@@ -573,6 +573,77 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
     memory.close()
 
 
+
+@pytest.mark.parametrize(("timeout_fires", "returncode", "kind"), [(True, 130, "timeout"), (False, -2, "signal")])
+def test_native_direction_process_failure_crosses_real_stage_boundary(
+    tmp_path, monkeypatch, timeout_fires, returncode, kind
+):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "native"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "native-direction-build",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/native-direction-build",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    import threading
+    import site_agent.hands.opencode_runner as opencode_runner
+
+    real_popen = opencode_runner.subprocess.Popen
+    class Process:
+        pid = 83421
+        stdout = iter(['{"type":"tool_use","part":{"type":"tool","tool":"Read"}}\n'])
+        def __init__(self): self.returncode = returncode
+        def wait(self, timeout=None): return returncode
+        def send_signal(self, _signal): pass
+    process = Process()
+    def selective_popen(command, *args, **kwargs):
+        if command and command[0] == opencode_runner._opencode_bin(config):
+            return process
+        return real_popen(command, *args, **kwargs)
+    class Timer:
+        def __init__(self, _seconds, callback): self.callback = callback
+        def start(self):
+            if timeout_fires: self.callback()
+        def cancel(self): pass
+    monkeypatch.setattr(opencode_runner.subprocess, "Popen", selective_popen)
+    monkeypatch.setattr(threading, "Timer", Timer)
+    monkeypatch.setattr(opencode_runner.os, "killpg", lambda pid, _sig: None if pid == process.pid else (_ for _ in ()).throw(AssertionError(pid)))
+
+    with pytest.raises(runner.RunnerError) as caught:
+        runner.stage_design_build({"config": config, "memory": memory}, request, target)
+    failure = caught.value.result["process_failure"]
+    assert failure["kind"] == kind
+    assert failure["stage"] == "native-direction"
+    assert failure["last_tool"] == "Read"
+    transcript_path = caught.value.result["direction_transcript_path"]
+    assert transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
+    persisted_transcript = tmp_path / "data" / transcript_path
+    assert persisted_transcript.is_file()
+    assert '"tool":"Read"' in persisted_transcript.read_text()
+    memory.close()
+
+
 def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, monkeypatch):
     clone, base_sha = _clone(tmp_path)
     config = {
@@ -1559,7 +1630,9 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
         _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 1800s",
-            result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n"},
+            result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n",
+                    "process_failure": {"kind": "timeout", "effective_timeout_seconds": 1800,
+                                        "returncode": -15, "stage": "build"}},
         )
 
     monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
@@ -1572,11 +1645,98 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
         {"config": config, "memory": memory}, request, target, design_plan=plan
     )
 
-    assert receipt.build_error == ""
+    assert receipt.build_error == "opencode timed out after 1800s"
+    assert receipt.process_failure["kind"] == "timeout"
     assert [item[0] for item in calls] == ["coordinator", "implementation", "fidelity"]
     assert calls[1][1]["provider_turn_error"] == "opencode timed out after 1800s"
     assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
     assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
+@pytest.mark.parametrize("failure_point", ["self_check", "provision", "finalization"])
+def test_provider_timeout_metadata_survives_host_and_finalization_failures(
+    tmp_path, monkeypatch, failure_point
+):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": f"preserve-timeout-{failure_point}",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": f"refs/ada-design-lab/preserve-timeout-{failure_point}",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    plan = {"experience_journey": {"scenes": [{"id": "arrival"}]}}
+    original_failure = {
+        "kind": "timeout", "effective_timeout_seconds": 1800,
+        "returncode": -15, "stage": "source_authoring", "last_tool": "write_file",
+    }
+    secondary_failure = {
+        "kind": "signal", "effective_timeout_seconds": 1800,
+        "returncode": -2, "stage": "host_finalization", "last_tool": "git_commit",
+    }
+    host_error = f"{failure_point} host gate failed"
+
+    class FidelityReport:
+        def to_dict(self):
+            return {"status": "passed"}
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            pass
+
+        def record_implementation_phase(self, request, target, *, plan, provider_result):
+            pass
+
+        def run_experience_fidelity_phase(self, request, target, *, plan, workspace, progress, image_files):
+            return FidelityReport()
+
+    def failed_turn(worktree, prompt, config, **kwargs):
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
+        raise runner.RunnerError(
+            "opencode timed out after 1800s", result={"session_id": "timeout-session", "reply": "implemented",
+                                           "transcript": "timeout\\n", "process_failure": original_failure},
+        )
+
+    def failing_host(*args, **kwargs):
+        raise runner.RunnerError(host_error, result={"process_failure": secondary_failure})
+
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
+    monkeypatch.setattr(runner, "_journey_source_coverage", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_run_local_design_self_check", failing_host if failure_point == "self_check" else lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", failing_host if failure_point == "provision" else lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
+
+    def finalize_progress(message):
+        if failure_point == "finalization" and message == "committing the validated design candidate":
+            raise runner.RunnerError(host_error, result={"process_failure": secondary_failure})
+
+    with pytest.raises(runner.RunnerError) as raised:
+        runner.stage_design_build(
+            {"config": config, "memory": memory}, request, target,
+            design_plan=plan, progress=finalize_progress,
+        )
+
+    assert host_error in str(raised.value)
+    assert raised.value.result["process_failure"] == original_failure
     memory.close()
 
 
@@ -1635,7 +1795,9 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
         _write_presentation(worktree, "<html><body><h1>Repaired</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 900s",
-            result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n"},
+            result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n",
+                    "process_failure": {"kind": "timeout", "effective_timeout_seconds": 900,
+                                        "returncode": -15, "stage": "build"}},
         )
 
     monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
@@ -1651,7 +1813,8 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
         repair_brief={"source": "host_deterministic_evidence"},
     )
 
-    assert receipt.build_error == ""
+    assert receipt.build_error == "opencode timed out after 900s"
+    assert receipt.process_failure["kind"] == "timeout"
     assert [item[0] for item in calls] == ["coordinator", "fidelity"]
     assert isinstance(calls[1][1], ExperiencePlanBundle)
     assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha

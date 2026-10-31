@@ -820,6 +820,10 @@ def test_partial_build_receipt_retains_candidate_but_cannot_be_reviewed(tmp_path
                 "model": "deepseek-ai/DeepSeek-V4-Flash",
                 "publishable": True,
                 "build_error": "opencode exited 1: provider stopped",
+                "process_failure": {
+                    "kind": "nonzero_exit", "stage": "build", "returncode": 1,
+                    "returncode_interpretation": "ordinary_exit",
+                },
             })
 
     service = DesignService(memory, builder=FakeBuilder(), config={"llm": {"model": "openrouter/test"}})
@@ -850,6 +854,9 @@ def test_partial_build_receipt_retains_candidate_but_cannot_be_reviewed(tmp_path
     assert stored["status"] == "failed"
     assert stored["candidate_sha"] == "e" * 40
     assert stored["transcript_path"] == "artifacts/partial.jsonl"
+    failed_event = next(event for event in stored["events"] if event["stage"] == "candidate_failed")
+    assert failed_event["detail"]["process_failure"]["kind"] == "nonzero_exit"
+    assert failed_event["detail"]["process_failure"]["stage"] == "build"
     with pytest.raises(DesignServiceError, match="not ready for review"):
         service.create_review_draft(run["run_id"])
     memory.close()
@@ -865,6 +872,14 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
                 result={
                     "session_id": "noop-session",
                     "transcript_path": "design-runs/design-noop/opencode.jsonl",
+                    "process_failure": {
+                        "kind": "timeout",
+                        "effective_timeout_seconds": 9,
+                        "returncode": -15,
+                        "host_termination_reason": "runner_timeout",
+                        "stage": "native-direction",
+                        "last_tool": "Read",
+                    },
                 },
             )
 
@@ -898,6 +913,15 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
     assert stored["transcript_path"] == "design-runs/design-noop/opencode.jsonl"
     assert stored["opencode_session_id"] == "noop-session"
     assert stored["transcript_artifact_id"]
+    failed_event = next(event for event in stored["events"] if event["stage"] == "failed")
+    assert failed_event["detail"]["process_failure"] == {
+        "kind": "timeout",
+        "effective_timeout_seconds": 9,
+        "returncode": -15,
+        "host_termination_reason": "runner_timeout",
+        "stage": "native-direction",
+        "last_tool": "Read",
+    }
     memory.close()
 
 

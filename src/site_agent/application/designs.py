@@ -1974,10 +1974,29 @@ class DesignService:
             self.memory.update_design_run(run_id, **evidence)
             if receipt.build_error:
                 self.memory.transition_design_run(run_id, DesignRunStatus.FAILED.value, error=receipt.build_error)
-                self.memory.add_design_run_event(run_id, "candidate_failed", "An incomplete OpenCode turn produced a retained candidate.", {
+                failed_detail = {
                     "candidate_sha": receipt.candidate_sha,
                     "error": receipt.build_error[:500],
-                })
+                }
+                if receipt.process_failure:
+                    allowed_process_failure_fields = {
+                        "kind", "effective_timeout_seconds", "returncode", "signal_number", "signal_name",
+                        "signal_inferred_number", "signal_inferred_name", "returncode_interpretation",
+                        "host_termination_reason", "stage", "last_tool",
+                    }
+                    process_failure = {
+                        key: value
+                        for key, value in receipt.process_failure.items()
+                        if key in allowed_process_failure_fields
+                    }
+                    if process_failure.get("kind") in {"timeout", "signal", "nonzero_exit"}:
+                        failed_detail["process_failure"] = process_failure
+                self.memory.add_design_run_event(
+                    run_id,
+                    "candidate_failed",
+                    "An incomplete OpenCode turn produced a retained candidate.",
+                    failed_detail,
+                )
                 return receipt
             self._advance(run_id, DesignRunStatus.CANDIDATE_READY, "Candidate retained; host validation is a separate operation.")
             self._record_progress_stage(run_id, "building", "Your design is being assembled.")
@@ -1993,6 +2012,21 @@ class DesignService:
                 partial = dict(getattr(exc, "result", {}) or {})
                 if not partial and getattr(exc, "__cause__", None) is not None:
                     partial = dict(getattr(exc.__cause__, "result", {}) or {})
+                process_failure = partial.get("process_failure")
+                if isinstance(process_failure, Mapping) and process_failure.get("kind") in {
+                    "timeout", "signal", "nonzero_exit"
+                }:
+                    process_failure = {
+                        key: process_failure[key]
+                        for key in (
+                            "kind", "effective_timeout_seconds", "returncode", "signal_number",
+                            "signal_name", "signal_inferred_number", "signal_inferred_name",
+                            "returncode_interpretation", "host_termination_reason", "stage", "last_tool",
+                        )
+                        if key in process_failure
+                    }
+                else:
+                    process_failure = None
                 transcript_path = str(partial.get("transcript_path") or "").strip()
                 if transcript_path:
                     try:
@@ -2057,7 +2091,10 @@ class DesignService:
                     DesignRunStatus.CANCELLED.value,
                 }:
                     self.memory.transition_design_run(run_id, DesignRunStatus.FAILED.value, error=str(exc))
-                    self.memory.add_design_run_event(run_id, "failed", "The design build failed.", {"error": str(exc)[:500]})
+                    event_data = {"error": str(exc)[:500]}
+                    if process_failure:
+                        event_data["process_failure"] = process_failure
+                    self.memory.add_design_run_event(run_id, "failed", "The design build failed.", event_data)
             except Exception:
                 pass
             if isinstance(exc, DesignServiceError):
