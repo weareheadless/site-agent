@@ -442,6 +442,21 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
     memory.close()
 
 
+def test_status_session_omits_expensive_history_but_keeps_confirmed_identity(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    service = DesignIntakeService(memory, config={}, default_intake=_intake())
+    session = service.create_session()
+    confirmed = service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    expected = confirmed["session"]["confirmed_revision_id"]
+    monkeypatch.setattr(memory, "list_design_intake_revisions", lambda *_a, **_k: pytest.fail("status must not decode revision history"))
+    monkeypatch.setattr(service, "_asset_rows", lambda *_a: pytest.fail("status must not fetch media history"))
+    result = service.get_session(session["session_id"], include_history=False)
+    assert result["confirmed_revision_id"] == expected
+    assert result["summary"]
+    assert "revisions" not in result and "messages" not in result and "assets" not in result
+    memory.close()
+
+
 @pytest.mark.parametrize(
     "recovery_case", ["same-base", "changed-runtime-base", "changed-owner-request",
                       "changed-context-extra", "changed-intake-session-id", "changed-authorized-target",

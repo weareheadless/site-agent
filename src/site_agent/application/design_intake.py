@@ -359,7 +359,7 @@ class DesignIntakeService:
             result.append(item)
         return result
 
-    def get_session(self, session_id: str) -> dict[str, Any]:
+    def get_session(self, session_id: str, *, include_history: bool = True) -> dict[str, Any]:
         session = self._row(session_id)
         session_id = session["session_id"]
         draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
@@ -372,10 +372,16 @@ class DesignIntakeService:
             "deferred": [item.to_dict() for item in draft.deferred],
             "contradictions": [item.to_dict() for item in draft.contradictions],
         }
-        session["assets"] = self._asset_rows(session_id)
-        session["revisions"] = self.memory.list_design_intake_revisions(session_id, limit=100)
         session["summary"] = IntakeSummary.from_draft(draft).to_dict()
         confirmed_revision = session.get("confirmed_revision")
+        if not include_history:
+            if confirmed_revision is not None:
+                confirmed_id = self.memory.design_intake_confirmed_revision_id(session_id, confirmed_revision)
+                if confirmed_id is not None:
+                    session["confirmed_revision_id"] = confirmed_id
+            return session
+        session["assets"] = self._asset_rows(session_id)
+        session["revisions"] = self.memory.list_design_intake_revisions(session_id, limit=100)
         if confirmed_revision is not None:
             confirmed = next(
                 (

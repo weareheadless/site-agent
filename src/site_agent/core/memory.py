@@ -4627,6 +4627,17 @@ class Memory:
         }
 
     @_locked
+    def design_intake_confirmed_revision_id(self, session_id: str, revision: int) -> int | None:
+        """Resolve an exact confirmed revision without decoding historical drafts."""
+        session_id = self._validate_intake_session_id(session_id)
+        row = self.conn.execute(
+            "SELECT id FROM design_intake_revisions WHERE session_id = ? AND revision = ? "
+            "AND site_intake_json IS NOT NULL AND site_intake_json != '{}'",
+            (session_id, int(revision)),
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    @_locked
     def list_design_intake_revisions(self, session_id: str, limit: int = 100) -> list[dict[str, Any]]:
         session_id = self._validate_intake_session_id(session_id)
         rows = self.conn.execute(
