@@ -495,6 +495,27 @@ def test_technical_repair_manifest_keeps_the_complete_intake_route_inventory():
     assert runner._manifest_required_pages(request, target) == ["index.html", "articles.html"]
 
 
+def test_payload_initial_prompt_reuses_templates_and_existing_candidate_flow():
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1, "run_id": "section-handoff", "mode": "initial_homepage",
+        "base_sha": "a" * 40, "page_path": "index.html", "purpose": "Compose the homepage.",
+        "acceptance_criteria": ["Use the supplied sections."],
+        "content": {"site_intake": _intake().to_dict(), "payload_draft_receipts": [{"document_id": "41"}]},
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment", "base_sha": "a" * 40,
+        "candidate_ref": "refs/ada-design-lab/section-handoff", "push_mode": "none",
+        "publishable": False, "clone_path": "/tmp/design-clone",
+    })
+    prompt = runner._design_prompt(request, target)
+    assert "section-library-v1/" in prompt
+    assert "render the Payload sections in their stored order" in prompt
+    assert "Do not recreate the hero markup" in prompt
+    assert "helloAdaBindingId" in prompt
+    assert "signature slot" in prompt
+    assert "Keep non-composed documents on their existing renderer" in prompt
+
+
 def test_initial_typed_prompt_does_not_expose_existing_site_context():
     snapshot = DesignContextSnapshot.from_dict(_snapshot(
         effective_persona="PERSONA_MARKER",

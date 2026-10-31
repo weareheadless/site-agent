@@ -10,6 +10,25 @@ TEMPLATE = ROOT / "src" / "site_agent" / "templates" / "next-payload"
 SECTIONS = TEMPLATE / "src" / "components" / "site" / "sections"
 
 
+def test_candidate_receives_a_pinned_section_snapshot_without_replacing_presentation(tmp_path):
+    from site_agent.hands.opencode_runner import _stage_section_templates, RunnerError
+    import pytest
+
+    presentation = tmp_path / "src/components/site/presentation/PagePresentation.tsx"
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text("owner composition")
+    paths = _stage_section_templates(tmp_path)
+    assert presentation.read_text() == "owner composition"
+    assert len(paths) == 3
+    assert all("section-library-v1/" in path for path in paths)
+    for path in paths:
+        assert (tmp_path / path).read_bytes() == (SECTIONS / Path(path).name).read_bytes()
+    assert _stage_section_templates(tmp_path) == paths
+    (tmp_path / paths[0]).write_text("different pinned version")
+    with pytest.raises(RunnerError, match="section template snapshot"):
+        _stage_section_templates(tmp_path)
+
+
 def test_sections_are_scaffold_not_shared_runtime():
     """Sections are the site's own design, so they ship in the scaffold.
 
