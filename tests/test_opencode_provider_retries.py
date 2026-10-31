@@ -5,6 +5,24 @@ import pytest
 from site_agent.hands import opencode_runner as runner
 
 
+def test_frozen_profile_does_not_replace_the_configured_credential_source():
+    from types import SimpleNamespace
+    from site_agent.core.design_contracts import canonical_hash
+    from site_agent.config import resolve_secret
+
+    quality = {"browser_required": False}
+    request = SimpleNamespace(context_snapshot=SimpleNamespace(execution_profile={
+        "model": "deepseek/deepseek-v4.1-flash-1017", "provider": "openrouter",
+        "provider_env_name": "OPENROUTER_API_KEY", "build_profile": "next_react",
+        "quality_policy": {**quality, "hash": canonical_hash(quality)},
+    }))
+    config = {"env": {"llm_api_key": "SITE_AGENT_LLM_API_KEY"}}
+    projected = runner._typed_execution_config(config, request, SimpleNamespace(build_profile="next_react"))
+    assert projected["design_engine"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert projected["env"]["llm_api_key"] == "SITE_AGENT_LLM_API_KEY"
+    assert resolve_secret(projected, "llm_api_key", {"SITE_AGENT_LLM_API_KEY": "selected-key"}) == "selected-key"
+
+
 def rejection(kind="provider.no-route"):
     return runner.RunnerError("opencode exited 1: ", result={
         "transcript": json.dumps({"type": "error", "error": {"type": kind, "message": "temporarily unavailable"}}),

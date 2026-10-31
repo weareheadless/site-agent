@@ -1932,12 +1932,10 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
     if "provider_base_url" in profile:
         llm["base_url"] = str(profile.get("provider_base_url") or "")
     result["llm"] = llm
-    provider_env_name = str(profile.get("provider_env_name") or "").strip()
-    if provider_env_name:
-        result["env"] = {
-            **dict(result.get("env") or {}),
-            "llm_api_key": provider_env_name,
-        }
+    # provider_env_name is the variable exported to the isolated coding
+    # process. It must not erase the host's configured secret-source mapping:
+    # SITE_AGENT_LLM_API_KEY may be exported as OPENROUTER_API_KEY without
+    # requiring a second credential or changing the configured provider.
     quality = dict(engine.get("quality") or {})
     for key in (
         "output_dir", "required_pages", "required_content", "allowed_patterns", "allowed_hard_denied_paths",
@@ -2725,6 +2723,11 @@ def stage_design_build(
             provider_key = str(os.environ.get(provider_env_name) or "")
         if not provider_key:
             provider_key = resolve_secret(execution_config, "llm_api_key", source_env)
+        if not provider_key and target.publishable:
+            raise RunnerError(
+                f"the configured design provider credential is unavailable for run {request.run_id} "
+                f"(child variable {provider_env_name or 'unset'})"
+            )
         execution_context["api_key"] = provider_key
         install_agent_files(
             worktree,
