@@ -345,3 +345,13 @@ def test_build_site_stages_noexec_workspace_on_an_executable_mount(tmp_path, mon
     assert result.ok is True
     assert (workspace / "out" / "index.html").read_text(encoding="utf-8") == "candidate"
     assert all(Path(kwargs["cwd"]) != workspace for _, kwargs in calls)
+
+
+def test_next_profile_does_not_require_a_static_export_tree():
+    """A server-rendered Next/Payload build never writes `out`.
+
+    Requiring it reported every good build as `missing build output: out`,
+    which is how a real candidate died after thirty minutes of authoring.
+    """
+    assert NEXT_REACT_PROFILE.output_required is False
+    assert NEXT_REACT_PROFILE.output_dir == "out"
