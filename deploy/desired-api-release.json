@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261031223239-api-provider-retries",
-    "sha": "15f79f2b4321b964c62df0d522464606b258fa01"
+    "id": "20261031225641-api-provider-isolation",
+    "sha": "415c20668a6471bcf908cf07b874e6799b2f2a26"
   }
 }
