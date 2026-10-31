@@ -196,6 +196,29 @@ def test_next_template_dependency_source_is_fail_closed(tmp_path, monkeypatch):
         site_build.next_react_toolchain_dependencies()
 
 
+def test_managed_payload_workspace_keeps_its_canonical_route_shell(tmp_path):
+    workspace = tmp_path / "managed"
+    route = workspace / "src/app/(frontend)/[[...slug]]/page.tsx"
+    layout = workspace / "src/app/(frontend)/layout.tsx"
+    route.parent.mkdir(parents=True)
+    route.write_text("canonical public route")
+    layout.write_text("canonical frontend layout")
+    (workspace / "template-manifest.json").write_text("{}")
+    (workspace / "payload.config.ts").write_text("shared Payload schema")
+    created = prepare_native_workspace(workspace, NEXT_REACT_PROFILE)
+    assert "src/app/page.tsx" not in created
+    assert "src/app/layout.tsx" not in created
+    assert not (workspace / "src/app/page.tsx").exists()
+    assert not (workspace / "src/app/layout.tsx").exists()
+    assert route.read_text() == "canonical public route"
+    assert layout.read_text() == "canonical frontend layout"
+    assert (workspace / "payload.config.ts").read_text() == "shared Payload schema"
+    route.unlink()
+    with pytest.raises(SiteBuildError, match="canonical route shell"):
+        prepare_native_workspace(workspace, NEXT_REACT_PROFILE)
+    assert not (workspace / "src/app/page.tsx").exists()
+
+
 def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path):
     workspace = tmp_path / "site"
     workspace.mkdir()
