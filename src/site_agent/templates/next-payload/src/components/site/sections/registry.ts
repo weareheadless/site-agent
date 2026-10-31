@@ -1,4 +1,5 @@
-import Hero from './hero'
+import type { ReactNode } from 'react'
+import Hero, { type HeroContent, type HeroDirection } from './hero'
 
 /**
  * Section vocabulary.
@@ -8,12 +9,17 @@ import Hero from './hero'
  * parameters. Adding a section means adding a component and a line here — it
  * does not change how any existing page renders.
  */
-export const sectionComponents = {
+
+export type SectionProps = {
+  content: HeroContent
+  direction?: HeroDirection
+  signature?: ReactNode
+}
+
+export const sectionComponents: Record<string, (props: SectionProps) => ReactNode> = {
   hero: Hero,
-} as const
+}
 
-export type SectionType = keyof typeof sectionComponents
-
-export function isSectionType(value: string): value is SectionType {
+export function isSectionType(value: string): boolean {
   return Object.hasOwn(sectionComponents, value)
 }

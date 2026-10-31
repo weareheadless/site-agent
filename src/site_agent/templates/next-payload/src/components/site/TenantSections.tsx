@@ -6,6 +6,8 @@ import ContactForm from './ContactForm'
 import BookingForm from './BookingForm'
 import { runtimeValue } from '@/lib/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
+import { isSectionType, sectionComponents } from './sections/registry'
+import { sectionDirection, sectionEntriesToContent } from './sections/adapt'
 
 type ContentEntry = Record<string, unknown> & { key: string; blockType: string }
 type Section = Record<string, unknown> & { key: string; label: string }
@@ -153,6 +155,20 @@ export default function TenantSections({ sections, collection, documentId, previ
       const sectionBinding = helloAdaBindingId(collection, documentId, { collection, documentId, sectionKey, field: 'sectionLabel' })
       const entries = section.entries === undefined ? [] : section.entries
       if (!Array.isArray(entries)) throw new Error(`Payload section “${sectionKey}” content is invalid.`)
+      // A section that names a layout renders through the shared section
+      // library. Everything else keeps the generic content rendering, so
+      // existing pages are unchanged until their section opts in.
+      const layout = typeof section.layout === 'string' ? section.layout : ''
+      if (isSectionType(layout)) {
+        const SectionComponent = sectionComponents[layout]
+        return (
+          <SectionComponent
+            key={sectionKey}
+            content={sectionEntriesToContent(entries)}
+            direction={sectionDirection(section)}
+          />
+        )
+      }
       return <section className="content-section" key={sectionKey} data-section-key={sectionKey}>
         <h2 data-helloada-field={sectionBinding}>{label}</h2>
         {entries.map((rawEntry: unknown) => {

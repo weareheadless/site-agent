@@ -45,3 +45,15 @@ def test_sections_use_theme_tokens_not_hard_coded_colours():
     assert "#" not in source, "hero.tsx contains a hard-coded colour"
     assert "@theme" in css
     assert "--color-paper" in css and "--tenant-paper" in css
+
+
+def test_adapter_maps_content_blocks_to_section_props():
+    """The adapter is the one place that decides which block becomes what."""
+    source = (SECTIONS / "adapt.ts").read_text()
+
+    for block in ("helloAdaHeading", "helloAdaParagraph", "helloAdaLink", "helloAdaImage"):
+        assert block in source, f"adapter ignores {block}"
+    assert "src/components/site/sections/adapt.ts" in json.loads(
+        (ROOT / "deploy" / "shared-runtime-overlay.json").read_text()
+    )["copy"]
+
