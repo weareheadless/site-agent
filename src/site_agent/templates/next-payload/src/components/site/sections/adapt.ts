@@ -1,4 +1,3 @@
-import { mediaUrl } from '@/lib/content'
 import type { HeroAlignment, HeroContent, HeroDirection } from './hero'
 
 /**
@@ -6,8 +5,17 @@ import type { HeroAlignment, HeroContent, HeroDirection } from './hero'
  *
  * The schema stores content, not layout: a heading, paragraphs, an image, a
  * link. This adapter is the single place that decides which block becomes the
- * headline, the body, the action and the image, so the same content can be
- * rendered by any section variant.
+ * headline, the eyebrow, the body, the supporting copy, the action and the
+ * image, so the same content can be rendered by any section variant.
+ *
+ * The mapping is structural rather than key-based: a paragraph that precedes
+ * the heading is the eyebrow, the first paragraph after it is the body, and
+ * any further paragraphs are supporting copy. That keeps the authoring surface
+ * plain and ordered while letting the section own where each part sits.
+ *
+ * The adapter also reports which content entry each part came from, so the
+ * section can carry the owner's editable binding for it. A composed page stays
+ * editable in the workspace; it does not become a picture of Payload data.
  *
  * A heading may carry an italic break with a pipe:
  *   "Tu color, | en las mismas manos."
@@ -23,41 +31,99 @@ const SCALES = new Set(['editorial', 'compact'])
 
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
 
-export function sectionEntriesToContent(entries: readonly unknown[]): HeroContent {
+/**
+ * Resolve a Payload media relation to a public source and its alternative text.
+ *
+ * Injected so this adapter stays a pure translation with no runtime imports:
+ * the mapping is the thing worth testing, and it should not need a Payload
+ * runtime to prove it maps an eyebrow to an eyebrow.
+ */
+export type MediaResolver = (value: unknown) => { src: string; alt: string }
+
+/** Which content entry a rendered part came from, and which field it edits. */
+export type SectionBinding = { key: string; property: 'text' | 'image' }
+
+export type SectionBindings = {
+  eyebrow?: SectionBinding
+  headline?: SectionBinding
+  body?: SectionBinding
+  supporting?: SectionBinding[]
+  action?: SectionBinding
+  image?: SectionBinding
+}
+
+export type SectionContent = {
+  content: HeroContent
+  bindings: SectionBindings
+}
+
+export function sectionEntriesToContent(entries: readonly unknown[], media: MediaResolver): SectionContent {
+  let eyebrow = ''
+  let eyebrowKey = ''
   let headline = ''
+  let headlineKey = ''
   let emphasis: string | undefined
-  let body: string | undefined
+  let body = ''
+  let bodyKey = ''
+  const supporting: string[] = []
+  const supportingBindings: SectionBinding[] = []
   let action: HeroContent['action']
+  let actionKey = ''
   let image: HeroContent['image']
+  let imageKey = ''
+  let headingSeen = false
 
   for (const raw of entries) {
     if (!raw || typeof raw !== 'object') continue
     const entry = raw as Entry
+    const key = text(entry.key)
     switch (entry.blockType) {
       case 'helloAdaHeading': {
         const value = text(entry.text)
         if (!value || headline) break
         const [plain, ...rest] = value.split('|')
         headline = plain.trim()
+        headlineKey = key
         const tail = rest.join('|').trim()
         if (tail) emphasis = tail
+        headingSeen = true
         break
       }
       case 'helloAdaParagraph': {
         const value = text(entry.text)
-        if (value && !body) body = value
+        if (!value) break
+        if (!headingSeen) {
+          if (!eyebrow) {
+            eyebrow = value
+            eyebrowKey = key
+          }
+          break
+        }
+        if (!body) {
+          body = value
+          bodyKey = key
+        } else {
+          supporting.push(value)
+          supportingBindings.push({ key, property: 'text' })
+        }
         break
       }
       case 'helloAdaLink': {
         const href = text(entry.href)
         const label = text(entry.text)
-        if (href && label && !action) action = { label, href }
+        if (href && label && !action) {
+          action = { label, href }
+          actionKey = key
+        }
         break
       }
       case 'helloAdaImage': {
         if (image) break
-        const src = mediaUrl(entry.image)
-        if (src) image = { src, alt: text(entry.alt) }
+        const resolved = media(entry.image)
+        if (resolved.src) {
+          image = { src: resolved.src, alt: text(entry.alt) || resolved.alt }
+          imageKey = key
+        }
         break
       }
       default:
@@ -65,7 +131,26 @@ export function sectionEntriesToContent(entries: readonly unknown[]): HeroConten
     }
   }
 
-  return { headline, emphasis, body, action, image }
+  const bindings: SectionBindings = {}
+  if (eyebrowKey) bindings.eyebrow = { key: eyebrowKey, property: 'text' }
+  if (headlineKey) bindings.headline = { key: headlineKey, property: 'text' }
+  if (bodyKey) bindings.body = { key: bodyKey, property: 'text' }
+  if (supportingBindings.length) bindings.supporting = supportingBindings
+  if (actionKey) bindings.action = { key: actionKey, property: 'text' }
+  if (imageKey) bindings.image = { key: imageKey, property: 'image' }
+
+  return {
+    content: {
+      eyebrow: eyebrow || undefined,
+      headline,
+      emphasis,
+      body: body || undefined,
+      supporting,
+      action,
+      image,
+    },
+    bindings,
+  }
 }
 
 export function sectionDirection(section: Record<string, unknown>): HeroDirection {

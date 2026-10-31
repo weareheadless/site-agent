@@ -493,9 +493,54 @@ def _experience_plan(**overrides):
             "primary_action": "Book a consultation",
             "supporting_copy": ["Thoughtful strategy, made practical."],
         },
+        "page_composition": {
+            "schema_version": 1,
+            "sections": [{
+                "id": "home-opening",
+                "layout": "hero",
+                "direction": {"align": "split-left", "rules": True, "treatment": "colour", "scale": "editorial"},
+            }],
+        },
     }
     value.update(overrides)
     return value
+
+
+def test_page_composition_names_a_renderable_layout_and_full_direction():
+    plan = ExperiencePlanBundle.from_dict(_experience_plan())
+
+    section = plan.page_composition[0]
+    assert section.layout == "hero"
+    assert section.direction.to_dict() == {
+        "align": "split-left", "rules": True, "treatment": "colour", "scale": "editorial",
+    }
+    assert plan.to_dict()["page_composition"]["sections"][0]["direction"]["align"] == "split-left"
+
+    def composed(sections):
+        return _experience_plan(page_composition={"schema_version": 1, "sections": sections})
+
+    good = {"id": "home-opening", "layout": "hero",
+            "direction": {"align": "centred", "rules": False, "treatment": "monochrome", "scale": "compact"}}
+    with pytest.raises(ContractError, match="layout must be one of"):
+        ExperiencePlanBundle.from_dict(composed([{**good, "layout": "carousel"}]))
+    with pytest.raises(ContractError, match="align must be one of"):
+        ExperiencePlanBundle.from_dict(composed([{**good, "direction": {**good["direction"], "align": "diagonal"}}]))
+    with pytest.raises(ContractError, match="treatment must be one of"):
+        ExperiencePlanBundle.from_dict(composed([{**good, "direction": {**good["direction"], "treatment": "sepia"}}]))
+    with pytest.raises(ContractError, match="scale must be one of"):
+        ExperiencePlanBundle.from_dict(composed([{**good, "direction": {**good["direction"], "scale": "huge"}}]))
+    with pytest.raises(ContractError, match="rules must be a boolean"):
+        ExperiencePlanBundle.from_dict(composed([{**good, "direction": {**good["direction"], "rules": "yes"}}]))
+    with pytest.raises(ContractError, match="page_composition.sections must not be empty"):
+        ExperiencePlanBundle.from_dict(composed([]))
+    with pytest.raises(ContractError, match="more than one hero section"):
+        ExperiencePlanBundle.from_dict(composed([good, {**good, "id": "home-second"}]))
+
+    # A plan persisted before composition existed stays readable for repair;
+    # the stage that renders the page is what refuses an uncomposed plan.
+    legacy = _experience_plan()
+    legacy.pop("page_composition")
+    assert ExperiencePlanBundle.from_dict(legacy).page_composition == ()
 
 
 def test_experience_plan_requires_evidence_backed_behavior_and_round_trips():

@@ -449,6 +449,7 @@ def _native_direction_payload(
         "asset_composition_plan", "experience_journey", "behavior_system", "layout_and_typography_plan",
         "responsive_composition_plan", "protected_strengths", "variation_points", "implementation_risks",
         "transfer_test", "review_rubric", "input_artifact_hashes", "copy_deck",
+        "page_composition",
     }
     normalized = {key: value for key, value in normalized.items() if key in plan_fields}
     normalized["schema_version"] = 1
@@ -616,6 +617,14 @@ def _native_direction_payload(
         plan = ExperiencePlanBundle.from_dict(normalized)
     except Exception as exc:  # noqa: BLE001 - contract validation is the boundary
         raise RunnerError(f"creative direction returned an invalid experience plan: {exc}", result=dict(result)) from exc
+    if not plan.page_composition:
+        # A page Ada has not composed cannot be rendered by the section
+        # library, and the host will not compose it on her behalf.
+        raise RunnerError(
+            "creative direction must compose the homepage from the section library: "
+            "experience_plan.page_composition is missing",
+            result=dict(result),
+        )
     if not request.context_snapshot_hash or plan.context_snapshot_hash != request.context_snapshot_hash:
         raise RunnerError("creative experience plan is not bound to the frozen context snapshot", result=dict(result))
     if snapshot_evidence and not plan.asset_evidence:
@@ -881,6 +890,16 @@ def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int
         "label": "Homepage introduction",
         "text": body,
     })
+    if featured_media_id is not None:
+        # The composed hero owns the opening image. Payload media carries its
+        # own alternative text, which the section reads back through the
+        # canonical media resolver.
+        entries.append({
+            "key": "home.hero.image",
+            "blockType": "helloAdaImage",
+            "label": "Homepage image",
+            "image": featured_media_id,
+        })
     destination = str(intake.conversion.get("whatsapp_url") or intake.conversion.get("instagram_url") or "").strip()
     if destination:
         entries.append({
@@ -917,10 +936,30 @@ def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int
     if description is not None and (not isinstance(description, str) or not description.strip()):
         raise RunnerError("the homepage copy deck meta_description must be non-empty text when present")
     description = str(description or body).strip()[:320]
+
+    # Ada composed the page; the host only binds her composition to the
+    # canonical section fields. A plan without a composition cannot be
+    # rendered by the section library, and the host does not compose for her.
+    composition = getattr(typed, "page_composition", ()) or ()
+    if not composition:
+        raise RunnerError("the approved creative plan does not compose the homepage from the section library")
+    opening = composition[0]
+    if opening.layout != "hero":
+        raise RunnerError(f"the homepage cannot open with an unsupported section layout: {opening.layout}")
+    if len(composition) > 1:
+        # Fail closed rather than silently dropping a section Ada composed.
+        raise RunnerError("the homepage stage can only bind the opening section of a composition")
+
     page: dict[str, Any] = {
         "title": str(intake.business["name"]).strip(),
         "slug": "home",
-        "sections": [{"key": "home.hero", "label": "Homepage introduction", "entries": entries}],
+        "sections": [{
+            "key": "home.hero",
+            "label": "Homepage introduction",
+            "layout": opening.layout,
+            "direction": opening.direction.to_dict(),
+            "entries": entries,
+        }],
         "seo": {"title": headline[:300], "description": description},
     }
     if featured_media_id is not None:
@@ -1568,9 +1607,17 @@ def _native_direction_prompt(
         "validation. The experience_plan must include selected_concept_id, asset_evidence, brand_source_map, "
         "asset_composition_plan, experience_journey, behavior_system, layout_and_typography_plan, "
         "responsive_composition_plan, protected_strengths, variation_points, implementation_risks, transfer_test, "
-        "review_rubric, input_artifact_hashes, and copy_deck. The copy_deck must contain final visitor-facing homepage "
-        "copy as an object with non-empty string fields headline, body, and primary_action; it may also include a short "
-        "eyebrow and supporting_copy array. Write actual copy, not instructions or placeholders. The brand_source_map "
+        "review_rubric, input_artifact_hashes, copy_deck, and page_composition. The copy_deck must contain final "
+        "visitor-facing homepage copy as an object with non-empty string fields headline, body, and primary_action; "
+        "it may also include a short eyebrow and supporting_copy array. Write actual copy, not instructions or "
+        "placeholders. page_composition is the page you are composing: an object with schema_version and a sections "
+        "array in reading order. Each section must have id, layout, and direction, and nothing else. layout must be "
+        "one of the section layouts this platform renders: hero. direction must contain exactly align, rules, "
+        "treatment and scale: align is one of split-left, split-right, centred, overlap or reversed; rules is a "
+        "boolean; treatment is colour or monochrome; scale is editorial or compact. The first section is the page's "
+        "opening section and must use the hero layout. Choose the direction from the subject, the confirmed intake "
+        "and the approved media; the section renders structure only, so these values are the design. The "
+        "brand_source_map "
         "must be an object with exactly these fields: "
         "schema_version, identity_assets, primary_brand_signals, geometry_vocabulary, spacing_rhythm, "
         "line_and_edge_language, color_relationships, type_relationship_hypotheses, material_relationships, "

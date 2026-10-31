@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import Hero, { type HeroContent, type HeroDirection } from './hero'
+import Hero, { type HeroContent, type HeroDirection, type SectionMarkers } from './hero'
 
 /**
  * Section vocabulary.
@@ -13,6 +13,7 @@ import Hero, { type HeroContent, type HeroDirection } from './hero'
 export type SectionProps = {
   content: HeroContent
   direction?: HeroDirection
+  bindings?: SectionMarkers
   signature?: ReactNode
 }
 

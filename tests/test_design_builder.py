@@ -15,6 +15,31 @@ from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult
 from tests.test_design_contracts import _experience_plan
 
 
+def _composed_plan(copy_deck, **overrides):
+    """The plan shape the homepage stage consumes: copy plus Ada's composition."""
+    from types import SimpleNamespace as _Namespace
+
+    from site_agent.core.design_contracts import SectionComposition, SectionDirection
+
+    plan = _Namespace(
+        copy_deck=copy_deck,
+        asset_composition_plan=(),
+        asset_evidence=(),
+        page_composition=(
+            SectionComposition(
+                section_id="home-opening",
+                layout="hero",
+                direction=SectionDirection(
+                    align="split-left", rules=True, treatment="colour", scale="editorial",
+                ),
+            ),
+        ),
+    )
+    for key, value in overrides.items():
+        setattr(plan, key, value)
+    return plan
+
+
 def _payload_first_request(whatsapp_url=None):
     conversion = {"primary_action": "Start a conversation", "not_available": True}
     if whatsapp_url:
@@ -56,26 +81,48 @@ def test_payload_first_homepage_data_is_editable_and_never_invents_a_contact_des
 
     linked = runner._initial_homepage_payload_data(
         _payload_first_request("https://wa.me/15551234567"),
-        SimpleNamespace(copy_deck=copy_deck),
+        _composed_plan(copy_deck),
         featured_media_id=17,
     )
-    entries = linked["sections"][0]["entries"]
+    entries = {entry["key"]: entry for entry in linked["sections"][0]["entries"]}
     assert linked["title"] == "North Star Studio"
     assert linked["slug"] == "home"
     assert linked["featuredImage"] == 17
     assert linked["seo"]["description"] == copy_deck["meta_description"]
-    assert entries[1]["text"] == copy_deck["headline"]
-    assert entries[2]["text"] == copy_deck["body"]
-    assert entries[3]["href"] == "https://wa.me/15551234567"
-    assert entries[3]["key"] == "home.hero.primary-action"
+    assert entries["home.hero.eyebrow"]["text"] == copy_deck["eyebrow"]
+    assert entries["home.hero.heading"]["text"] == copy_deck["headline"]
+    assert entries["home.hero.introduction"]["text"] == copy_deck["body"]
+    assert entries["home.hero.primary-action"]["href"] == "https://wa.me/15551234567"
+    assert entries["home.hero.image"]["image"] == 17
+    assert entries["home.supporting.paragraph-1"]["text"] == copy_deck["supporting_copy"][0]
+
+    # Ada's composition is written as data: the section names a layout and the
+    # art direction she chose, so the page is composed rather than coded.
+    section = linked["sections"][0]
+    assert section["layout"] == "hero"
+    assert section["direction"] == {
+        "align": "split-left", "rules": True, "treatment": "colour", "scale": "editorial",
+    }
 
     no_destination = runner._initial_homepage_payload_data(
-        _payload_first_request(), SimpleNamespace(copy_deck=copy_deck)
+        _payload_first_request(), _composed_plan(copy_deck)
     )
-    action = no_destination["sections"][0]["entries"][3]
+    action = next(entry for entry in no_destination["sections"][0]["entries"]
+                  if entry["key"] == "home.hero.primary-action")
     assert action["blockType"] == "helloAdaParagraph"
     assert action["text"] == copy_deck["primary_action"]
     assert "href" not in action
+
+
+def test_payload_first_homepage_refuses_a_plan_that_did_not_compose_the_page():
+    """The host does not compose for Ada; an uncomposed plan is a hard stop."""
+    copy_deck = {"headline": "Make your next move clearer.", "body": "Brand strategy.",
+                 "primary_action": "Start a conversation"}
+
+    with pytest.raises(runner.RunnerError, match="does not compose the homepage"):
+        runner._initial_homepage_payload_data(
+            _payload_first_request(), _composed_plan(copy_deck, page_composition=())
+        )
 
 
 def test_payload_first_stage_persists_and_binds_the_exact_default_locale_revision():
@@ -108,15 +155,11 @@ def test_payload_first_stage_persists_and_binds_the_exact_default_locale_revisio
     staged = runner._stage_initial_homepage_payload(
         {"payload_gateway": Payload()},
         request,
-        SimpleNamespace(
-            copy_deck={
-                "headline": "A clear promise.",
-                "body": "An owner-confirmed service.",
-                "primary_action": "Learn more",
-            },
-            asset_composition_plan=(),
-            asset_evidence=(),
-        ),
+        _composed_plan({
+            "headline": "A clear promise.",
+            "body": "An owner-confirmed service.",
+            "primary_action": "Learn more",
+        }),
     )
 
     receipt = staged.content["payload_draft_receipts"][0]
@@ -172,9 +215,8 @@ def test_payload_first_stage_adopts_existing_home_route_draft_and_binds_run_iden
     request = _payload_first_request()
     staged = runner._stage_initial_homepage_payload(
         {"payload_gateway": payload}, request,
-        SimpleNamespace(copy_deck={"headline": "New heading.", "body": "New body.",
-                                   "primary_action": "Learn more"},
-                       asset_composition_plan=(), asset_evidence=()),
+        _composed_plan({"headline": "New heading.", "body": "New body.",
+                                   "primary_action": "Learn more"}),
     )
     receipt = staged.content["payload_draft_receipts"][0]
     assert next(item["text"] for item in payload.updated["sections"][0]["entries"]
@@ -214,9 +256,8 @@ def test_payload_first_stage_does_not_adopt_different_or_unreadable_route(existi
     with pytest.raises(runner.RunnerError, match="the initial Payload homepage draft could not be verified"):
         runner._stage_initial_homepage_payload(
             {"payload_gateway": Payload()}, _payload_first_request(),
-            SimpleNamespace(copy_deck={"headline": "Heading.", "body": "Body.",
-                                       "primary_action": "Learn more"},
-                           asset_composition_plan=(), asset_evidence=()),
+            _composed_plan({"headline": "Heading.", "body": "Body.",
+                                       "primary_action": "Learn more"}),
         )
 
 
