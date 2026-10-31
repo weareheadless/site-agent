@@ -1391,6 +1391,7 @@ def test_run_opencode_turn_uses_supplied_child_environment(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
 
     def fake_popen(*args, **kwargs):
+        captured["command"] = args[0]
         captured.update(kwargs)
         return FakeProcess()
 
@@ -1409,10 +1410,22 @@ def test_run_opencode_turn_uses_supplied_child_environment(tmp_path, monkeypatch
     )
 
     child_env = captured["env"]
-    assert child_env["HOME"] == str(child_home.resolve())
+    assert "--standalone" in captured["command"]
+    assert child_env["HOME"] == str((tmp_path / ".agent-home").resolve())
     assert child_env["PATH"] == "/usr/bin"
     assert child_env["ENTRIM_API_KEY"] == "selected-secret"
     assert "GITHUB_TOKEN" not in child_env
+
+
+def test_builder_environment_never_reuses_service_home_or_xdg_state(tmp_path):
+    inherited = {"HOME": "/operator/home", "XDG_CONFIG_HOME": "/operator/config",
+                 "XDG_DATA_HOME": "/operator/data", "XDG_CACHE_HOME": "/operator/cache"}
+    first = runner._isolated_env(tmp_path / "first", "selected", source_env=inherited)
+    second = runner._isolated_env(tmp_path / "second", "selected", source_env=inherited)
+    for name in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
+        assert first[name] != inherited[name]
+        assert first[name] != second[name]
+        assert first[name].startswith(str(tmp_path / "first" / ".agent-home"))
 
 
 def test_template_tokens_describe_shadow_without_prescribing_flatness(tmp_path):

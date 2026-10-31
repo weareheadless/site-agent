@@ -4052,8 +4052,10 @@ def _isolated_env(
     import os
 
     source = os.environ if source_env is None else source_env
-    home_value = source.get("HOME") if source_env is not None else None
-    home = Path(str(home_value or clone / ".agent-home")).expanduser().resolve()
+    # The API supplies a full host environment, including HOME. Reusing it
+    # shares a managed OpenCode service (and its startup provider environment)
+    # across candidates/tenants instead of isolating this execution.
+    home = (clone / ".agent-home").expanduser().resolve()
     passthrough = {
         "PATH", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR", "NO_COLOR", "CI",
         "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
@@ -4062,7 +4064,7 @@ def _isolated_env(
     env["HOME"] = str(home)
     for var, sub in (("XDG_CONFIG_HOME", "config"), ("XDG_DATA_HOME", "data"),
                      ("XDG_CACHE_HOME", "cache")):
-        d = Path(str(source.get(var) or home / sub)).expanduser().resolve()
+        d = (home / sub).resolve()
         d.mkdir(parents=True, exist_ok=True)
         env[var] = str(d)
     home.mkdir(parents=True, exist_ok=True)
@@ -4482,7 +4484,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
     if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_name):
         raise RunnerError("opencode agent name is invalid")
     cmd = [
-        _opencode_bin(config), "run", "--auto", "--format", "json",
+        _opencode_bin(config), "run", "--standalone", "--auto", "--format", "json",
         "--print-logs", "--log-level", "error",
         "--agent", agent_name,
     ]
@@ -4509,7 +4511,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
         source_env=env,
         api_key_env=api_key_env,
     )
-    _ensure_service_port(builder_env)
+    # This turn's private server receives this exact model credential and
+    # project config, rather than attaching to a previously started service.
     heartbeat.__enter__()
     try:
         proc = subprocess.Popen(
