@@ -92,7 +92,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     design_before = (checkout / "src/components/site/TenantSections.tsx").read_bytes()
     migration_before = (checkout / "src/migrations/tenant-migration.ts").read_bytes()
 
-    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.44", "payloadCore": "0.5.9"}
+    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.44", "payloadCore": "0.5.10"}
     result = apply_shared_runtime_overlay(
         ROOT,
         checkout,
@@ -165,10 +165,10 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     }
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
     assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.44"
-    assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.9"
+    assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.10"
     assert manifest["migrationHead"] == "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
     assert manifest["contentContract"] == "helloada-content-v4"
-    assert manifest["schemaRevision"] == 8
+    assert manifest["schemaRevision"] == 9
     assert result["payloadAdmin"] == admin_version
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]

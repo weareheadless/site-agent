@@ -71,7 +71,8 @@ test('all standard tenant schemas come from one contract and share the native mu
   assert.ok(globals.navigation.fields.some((field) => field.name === 'footerGroups'))
   assert.ok(globals.siteSettings.fields.some((field) => field.name === 'defaultSeoDescription'))
   assert.ok(globals.siteSettings.fields.some((field) => field.name === 'contactLabel'))
-  assert.ok(collections.pages.fields.some((field) => field.name === 'sections' && field.fields[2].blocks.some((block) => block.slug === 'helloAdaContactForm')))
+  assert.ok(collections.pages.fields.some((field) => field.name === 'sections'
+    && field.fields.find((entry) => entry.name === 'entries').blocks.some((block) => block.slug === 'helloAdaContactForm')))
   assert.deepEqual(HELLOADA_CAPABILITIES.globals, ['siteSettings', 'navigation', 'messageMailbox', 'calendarSettings'])
   assert.equal(collections.contactForms.access.create, collections.contactForms.access.update)
   assert.equal(collections.appointmentTypes.access.read({ req: { user: { id: 'owner' } } }), true)
@@ -138,6 +139,10 @@ test('Ada authoring capabilities expose website content only and derive nested f
   assert.deepEqual(Object.keys(contract.collections), ['pages', 'posts', 'products'])
   assert.deepEqual(Object.keys(contract.globals), ['siteSettings', 'navigation'])
   assert.deepEqual(HELLOADA_AUTHORING_CAPABILITIES.collections, ['pages', 'posts', 'products'])
+  const pageSections = contract.collections.pages.find((field) => field.name === 'sections')
+  assert.deepEqual(pageSections.fields.slice(0, 4).map((field) => field.name), ['key', 'label', 'layout', 'direction'])
+  const directionFields = pageSections.fields.find((field) => field.name === 'direction').fields.map((field) => field.name)
+  assert.deepEqual(directionFields, ['align', 'rules', 'treatment', 'scale'])
   assert.equal(contract.collections.pages.some((field) => field.name === 'published'), false)
   assert.equal(contract.collections.posts.some((field) => field.name === 'sourceId'), false)
   assert.equal(contract.collections.pages.find((field) => field.name === 'sections').fields

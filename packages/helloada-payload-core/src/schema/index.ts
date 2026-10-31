@@ -2,8 +2,8 @@ import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.5.9'
-export const HELLOADA_SCHEMA_REVISION = 8
+export const HELLOADA_CORE_VERSION = '0.5.10'
+export const HELLOADA_SCHEMA_REVISION = 9
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -940,10 +940,46 @@ export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig
     { name: 'summary', type: 'textarea', localized: true, label: 'Short introduction' },
     {
       name: 'sections', type: 'array', maxRows: 30, label: 'Page content',
-      admin: { description: 'Add typed content and give each item a useful name. Layout remains part of the website design.' },
+      admin: { description: 'Add typed content, choose how each section is laid out, and give it a useful name.' },
       fields: [
         { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
         { name: 'label', type: 'text', required: true, localized: true, label: 'Section name' },
+        {
+          name: 'layout', type: 'select', label: 'Section layout',
+          admin: { description: 'Which designed section renders this content. Leave empty for the plain content layout.' },
+          options: [
+            { label: 'Hero', value: 'hero' },
+            { label: 'Services', value: 'services' },
+            { label: 'Gallery', value: 'gallery' },
+            { label: 'About', value: 'about' },
+            { label: 'Contact', value: 'contact' },
+          ],
+        },
+        {
+          name: 'direction', type: 'group', label: 'Art direction',
+          admin: { description: 'How this section is composed. Defaults follow the site theme.' },
+          fields: [
+            {
+              name: 'align', type: 'select', label: 'Composition',
+              options: [
+                { label: 'Split, copy first', value: 'split-left' },
+                { label: 'Split, image first', value: 'split-right' },
+                { label: 'Centred', value: 'centred' },
+                { label: 'Type over image', value: 'overlap' },
+                { label: 'Reversed over image', value: 'reversed' },
+              ],
+            },
+            { name: 'rules', type: 'checkbox', label: 'Hairline rules carry the structure' },
+            {
+              name: 'treatment', type: 'select', label: 'Image treatment',
+              options: [{ label: 'Colour', value: 'colour' }, { label: 'Monochrome', value: 'monochrome' }],
+            },
+            {
+              name: 'scale', type: 'select', label: 'Display scale',
+              options: [{ label: 'Editorial', value: 'editorial' }, { label: 'Compact', value: 'compact' }],
+            },
+          ],
+        },
         { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks, label: 'Content in this section' },
       ],
     },

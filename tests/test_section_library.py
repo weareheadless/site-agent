@@ -10,13 +10,19 @@ TEMPLATE = ROOT / "src" / "site_agent" / "templates" / "next-payload"
 SECTIONS = TEMPLATE / "src" / "components" / "site" / "sections"
 
 
-def test_shared_sections_are_declared_in_the_runtime_overlay():
-    """A section that is not in the overlay never reaches a tenant Worker."""
+def test_sections_are_scaffold_not_shared_runtime():
+    """Sections are the site's own design, so they ship in the scaffold.
+
+    `src/components/site` is tenant-owned presentation and the runtime overlay
+    refuses to replace it. A section library belongs to the scaffold every new
+    site is created from, which is also why improving it cannot restyle a live
+    site without the owner moving to a new variant.
+    """
     overlay = json.loads((ROOT / "deploy" / "shared-runtime-overlay.json").read_text())
 
-    for name in ("hero.tsx", "registry.ts"):
-        assert (SECTIONS / name).is_file(), f"missing shared section: {name}"
-        assert f"src/components/site/sections/{name}" in overlay["copy"]
+    for name in ("hero.tsx", "registry.ts", "adapt.ts"):
+        assert (SECTIONS / name).is_file(), f"missing scaffold section: {name}"
+        assert f"src/components/site/sections/{name}" not in overlay["copy"]
 
 
 def test_hero_exposes_direction_instead_of_baking_one_look():
@@ -53,7 +59,5 @@ def test_adapter_maps_content_blocks_to_section_props():
 
     for block in ("helloAdaHeading", "helloAdaParagraph", "helloAdaLink", "helloAdaImage"):
         assert block in source, f"adapter ignores {block}"
-    assert "src/components/site/sections/adapt.ts" in json.loads(
-        (ROOT / "deploy" / "shared-runtime-overlay.json").read_text()
-    )["copy"]
+    assert (SECTIONS / "adapt.ts").is_file()
 
