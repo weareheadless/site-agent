@@ -555,6 +555,29 @@ directories. Do not rely on the system `PATH`, a user-shell profile, or an
 implicit Node/npm fallback; changing either version requires updating the
 contract and regenerating tenant lockfiles with that version.
 
+## Disk retention
+
+Release artifacts are bounded by the scripts that create them, so no separate
+cleanup job is required:
+
+- A tenant release deletes its `custom-worker-dry-run` bundle as soon as
+  `artifactHashes` are recorded in the receipt. The bundle is never read again;
+  `--verify-only` compares those hashes with the promoted Cloudflare version.
+- An API release prunes `api/releases` to the live slot, that receipt's
+  rollback target and three recent slots, and deletes `api-sources` snapshots
+  that no kept slot references (they are regenerable from the mirror). The
+  result is recorded as `retention` in the receipt.
+- Both scripts stop before building when free space is below
+  `MINIMUM_FREE_GIB` (15 GiB) and name the path and available space.
+- The design and preview builder removes `builder-worktrees/build-*` older than
+  24 hours before creating a new worktree, which only reclaims directories left
+  by an interrupted run.
+
+The project runner separately removes agent build checkouts under
+`/home/admin/releases` that are clean, track an upstream, sit at that upstream
+and are a day old. Receipts under `runs/` are the audit trail and are not
+pruned.
+
 ## Rules for coding agents
 
 - Use this queue for every customer Worker release. Do not run direct
