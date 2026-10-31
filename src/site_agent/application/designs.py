@@ -1237,7 +1237,16 @@ class DesignService:
             raise DesignServiceError(f"site clone is missing at {clone}")
         source_ref = str(ref or site.get("base_sha") or site.get("branch") or "HEAD").strip()
         try:
-            from ..hands.opencode_runner import resolve_commit_sha
+            from ..hands.opencode_runner import ensure_clone, resolve_commit_sha
+
+            if (ref is None and not site.get("base_sha")
+                    and site.get("adapter") == "payload_gateway" and site.get("repository")):
+                # Managed tenants may have an intentionally untouched local
+                # checkout while official main advances through releases.
+                # Freeze the fetched remote branch, never that stale checkout.
+                ensure_clone(self.config)
+                branch = str(site.get("branch") or "main").strip()
+                source_ref = branch if branch.startswith("origin/") else f"origin/{branch}"
 
             return resolve_commit_sha(clone, source_ref)
         except (OSError, ValueError, RuntimeError) as exc:

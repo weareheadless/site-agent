@@ -5,11 +5,41 @@ import pytest
 from site_agent.hands import opencode_runner as runner
 
 
+def test_frozen_profile_does_not_replace_the_configured_credential_source():
+    from types import SimpleNamespace
+    from site_agent.core.design_contracts import canonical_hash
+    from site_agent.config import resolve_secret
+
+    quality = {"browser_required": False}
+    request = SimpleNamespace(context_snapshot=SimpleNamespace(execution_profile={
+        "model": "deepseek/deepseek-v4.1-flash-1017", "provider": "openrouter",
+        "provider_env_name": "OPENROUTER_API_KEY", "build_profile": "next_react",
+        "quality_policy": {**quality, "hash": canonical_hash(quality)},
+    }))
+    config = {"env": {"llm_api_key": "SITE_AGENT_LLM_API_KEY"}}
+    projected = runner._typed_execution_config(config, request, SimpleNamespace(build_profile="next_react"))
+    assert projected["design_engine"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert projected["env"]["llm_api_key"] == "SITE_AGENT_LLM_API_KEY"
+    assert resolve_secret(projected, "llm_api_key", {"SITE_AGENT_LLM_API_KEY": "selected-key"}) == "selected-key"
+
+
 def rejection(kind="provider.no-route"):
     return runner.RunnerError("opencode exited 1: ", result={
         "transcript": json.dumps({"type": "error", "error": {"type": kind, "message": "temporarily unavailable"}}),
         "tool_calls": [], "usage": {"prompt_tokens": 0, "completion_tokens": 0},
     })
+
+
+def test_standalone_diagnostic_logs_do_not_hide_a_pre_generation_rejection():
+    failure = rejection()
+    failure.result["transcript"] = (
+        'timestamp=2026-10-31T23:06:52Z level=ERROR message="watcher backend not supported" role=server\n'
+        + failure.result["transcript"]
+        + '\ntimestamp=2026-10-31T23:06:54Z level=INFO message="watcher stopped" role=server'
+    )
+    assert runner._retryable_provider_rejection(failure.result) == "provider.no-route"
+    failure.result["transcript"] += '\npartial model output'
+    assert runner._retryable_provider_rejection(failure.result) == ""
 
 
 def test_provider_rejection_retries_same_request_with_bounded_backoff(monkeypatch, tmp_path):

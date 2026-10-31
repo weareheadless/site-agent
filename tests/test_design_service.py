@@ -26,6 +26,39 @@ from site_agent.hands.site_build import (
 from tests.test_design_contracts import _experience_plan
 
 
+def test_managed_payload_build_freezes_fetched_branch_not_stale_local_branch(tmp_path, monkeypatch):
+    from site_agent.hands import opencode_runner as runner
+
+    clone = tmp_path / "site"
+    (clone / ".git").mkdir(parents=True)
+    memory = Memory(tmp_path / "memory.db")
+    service = DesignService(memory, config={"site": {
+        "adapter": "payload_gateway", "repository": "owner/site",
+        "clone_path": str(clone), "branch": "main",
+    }})
+    calls = []
+    def sync(config):
+        calls.append("fetch")
+        return clone
+    def resolve(root, ref):
+        calls.append(ref)
+        return "b" * 40 if ref == "origin/main" else "a" * 40
+    monkeypatch.setattr(runner, "ensure_clone", sync)
+    monkeypatch.setattr(runner, "resolve_commit_sha", resolve)
+    assert service.resolve_base_sha() == "b" * 40
+    assert calls == ["fetch", "origin/main"]
+    calls.clear()
+    assert service.resolve_base_sha("retained-parent") == "a" * 40
+    assert calls == ["retained-parent"]
+    def unavailable(config):
+        raise runner.RunnerError("remote fetch unavailable")
+    monkeypatch.setattr(runner, "ensure_clone", unavailable)
+    calls.clear()
+    with pytest.raises(DesignServiceError, match="remote fetch unavailable"):
+        service.resolve_base_sha()
+    assert calls == []  # Never resolve a stale branch after a failed fetch.
+
+
 def test_owner_review_requires_a_passing_ready_run():
     base = {
         "candidate_sha": "a" * 40,
