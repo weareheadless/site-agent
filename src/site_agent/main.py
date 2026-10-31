@@ -1118,10 +1118,17 @@ def _cmd_api(args: argparse.Namespace) -> int:
     )
     host = str(api.get("host") or "127.0.0.1")
     port = int(api.get("port") or 3014)
+    from .web.diagnostics import install_stall_diagnostics
+
+    diagnostics = install_stall_diagnostics(
+        app,
+        Path(str(config.get("data_dir") or ".")).expanduser().resolve() / "logs" / "api-stalls.log",
+    )
     print(f"[site-agent] shared Ada API on http://{host}:{port}")
     try:
         uvicorn.run(app, host=host, port=port, log_level="warning")
     finally:
+        diagnostics.stop()
         bootstrap.close()
         registry.close()
     return 0
