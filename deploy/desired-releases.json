@@ -1,35 +1,35 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261030131426-633e564e",
+      "id": "runtime-20261031194326-ff9bb6e7",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "4ed13458429403b1b1c3fe33ad59b89ec04af9877d3da5ba12f220c29be5dbd8"
+      "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261030131426-532226a6",
+      "id": "runtime-20261031194326-d3e98529",
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
-      "sharedRuntimeFingerprint": "4ed13458429403b1b1c3fe33ad59b89ec04af9877d3da5ba12f220c29be5dbd8"
+      "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261030131426-cf29bdeb",
+      "id": "runtime-20261031194326-ef2ab39c",
       "sha": "b8d4614b07336aadfe312925d1c4f5705522accd",
-      "sharedRuntimeFingerprint": "4ed13458429403b1b1c3fe33ad59b89ec04af9877d3da5ba12f220c29be5dbd8"
+      "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261030131426-9319374c",
+      "id": "runtime-20261031194326-0d2f2b52",
       "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
-      "sharedRuntimeFingerprint": "4ed13458429403b1b1c3fe33ad59b89ec04af9877d3da5ba12f220c29be5dbd8"
+      "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "oceanicvibes": {
-      "id": "runtime-20261031135802-canary-wr134",
+      "id": "runtime-20261031143637-canary-fixed",
       "sha": "f2e317b1ef2e00be859f23af725fa0a84a794ab2",
       "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "site-5fe73d3d38ff6f77": {
-      "id": "sections-20261031-0900",
+      "id": "sections-20261031151720-ledger",
       "sha": "879797a3324914e033bef9d11b53e6ae39721180",
       "schemaMigration": {
-        "fromLedgerIdentity": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
+        "fromLedgerIdentity": "14736a687a4705c37d7f68373f92cdaf09295632a64eb79f3889ef8503a6fafe",
         "targetMigrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
       }
     }
