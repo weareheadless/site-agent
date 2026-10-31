@@ -1786,6 +1786,29 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     return receipt
 
 
+MINIMUM_FREE_GIB = 15
+
+
+def require_free_space(path: Path, minimum_gib: int | None = None) -> None:
+    """A release that fills the disk breaks the next one, so stop before building."""
+    minimum_gib = MINIMUM_FREE_GIB if minimum_gib is None else minimum_gib
+    free = shutil.disk_usage(path).free
+    if free < minimum_gib * 1024**3:
+        raise RuntimeError(
+            f"release requires {minimum_gib} GiB free under {path}, "
+            f"only {free / 1024**3:.1f} GiB available"
+        )
+
+
+def discard_artifact_bundle(bundle: Path) -> str:
+    """Remove a dry-run bundle that only existed to be hashed into the receipt."""
+    try:
+        shutil.rmtree(bundle, ignore_errors=True)
+        return "failed: still present" if bundle.exists() else "complete"
+    except OSError as error:
+        return f"failed: {type(error).__name__}"
+
+
 def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
                      custom_worker_bundle: Path | None = None,
                      shared_runtime_fingerprint: str | None = None) -> dict[str, str]:
@@ -1948,6 +1971,8 @@ def main() -> int:
     except ValueError as error:
         parser.error(str(error))
     release_root = Path(manifest["releaseRoot"])
+    if not args.verify_only:
+        require_free_space(release_root)
     directory = release_root / "runs" / args.tenant / args.release_id
     workspace = None
     workspace_path = None
@@ -2236,6 +2261,9 @@ def main() -> int:
             checkout, customer, args.ref, custom_worker_bundle,
             receipt["sharedRuntimeFingerprint"],
         )
+        # The bundle exists only to be hashed into the receipt; --verify-only
+        # checks those hashes against Cloudflare, never against local disk.
+        receipt["artifactBundleCleanup"] = discard_artifact_bundle(custom_worker_bundle)
         unexpected_changes = tracked_changes_outside_runtime_overlay(
             checkout, runtime_provenance["changedPaths"], base,
             generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
@@ -2380,6 +2408,9 @@ def main() -> int:
                 receipt["workspaceCleanupStatus"] = "failed"
                 receipt["workspaceCleanupError"] = f"{type(error).__name__}: {error}"
                 print(f"[release] WORKSPACE_CLEANUP_FAILED: {error}", file=sys.stderr, flush=True)
+            leftover = directory / "custom-worker-dry-run"
+            if leftover.exists():
+                receipt["artifactBundleCleanup"] = discard_artifact_bundle(leftover)
             atomic_json(receipt_path, receipt)
 
 

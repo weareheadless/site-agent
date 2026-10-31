@@ -23,6 +23,7 @@ SHA_RE = re.compile(r"[0-9a-f]{40}")
 RELEASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 SERVICE = "site-agent-api.service"
 RESTART_SOCKET = "/run/helloada-api-restart.sock"
+MINIMUM_FREE_GIB = 15
 HEALTH_URL = "http://127.0.0.1:3014/healthz"
 
 
@@ -162,6 +163,82 @@ def _set_current(current: Path, destination: Path) -> None:
     temporary.unlink(missing_ok=True)
     temporary.symlink_to(destination)
     os.replace(temporary, current)
+
+
+def _require_free_space(path: Path, minimum_gib: int | None = None) -> None:
+    """A release that fills the disk breaks the next one, so stop before building."""
+    minimum_gib = MINIMUM_FREE_GIB if minimum_gib is None else minimum_gib
+    free = shutil.disk_usage(path).free
+    if free < minimum_gib * 1024**3:
+        raise RuntimeError(
+            f"API release requires {minimum_gib} GiB free under {path}, "
+            f"only {free / 1024**3:.1f} GiB available"
+        )
+
+
+def _prune_release_store(releases: Path, current: Path, sources: Path,
+                         keep: int = 3, previous: Path | None = None) -> dict[str, Any]:
+    """Keep the active slot, its rollback target and a few recent ones.
+
+    Every slot is a full installed wheel and every source snapshot can be
+    regenerated from the mirror, so both otherwise grow one entry per release.
+    """
+    summary: dict[str, Any] = {"removedReleases": [], "removedSources": [], "errors": []}
+    protected: set[str] = set()
+    if previous is not None and previous.parent == releases:
+        protected.add(previous.name)
+    if current.is_symlink():
+        try:
+            protected.add(current.resolve().name)
+        except OSError as error:
+            summary["errors"].append(f"current: {type(error).__name__}")
+    try:
+        slots = sorted(
+            (path for path in releases.iterdir()
+             if path.is_dir() and not path.is_symlink() and RELEASE_ID_RE.fullmatch(path.name)),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+    except OSError as error:
+        summary["errors"].append(f"releases: {type(error).__name__}")
+        return summary
+    kept = protected | {path.name for path in slots[:keep]}
+    for path in slots:
+        if path.name in kept:
+            continue
+        try:
+            shutil.rmtree(path)
+            summary["removedReleases"].append(path.name)
+        except OSError as error:
+            summary["errors"].append(f"{path.name}: {type(error).__name__}")
+
+    keep_sources: set[str] = set()
+    for name in kept:
+        marker = releases / name / "source-sha"
+        try:
+            sha = marker.read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if SHA_RE.fullmatch(sha):
+            keep_sources.add(sha)
+    try:
+        snapshots = sorted(
+            (path for path in sources.iterdir()
+             if path.is_dir() and not path.is_symlink() and SHA_RE.fullmatch(path.name)),
+            key=lambda path: path.stat().st_mtime, reverse=True,
+        )
+    except OSError as error:
+        summary["errors"].append(f"sources: {type(error).__name__}")
+        return summary
+    keep_sources.update(path.name for path in snapshots[:keep])
+    for path in snapshots:
+        if path.name in keep_sources:
+            continue
+        try:
+            shutil.rmtree(path)
+            summary["removedSources"].append(path.name)
+        except OSError as error:
+            summary["errors"].append(f"source {path.name}: {type(error).__name__}")
+    return summary
 
 
 def _health_check(url: str, attempts: int = 180) -> int:
@@ -316,6 +393,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
     current = api_root / "current"
     release_dir = releases / release_id
     receipt_path = root / "runs" / "api" / release_id / "receipt.json"
+    _require_free_space(root)
     releases.mkdir(parents=True, exist_ok=True, mode=0o700)
     if receipt_path.exists():
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -429,6 +507,11 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
                 receipt["failedUnitLogPath"] = failed_log
             raise
         receipt["healthCheck"] = {"attempts": health_attempts, "secondsWaited": round(time.monotonic() - health_started, 1)}
+        try:
+            receipt["retention"] = _prune_release_store(
+                releases, current, root / "api-sources", previous=prior_path)
+        except Exception as error:  # noqa: BLE001 - cleanup must never undo a healthy release
+            receipt["retention"] = {"errors": [type(error).__name__]}
         _record(receipt_path, receipt, "health-passed", "deployed",
                 finishedAt=datetime.now(timezone.utc).isoformat())
         return receipt
