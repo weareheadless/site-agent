@@ -4401,6 +4401,11 @@ def _retryable_provider_rejection(result: Mapping[str, Any]) -> str:
         return ""
     kinds = []
     for line in lines:
+        # --standalone also writes OpenCode's own structured diagnostic log
+        # records to stderr (merged into stdout). They are not model output.
+        if (_re.match(r"^timestamp=\S+ level=(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL) ", line)
+                and _re.search(r"\brole=(?:server|cli)(?:\s|$)", line)):
+            continue
         try:
             event = json.loads(line)
         except (TypeError, ValueError):

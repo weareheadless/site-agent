@@ -30,6 +30,18 @@ def rejection(kind="provider.no-route"):
     })
 
 
+def test_standalone_diagnostic_logs_do_not_hide_a_pre_generation_rejection():
+    failure = rejection()
+    failure.result["transcript"] = (
+        'timestamp=2026-10-31T23:06:52Z level=ERROR message="watcher backend not supported" role=server\n'
+        + failure.result["transcript"]
+        + '\ntimestamp=2026-10-31T23:06:54Z level=INFO message="watcher stopped" role=server'
+    )
+    assert runner._retryable_provider_rejection(failure.result) == "provider.no-route"
+    failure.result["transcript"] += '\npartial model output'
+    assert runner._retryable_provider_rejection(failure.result) == ""
+
+
 def test_provider_rejection_retries_same_request_with_bounded_backoff(monkeypatch, tmp_path):
     calls, waits = [], []
     def turn(*args, **kwargs):
