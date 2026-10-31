@@ -7,7 +7,7 @@ import BookingForm from './BookingForm'
 import { runtimeValue } from '@/lib/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
 import { isSectionType, sectionComponents } from './sections/registry'
-import { sectionDirection, sectionEntriesToContent } from './sections/adapt'
+import { sectionDirection, sectionEntriesToContent, type SectionBinding } from './sections/adapt'
 
 type ContentEntry = Record<string, unknown> & { key: string; blockType: string }
 type Section = Record<string, unknown> & { key: string; label: string }
@@ -161,11 +161,31 @@ export default function TenantSections({ sections, collection, documentId, previ
       const layout = typeof section.layout === 'string' ? section.layout : ''
       if (isSectionType(layout)) {
         const SectionComponent = sectionComponents[layout]
+        const { content, bindings } = sectionEntriesToContent(entries, (value) => ({
+          src: mediaUrl(value) || '',
+          alt: mediaAlt(value),
+        }))
+        // A composed section keeps the owner's editable bindings: the same
+        // markers the generic renderer emits, resolved from the content entry
+        // each part of the section came from.
+        const marker = (binding?: SectionBinding) => binding
+          ? helloAdaBindingId(collection, documentId, {
+            collection, documentId, sectionKey, entryKey: binding.key, field: 'entry', property: binding.property,
+          })
+          : undefined
         return (
           <SectionComponent
             key={sectionKey}
-            content={sectionEntriesToContent(entries)}
+            content={content}
             direction={sectionDirection(section)}
+            bindings={{
+              eyebrow: marker(bindings.eyebrow),
+              headline: marker(bindings.headline),
+              body: marker(bindings.body),
+              supporting: bindings.supporting?.map(marker),
+              action: marker(bindings.action),
+              image: marker(bindings.image),
+            }}
           />
         )
       }

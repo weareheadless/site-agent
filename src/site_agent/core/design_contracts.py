@@ -1245,6 +1245,114 @@ class ExperienceJourney:
         return canonical_hash(self.to_dict())
 
 
+# The section vocabulary a composed page may name. This is the contract shared
+# with the rendered section registry in the site scaffold; adding a section
+# means adding a component there and its layout name here, in the same change.
+SECTION_LAYOUTS: frozenset[str] = frozenset({"hero"})
+SECTION_ALIGNMENTS: frozenset[str] = frozenset({"split-left", "split-right", "centred", "overlap", "reversed"})
+SECTION_TREATMENTS: frozenset[str] = frozenset({"colour", "monochrome"})
+SECTION_SCALES: frozenset[str] = frozenset({"editorial", "compact"})
+# The opening section carries the page's promise, so it is not negotiable.
+OPENING_SECTION_LAYOUT = "hero"
+
+
+@dataclass(frozen=True)
+class SectionDirection:
+    """Art direction for one section, as data rather than a baked-in look.
+
+    The section component owns structure. Everything that makes this tenant's
+    page look like this tenant is chosen by Ada and arrives here.
+    """
+
+    align: str
+    rules: bool
+    treatment: str
+    scale: str
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], path: str = "section.direction") -> "SectionDirection":
+        value = _strict_object(raw, path, {"align", "rules", "treatment", "scale"})
+        align = _text(value.get("align"), f"{path}.align", maximum=40)
+        if align not in SECTION_ALIGNMENTS:
+            raise ContractError(
+                f"{path}.align must be one of: {', '.join(sorted(SECTION_ALIGNMENTS))}"
+            )
+        rules = value.get("rules")
+        if not isinstance(rules, bool):
+            raise ContractError(f"{path}.rules must be a boolean")
+        treatment = _text(value.get("treatment"), f"{path}.treatment", maximum=40)
+        if treatment not in SECTION_TREATMENTS:
+            raise ContractError(
+                f"{path}.treatment must be one of: {', '.join(sorted(SECTION_TREATMENTS))}"
+            )
+        scale = _text(value.get("scale"), f"{path}.scale", maximum=40)
+        if scale not in SECTION_SCALES:
+            raise ContractError(f"{path}.scale must be one of: {', '.join(sorted(SECTION_SCALES))}")
+        return cls(align=align, rules=rules, treatment=treatment, scale=scale)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "align": self.align,
+            "rules": self.rules,
+            "treatment": self.treatment,
+            "scale": self.scale,
+        }
+
+
+@dataclass(frozen=True)
+class SectionComposition:
+    """One section of the page Ada composed, with the layout it names."""
+
+    section_id: str
+    layout: str
+    direction: SectionDirection
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], path: str = "section") -> "SectionComposition":
+        value = _strict_object(raw, path, {"id", "layout", "direction"})
+        layout = _text(value.get("layout"), f"{path}.layout", maximum=40)
+        if layout not in SECTION_LAYOUTS:
+            raise ContractError(
+                f"{path}.layout must be one of: {', '.join(sorted(SECTION_LAYOUTS))}"
+            )
+        return cls(
+            section_id=_normalized_id(value.get("id"), f"{path}.id"),
+            layout=layout,
+            direction=SectionDirection.from_dict(value.get("direction"), f"{path}.direction"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.section_id,
+            "layout": self.layout,
+            "direction": self.direction.to_dict(),
+        }
+
+
+def page_composition_from_dict(raw: Any, path: str = "page_composition") -> tuple[SectionComposition, ...]:
+    """Validate the ordered sections Ada composed for a page."""
+    value = _strict_object(raw, path, {"schema_version", "sections"})
+    _schema(value)
+    items = _list(value.get("sections"), f"{path}.sections", item_type=object, maximum=12)
+    if not items:
+        raise ContractError(f"{path} must compose at least one section")
+    sections: list[SectionComposition] = []
+    seen_ids: set[str] = set()
+    seen_layouts: set[str] = set()
+    for index, item in enumerate(items):
+        section = SectionComposition.from_dict(item, f"{path}.sections[{index}]")
+        if section.section_id in seen_ids:
+            raise ContractError(f"{path}.sections contains duplicate section id: {section.section_id}")
+        if section.layout in seen_layouts:
+            raise ContractError(f"{path}.sections contains more than one {section.layout} section")
+        seen_ids.add(section.section_id)
+        seen_layouts.add(section.layout)
+        sections.append(section)
+    if sections[0].layout != OPENING_SECTION_LAYOUT:
+        raise ContractError(f"{path}.sections[0].layout must be {OPENING_SECTION_LAYOUT}")
+    return tuple(sections)
+
+
 @dataclass(frozen=True)
 class ExperiencePlanBundle:
     """Immutable creative source of truth passed to the realization agent."""
@@ -1270,6 +1378,9 @@ class ExperiencePlanBundle:
     review_rubric: tuple[dict[str, Any], ...]
     input_artifact_hashes: tuple[str, ...]
     copy_deck: dict[str, Any] = field(default_factory=dict)
+    # Optional only so a plan persisted before composition existed can still be
+    # read back for repair; every new direction turn must compose the page.
+    page_composition: tuple[SectionComposition, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "ExperiencePlanBundle":
@@ -1279,7 +1390,7 @@ class ExperiencePlanBundle:
             "experience_journey",
             "layout_and_typography_plan", "responsive_composition_plan", "protected_strengths", "variation_points",
             "implementation_risks", "transfer_test", "review_rubric", "input_artifact_hashes",
-            "copy_deck",
+            "copy_deck", "page_composition",
         }
         value = _strict_object(raw, "experience_plan_bundle", known)
         version = _schema(value)
@@ -1338,6 +1449,10 @@ class ExperiencePlanBundle:
             review_rubric=rubric,
             input_artifact_hashes=tuple(item.lower() for item in input_hashes),
             copy_deck=_optional_object(value.get("copy_deck"), "experience_plan_bundle.copy_deck"),
+            page_composition=(
+                page_composition_from_dict(value.get("page_composition"))
+                if value.get("page_composition") is not None else ()
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1363,6 +1478,10 @@ class ExperiencePlanBundle:
             "review_rubric": copy.deepcopy(list(self.review_rubric)),
             "input_artifact_hashes": list(self.input_artifact_hashes),
             "copy_deck": copy.deepcopy(self.copy_deck),
+            "page_composition": {
+                "schema_version": 1,
+                "sections": [section.to_dict() for section in self.page_composition],
+            },
         }
 
     @property

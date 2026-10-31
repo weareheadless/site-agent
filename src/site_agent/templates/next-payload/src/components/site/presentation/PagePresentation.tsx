@@ -4,6 +4,7 @@ import type { SerializedEditorState } from 'lexical'
 import { helloAdaBindingId, helloAdaGlobalBindingId } from '@weareheadless/helloada-payload-core/bindings'
 import { mediaAlt, mediaUrl } from '@/lib/content'
 import TenantSections from '@/components/site/TenantSections'
+import { isSectionType } from '@/components/site/sections/registry'
 import { articleIndexPath } from '@/lib/content-routes'
 
 type RecordValue = Record<string, unknown>
@@ -27,14 +28,20 @@ export default function PagePresentation({ document, settings, kind, collection,
   const category = objectValue(document.category)
   const bind = (field: string) => helloAdaBindingId(collection, documentId, { collection, documentId, field })
   if (document.featuredImage && !image) throw new Error('The selected Payload image has no public URL.')
+  // A composed opening section owns the page's first viewport. Rendering the
+  // generic title, image and summary above it would duplicate the composition
+  // Ada chose, so the document header steps aside for that one case.
+  const opening = sections[0]
+  const composedOpening = kind === 'page' && !!opening && typeof opening.layout === 'string'
+    && isSectionType(opening.layout)
 
   return <main className={`content-page${kind === 'post' ? ' article-page' : kind === 'product' ? ' product-page' : ''}`}
     data-helloada-document-id={documentId} data-helloada-updated-at={String(document.updatedAt || '')}>
     {kind === 'post' ? <Link href={articleIndexPath()} aria-label="Back to journal"><span aria-hidden="true">← </span><span data-helloada-field={helloAdaGlobalBindingId('siteSettings', 'siteSettings', 'journalTitle')}>{String(settings.journalTitle || '').trim()}</span></Link> : null}
     {kind === 'post' && document.category ? <p className="eyebrow">{String(category.title || '').trim()}</p> : null}
-    <h1 data-helloada-field={bind('title')}>{title}</h1>
-    {image ? <img className="article-image" src={image} alt={mediaAlt(document.featuredImage)} data-helloada-field={bind('featuredImage')} /> : null}
-    {document.summary ? <p className="article-intro" data-helloada-field={bind('summary')}>{String(document.summary)}</p> : null}
+    {composedOpening ? null : <h1 data-helloada-field={bind('title')}>{title}</h1>}
+    {!composedOpening && image ? <img className="article-image" src={image} alt={mediaAlt(document.featuredImage)} data-helloada-field={bind('featuredImage')} /> : null}
+    {!composedOpening && document.summary ? <p className="article-intro" data-helloada-field={bind('summary')}>{String(document.summary)}</p> : null}
     {document.body ? <div className="article-body" data-helloada-field={bind('body')}><RichText data={document.body as SerializedEditorState} /></div> : null}
     <TenantSections sections={sections} collection={collection} documentId={documentId} preview={preview} />
     {kind === 'post' && document.publishedAt ? <small>{new Date(String(document.publishedAt)).toLocaleDateString()}</small> : null}

@@ -61,3 +61,38 @@ def test_adapter_maps_content_blocks_to_section_props():
         assert block in source, f"adapter ignores {block}"
     assert (SECTIONS / "adapt.ts").is_file()
 
+
+
+def test_composition_vocabulary_matches_the_renderable_registry():
+    """Ada may only name a layout the scaffold can actually render.
+
+    The contract in design_contracts and the registry in the scaffold are two
+    halves of one vocabulary; if they drift, Ada composes a page nobody can
+    build.
+    """
+    from site_agent.core.design_contracts import SECTION_LAYOUTS
+
+    import re
+
+    registry = (SECTIONS / "registry.ts").read_text()
+    block = registry.split("sectionComponents", 1)[1].split("}", 1)[0]
+    registered = set(re.findall(r"^\s{2}([a-z][a-z0-9-]*):", block, re.MULTILINE))
+    assert registered, "could not read the section registry"
+    assert set(SECTION_LAYOUTS) == registered
+
+
+def test_adapter_reads_the_eyebrow_before_the_heading_and_keeps_every_paragraph():
+    """A composed hero must not swap the eyebrow into the body or drop copy.
+
+    The authoring surface is ordered, so the adapter decides by position: a
+    paragraph before the heading is the eyebrow, the first after it is the
+    body, and later paragraphs stay visible as supporting copy.
+    """
+    source = (SECTIONS / "adapt.ts").read_text()
+
+    assert "headingSeen" in source, "adapter cannot tell copy before the heading from copy after it"
+    assert "eyebrow" in source
+    assert "supporting.push" in source, "further approved paragraphs would be dropped"
+
+    hero = (SECTIONS / "hero.tsx").read_text()
+    assert "supporting" in hero, "hero never renders the supporting copy the adapter collects"
