@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root { color-scheme: dark; --ink: #f7f1e7; --muted: #aaa19a; --line: rgba(247,241,231,.14); --surface: #151313; --accent: #ff6a63; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #0d0c0c; color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
