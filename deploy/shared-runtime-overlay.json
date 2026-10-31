@@ -37,7 +37,9 @@
     "src/lib/payload-field-match.ts",
     "src/lib/payload-locale.ts",
     "src/lib/service-auth.ts",
-    "src/lib/runtime-env.ts"
+    "src/lib/runtime-env.ts",
+    "src/components/site/sections/hero.tsx",
+    "src/components/site/sections/registry.ts"
   ],
   "remove": [
     "src/app/api/helloada/bookings/route.ts",
