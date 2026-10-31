@@ -2,8 +2,8 @@
   "templateSchema": 8,
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.44",
-  "payloadCore": "0.5.9",
-  "schemaRevision": 8,
+  "payloadCore": "0.5.10",
+  "schemaRevision": 9,
   "contentContract": "helloada-content-v4",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=22.0.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
+  "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -35,8 +35,13 @@
       "name": "20261009_123644_helloada_mailbox_calendar",
       "fileSha256": "c4127ef09482f61d2f545491e1fad6f172ea6ffe19400ebebdc071a2f4eac9bd",
       "snapshotSha256": "a25c9738d035539529512ed3cbc8b063b71565debf4798daa24e55040c211b31"
+    },
+    {
+      "name": "20261031_090000_helloada_section_layout",
+      "fileSha256": "fc59f0b8931dd9ebb81ef3f94778b98a1e83956228569bb5335f9f712b68fb34",
+      "snapshotSha256": "73685046f88cd97ca65014a4bdc61aa856e7f6f8f54f74019b24944acce3ffe6"
     }
   ],
-  "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
-  "migrationIndexSha256": "885c15dbc13b6c2b67b801a064678115466daa4fd7e790c82923964a7c087e66"
+  "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac",
+  "migrationIndexSha256": "bc575500f40758e3ade370d4e640682a5046c8b1b3b6de09e9625e0a5937b10b"
 }
