@@ -1426,8 +1426,13 @@ def create_workspace_api_app(
     )
 
     @app.get("/healthz")
-    def healthz():
-        """Expose only process readiness for the VPS API release gate."""
+    async def healthz():
+        """Expose only process readiness for the VPS API release gate.
+
+        This must stay ``async``: a synchronous handler runs in the shared
+        worker pool, so a stalled pool made the liveness probe itself time out
+        and the whole service look dead while the event loop was still healthy.
+        """
         return {"ok": True}
 
     register_workspace_routes(
