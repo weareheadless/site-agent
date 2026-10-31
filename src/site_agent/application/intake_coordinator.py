@@ -210,18 +210,18 @@ class IntakeCoordinator:
             )
         return draft
 
-    def _session(self, conversation_id: int | None = None) -> dict[str, Any]:
+    def _session(self, conversation_id: int | None = None, *, include_history: bool = True) -> dict[str, Any]:
         if conversation_id is not None:
             existing = self.memory.find_design_intake_session_for_conversation(conversation_id)
             if existing is not None:
-                return self.intake_service.get_session(str(existing["session_id"]))
+                return self.intake_service.get_session(str(existing["session_id"]), include_history=include_history)
             return self.intake_service.create_session(
                 conversation_id=conversation_id,
                 draft=self._bootstrap_draft(),
             )
         sessions = self.memory.list_design_intake_sessions(limit=1)
         if sessions:
-            return self.intake_service.get_session(str(sessions[0]["session_id"]))
+            return self.intake_service.get_session(str(sessions[0]["session_id"]), include_history=include_history)
         return self.intake_service.create_session(draft=self._bootstrap_draft())
 
     def needs_intake(self, conversation_id: int | None = None) -> bool:
@@ -242,7 +242,7 @@ class IntakeCoordinator:
 
     def status(self, conversation_id: int | None = None) -> dict[str, Any]:
         """Return the minimal owner-facing acceptance state for one conversation."""
-        session = self._session(conversation_id)
+        session = self._session(conversation_id, include_history=False)
         readiness = session.get("readiness") if isinstance(session.get("readiness"), Mapping) else {}
         return {
             "session_id": str(session["session_id"]),
