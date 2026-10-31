@@ -144,5 +144,5 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_core['version'] == core_version
     assert locked_core['resolved'] == core_asset
     assert locked_core['integrity'] == (
-        'sha512-kZw7bEh6opyCUWSIeSKX1erEAuy7VXjfudzqVU7aw2X1i93Yb/5wN5ejtjA7pNLmh3qTbpyMo3S0nuefHHdpoQ=='
+        'sha512-tIqGARt2cdc+Twp22WscNqjhZLBFgqxUkka8kvt/chXZ8T8ro6Ksg4PdwgftxHMNdnHEOBeUymaOkr7IEXIwrw=='
     )

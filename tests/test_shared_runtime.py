@@ -166,7 +166,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
     assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.44"
     assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.10"
-    assert manifest["migrationHead"] == "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
+    assert manifest["migrationHead"] == "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
     assert manifest["contentContract"] == "helloada-content-v4"
     assert manifest["schemaRevision"] == 9
     assert result["payloadAdmin"] == admin_version
