@@ -22,6 +22,12 @@ api_deploy = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api_deploy)
 
 
+@pytest.fixture(autouse=True)
+def _no_disk_gate(monkeypatch):
+    """Unit tests deploy into a temporary root, not onto the release host."""
+    monkeypatch.setattr(api_deploy, "MINIMUM_FREE_GIB", 0)
+
+
 def test_api_health_check_uses_extended_window_and_exact_contract(monkeypatch):
     class Response:
         status = 200

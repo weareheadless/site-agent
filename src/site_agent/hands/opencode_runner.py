@@ -15,6 +15,7 @@ import copy
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -252,6 +253,29 @@ def _builder_worktree_path(config: dict[str, Any]) -> Path:
     root = Path(str(config.get("data_dir") or (Path.cwd() / ".site-agent-data"))) / "builder-worktrees"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"build-{time.time_ns()}"
+
+
+def _sweep_builder_worktrees(clone: Path, config: dict[str, Any], keep_hours: int = 24) -> None:
+    """Remove preview worktrees left behind by crashed or interrupted runs.
+
+    A successful run removes its own worktree; this only reclaims directories
+    nobody owns any more, and it never raises.
+    """
+    root = Path(str(config.get("data_dir") or (Path.cwd() / ".site-agent-data"))) / "builder-worktrees"
+    if not root.is_dir():
+        return
+    cutoff = time.time() - keep_hours * 3600
+    for path in root.glob("build-*"):
+        try:
+            if path.is_symlink() or not path.is_dir() or path.stat().st_mtime > cutoff:
+                continue
+            shutil.rmtree(path, ignore_errors=True)
+        except OSError:
+            continue
+    try:
+        _git(clone, "worktree", "prune")
+    except Exception:  # noqa: BLE001 - stale metadata must not block a build
+        pass
 
 
 def _design_transcript_path(config: dict[str, Any], run_id: str) -> Path:
@@ -1061,6 +1085,7 @@ def prepare_preview(config: dict[str, Any], progress=None, base_ref: str | None 
             _git(clone, "rev-parse", "--verify", f"{base}^{{commit}}")
         except RunnerError:
             base = "origin/main"
+    _sweep_builder_worktrees(clone, config)
     worktree = _builder_worktree_path(config)
     if progress:
         progress("using an isolated preview worktree")
@@ -1144,6 +1169,7 @@ def prepare_design_worktree(config: dict[str, Any], target, progress=None) -> tu
     base_sha = resolve_commit_sha(clone, target.base_sha)
     if base_sha != target.base_sha.lower():
         raise RunnerError("resolved base SHA does not match the requested immutable base")
+    _sweep_builder_worktrees(clone, config)
     worktree = _builder_worktree_path(config)
     if progress:
         progress("using an isolated design worktree")
