@@ -67,9 +67,13 @@ def _website_present_from_config(config: Mapping[str, Any]) -> bool:
 # A build in these states is still producing its candidate. Starting a second
 # one would duplicate provider spend and race two writers on the same tenant
 # Payload draft and preview clone.
+# `needs_repair` is deliberately absent: the candidate is finished and waiting
+# for a decision, no worker owns it, and it holds no provider call or worktree.
+# Treating it as live made the owner's next build a silent no-op — Ada replied
+# that she was building while nothing was queued.
 _ACTIVE_RUN_STATUSES = frozenset({
     "created", "assessing_intake", "planning", "building", "candidate_ready",
-    "validating", "needs_repair",
+    "validating",
 })
 
 _PLACEHOLDER_REQUESTS = frozenset({
