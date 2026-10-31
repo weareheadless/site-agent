@@ -1462,8 +1462,11 @@ def _design_prompt(
             "business content as JSX literals when it belongs in Payload. Use only the exact host-approved dependencies in "
             "package.json. The approved direct dependency set and versions are: "
             + approved_dependencies
-            + ". Do not use ranges or newer versions. Run the Next/React npm check/build commands only after the native "
-            "source exists; build output is host-generated and must not be authored.\n\n"
+            + ". Do not use ranges or newer versions.\n"
+            "Write the source first. Do not run `npm run build` during this turn: the host runs the canonical build "
+            "immediately after it and hands you any failure. Run `npm run typecheck` at most once, after your last "
+            "edit. Never read or write outside this worktree; the host filesystem is not yours and exploring it only "
+            "delays the page.\n\n"
         )
     payload_first_block = ""
     if request.mode == "initial_homepage" and payload_draft_receipts:
@@ -3053,6 +3056,22 @@ def stage_design_build(
                         "transcript_path": transcript_path,
                         "experience_fidelity_error": str(exc)[:1_500],
                     },
+                ) from exc
+            # The fidelity phase edits the same source the build check just
+            # approved. Re-check it here, or a broken edit is only discovered
+            # by the validation build minutes later and the whole run is lost.
+            try:
+                _run_local_design_self_check(
+                    execution_config,
+                    execution_context,
+                    worktree,
+                    npm_cache,
+                    progress=progress,
+                )
+            except RunnerError as exc:
+                raise RunnerError(
+                    f"experience-fidelity edits broke the candidate build: {exc}",
+                    result={**initial, "transcript_path": transcript_path},
                 ) from exc
             # A timeout after source authoring is recoverable once the host
             # local check and the existing fidelity phase have both run. Other
