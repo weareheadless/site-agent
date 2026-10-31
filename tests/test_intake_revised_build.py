@@ -117,3 +117,44 @@ def test_build_heartbeat_reports_progress_while_one_turn_is_in_flight():
     with _build_heartbeat(beats.append, "still working", interval=15):
         pass
     assert beats == []
+
+
+def test_a_candidate_waiting_for_repair_does_not_block_the_next_build(tmp_path):
+    """`needs_repair` is finished work, not a live build.
+
+    Counting it as live made the owner's next request a silent no-op: Ada
+    replied that she was building while nothing was queued.
+    """
+    memory = Memory(tmp_path / "intake.db")
+    submissions = []
+
+    class Lab:
+        def submit(self, request, intake, **kwargs):
+            submissions.append(kwargs["run_id"])
+            return memory.create_design_run(
+                run_id=kwargs["run_id"], mode="production_candidate", status="needs_repair",
+                intake_json=intake, intake_hash="c" * 64, base_sha="b" * 40,
+                publishable=True, candidate_ref=f"refs/ada-design/{kwargs['run_id']}",
+                intake_session_id=kwargs["intake_session_id"],
+                intake_revision_id=kwargs["intake_revision_id"],
+            )
+
+        def get_run(self, run_id):
+            return memory.get_design_run(run_id)
+
+    service = DesignIntakeService(memory, default_intake=_intake(), lab_service=Lab())
+    session = service.create_session()
+    confirmed = service.confirm(
+        session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"],
+    )["session"]
+    service.build(session["session_id"], confirmed_revision=confirmed["confirmed_revision_id"])
+
+    again = service.build(
+        session["session_id"],
+        confirmed_revision=confirmed["confirmed_revision_id"],
+        force_new=True,
+    )
+
+    assert len(submissions) == 2, "a finished candidate must not block a new build"
+    assert again["run"]["run_id"] == submissions[-1]
+    memory.close()
