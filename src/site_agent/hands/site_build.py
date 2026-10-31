@@ -314,6 +314,14 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
     workspace = Path(root).expanduser().resolve()
     if profile.name != NEXT_REACT_PROFILE.name:
         return ()
+    managed_payload = (workspace / "template-manifest.json").is_file()
+    if managed_payload:
+        for relative in (
+            "payload.config.ts", "src/app/(frontend)/layout.tsx",
+            "src/app/(frontend)/[[...slug]]/page.tsx",
+        ):
+            if not (workspace / relative).is_file():
+                raise SiteBuildError(f"managed Payload workspace is missing its canonical route shell: {relative}")
     created: list[str] = []
 
     manifest_path = workspace / "package.json"
@@ -387,7 +395,7 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
         created.append("eslint.config.mjs")
 
     layout_path = workspace / "src" / "app" / "layout.tsx"
-    if not layout_path.exists():
+    if not managed_payload and not layout_path.exists():
         layout_path.parent.mkdir(parents=True, exist_ok=True)
         layout_path.write_text(
             "import type { ReactNode } from 'react'\n\n"
@@ -399,7 +407,7 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
         created.append("src/app/layout.tsx")
 
     page_path = workspace / "src" / "app" / "page.tsx"
-    if not page_path.exists():
+    if not managed_payload and not page_path.exists():
         page_path.parent.mkdir(parents=True, exist_ok=True)
         page_path.write_text("export default function HomePage() {\n  return null\n}\n", encoding="utf-8")
         created.append("src/app/page.tsx")
