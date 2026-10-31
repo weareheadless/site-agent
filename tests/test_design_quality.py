@@ -1067,9 +1067,16 @@ def test_server_rendered_build_skips_static_output_gates_without_failing(tmp_pat
     )
 
     data = report.to_dict()
+    assert data["state"] == "passed"
     assert not any(finding["code"] == "missing_output" for finding in data["findings"])
     evidence = data["evidence"]
     assert evidence["output"]["status"] == "skipped"
     assert evidence["output"]["reason"] == "server_rendered_build_has_no_static_output"
     assert evidence["content"]["status"] == "skipped"
     assert evidence["browser"]["status"] == "skipped"
+    # Browser-derived experience gates are deferred to the deployed site, not
+    # reported as passing evidence.
+    assert data["gates"]["experience_journey"] == "skipped"
+    assert data["gates"]["composition"] == "skipped"
+    assert data["gates"]["temporal"] == "skipped"
+    assert evidence["build"]["status"] == "passed"
