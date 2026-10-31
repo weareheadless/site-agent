@@ -1564,7 +1564,13 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
 
     monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
     monkeypatch.setattr(runner, "_journey_source_coverage", lambda *args, **kwargs: {})
-    monkeypatch.setattr(runner, "_run_local_design_self_check", lambda *args, **kwargs: {"ok": True})
+    checks: list[str] = []
+
+    def self_check(*args, **kwargs):
+        checks.append("check")
+        return {"ok": True}
+
+    monkeypatch.setattr(runner, "_run_local_design_self_check", self_check)
     monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", lambda *args, **kwargs: ())
     monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
 
@@ -1573,6 +1579,9 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
     )
 
     assert receipt.build_error == ""
+    # The build is checked before the fidelity phase and again after it, so a
+    # broken fidelity edit cannot reach validation and lose the whole run.
+    assert len(checks) == 2
     assert [item[0] for item in calls] == ["coordinator", "implementation", "fidelity"]
     assert calls[1][1]["provider_turn_error"] == "opencode timed out after 1800s"
     assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
