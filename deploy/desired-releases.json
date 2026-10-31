@@ -26,9 +26,12 @@
       "sharedRuntimeFingerprint": "318fe14ba0e6518d60950fdacc57cd188eb9e5737a691890f850e7983230d953"
     },
     "site-5fe73d3d38ff6f77": {
-      "id": "runtime-20261030131426-05ac1d98",
-      "sha": "69d5000ea2d37face630a9dcf608cc3b8a1077c4",
-      "sharedRuntimeFingerprint": "4ed13458429403b1b1c3fe33ad59b89ec04af9877d3da5ba12f220c29be5dbd8"
+      "id": "sections-20261031-0900",
+      "sha": "879797a3324914e033bef9d11b53e6ae39721180",
+      "schemaMigration": {
+        "fromLedgerIdentity": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
+        "targetMigrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
+      }
     }
   },
   "schema": 1
