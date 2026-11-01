@@ -18,6 +18,22 @@ from .designs import DesignService
 from .onboarding_report import persist_initial_onboarding_report
 
 
+def repair_child_blocks_new_repair(item: Mapping[str, Any]) -> bool:
+    """Match the service's own retry rule for a refinement child.
+
+    A child that never reached visual review (no critique) may be replaced after
+    a host validation failure. A stricter duplicate of that rule consumed the
+    single repair slot with a child that never received actionable host evidence.
+    """
+    status = item.get("status")
+    if status in {DesignRunStatus.FAILED.value, DesignRunStatus.CANCELLED.value}:
+        return False
+    if status != DesignRunStatus.NEEDS_REPAIR.value:
+        return True
+    report = item.get("quality_report_json") or {}
+    return isinstance(report, Mapping) and bool(report.get("visual_critique"))
+
+
 class DesignJobExecutor:
     """Execute queued design runs while keeping the run ID as the job handle."""
 
@@ -1048,10 +1064,8 @@ class DesignJobExecutor:
             for item in self.memory.list_design_run_children(run_id, limit=500)
             if item.get("operation_kind") == "visual_refinement"
         ]
-        if any(
-            item.get("status") not in {DesignRunStatus.FAILED.value, DesignRunStatus.CANCELLED.value}
-            for item in existing
-        ):
+
+        if any(repair_child_blocks_new_repair(item) for item in existing):
             return
         bundle = self._host_render_bundle(run)
         critique = self._host_evidence_critique(run_id, run, bundle)
