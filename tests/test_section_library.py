@@ -1,4 +1,4 @@
-"""The section library is shared runtime, and it carries no fixed look."""
+"""The section library is pinned tenant presentation, not a runtime overlay."""
 
 from __future__ import annotations
 
@@ -17,10 +17,14 @@ def test_candidate_receives_a_pinned_section_snapshot_without_replacing_presenta
     presentation = tmp_path / "src/components/site/presentation/PagePresentation.tsx"
     presentation.parent.mkdir(parents=True)
     presentation.write_text("owner composition")
+    previous = presentation.parent / "section-library-v1/hero.tsx"
+    previous.parent.mkdir()
+    previous.write_text("previous pinned presentation")
     paths = _stage_section_templates(tmp_path)
     assert presentation.read_text() == "owner composition"
-    assert len(paths) == 3
-    assert all("section-library-v1/" in path for path in paths)
+    assert previous.read_text() == "previous pinned presentation"
+    assert len(paths) == 4
+    assert all("section-library-v2/" in path for path in paths)
     for path in paths:
         assert (tmp_path / path).read_bytes() == (SECTIONS / Path(path).name).read_bytes()
     assert _stage_section_templates(tmp_path) == paths
@@ -60,7 +64,7 @@ def test_sections_are_scaffold_not_shared_runtime():
     """
     overlay = json.loads((ROOT / "deploy" / "shared-runtime-overlay.json").read_text())
 
-    for name in ("hero.tsx", "registry.ts", "adapt.ts"):
+    for name in ("hero.tsx", "registry.ts", "adapt.ts", "supporting.tsx"):
         assert (SECTIONS / name).is_file(), f"missing scaffold section: {name}"
         assert f"src/components/site/sections/{name}" not in overlay["copy"]
 

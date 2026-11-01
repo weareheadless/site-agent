@@ -4,8 +4,21 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import ts from 'typescript'
+import { fileURLToPath } from 'node:url'
 
 import { scanPresentation } from '../../../application/source_inventory_ast.mjs'
+
+test('the pinned section library itself satisfies the unchanged content-authority gate', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-section-inventory-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const destination = path.join(root, 'src/components/site/presentation/section-library-v2')
+  fs.mkdirSync(destination, { recursive: true })
+  fs.cpSync(fileURLToPath(new URL('../src/components/site/sections/', import.meta.url)), destination, { recursive: true })
+  fs.writeFileSync(path.join(root, 'helloada-content-contract.json'), JSON.stringify({ collections: { pages: ['sections'] }, globals: {} }))
+  const result = scanPresentation(root, ts)
+  assert.ok(result.filesScanned >= 2)
+  assert.deepEqual(result.violations, [])
+})
 
 test('host presentation inventory rejects visible copy outside Payload and counts shared bindings', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-source-inventory-'))

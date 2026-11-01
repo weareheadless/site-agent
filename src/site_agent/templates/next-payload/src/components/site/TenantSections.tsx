@@ -185,6 +185,7 @@ export default function TenantSections({ sections, collection, documentId, previ
               supporting: bindings.supporting?.map(marker),
               action: marker(bindings.action),
               image: marker(bindings.image),
+              additionalImages: bindings.additionalImages?.map(marker),
             }}
           />
         )

@@ -562,7 +562,7 @@ def _native_direction_payload(
             result=dict(result),
         )
     copy_deck = dict(copy_deck)
-    for field in ("headline", "body", "primary_action"):
+    for field in ("meta_description",):
         value = copy_deck.get(field)
         if not isinstance(value, str) or not value.strip():
             raise RunnerError(
@@ -625,6 +625,11 @@ def _native_direction_payload(
             "experience_plan.page_composition is missing",
             result=dict(result),
         )
+    if any(not section.entries for section in plan.page_composition):
+        raise RunnerError("creative direction must provide final section content for every selected section", result=dict(result))
+    mapped_assets = {entry["asset_id"] for section in plan.page_composition for entry in section.entries if "asset_id" in entry}
+    if mapped_assets != {item.asset_id for item in plan.asset_composition_plan}:
+        raise RunnerError("creative direction section content must map every assigned asset, without unplanned assets", result=dict(result))
     if not request.context_snapshot_hash or plan.context_snapshot_hash != request.context_snapshot_hash:
         raise RunnerError("creative experience plan is not bound to the frozen context snapshot", result=dict(result))
     if snapshot_evidence and not plan.asset_evidence:
@@ -875,11 +880,11 @@ def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
     candidate; subsequent platform releases cannot replace a live composition.
     """
     source = Path(__file__).resolve().parents[1] / "templates/next-payload/src/components/site/sections"
-    destination = worktree / "src/components/site/presentation/section-library-v1"
+    destination = worktree / "src/components/site/presentation/section-library-v2"
     if not destination.resolve().is_relative_to(worktree.resolve()):
         raise RunnerError("the section template snapshot escapes the candidate workspace")
     paths = []
-    for name in ("hero.tsx", "adapt.ts", "registry.ts"):
+    for name in ("hero.tsx", "adapt.ts", "registry.ts", "supporting.tsx"):
         original = source / name
         target = destination / name
         if target.is_symlink():
@@ -895,7 +900,7 @@ def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
     return tuple(paths)
 
 
-def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int | None = None) -> dict[str, Any]:
+def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
     """Map confirmed intake and Ada's final homepage copy into canonical Payload fields."""
     from ..core.design_contracts import ExperiencePlanBundle, SiteIntake
 
@@ -913,115 +918,53 @@ def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int
     except Exception as exc:  # noqa: BLE001 - the typed intake is the factual source of this draft
         raise RunnerError(f"the confirmed intake is invalid: {str(exc)[:500]}") from exc
 
-    copy_deck = typed.copy_deck
-
-    def required_copy(name: str) -> str:
-        value = copy_deck.get(name)
-        if not isinstance(value, str) or not value.strip():
-            raise RunnerError(f"the approved creative plan has no final Payload copy for {name}")
-        return value.strip()
-
-    headline = required_copy("headline")
-    body = required_copy("body")
-    action = required_copy("primary_action")
-    entries: list[dict[str, Any]] = []
-    eyebrow = copy_deck.get("eyebrow")
-    if eyebrow is not None:
-        if not isinstance(eyebrow, str) or not eyebrow.strip():
-            raise RunnerError("the homepage copy deck eyebrow must be non-empty text when present")
-        entries.append({
-            "key": "home.hero.eyebrow",
-            "blockType": "helloAdaParagraph",
-            "label": "Homepage eyebrow",
-            "text": eyebrow.strip(),
-        })
-    entries.append({
-        "key": "home.hero.heading",
-        "blockType": "helloAdaHeading",
-        "label": "Homepage headline",
-        "text": headline,
-        "level": "h2",
-    })
-    entries.append({
-        "key": "home.hero.introduction",
-        "blockType": "helloAdaParagraph",
-        "label": "Homepage introduction",
-        "text": body,
-    })
-    if featured_media_id is not None:
-        # The composed hero owns the opening image. Payload media carries its
-        # own alternative text, which the section reads back through the
-        # canonical media resolver.
-        entries.append({
-            "key": "home.hero.image",
-            "blockType": "helloAdaImage",
-            "label": "Homepage image",
-            "image": featured_media_id,
-        })
-    destination = str(intake.conversion.get("whatsapp_url") or intake.conversion.get("instagram_url") or "").strip()
-    if destination:
-        entries.append({
-            "key": "home.hero.primary-action",
-            "blockType": "helloAdaLink",
-            "label": "Primary action",
-            "text": action,
-            "href": destination,
-        })
-    else:
-        # The intake explicitly has no confirmed destination. Preserve Ada's
-        # call-to-action copy as editable content without manufacturing a link.
-        entries.append({
-            "key": "home.hero.primary-action",
-            "blockType": "helloAdaParagraph",
-            "label": "Primary action text (destination not supplied)",
-            "text": action,
-        })
-
-    supporting_copy = copy_deck.get("supporting_copy", [])
-    if not isinstance(supporting_copy, list) or len(supporting_copy) > 12:
-        raise RunnerError("the homepage copy deck supporting_copy must be a list of at most twelve items")
-    for index, value in enumerate(supporting_copy, start=1):
-        if not isinstance(value, str) or not value.strip():
-            raise RunnerError("homepage supporting_copy items must be non-empty text")
-        entries.append({
-            "key": f"home.supporting.paragraph-{index}",
-            "blockType": "helloAdaParagraph",
-            "label": f"Supporting copy {index}",
-            "text": value.strip(),
-        })
-
-    description = copy_deck.get("meta_description")
-    if description is not None and (not isinstance(description, str) or not description.strip()):
-        raise RunnerError("the homepage copy deck meta_description must be non-empty text when present")
-    description = str(description or body).strip()[:320]
-
     # Ada composed the page; the host only binds her composition to the
     # canonical section fields. A plan without a composition cannot be
     # rendered by the section library, and the host does not compose for her.
     composition = getattr(typed, "page_composition", ()) or ()
     if not composition:
         raise RunnerError("the approved creative plan does not compose the homepage from the section library")
-    opening = composition[0]
-    if opening.layout != "hero":
-        raise RunnerError(f"the homepage cannot open with an unsupported section layout: {opening.layout}")
-    if len(composition) > 1:
-        # Fail closed rather than silently dropping a section Ada composed.
-        raise RunnerError("the homepage stage can only bind the opening section of a composition")
+    from ..core.design_contracts import page_composition_from_dict
+
+    # Revalidate at the write boundary as well as the planning boundary.
+    sections = page_composition_from_dict({
+        "schema_version": 1, "sections": [section.to_dict() for section in composition],
+    })
+    if any(not section.entries or not section.label for section in sections):
+        raise RunnerError("the approved creative plan has no complete section content; resume Ada planning")
+    planned_assets = {item.asset_id for item in typed.asset_composition_plan}
+    mapped_assets = {entry["asset_id"] for section in sections for entry in section.entries if "asset_id" in entry}
+    if planned_assets != mapped_assets:
+        raise RunnerError(
+            "section content must map every assigned asset exactly: "
+            f"unmapped={sorted(planned_assets - mapped_assets)}, unplanned={sorted(mapped_assets - planned_assets)}"
+        )
+    payload_sections = []
+    for section in sections:
+        entries = []
+        for source in section.entries:
+            entry = dict(source)
+            if "asset_id" in entry:
+                entry["image"] = int(entry.pop("asset_id").removeprefix("media-"))
+            entries.append(entry)
+        payload_sections.append({
+            "key": section.section_id, "label": section.label, "layout": section.layout,
+            "direction": section.direction.to_dict(), "entries": entries,
+        })
+    headline = next(entry["text"] for entry in sections[0].entries if entry["blockType"] == "helloAdaHeading")
+    description = typed.copy_deck.get("meta_description")
+    if not isinstance(description, str) or not description.strip():
+        raise RunnerError("the approved creative plan has no final copy_deck.meta_description")
 
     page: dict[str, Any] = {
         "title": str(intake.business["name"]).strip(),
         "slug": "home",
-        "sections": [{
-            "key": "home.hero",
-            "label": "Homepage introduction",
-            "layout": opening.layout,
-            "direction": opening.direction.to_dict(),
-            "entries": entries,
-        }],
-        "seo": {"title": headline[:300], "description": description},
+        "sections": payload_sections,
+        "seo": {"title": headline[:300], "description": description.strip()[:320]},
     }
-    if featured_media_id is not None:
-        page["featuredImage"] = featured_media_id
+    opening_images = [entry["image"] for entry in payload_sections[0]["entries"] if "image" in entry]
+    if opening_images:
+        page["featuredImage"] = opening_images[0]
     return page
 
 
@@ -1049,23 +992,18 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
 
         typed_plan = ExperiencePlanBundle.from_dict(plan)
     approved_media_ids = set(request.supplied_media_asset_ids)
-    evidence = {item.asset_id: item for item in typed_plan.asset_evidence}
-    featured_media_id = None
-    for assignment in typed_plan.asset_composition_plan:
-        visual = evidence.get(assignment.asset_id)
-        if visual is None or str(visual.media_role).lower() in {"logo", "identity_mark"}:
-            continue
-        match = _re.fullmatch(r"media-([1-9][0-9]*)", assignment.asset_id)
-        if match and int(match.group(1)) in approved_media_ids:
-            featured_media_id = int(match.group(1))
-            break
-    if featured_media_id is not None:
+    data = _initial_homepage_payload_data(request, typed_plan)
+    media_ids = sorted({entry["image"] for section in data["sections"] for entry in section["entries"] if "image" in entry})
+    for media_id in media_ids:
+        if media_id not in approved_media_ids:
+            raise RunnerError(f"section image media-{media_id} is not an approved intake asset")
         try:
-            payload.read_media(str(featured_media_id), identifier_kind="id", draft=True)
+            media = payload.read_media(str(media_id), identifier_kind="id", draft=True)
+            if str(media.get("id")) != str(media_id):
+                raise RunnerError(f"Payload returned a different media identity for media-{media_id}")
         except Exception as exc:  # noqa: BLE001 - verify the exact selected tenant-local asset
-            raise RunnerError("Ada selected a homepage image that is not present in this tenant's Payload media library") from exc
+            raise RunnerError(f"section image media-{media_id} is not present in this tenant's Payload media library") from exc
 
-    data = _initial_homepage_payload_data(request, typed_plan, featured_media_id=featured_media_id)
     operation = "create"
     try:
         try:
@@ -1455,6 +1393,17 @@ def _design_prompt(
         plan_data = design_plan.to_dict() if hasattr(design_plan, "to_dict") else dict(design_plan)
         if request.mode == "initial_homepage" and payload_draft_receipts:
             plan_data.pop("copy_deck", None)
+            composition = plan_data.get("page_composition")
+            if isinstance(composition, Mapping):
+                plan_data["page_composition"] = {
+                    **composition,
+                    "sections": [
+                        {**{key: value for key, value in section.items() if key not in {"label", "entries"}},
+                         "entries": [{key: value for key, value in entry.items() if key in {"key", "blockType", "asset_id"}}
+                                     for entry in section.get("entries", [])]}
+                        for section in composition.get("sections", [])
+                    ],
+                }
         locked_plan_block = (
             "LOCKED CREATIVE PLAN (host-selected; implement this direction rather than inventing a new one):\n"
             + canonical_json(plan_data)
@@ -1576,10 +1525,12 @@ def _design_prompt(
             "Payload values as the sole runtime source for business name, headline, paragraph text, calls to action, "
             "metadata, and the selected image. Do not copy these values into JSX/TS/JS constants, static HTML, a second "
             "JSON file, or a new content store. Compose the page with the supplied section templates under "
-            "src/components/site/presentation/section-library-v1/. Import its registry and adapter in the existing "
+            "src/components/site/presentation/section-library-v2/. Import its registry and adapter in the existing "
             "PagePresentation component: render the Payload sections in their stored order using each section's "
             "layout and direction. Resolve images with the existing canonical media resolver, and translate the "
-            "adapter's stable entry keys into helloAdaBindingId markers for the section's bindings prop. "
+            "adapter's stable entry keys into helloAdaBindingId markers for every section binding, including each "
+            "supporting paragraph and additionalImages gallery entry. Anchor each section using its stable key so "
+            "planned internal section links resolve. "
             "Do not recreate the hero markup or replace the section templates with a bespoke whole-page component. "
             "Keep non-composed documents on their existing renderer. The composed hero owns its heading and image; "
             "do not print a duplicate document heading or featured image above it. The host already prepared Tailwind "
@@ -1587,7 +1538,7 @@ def _design_prompt(
             "utilities in site.css and choose palette and typography through --tenant-* "
             "tokens in site.css. Add any defining behavior through the template's signature slot and a scoped wrapper "
             "rather than rebuilding its layout. Preserve all stable data-helloada-field bindings. "
-            "The locked experience plan's copy_deck is intentionally omitted from your source prompt: implement its "
+            "The locked plan's staged copy, labels and destinations are intentionally omitted from your source prompt: implement its "
             "composition and motion intent, but read all wording from Payload.\n\n"
         )
     retained_implementation_block = ""
@@ -1658,7 +1609,7 @@ def _native_direction_prompt(
     require_experience_plan: bool = False,
 ) -> str:
     """Prompt Ada's bounded read-only direction turn without choosing for her."""
-    from ..core.design_contracts import canonical_json
+    from ..core.design_contracts import canonical_json, section_composition_contract_description
 
     media = tuple(materialized_media_paths) + tuple(evidence_paths)
     media_block = (
@@ -1675,16 +1626,8 @@ def _native_direction_prompt(
         "validation. The experience_plan must include selected_concept_id, asset_evidence, brand_source_map, "
         "asset_composition_plan, experience_journey, behavior_system, layout_and_typography_plan, "
         "responsive_composition_plan, protected_strengths, variation_points, implementation_risks, transfer_test, "
-        "review_rubric, input_artifact_hashes, copy_deck, and page_composition. The copy_deck must contain final "
-        "visitor-facing homepage copy as an object with non-empty string fields headline, body, and primary_action; "
-        "it may also include a short eyebrow and supporting_copy array. Write actual copy, not instructions or "
-        "placeholders. page_composition is the page you are composing: an object with schema_version and a sections "
-        "array in reading order. Each section must have id, layout, and direction, and nothing else. layout must be "
-        "one of the section layouts this platform renders: hero. direction must contain exactly align, rules, "
-        "treatment and scale: align is one of split-left, split-right, centred, overlap or reversed; rules is a "
-        "boolean; treatment is colour or monochrome; scale is editorial or compact. The first section is the page's "
-        "opening section and must use the hero layout. Choose the direction from the subject, the confirmed intake "
-        "and the approved media; the section renders structure only, so these values are the design. The "
+        "review_rubric, input_artifact_hashes, copy_deck, and page_composition. "
+        + section_composition_contract_description() + "The "
         "brand_source_map "
         "must be an object with exactly these fields: "
         "schema_version, identity_assets, primary_brand_signals, geometry_vocabulary, spacing_rhythm, "
@@ -3993,12 +3936,13 @@ def _write_researcher_agent(oc: Path, prompt: str) -> None:
 
 def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None:
     """Install the bounded read-only agent used before a native Build turn."""
-    from ..core.design_contracts import brand_behavior_contract_description
+    from ..core.design_contracts import brand_behavior_contract_description, section_composition_contract_description
     agent_dir = oc / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     output = (
         "Return one compact JSON object containing direction and a complete typed experience plan. The plan must include "
-        "an integrated copy_deck with final non-empty headline, body, and primary_action strings, "
+        "an integrated copy_deck with final non-empty meta_description and complete page_composition section content. "
+        + section_composition_contract_description() +
         "brand_source_map as an object with the exact fields schema_version, identity_assets, primary_brand_signals, "
         "geometry_vocabulary, spacing_rhythm, line_and_edge_language, color_relationships, "
         "type_relationship_hypotheses, material_relationships, image_treatment_hypotheses, signals_to_preserve, "

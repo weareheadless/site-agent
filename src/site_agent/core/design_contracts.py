@@ -1248,12 +1248,34 @@ class ExperienceJourney:
 # The section vocabulary a composed page may name. This is the contract shared
 # with the rendered section registry in the site scaffold; adding a section
 # means adding a component there and its layout name here, in the same change.
-SECTION_LAYOUTS: frozenset[str] = frozenset({"hero"})
+SECTION_LAYOUTS: frozenset[str] = frozenset({"hero", "services", "gallery", "about", "contact"})
 SECTION_ALIGNMENTS: frozenset[str] = frozenset({"split-left", "split-right", "centred", "overlap", "reversed"})
 SECTION_TREATMENTS: frozenset[str] = frozenset({"colour", "monochrome"})
 SECTION_SCALES: frozenset[str] = frozenset({"editorial", "compact"})
 # The opening section carries the page's promise, so it is not negotiable.
 OPENING_SECTION_LAYOUT = "hero"
+
+
+def section_composition_contract_description() -> str:
+    """One planning/staging/rendering vocabulary, with no worked creative examples."""
+    return (
+        "page_composition has schema_version 1 and sections in reading order. Each section has exactly id, label, "
+        "layout, direction and entries. id is stable and unique; label is its final editable name. "
+        "layout is hero, services, gallery, about or contact. Only the first section uses hero; other layouts may "
+        "repeat with distinct IDs. direction has exactly align (split-left, split-right, centred, overlap or reversed), "
+        "rules (boolean), treatment (colour or monochrome), scale (editorial or compact). "
+        "entries are ordered canonical Payload content blocks. Every entry has a globally unique stable key, "
+        "a final label and blockType. helloAdaHeading and helloAdaParagraph also have text; helloAdaLink has text "
+        "and href; helloAdaImage has asset_id naming exact approved media. No other fields are allowed. "
+        "Each section has exactly one heading, at most one paragraph before it (the eyebrow), any body/supporting "
+        "paragraphs after it, at most one link and one image; gallery supports multiple images. Use only confirmed "
+        "destinations or valid planned internal anchors/routes; absent a confirmed destination, retain action copy "
+        "as a paragraph, never invent a link. Map every asset_composition_plan asset to an image entry and do not "
+        "reference unassigned assets. All visitor copy, captions and labels belong in these entries, not implementation "
+        "source. copy_deck contains final meta_description for SEO; section entries are the sole presentation copy "
+        "source. Select all sections, copy, assets, direction and required behavior now. Downstream realization "
+        "stages these exact decisions in Payload and wires the pinned templates; it must not compose a different page. "
+    )
 
 
 @dataclass(frozen=True)
@@ -1306,27 +1328,78 @@ class SectionComposition:
     section_id: str
     layout: str
     direction: SectionDirection
+    # Absent only on historical plans. New realization requires complete
+    # canonical content blocks; image relations are resolved from asset_id.
+    label: str = ""
+    entries: tuple[dict[str, Any], ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any], path: str = "section") -> "SectionComposition":
-        value = _strict_object(raw, path, {"id", "layout", "direction"})
+        value = _strict_object(raw, path, {"id", "layout", "direction", "label", "entries"})
         layout = _text(value.get("layout"), f"{path}.layout", maximum=40)
         if layout not in SECTION_LAYOUTS:
             raise ContractError(
                 f"{path}.layout must be one of: {', '.join(sorted(SECTION_LAYOUTS))}"
             )
+        entries = []
+        seen_keys: set[str] = set()
+        counts: dict[str, int] = {}
+        for index, raw_entry in enumerate(_list(value.get("entries"), f"{path}.entries", item_type=object, required=False, maximum=40)):
+            entry_path = f"{path}.entries[{index}]"
+            entry = _object(raw_entry, entry_path)
+            block = entry.get("blockType")
+            fields = {
+                "helloAdaHeading": {"text"}, "helloAdaParagraph": {"text"},
+                "helloAdaLink": {"text", "href"}, "helloAdaImage": {"asset_id"},
+            }.get(block) if isinstance(block, str) else None
+            if fields is None:
+                raise ContractError(f"{entry_path}.blockType is not supported by the section library")
+            entry = _strict_object(entry, entry_path, {"key", "label", "blockType"} | fields)
+            entry["key"] = _normalized_id(entry.get("key"), f"{entry_path}.key")
+            entry["label"] = _text(entry.get("label"), f"{entry_path}.label", maximum=300)
+            if entry["key"] in seen_keys:
+                raise ContractError(f"{path} contains duplicate content key: {entry['key']}")
+            seen_keys.add(entry["key"])
+            counts[block] = counts.get(block, 0) + 1
+            for name in fields:
+                entry[name] = _text(entry.get(name), f"{entry_path}.{name}", maximum=8_000)
+            if block == "helloAdaImage" and not re.fullmatch(r"media-[1-9][0-9]*", entry["asset_id"]):
+                raise ContractError(f"{entry_path}.asset_id must reference exact Payload media")
+            if block == "helloAdaLink":
+                href = entry["href"]
+                parsed = urlsplit(href)
+                absolute = parsed.scheme == "https" and bool(parsed.hostname) and parsed.username is None and parsed.password is None
+                local = href.startswith(("/", "#")) and not href.startswith("//")
+                contact = parsed.scheme in {"mailto", "tel"} and bool(parsed.path)
+                if not (absolute or local or contact) or "\\" in href or any(char.isspace() or ord(char) < 32 for char in href):
+                    raise ContractError(f"{entry_path}.href must be a safe confirmed destination")
+            if block == "helloAdaParagraph" and not counts.get("helloAdaHeading") and counts[block] > 1:
+                raise ContractError(f"{path} supports only one eyebrow before the heading")
+            entries.append(entry)
+        if entries:
+            if counts.get("helloAdaHeading") != 1:
+                raise ContractError(f"{path} must contain exactly one heading")
+            if counts.get("helloAdaLink", 0) > 1:
+                raise ContractError(f"{path} supports only one action")
+            if counts.get("helloAdaImage", 0) > 1 and layout != "gallery":
+                raise ContractError(f"{path} supports only one image; use gallery for multiple images")
         return cls(
             section_id=_normalized_id(value.get("id"), f"{path}.id"),
             layout=layout,
             direction=SectionDirection.from_dict(value.get("direction"), f"{path}.direction"),
+            label=_text(value.get("label"), f"{path}.label", maximum=300) if "label" in value or entries else "",
+            entries=tuple(entries),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.section_id,
             "layout": self.layout,
             "direction": self.direction.to_dict(),
         }
+        if self.label or self.entries:
+            result.update(label=self.label, entries=copy.deepcopy(list(self.entries)))
+        return result
 
 
 def page_composition_from_dict(raw: Any, path: str = "page_composition") -> tuple[SectionComposition, ...]:
@@ -1339,14 +1412,19 @@ def page_composition_from_dict(raw: Any, path: str = "page_composition") -> tupl
     sections: list[SectionComposition] = []
     seen_ids: set[str] = set()
     seen_layouts: set[str] = set()
+    seen_keys: set[str] = set()
     for index, item in enumerate(items):
         section = SectionComposition.from_dict(item, f"{path}.sections[{index}]")
         if section.section_id in seen_ids:
             raise ContractError(f"{path}.sections contains duplicate section id: {section.section_id}")
-        if section.layout in seen_layouts:
+        if section.layout == OPENING_SECTION_LAYOUT and section.layout in seen_layouts:
             raise ContractError(f"{path}.sections contains more than one {section.layout} section")
         seen_ids.add(section.section_id)
         seen_layouts.add(section.layout)
+        for entry in section.entries:
+            if entry["key"] in seen_keys:
+                raise ContractError(f"{path} contains duplicate content key: {entry['key']}")
+            seen_keys.add(entry["key"])
         sections.append(section)
     if sections[0].layout != OPENING_SECTION_LAYOUT:
         raise ContractError(f"{path}.sections[0].layout must be {OPENING_SECTION_LAYOUT}")

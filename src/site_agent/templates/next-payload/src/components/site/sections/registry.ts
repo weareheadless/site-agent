@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import Hero, { type HeroContent, type HeroDirection, type SectionMarkers } from './hero'
+import Supporting from './supporting'
 
 /**
  * Section vocabulary.
@@ -19,6 +20,10 @@ export type SectionProps = {
 
 export const sectionComponents: Record<string, (props: SectionProps) => ReactNode> = {
   hero: Hero,
+  services: Supporting,
+  gallery: Supporting,
+  about: Supporting,
+  contact: Supporting,
 }
 
 export function isSectionType(value: string): boolean {

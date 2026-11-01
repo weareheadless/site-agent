@@ -50,6 +50,7 @@ export type SectionBindings = {
   supporting?: SectionBinding[]
   action?: SectionBinding
   image?: SectionBinding
+  additionalImages?: SectionBinding[]
 }
 
 export type SectionContent = {
@@ -71,6 +72,8 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
   let actionKey = ''
   let image: HeroContent['image']
   let imageKey = ''
+  const additionalImages: NonNullable<HeroContent['additionalImages']> = []
+  const additionalImageBindings: SectionBinding[] = []
   let headingSeen = false
 
   for (const raw of entries) {
@@ -118,11 +121,16 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
         break
       }
       case 'helloAdaImage': {
-        if (image) break
         const resolved = media(entry.image)
         if (resolved.src) {
-          image = { src: resolved.src, alt: text(entry.alt) || resolved.alt }
-          imageKey = key
+          const next = { src: resolved.src, alt: text(entry.alt) || resolved.alt }
+          if (image) {
+            additionalImages.push(next)
+            additionalImageBindings.push({ key, property: 'image' })
+          } else {
+            image = next
+            imageKey = key
+          }
         }
         break
       }
@@ -138,6 +146,7 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
   if (supportingBindings.length) bindings.supporting = supportingBindings
   if (actionKey) bindings.action = { key: actionKey, property: 'text' }
   if (imageKey) bindings.image = { key: imageKey, property: 'image' }
+  if (additionalImageBindings.length) bindings.additionalImages = additionalImageBindings
 
   return {
     content: {
@@ -148,6 +157,7 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
       supporting,
       action,
       image,
+      ...(additionalImages.length ? { additionalImages } : {}),
     },
     bindings,
   }

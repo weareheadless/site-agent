@@ -492,12 +492,18 @@ def _experience_plan(**overrides):
             "body": "Brand strategy for independent businesses ready to grow with intention.",
             "primary_action": "Book a consultation",
             "supporting_copy": ["Thoughtful strategy, made practical."],
+            "meta_description": "Thoughtful brand strategy for independent businesses.",
         },
         "page_composition": {
             "schema_version": 1,
             "sections": [{
                 "id": "home-opening",
                 "layout": "hero",
+                "label": "Introduction",
+                "entries": [
+                    {"key": "home.hero.heading", "blockType": "helloAdaHeading", "label": "Heading", "text": "Make the next clear move."},
+                    {"key": "home.hero.body", "blockType": "helloAdaParagraph", "label": "Introduction", "text": "Brand strategy for independent businesses."},
+                ],
                 "direction": {"align": "split-left", "rules": True, "treatment": "colour", "scale": "editorial"},
             }],
         },

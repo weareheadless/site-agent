@@ -202,6 +202,30 @@ substitute a generic site pattern for a run-specific decision.
 
 ### The locked creative plan
 
+For section-template builds, `page_composition.sections` is the executable page,
+not a suggestion for the coding turn. Ada selects ordered layouts from the
+canonical section registry and supplies each section's stable ID, editable
+label, direction, and ordered canonical content entries. Entries carry final
+copy, labels, actions/destinations and exact approved media asset IDs. Every
+assigned composition asset must have a content slot; none may be silently
+dropped. Repeated supporting layouts use distinct section and content keys.
+`copy_deck.meta_description` carries SEO copy; section entries own presentation
+copy. Historical plans remain readable but cannot realize a new candidate
+without complete section content: resume Ada planning instead of inventing it.
+
+The host verifies every selected tenant media relation before any draft write,
+stages all sections in one unpublished Payload page, and binds the exact revision
+to the existing candidate flow. Realization reads that Payload draft, renders
+the selected sections in their stored order, wires every editable binding, and
+implements the planned behavior through the existing signature/wrapper slots.
+It must not invent additional sections, hardcode missing copy, or redesign the
+page. Source prompts omit staged wording and destinations. Section-library
+changes ship as a new pinned tenant-presentation snapshot (`section-library-v2`
+for complete section staging), never as a runtime overlay that restyles existing
+sites. The first section renders the page h1; supporting sections render h2s.
+The content-authority gate, real preview behavior checks and explicit owner
+approval remain mandatory; this does not add another model-review or repair level.
+
 Before source mutation, Ada must produce a complete plan composed of the
 existing typed design and experience plan artifacts. It must be sufficient for
 another agent to implement the selected experience without inventing the

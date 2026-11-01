@@ -37,6 +37,7 @@ from ..core.design_contracts import (
     RepairReport,
     canonical_hash,
     brand_behavior_contract_description,
+    section_composition_contract_description,
     canonical_json,
 )
 from ..hands.opencode_provider import (
@@ -1617,13 +1618,8 @@ class SpecialistDesignCoordinator:
              "context_snapshot_hash, selected_concept_id, copy_deck_hash, asset_evidence, brand_source_map, "
              "brand_source_map_hash, asset_composition_plan, experience_journey, behavior_system, layout_and_typography_plan, "
             "responsive_composition_plan, protected_strengths, variation_points, implementation_risks, transfer_test, "
-             "review_rubric, input_artifact_hashes, copy_deck, and page_composition. page_composition is the page "
-            "you are composing: an object with schema_version and a sections array in reading order. Each section "
-            "must have exactly id, layout, and direction. layout must be one of the section layouts this platform "
-            "renders: hero. direction must contain exactly align, rules, treatment and scale, where align is one of "
-            "split-left, split-right, centred, overlap or reversed, rules is a boolean, treatment is colour or "
-            "monochrome, and scale is editorial or compact. The first section is the page's opening section and must "
-            "use the hero layout. These values are the design: the section renders structure only. "
+             "review_rubric, input_artifact_hashes, copy_deck, and page_composition. "
+             + section_composition_contract_description() +
             "The experience_journey object must use exactly "
              "schema_version, journey_id, thesis, signature_behavior_id, signature_scene_id, scenes, "
              "must_pass_condition_ids, and evidence_refs. Each scene must use exactly id, order, content_region, "

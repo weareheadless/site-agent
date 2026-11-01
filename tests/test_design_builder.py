@@ -19,20 +19,28 @@ def _composed_plan(copy_deck, **overrides):
     """The plan shape the homepage stage consumes: copy plus Ada's composition."""
     from types import SimpleNamespace as _Namespace
 
-    from site_agent.core.design_contracts import SectionComposition, SectionDirection
+    from site_agent.core.design_contracts import SectionComposition
+
+    entries = []
+    if copy_deck.get("eyebrow"):
+        entries.append({"key": "home.hero.eyebrow", "blockType": "helloAdaParagraph", "label": "Eyebrow", "text": copy_deck["eyebrow"]})
+    entries.extend([
+        {"key": "home.hero.heading", "blockType": "helloAdaHeading", "label": "Heading", "text": copy_deck["headline"]},
+        {"key": "home.hero.introduction", "blockType": "helloAdaParagraph", "label": "Introduction", "text": copy_deck["body"]},
+        {"key": "home.hero.primary-action", "blockType": "helloAdaParagraph", "label": "Action", "text": copy_deck["primary_action"]},
+    ])
+    entries.extend({"key": f"home.supporting.paragraph-{index}", "blockType": "helloAdaParagraph", "label": "Supporting copy", "text": text}
+                   for index, text in enumerate(copy_deck.get("supporting_copy", []), start=1))
 
     plan = _Namespace(
-        copy_deck=copy_deck,
+        copy_deck={"meta_description": copy_deck["body"], **copy_deck},
         asset_composition_plan=(),
         asset_evidence=(),
         page_composition=(
-            SectionComposition(
-                section_id="home-opening",
-                layout="hero",
-                direction=SectionDirection(
-                    align="split-left", rules=True, treatment="colour", scale="editorial",
-                ),
-            ),
+            SectionComposition.from_dict({
+                "id": "home-opening", "label": "Introduction", "layout": "hero", "entries": entries,
+                "direction": {"align": "split-left", "rules": True, "treatment": "colour", "scale": "editorial"},
+            }),
         ),
     )
     for key, value in overrides.items():
@@ -79,10 +87,18 @@ def test_payload_first_homepage_data_is_editable_and_never_invents_a_contact_des
         "meta_description": "A thoughtful brand strategy partner for independent businesses.",
     }
 
+    selected = _composed_plan(copy_deck, asset_composition_plan=(SimpleNamespace(asset_id="media-17"),))
+    from dataclasses import replace
+    opening = selected.page_composition[0]
+    planned_entries = [dict(entry) for entry in opening.entries]
+    next(entry for entry in planned_entries if entry["key"] == "home.hero.primary-action").update(
+        blockType="helloAdaLink", href="https://wa.me/15551234567",
+    )
+    planned_entries.append({"key": "home.hero.image", "blockType": "helloAdaImage", "label": "Image", "asset_id": "media-17"})
+    selected.page_composition = (replace(opening, entries=tuple(planned_entries)),)
     linked = runner._initial_homepage_payload_data(
         _payload_first_request("https://wa.me/15551234567"),
-        _composed_plan(copy_deck),
-        featured_media_id=17,
+        selected,
     )
     entries = {entry["key"]: entry for entry in linked["sections"][0]["entries"]}
     assert linked["title"] == "North Star Studio"
@@ -1038,7 +1054,7 @@ def test_creative_direction_rejects_an_incomplete_visible_copy_deck(tmp_path):
         copy_deck={"headline": "A real headline"},
     )
 
-    with pytest.raises(runner.RunnerError, match="copy_deck.body"):
+    with pytest.raises(runner.RunnerError, match="copy_deck.meta_description"):
         runner._native_direction_payload(
             {
                 "reply": json.dumps({
@@ -1268,7 +1284,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
     assert "Return exactly one JSON object" in calls[0]["prompt"]
     assert "brand_source_map" in calls[0]["prompt"]
     assert "asset_composition_plan" in calls[0]["prompt"]
-    assert "final visitor-facing homepage copy" in calls[0]["prompt"]
+    assert "section entries are the sole presentation copy" in calls[0]["prompt"]
     assert "Do not inspect the repository" in calls[0]["prompt"]
     assert "top-level transfer_test field is mandatory" in calls[0]["prompt"]
     assert "never pass useGSAP to gsap.registerPlugin" in calls[1]["prompt"]

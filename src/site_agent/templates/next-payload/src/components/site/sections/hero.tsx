@@ -31,6 +31,7 @@ export type HeroContent = {
   supporting?: string[]
   action?: { label: string; href: string }
   image?: { src: string; alt: string }
+  additionalImages?: { src: string; alt: string }[]
 }
 
 /**
@@ -45,6 +46,7 @@ export type SectionMarkers = {
   supporting?: (string | undefined)[]
   action?: string
   image?: string
+  additionalImages?: (string | undefined)[]
 }
 
 type HeroProps = {
@@ -53,6 +55,7 @@ type HeroProps = {
   bindings?: SectionMarkers
   /** One deliberate gesture, supplied by the designer. Rendered as-is. */
   signature?: ReactNode
+  headingLevel?: 'h1' | 'h2'
 }
 
 const displaySize: Record<NonNullable<HeroDirection['scale']>, string> = {
@@ -73,13 +76,15 @@ function Eyebrow({ children, marker }: { children: ReactNode; marker?: string })
   )
 }
 
-function Headline({ content, scale, marker }: {
+function Headline({ content, scale, marker, headingLevel = 'h1' }: {
   content: HeroContent
   scale: NonNullable<HeroDirection['scale']>
   marker?: string
+  headingLevel?: 'h1' | 'h2'
 }) {
+  const Heading = headingLevel
   return (
-    <h1 className={`font-display leading-[0.95] tracking-[-0.02em] text-ink ${displaySize[scale]}`} data-helloada-field={marker}>
+    <Heading className={`font-display leading-[0.95] tracking-[-0.02em] text-ink ${displaySize[scale]}`} data-helloada-field={marker}>
       {content.headline}
       {content.emphasis ? (
         <>
@@ -87,7 +92,7 @@ function Headline({ content, scale, marker }: {
           <em className="italic">{content.emphasis}</em>
         </>
       ) : null}
-    </h1>
+    </Heading>
   )
 }
 
@@ -115,12 +120,14 @@ function Body({ children, supporting = [], marker, supportingMarkers = [] }: {
     <div className="flex max-w-[34ch] flex-col gap-3">
       {children ? <p className="text-[0.92rem] leading-[1.7] text-body" data-helloada-field={marker}>{children}</p> : null}
       {supporting.map((paragraph, index) => (
-        <p key={index} className="text-[0.92rem] leading-[1.7] text-body" data-helloada-field={supportingMarkers[index]}>
-          {paragraph}
-        </p>
+        <SupportingParagraph key={index} text={paragraph} marker={supportingMarkers[index]} />
       ))}
     </div>
   )
+}
+
+function SupportingParagraph({ text, marker }: { text: string; marker?: string }) {
+  return <p className="text-[0.92rem] leading-[1.7] text-body" data-helloada-field={marker}>{text}</p>
 }
 
 function Rule({ tone = 'ink' }: { tone?: 'ink' | 'paper' }) {
@@ -146,7 +153,7 @@ function Figure({ image, treatment, marker, className = '' }: {
   )
 }
 
-export function Hero({ content, direction = {}, bindings = {}, signature }: HeroProps) {
+export function Hero({ content, direction = {}, bindings = {}, signature, headingLevel = 'h1' }: HeroProps) {
   const align = direction.align ?? 'split-left'
   const rules = direction.rules ?? true
   const treatment = direction.treatment ?? 'colour'
@@ -166,7 +173,7 @@ export function Hero({ content, direction = {}, bindings = {}, signature }: Hero
           </div>
           <div className="grid grid-cols-1 items-end gap-8 md:grid-cols-12">
             <div className="md:col-span-8">
-              <Headline content={content} scale={scale} marker={bindings.headline} />
+              <Headline content={content} scale={scale} marker={bindings.headline} headingLevel={headingLevel} />
             </div>
             <div className="md:col-span-4">
               {rules ? <Rule tone="paper" /> : null}
@@ -187,7 +194,7 @@ export function Hero({ content, direction = {}, bindings = {}, signature }: Hero
         <div className="mx-auto max-w-3xl text-center">
           {content.eyebrow ? <Eyebrow marker={bindings.eyebrow}>{content.eyebrow}</Eyebrow> : null}
           <div className="mt-6">
-            <Headline content={content} scale={scale} marker={bindings.headline} />
+            <Headline content={content} scale={scale} marker={bindings.headline} headingLevel={headingLevel} />
           </div>
           <div className="mx-auto mt-6 flex max-w-xl flex-col items-center gap-4">
             <Body supporting={content.supporting} marker={bindings.body} supportingMarkers={bindings.supporting}>{content.body}</Body>
@@ -212,7 +219,7 @@ export function Hero({ content, direction = {}, bindings = {}, signature }: Hero
         <div className={`md:col-span-6 ${copyFirst ? 'md:order-1' : 'md:order-2'} ${overlap ? 'md:relative md:z-10' : ''}`}>
           {content.eyebrow ? <Eyebrow marker={bindings.eyebrow}>{content.eyebrow}</Eyebrow> : null}
           <div className="mt-5">
-            <Headline content={content} scale={scale} marker={bindings.headline} />
+            <Headline content={content} scale={scale} marker={bindings.headline} headingLevel={headingLevel} />
           </div>
           {rules ? <div className="mt-7 max-w-[6rem]"><Rule /></div> : null}
           <div className="mt-6 flex flex-col gap-5">
