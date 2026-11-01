@@ -2,6 +2,9 @@ from site_agent.application.onboarding_report import persist_initial_onboarding_
 from site_agent.application.workspace import ChatService, Journey, Tenant
 from site_agent.core.design_contracts import DesignContextSnapshot, SiteIntake, canonical_hash
 from site_agent.core.memory import Memory
+from site_agent.core.contracts import ContractError
+from site_agent.core.design_contracts import MAX_QUALITY_REPORT_BYTES
+import pytest
 
 
 def _run(memory: Memory):
@@ -130,5 +133,37 @@ def test_new_site_progress_uses_persisted_milestones_only(tmp_path):
         assert after_report["report_state"] == "ready"
         assert after_report["report"]["candidate_sha"] == run["candidate_sha"]
         assert ChatService._new_site_onboarding(memory, intake_status, None) is None
+    finally:
+        memory.close()
+
+
+@pytest.mark.parametrize('quality_state', ['passed', 'failed'])
+def test_onboarding_projection_and_report_share_the_quality_evidence_size_bound(tmp_path, quality_state):
+    memory = Memory(tmp_path / 'memory.db')
+    tenant = Tenant(tenant_id='new-site', config={}, memory=memory, runtime=None,
+                    context={'journey': Journey(website_present=False, incubation_needed=False)}, api_token='test-token')
+    try:
+        run = _run(memory)
+        quality = {'state': quality_state, 'gates': {'build': quality_state, 'browser': quality_state},
+                   'evidence': {'browser': 'observed evidence ' * 30_000}}
+        with pytest.raises(ContractError, match='contract exceeds'):
+            canonical_hash(quality)
+        expected_hash = canonical_hash(quality, max_bytes=MAX_QUALITY_REPORT_BYTES)
+        memory.update_design_run(run['run_id'], quality_report_json=quality)
+        run = memory.get_design_run(run['run_id'])
+        phase = persist_initial_onboarding_report(memory, run)
+        status = {'session_id': run['intake_session_id'], 'confirmed': True, 'confirmed_revision_id': run['intake_revision_id']}
+        projected = ChatService._new_site_onboarding(memory, status, tenant)
+        if quality_state == 'passed':
+            assert phase['payload']['quality_evidence_hash'] == expected_hash
+            assert projected['report_state'] == 'ready'
+            assert projected['report']['quality_evidence_hash'] == expected_hash
+            quality['evidence']['browser'] += ' changed'
+            memory.update_design_run(run['run_id'], quality_report_json=quality)
+            assert ChatService._new_site_onboarding(memory, status, tenant)['report_state'] == 'preparing'
+        else:
+            assert phase is None
+            assert projected['report'] is None
+            assert projected['completed_stages'] == [1]
     finally:
         memory.close()
