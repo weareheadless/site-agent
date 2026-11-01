@@ -561,6 +561,7 @@ def test_content_inventory_fails_closed_when_the_tool_cannot_run(tmp_path, monke
         service.close()
 
 
+
 def test_content_inventory_returns_violations_as_actionable_findings(tmp_path):
     """A violation exit must still deliver the machine-readable report."""
     import json as _json
