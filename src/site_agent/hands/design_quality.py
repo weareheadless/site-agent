@@ -2146,13 +2146,7 @@ def _run_quality_in_workspace(
         workspace, base_sha, candidate_sha, policy
     )
     findings.extend(native_source_findings)
-    if policy.react_source_required:
-        content_authority_evidence, content_authority_findings = _content_authority_findings(
-            build_evidence.get("content_authority")
-        )
-        findings.extend(content_authority_findings)
-    else:
-        content_authority_evidence = {"status": "skipped", "reason": "react_source_not_required"}
+    content_authority_evidence: dict[str, Any] = {"status": "skipped", "reason": "react_source_not_required"}
     originality_evidence, originality_findings = _originality_findings(
         workspace, base_sha, candidate_sha, policy
     )
@@ -2181,6 +2175,11 @@ def _run_quality_in_workspace(
             _finding("build", "blocker", "build_failed", "The canonical Next site build failed.", evidence=build_evidence)
         ]
     findings.extend(build_findings)
+    if policy.react_source_required and "content_authority" in build_evidence:
+        content_authority_evidence, content_authority_findings = _content_authority_findings(
+            build_evidence.get("content_authority")
+        )
+        findings.extend(content_authority_findings)
     runtime_evidence, runtime_findings = _stage_host_runtime_files(workspace, policy)
     findings.extend(runtime_findings)
     static_output = bool(getattr(policy, "static_output_required", True))

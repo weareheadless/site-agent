@@ -42,7 +42,10 @@ design_engine:
     max_retries: 1
     max_tokens: 4096
   specialist_timeout_seconds: 1800
-  repair_attempts: 0
+  # One bounded Ada repair per initial build. Host evidence (rendered behavior
+  # or content-authority findings) otherwise strands a candidate in
+  # needs_repair forever; the child never nests another repair.
+  repair_attempts: 1
   max_tokens: 8192
   required_viewports:
     - {name: desktop, width: 1440, height: 1000}
