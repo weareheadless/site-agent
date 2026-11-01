@@ -2782,11 +2782,18 @@ class DesignService:
                 npm_cache = Path(str(self.config.get("data_dir") or ".")).expanduser().resolve() / "npm-cache"
 
                 def build_runner(workspace: Path):
+                    from ..hands.site_build import configured_build_environment
+                    candidate_env = build_env
+                    if run.get("publishable") and (self.config.get("site") or {}).get("adapter") == "payload_gateway":
+                        candidate_env = configured_build_environment(
+                            self.config.get("source_deployment") or {}, workspace,
+                            self.experiment_environment(build_env),
+                        )
                     return build_site(
                         workspace,
                         NEXT_REACT_PROFILE,
                         npm_cache=npm_cache,
-                        env=build_env,
+                        env=candidate_env,
                         timeout_seconds=effective_policy.build_timeout_seconds,
                     ).to_dict()
 
@@ -2976,6 +2983,19 @@ class DesignService:
                 raise
             raise DesignServiceError(str(exc)) from exc
 
+    def prepare_revalidation(self, run_id: str) -> dict[str, Any]:
+        """Reopen only the existing immutable candidate's validation boundary."""
+        run = self.get_run(run_id)
+        if not run.get("candidate_sha"):
+            raise DesignServiceError("revalidation requires a retained immutable candidate")
+        if run["status"] in {DesignRunStatus.NEEDS_REPAIR.value, DesignRunStatus.INCOMPLETE.value,
+                             DesignRunStatus.READY_FOR_REVIEW.value}:
+            self._advance(run_id, DesignRunStatus.VALIDATING,
+                          "Host infrastructure corrected; rechecking the same immutable candidate.")
+        elif run["status"] not in {DesignRunStatus.CANDIDATE_READY.value, DesignRunStatus.VALIDATING.value}:
+            raise DesignServiceError("design run is not eligible for host revalidation")
+        return self.get_run(run_id)
+
     def revalidate_run(
         self,
         run_id: str,
@@ -2991,24 +3011,7 @@ class DesignService:
         An adapter or policy correction must be able to recheck persisted
         output without asking Ada to regenerate it or mutating production.
         """
-        run = self.memory.get_design_run(run_id)
-        if run is None:
-            raise DesignRunNotFound(f"no such design run: {run_id}")
-        if run["status"] in {
-            DesignRunStatus.NEEDS_REPAIR.value,
-            DesignRunStatus.INCOMPLETE.value,
-            DesignRunStatus.READY_FOR_REVIEW.value,
-        }:
-            self._advance(
-                run_id,
-                DesignRunStatus.VALIDATING,
-                "Host quality correction applied; rechecking the immutable candidate.",
-            )
-        elif run["status"] not in {
-            DesignRunStatus.CANDIDATE_READY.value,
-            DesignRunStatus.VALIDATING.value,
-        }:
-            raise DesignServiceError("design run is not eligible for host revalidation")
+        self.prepare_revalidation(run_id)
         return self.validate_run(
             run_id,
             repo,

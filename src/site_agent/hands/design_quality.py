@@ -687,6 +687,36 @@ def _host_provisioned_paths(repo: Path, policy: QualityPolicy) -> set[str]:
         if target.is_symlink() or not target.is_file() or (resolved != root and root not in resolved.parents):
             continue
         provisioned.add(normalize_path(relative))
+    hashes = {}
+    for name in ("owner_media_hashes", "font_hashes", "evidence_hashes", "provisioned_file_hashes"):
+        recorded = metadata.get(name)
+        if isinstance(recorded, Mapping):
+            hashes.update(recorded)
+    if isinstance(hashes, Mapping):
+        for raw_path, digest in hashes.items():
+            try:
+                relative = safe_relative_path(raw_path, "host_metadata.provisioned_file_hashes")
+                target = repo / relative
+                resolved = target.resolve()
+                if (target.is_symlink() or not target.is_file()
+                        or root not in resolved.parents):
+                    continue
+                if isinstance(digest, str) and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+                    provisioned.add(normalize_path(relative))
+            except (OSError, ValueError):
+                continue
+    # Older host manifests recorded the authored-file boundary rather than
+    # per-file compiler hashes. Retained candidates still have an immutable
+    # Git identity and that host-generated boundary; do not regenerate them.
+    base = metadata.get("base_sha")
+    authored = metadata.get("changed_source_files")
+    if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{40}", base) and isinstance(authored, list):
+        try:
+            host_changes = set(_git(repo, "diff", "--name-only", "-z", f"{base}...HEAD").split("\0")) - set(authored)
+            host_changes -= set(_git(repo, "diff", "--name-only", "-z", "HEAD").split("\0"))
+            provisioned.update(host_changes & {"package.json", "package-lock.json", "postcss.config.mjs"})
+        except Exception:
+            pass  # The repository/build gates retain the explicit failure.
     return {path for path in provisioned if path}
 
 

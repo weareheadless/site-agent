@@ -219,6 +219,36 @@ def test_managed_payload_workspace_keeps_its_canonical_route_shell(tmp_path):
     assert not (workspace / "src/app/page.tsx").exists()
 
 
+def test_compiled_build_uses_production_react_even_from_development_environment():
+    from site_agent.hands.site_build import _command_env
+    env = _command_env(None, {"NODE_ENV": "development", "PATH": "/approved/bin"})
+    assert env["NODE_ENV"] == "production"
+    assert env["PATH"] == "/approved/bin"
+
+
+def test_design_toolchain_uses_exact_configured_executables(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from site_agent.hands import site_build
+    node = tmp_path / "node"
+    npm = tmp_path / "npm"
+    for path in (node, npm):
+        path.write_text("fixture")
+        path.chmod(0o700)
+    settings = {"node_path": str(tmp_path), "npm_command": str(npm),
+                "node_version": "22.23.3", "npm_version": "11.13.0"}
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="v22.23.3\n" if command[0] == str(node) else "11.13.0\n")
+    monkeypatch.setattr(site_build.subprocess, "run", run)
+    env = site_build.configured_build_environment(settings, tmp_path, {"PATH": "/system", "NODE_ENV": "development"})
+    assert env["PATH"].split(":")[0] == str(tmp_path)
+    assert env["NODE_ENV"] == "production"
+    assert calls == [[str(node), "--version"], [str(npm), "--version"]]
+    with pytest.raises(SiteBuildError, match="shared.*contract"):
+        site_build.configured_build_environment({}, tmp_path, {})
+
+
 def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path):
     workspace = tmp_path / "site"
     workspace.mkdir()

@@ -485,11 +485,43 @@ def route_inventory(root: str | Path, output_dir: str) -> tuple[str, ...]:
     return tuple(sorted(routes, key=lambda item: (item not in {"index.html", "index.htm"}, item)))
 
 
+def configured_build_environment(
+    settings: Mapping[str, Any], cwd: Path, env: Mapping[str, str] | None = None,
+    *, run=None,
+) -> dict[str, str]:
+    """One explicit Node/npm identity for authoring, validation and previews."""
+    result = {str(k): str(v) for k, v in (os.environ if env is None else env).items()}
+    if not all(settings.get(name) for name in ("node_path", "node_version", "npm_command", "npm_version")):
+        raise SiteBuildError("source builds require the shared node_path, node_version, npm_command and npm_version contract")
+    node_dir = Path(str(settings.get("node_path") or ""))
+    npm = Path(str(settings.get("npm_command") or ""))
+    if not node_dir.is_absolute() or not npm.is_absolute():
+        raise SiteBuildError("source-build toolchain requires absolute node_path and npm_command")
+    result["PATH"] = os.pathsep.join([str(node_dir), str(npm.parent), result.get("PATH", "")])
+    result["NODE_ENV"] = "production"
+    for name, executable, key in (("Node", node_dir / "node", "node_version"), ("npm", npm, "npm_version")):
+        expected = str(settings.get(key) or "")
+        if not _EXACT_VERSION_RE.fullmatch(expected):
+            raise SiteBuildError(f"source-build toolchain requires an exact {name} version")
+        if not executable.is_file() or not executable.stat().st_mode & 0o111:
+            raise SiteBuildError(f"configured {name} executable is unavailable")
+        actual = (run([str(executable), "--version"], cwd, timeout=30) if run else
+                  subprocess.run([str(executable), "--version"], cwd=cwd, env=result,
+                                 capture_output=True, text=True, timeout=30))
+        if actual.returncode or actual.stdout.strip().removeprefix("v") != expected:
+            raise SiteBuildError(f"source-build toolchain requires {name} {expected}")
+    return result
+
+
 def _command_env(npm_cache: Path | None, env: Mapping[str, str] | None) -> dict[str, str]:
     result = {str(key): str(value) for key, value in (env.items() if env is not None else os.environ.items())}
     # The build profile is local-only and must not inherit npm's user-global
     # configuration or scripts from an unrelated customer environment.
     result["CI"] = "1"
+    # A compiled Next candidate must use production React in every host gate,
+    # even when the authoring/preview process uses a development environment.
+    result["NODE_ENV"] = "production"
+    result["NPM_CONFIG_INCLUDE"] = "dev"
     result["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"
     result["NPM_CONFIG_FUND"] = "false"
     if npm_cache is not None:
