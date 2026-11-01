@@ -50,6 +50,7 @@ export type SectionBindings = {
   supporting?: SectionBinding[]
   action?: SectionBinding
   image?: SectionBinding
+  additionalImages?: SectionBinding[]
 }
 
 export type SectionContent = {
@@ -71,16 +72,22 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
   let actionKey = ''
   let image: HeroContent['image']
   let imageKey = ''
+  const additionalImages: NonNullable<HeroContent['additionalImages']> = []
+  const additionalImageBindings: SectionBinding[] = []
   let headingSeen = false
+  const keys = new Set<string>()
+  const invalid = (detail: string): never => { throw new Error(`Section content cannot be rendered: ${detail}.`) }
 
   for (const raw of entries) {
-    if (!raw || typeof raw !== 'object') continue
+    if (!raw || typeof raw !== 'object') invalid('invalid content entry')
     const entry = raw as Entry
     const key = text(entry.key)
+    if (!key || keys.has(key)) invalid('missing or duplicate stable content key')
+    keys.add(key)
     switch (entry.blockType) {
       case 'helloAdaHeading': {
         const value = text(entry.text)
-        if (!value || headline) break
+        if (!value || headingSeen) invalid('missing text or duplicate heading')
         const [plain, ...rest] = value.split('|')
         headline = plain.trim()
         headlineKey = key
@@ -91,12 +98,12 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
       }
       case 'helloAdaParagraph': {
         const value = text(entry.text)
-        if (!value) break
+        if (!value) invalid('missing paragraph text')
         if (!headingSeen) {
           if (!eyebrow) {
             eyebrow = value
             eyebrowKey = key
-          }
+          } else invalid('multiple eyebrows')
           break
         }
         if (!body) {
@@ -111,25 +118,31 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
       case 'helloAdaLink': {
         const href = text(entry.href)
         const label = text(entry.text)
-        if (href && label && !action) {
-          action = { label, href }
-          actionKey = key
-        }
+        if (!href || !label || action) invalid('missing action content or duplicate action')
+        action = { label, href }
+        actionKey = key
         break
       }
       case 'helloAdaImage': {
-        if (image) break
         const resolved = media(entry.image)
+        if (!resolved.src) invalid(`missing media for ${key}`)
         if (resolved.src) {
-          image = { src: resolved.src, alt: text(entry.alt) || resolved.alt }
-          imageKey = key
+          const next = { src: resolved.src, alt: text(entry.alt) || resolved.alt }
+          if (image) {
+            additionalImages.push(next)
+            additionalImageBindings.push({ key, property: 'image' })
+          } else {
+            image = next
+            imageKey = key
+          }
         }
         break
       }
       default:
-        break
+        invalid(`unsupported block type ${String(entry.blockType)}`)
     }
   }
+  if (!headingSeen) invalid('missing section heading')
 
   const bindings: SectionBindings = {}
   if (eyebrowKey) bindings.eyebrow = { key: eyebrowKey, property: 'text' }
@@ -138,6 +151,7 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
   if (supportingBindings.length) bindings.supporting = supportingBindings
   if (actionKey) bindings.action = { key: actionKey, property: 'text' }
   if (imageKey) bindings.image = { key: imageKey, property: 'image' }
+  if (additionalImageBindings.length) bindings.additionalImages = additionalImageBindings
 
   return {
     content: {
@@ -148,6 +162,7 @@ export function sectionEntriesToContent(entries: readonly unknown[], media: Medi
       supporting,
       action,
       image,
+      ...(additionalImages.length ? { additionalImages } : {}),
     },
     bindings,
   }

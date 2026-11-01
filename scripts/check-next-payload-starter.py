@@ -36,9 +36,14 @@ def main() -> int:
         raise RuntimeError('The declared GitHub release credential is unavailable')
     with tempfile.TemporaryDirectory(prefix='helloada-starter-check-', dir=ROOT) as temporary:
         root = Path(temporary)
-        source = root / 'source'
+        # Preserve the template's repository-relative location so its inventory
+        # regression test exercises the same host validator as real candidates.
+        source = root / 'src/site_agent/templates/next-payload'
         shutil.copytree(ROOT / 'src/site_agent/templates/next-payload', source,
                         ignore=shutil.ignore_patterns('node_modules', '.next', '.open-next', '.wrangler', '.env*'))
+        inventory = root / 'src/site_agent/application/source_inventory_ast.mjs'
+        inventory.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / 'src/site_agent/application/source_inventory_ast.mjs', inventory)
         env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
         env.update(CI='1', TMPDIR=str(root), npm_config_cache=str(root / 'npm-cache'),
                    PAYLOAD_LOCAL_BUILD='1', PAYLOAD_CLI='1',
@@ -55,6 +60,8 @@ def main() -> int:
 
         prepare_release_dependencies(source, token, npm, root, run)
         run([npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline'], source)
+        run(['node', '--import', 'tsx', '--test', 'tests/section-library.test.mjs',
+             'tests/section-library-render.test.mjs', 'tests/source-inventory.test.mjs'], source)
         run([npm, 'run', 'typecheck'], source)
         run([npm, 'run', 'build'], source)
         if not (source / '.next/BUILD_ID').is_file():

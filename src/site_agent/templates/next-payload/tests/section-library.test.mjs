@@ -95,3 +95,18 @@ test('a section only carries direction values the renderer understands', () => {
 
   assert.deepEqual(sectionDirection({}), {})
 })
+
+test('unrenderable section content fails explicitly instead of disappearing', () => {
+  const title = heading('section.heading', 'A heading')
+  for (const entries of [
+    [title, { key: 'missing.image', blockType: 'helloAdaImage', image: null }],
+    [title, { key: 'unknown', blockType: 'helloAdaRichText', value: {} }],
+    [title, heading('second.heading', 'Another heading')],
+    [paragraph('first.eyebrow', 'One'), paragraph('second.eyebrow', 'Two'), title],
+    [title, { key: 'one', blockType: 'helloAdaLink', text: 'One', href: '#one' }, { key: 'two', blockType: 'helloAdaLink', text: 'Two', href: '#two' }],
+    [title, { key: 'empty', blockType: 'helloAdaParagraph', text: '' }],
+    [paragraph('no.heading', 'Body without heading')],
+    [title, paragraph('section.heading', 'Duplicate key')],
+    [title, { blockType: 'helloAdaParagraph', text: 'Missing key' }],
+  ]) assert.throws(() => sectionEntriesToContent(entries, media), /section content/i)
+})

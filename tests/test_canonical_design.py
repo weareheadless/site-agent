@@ -460,13 +460,22 @@ def test_payload_first_build_prompt_does_not_send_copydeck_values_to_the_source_
         "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
         "build_profile": "next_react",
     })
-    plan = SimpleNamespace(to_dict=lambda: {"copy_deck": {"headline": secret_copy}, "layout": "original"})
+    plan_data = {"copy_deck": {"headline": secret_copy}, "page_composition": {"schema_version": 1, "sections": [{
+        "id": "opening", "layout": "hero", "label": "PRIVATE_SECTION_LABEL",
+        "entries": [{"key": "opening.heading", "blockType": "helloAdaHeading", "text": secret_copy, "label": "PRIVATE_ENTRY_LABEL"},
+                    {"key": "opening.action", "blockType": "helloAdaLink", "text": "PRIVATE_ACTION", "href": "https://private-destination.example"}],
+    }]}}
+    from copy import deepcopy
+    plan = SimpleNamespace(to_dict=lambda: deepcopy(plan_data))
 
     prompt = runner._design_prompt(request, target, design_plan=plan)
 
     assert secret_copy not in prompt
+    assert all(value not in prompt for value in ["PRIVATE_SECTION_LABEL", "PRIVATE_ENTRY_LABEL", "PRIVATE_ACTION", "private-destination.example"])
+    assert '"key":"opening.heading"' in prompt
+    assert plan_data["page_composition"]["sections"][0]["entries"][0]["text"] == secret_copy
     assert "PAYLOAD-FIRST HOMEPAGE BINDING" in prompt
-    assert "copy_deck is intentionally omitted" in prompt
+    assert "staged copy, labels and destinations are intentionally omitted" in prompt
     assert "payload_draft_receipts" in prompt
     assert "data-helloada-field" in prompt
 
@@ -508,7 +517,7 @@ def test_payload_initial_prompt_reuses_templates_and_existing_candidate_flow():
         "publishable": False, "clone_path": "/tmp/design-clone",
     })
     prompt = runner._design_prompt(request, target)
-    assert "section-library-v1/" in prompt
+    assert "section-library-v2/" in prompt
     assert "render the Payload sections in their stored order" in prompt
     assert "Do not recreate the hero markup" in prompt
     assert "helloAdaBindingId" in prompt
