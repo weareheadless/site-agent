@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261101000100-api-workspace-responsiveness",
-    "sha": "5ad2eeea9a501eba511c49ed79db3646760c6d7b"
+    "id": "20261101001033-api-bounded-workspace-status",
+    "sha": "13c70cc898d4883d6c098a14c780fe03cf0b7069"
   }
 }
