@@ -48,14 +48,12 @@ def inventory(root: str | Path) -> dict[str, object]:
             decoded = {}
         violations = decoded.get("violations") if isinstance(decoded, dict) else None
         if isinstance(violations, list) and violations:
-            locations = [
-                f"{item.get('path')}:{item.get('line')} ({item.get('reason')})"
-                for item in violations[:8]
-                if isinstance(item, dict)
-            ]
-            more = len(violations) - len(locations)
-            suffix = f" and {more} more" if more > 0 else ""
-            raise ValueError("presentation violates the Payload content/binding contract: " + ", ".join(locations) + suffix)
+            # A violation is a failed gate, not a tooling error: return the
+            # report so the caller can name exact paths and lines. main() turns
+            # it into a non-zero exit for the hard pre-build gate.
+            if not isinstance(decoded.get("fields"), list):
+                raise ValueError("host TypeScript source inventory returned an invalid shape")
+            return decoded
         raise ValueError((result.stderr or "host TypeScript source inventory returned an invalid result")[:500].strip())
     try:
         decoded = json.loads(result.stdout)
