@@ -92,7 +92,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     design_before = (checkout / "src/components/site/TenantSections.tsx").read_bytes()
     migration_before = (checkout / "src/migrations/tenant-migration.ts").read_bytes()
 
-    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.46", "payloadCore": "0.5.10"}
+    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.47", "payloadCore": "0.5.10"}
     result = apply_shared_runtime_overlay(
         ROOT,
         checkout,
@@ -152,19 +152,19 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     admin_version = manifest["payloadAdmin"]
     admin_url = (
         "https://github.com/weareheadless/site-agent/releases/download/"
-        "payload-admin-v0.10.46/weareheadless-helloada-payload-admin-0.10.46.tgz"
+        "payload-admin-v0.10.47/weareheadless-helloada-payload-admin-0.10.47.tgz"
     )
-    assert admin_version == "0.10.46"
+    assert admin_version == "0.10.47"
     assert package["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
     assert lock["packages"][""]["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
     assert lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"] == {
         **lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"],
-        "version": "0.10.46",
+        "version": "0.10.47",
         "resolved": admin_url,
-        "integrity": "sha512-T8+63hULZVh+GAjHzp4YpcfIVoLraUgrk/TcKoXfWojTPxD39om277pQdnvWxp9/EH77JkNIzocCWX7o6YTi9w==",
+        "integrity": "sha512-imE3stNxkYLe48ySr0MmIrGeJFHNXUC9GuuG6N035mTEHEolJ3L35FAbWIh2j+KdPUbd7XBAJej5MDLNEAUw9g==",
     }
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
-    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.46"
+    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.47"
     assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.10"
     assert manifest["migrationHead"] == "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
     assert manifest["contentContract"] == "helloada-content-v4"
