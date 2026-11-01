@@ -1,6 +1,6 @@
 import pytest
 
-from site_agent.application.design_jobs import DesignJobExecutor
+from site_agent.application.design_jobs import DesignJobExecutor, repair_child_blocks_new_repair
 from site_agent.core.design_contracts import (
     BuildTarget,
     ExperiencePlanBundle,
@@ -1118,3 +1118,19 @@ def test_required_specialist_review_crash_marks_run_incomplete():
 
     assert run["status"] == "incomplete"
     assert any(event[1] == "specialist_review_incomplete" for event in memory.events)
+
+
+def test_a_repair_child_without_host_evidence_does_not_consume_the_single_slot(tmp_path):
+    """The single repair must not be spent by a child that was never told what failed."""
+    from site_agent.application.design_jobs import DesignJobExecutor, repair_child_blocks_new_repair
+    executor = DesignJobExecutor.__new__(DesignJobExecutor)
+
+    def blocks(status, critique):
+        report = {"state": "failed"} if critique is None else {"state": "failed", "visual_critique": critique}
+        return repair_child_blocks_new_repair({"status": status, "quality_report_json": report})
+
+    assert blocks("needs_repair", None) is False
+    assert blocks("needs_repair", {"state": "repair"}) is True
+    assert blocks("building", None) is True
+    assert blocks("failed", None) is False
+    assert blocks("cancelled", None) is False
