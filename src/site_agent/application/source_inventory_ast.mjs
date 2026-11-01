@@ -207,6 +207,27 @@ export function scanPresentation(root, ts) {
     }
     gather(sourceFile)
 
+    // Marker props are bound by the composing file, which owns the shared
+    // helper and the document identity. Collect the parameters of enclosing
+    // component functions so `data-helloada-field={marker}` is recognised as a
+    // reference to that binding rather than an unbindable literal.
+    const componentProps = new Set()
+    const collectProps = (node) => {
+      const isComponent = ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)
+      if (isComponent) {
+        for (const parameter of node.parameters) {
+          if (ts.isIdentifier(parameter.name)) componentProps.add(parameter.name.text)
+          if (ts.isObjectBindingPattern(parameter.name)) {
+            for (const element of parameter.name.elements) {
+              if (ts.isIdentifier(element.name)) componentProps.add(element.name.text)
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, collectProps)
+    }
+    collectProps(sourceFile)
+
     const inspect = (node) => {
       if (enforcePayloadCopy && ts.isJsxText(node) && hasWords(node.text)) {
         addViolation(violations, sourceFile, node, 'visible_copy_must_come_from_payload')
@@ -223,11 +244,18 @@ export function scanPresentation(root, ts) {
         }
         if (attribute === 'data-helloada-field') {
           const expression = node.initializer && ts.isJsxExpression(node.initializer) ? node.initializer.expression : undefined
-          if (!expression || !hasSharedBindingHelper) {
+          // A literal can never be a binding, even through a local constant.
+          const literal = !expression || resolveString(expression, declarations, ts) !== undefined
+          const markerProp = Boolean(expression && ts.isIdentifier(expression) && componentProps.has(expression.text)
+            && !declarations.has(expression.text))
+          if (literal || (!hasSharedBindingHelper && !markerProp)) {
             addViolation(violations, sourceFile, node, 'editable_field_needs_a_shared_binding')
-          } else {
+          } else if (!markerProp) {
             const descriptor = bindingDescriptor(expression, declarations, ts)
-            if (!hasSharedBindingHelper || !bindingMatchesContract(descriptor, contract)) {
+            // A computed marker (for example a mapped entry marker) cannot be
+            // resolved statically; it is accepted because this file owns the
+            // shared helper. A resolvable descriptor must match the contract.
+            if (descriptor && !bindingMatchesContract(descriptor, contract)) {
               addViolation(violations, sourceFile, node, 'editable_field_is_outside_the_shared_schema')
             }
             bindings.push({
