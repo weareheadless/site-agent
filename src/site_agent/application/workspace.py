@@ -636,12 +636,15 @@ class TenantRegistry:
                         dict(env),
                         memory=memory,
                         payload_gateway=payload_client,
+                        design_service=context.get("design_service"),
                     )
                 )
                 if payload_client is not None:
                     from ..hands.payload_gateway import PayloadMediaService
 
                     context["media_service"] = PayloadMediaService(payload_client)
+                    if context.get("design_service") is not None:
+                        context["design_service"].media_service = context["media_service"]
                 vision_config = tenant_config.get("vision") or {}
                 if (
                     isinstance(vision_config, Mapping)
@@ -674,6 +677,7 @@ class TenantRegistry:
                     design_service = context.get("design_service")
                     if design_service is not None:
                         design_service.builder = OperationRoutingBuilder(context)
+                        design_service.source_preview = context.get("source_deployment")
 
                         def browser_factory(run_id, run, *, _service=design_service, _config=tenant_config, _env=build_env):
                             try:

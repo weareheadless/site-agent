@@ -8,6 +8,7 @@ release service builds, promotes and records the only production artifact.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import secrets
@@ -64,11 +65,13 @@ class SourceDeploymentService:
         *,
         memory: Any | None = None,
         payload_gateway: Any | None = None,
+        design_service: Any | None = None,
     ) -> None:
         self.config = dict(config)
         self.env = dict(os.environ if env is None else env)
         self.memory = memory
         self.payload_gateway = payload_gateway
+        self.design_service = design_service
         self._preview_home = Path(tempfile.mkdtemp(prefix="site-agent-preview-home-"))
         self._preview_home.chmod(0o700)
         for directory in (self._preview_home / "tmp", self._preview_home / ".npm"):
@@ -119,12 +122,13 @@ class SourceDeploymentService:
                     })
         self._lock = threading.RLock()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="site-agent-source-build")
+        self._futures: dict[str, Any] = {}
         self._runtimes: dict[str, tuple[subprocess.Popen[str], Path]] = {}
         with self._lock:
             self._recover_production_jobs()
             self._persist()
         for job_id, branch, commit, mode in recover:
-            self._executor.submit(self._run_job, job_id, branch, commit, mode)
+            self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, commit, mode)
 
     def _persist(self) -> None:
         if self.memory is None:
@@ -411,6 +415,7 @@ class SourceDeploymentService:
         preview["TMP"] = preview["TMPDIR"]
         preview["TEMP"] = preview["TMPDIR"]
         preview["NPM_CONFIG_CACHE"] = str(self._preview_home / ".npm")
+        preview["NPM_CONFIG_INCLUDE"] = "dev"
         if production:
             preview["NODE_ENV"] = "production"
         elif self.env.get("NODE_ENV"):
@@ -444,8 +449,9 @@ class SourceDeploymentService:
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SourceDeploymentError(f"command failed: {' '.join(command[:4])}: {str(exc)[:300]}") from exc
         if result.returncode:
-            output = (result.stderr or result.stdout or "command failed").strip()
-            raise SourceDeploymentError(f"{' '.join(command[:4])}: {output[-1_500:]}")
+            from ..hands.opencode_runner import summarize_build_failure
+            output = summarize_build_failure((result.stdout or "") + "\n" + (result.stderr or ""))
+            raise SourceDeploymentError(f"{' '.join(command[:4])}: {output or 'command failed'}")
         return result
 
     def _head(self, branch: str) -> str:
@@ -528,10 +534,13 @@ class SourceDeploymentService:
             f"{label} verification did not confirm commit {expected[:12]}: {last_reason}"
         )
 
-    def _worktree(self, checkout: Path, branch: str, commit: str) -> tuple[Path, str]:
+    def _worktree(self, checkout: Path, branch: str, commit: str, *, retained: bool = False) -> tuple[Path, str]:
         fetch_timeout = int(self.settings.get("fetch_timeout_seconds") or 120)
-        self._run(["git", "fetch", "--no-tags", "origin", f"+{branch}:refs/remotes/origin/{branch}"], checkout, timeout=fetch_timeout)
-        local_head = self._run(["git", "rev-parse", f"refs/remotes/origin/{branch}"], checkout, timeout=30).stdout.strip().lower()
+        if retained:
+            local_head = self._run(["git", "rev-parse", "--verify", f"{commit}^{{commit}}"], checkout, timeout=30).stdout.strip().lower()
+        else:
+            self._run(["git", "fetch", "--no-tags", "origin", f"+{branch}:refs/remotes/origin/{branch}"], checkout, timeout=fetch_timeout)
+            local_head = self._run(["git", "rev-parse", f"refs/remotes/origin/{branch}"], checkout, timeout=30).stdout.strip().lower()
         if local_head != commit:
             raise SourceDeploymentError("local Git checkout did not fetch the requested GitHub commit")
         configured_root = str(self.settings.get("worktree_root") or "").strip()
@@ -560,12 +569,16 @@ class SourceDeploymentService:
         parse_json: bool = False,
         production: bool = False,
         preview_secret: str | None = None,
+        local_payload: bool = False,
     ) -> dict[str, Any]:
         try:
+            child_env = self._preview_env(production=production, payload_secret=preview_secret)
+            if local_payload:
+                child_env.update({"NODE_ENV": "development", "PAYLOAD_CLI": "1"})
             result = subprocess.run(
                 command,
                 cwd=str(cwd),
-                env=self._preview_env(production=production, payload_secret=preview_secret),
+                env=child_env,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -602,8 +615,41 @@ class SourceDeploymentService:
             raise SourceDeploymentError("host source inventory is not installed")
         return [sys.executable, str(inventory), "--root", str(worktree)]
 
-    def _verify_candidate_source_boundary(self, worktree: Path, commit: str, draft_id: Any) -> dict[str, Any]:
+    def _retained_design_run(self, run_id: str, commit: str) -> Mapping[str, Any]:
+        """Resolve the immutable candidate before its owner decision exists.
+
+        Browser validation must precede that decision. This is the same compiled
+        preview job, not an approval or a separate candidate store.
+        """
+        run = self.memory.get_design_run(str(run_id)) if self.memory is not None else None
+        if (not isinstance(run, Mapping) or run.get("mode") != "production_candidate"
+                or not run.get("publishable")
+                or run.get("status") not in {"validating", "needs_repair", "incomplete", "ready_for_review"}):
+            raise SourceDeploymentError("compiled preview requires a retained managed candidate")
+        if run.get("candidate_sha") != commit or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SourceDeploymentError("compiled preview requires the retained run's exact candidate")
+        return run
+
+    def _verify_candidate_source_boundary(self, worktree: Path, commit: str, draft_id: Any,
+                                          *, design_run_id: str = "") -> dict[str, Any]:
         """Reject source outside the tenant presentation allowlist before any candidate code runs."""
+        if design_run_id:
+            from dataclasses import replace
+            from ..core.design_contracts import DesignContextSnapshot
+            from ..hands.design_quality import _repository_findings
+
+            run = self._retained_design_run(design_run_id, commit)
+            if self.design_service is None:
+                raise SourceDeploymentError("retained candidate validation service is unavailable")
+            policy = self.design_service.quality_policy_for_run(design_run_id)
+            snapshot = run.get("context_snapshot")
+            if snapshot and policy.approved_media_files:
+                policy = replace(policy, approved_media_files=self.design_service._quality_media_files(
+                    DesignContextSnapshot.from_dict(snapshot)))
+            findings = _repository_findings(worktree, str(run["base_sha"]), commit, policy)
+            if findings:
+                raise SourceDeploymentError("candidate source boundary failed: " + str(findings[0]["message"]))
+            return {"name": "presentation_source_boundary", "ok": True, "run_id": design_run_id}
         try:
             numeric_id = int(draft_id)
         except (TypeError, ValueError) as exc:
@@ -649,6 +695,58 @@ class SourceDeploymentService:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
             return int(probe.getsockname()[1])
+
+    def _prepare_preview_mount(self, worktree: Path, job: dict[str, Any]) -> None:
+        """Apply transport-only Next compiler settings in the disposable build."""
+        original = worktree / "next.config.mjs"
+        retained = worktree / ".helloada-source-preview.next.mjs"
+        if original.is_symlink() or not original.is_file() or retained.exists():
+            raise SourceDeploymentError("compiled preview needs the exact managed Next config")
+        worker_path = worktree / "wrangler.jsonc"
+        worker = json.loads(worker_path.read_text(encoding="utf-8"))
+        databases = [item for item in worker.get("d1_databases") or [] if item.get("binding") == "D1"]
+        buckets = [item for item in worker.get("r2_buckets") or [] if item.get("binding") == "R2"]
+        if len(databases) != 1 or len(buckets) != 1:
+            raise SourceDeploymentError("compiled website preview requires the canonical D1 and R2 bindings")
+        # This is the existing website-only OpenNext preview, not a second
+        # deployment of Messages/AI/email. Never initialize remote side-effect
+        # bindings while importing public content or rendering the candidate.
+        local_worker = {key: worker[key] for key in ("name", "compatibility_date", "compatibility_flags") if key in worker}
+        public_vars = {"HELLOADA_TENANT_ID", "HELLOADA_SITE_NAME", "HELLOADA_TEMPLATE_SCHEMA",
+                       "HELLOADA_PAYLOAD_ADMIN_VERSION", "HELLOADA_PAYLOAD_CORE_VERSION",
+                       "HELLOADA_PAYLOAD_SCHEMA_REVISION", "HELLOADA_CONTENT_CONTRACT_VERSION",
+                       "HELLOADA_SCHEMA_IDENTITY", "HELLOADA_PAYLOAD_MIGRATION_HEAD", "HELLOADA_SITE_AGENT_VERSION"}
+        local_worker.update({"main": ".open-next/worker.js", "assets": {"directory": ".open-next/assets", "binding": "ASSETS"},
+                             "d1_databases": [{key: value for key, value in item.items() if key != "remote"} for item in databases],
+                             "r2_buckets": [{key: value for key, value in item.items() if key != "remote"} for item in buckets],
+                             "vars": {key: value for key, value in (worker.get("vars") or {}).items()
+                                      if key in public_vars or key.startswith("NEXT_PUBLIC_")}})
+        worker_path.write_text(json.dumps(local_worker, indent=2) + "\n", encoding="utf-8")
+        base_path = f"/api/helloada/source/preview/{job['id']}/runtime"
+        original.rename(retained)
+        original.write_text(
+            "import original from './.helloada-source-preview.next.mjs'\n"
+            "export default async (phase, context) => {\n"
+            " const config = typeof original === 'function' ? await original(phase, context) : original\n"
+            f" return {{ ...config, basePath: {json.dumps(base_path)}, assetPrefix: {json.dumps(base_path)} }}\n"
+            "}\n", encoding="utf-8",
+        )
+        job["runtime_base_path"] = base_path
+        public = worktree / "public"
+        job["public_asset_roots"] = [f"/{item.name}" + ("/" if item.is_dir() else "")
+                                    for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
+
+    @staticmethod
+    def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any]) -> bytes:
+        base = str(job.get("runtime_base_path") or "")
+        roots = list(job.get("public_asset_roots") or [])
+        if not base or not roots or not any(kind in content_type for kind in ("text/html", "text/css", "javascript")):
+            return body
+        # Root-relative public URLs occur in SSR HTML, its RSC payload and the
+        # matching client bundles. Rewrite all three so hydration sees the same
+        # props; Next's own chunks/router use its explicit basePath above.
+        pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
+        return pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8")).encode("utf-8")
 
     @staticmethod
     def _preview_root_is_ready(status: int) -> bool:
@@ -702,6 +800,7 @@ class SourceDeploymentService:
                 self._stop_runtime(other_id)
 
         port = self._preview_port()
+        base_path = str(job.get("runtime_base_path") or "")
         command = [
             "npx",
             "--no-install",
@@ -737,7 +836,7 @@ class SourceDeploymentService:
                 self._stop_runtime(str(job["id"]))
                 raise SourceDeploymentError("compiled preview process exited before it was ready")
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}{base_path}/", timeout=3) as response:
                     if self._preview_root_is_ready(int(response.status)):
                         ready = True
                         break
@@ -754,7 +853,7 @@ class SourceDeploymentService:
             self._stop_runtime(str(job["id"]))
             raise SourceDeploymentError("compiled preview did not become ready in time")
         revision = self._verify_public_revision(
-            f"http://127.0.0.1:{port}",
+            f"http://127.0.0.1:{port}{base_path}",
             str(expected_commit or job.get("commit") or ""),
             label="compiled preview",
         )
@@ -768,18 +867,71 @@ class SourceDeploymentService:
             "revision_verification": revision,
         }
 
+    def _content_inventory(self, checkout: Path, worktree: Path, timeout: int,
+                           preview_secret: str) -> dict[str, Any]:
+        """Record the shared content-authority inventory without hiding evidence.
+
+        The design quality gates turn these violations into Ada's repair brief;
+        the preview still renders so browser behavior can be observed.
+        """
+        try:
+            result = subprocess.run(
+                self._inventory_command(checkout, worktree), cwd=str(worktree),
+                env=self._preview_env(production=True, payload_secret=preview_secret),
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"status": "incomplete", "error": str(exc)[:400]}
+        try:
+            report = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            return {"status": "incomplete", "error": (result.stderr or "")[-600:]}
+        if not isinstance(report, Mapping):
+            return {"status": "incomplete", "error": "source inventory returned an invalid report"}
+        return dict(report)
+
+    def _seed_canonical_preview(self, worktree: Path, job: dict[str, Any], npm: str,
+                                timeout: int, preview_secret: str) -> list[dict[str, Any]]:
+        from .compiled_preview_content import canonical_preview_snapshot
+
+        snapshot = canonical_preview_snapshot(self.payload_gateway, list(job.get("payload_effects") or []))
+        job["preview_content_hash"] = hashlib.sha256(json.dumps(snapshot, sort_keys=True,
+            separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+        fd, name = tempfile.mkstemp(prefix="canonical-content-", suffix=".json", dir=self._preview_home / "tmp")
+        path = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(snapshot, stream)
+            checks = [self._check([npm, "run", "payload", "--", "migrate"], worktree,
+                       "preview_schema", timeout, preview_secret=preview_secret, local_payload=True)]
+            script = Path(__file__).with_name("seed_compiled_preview.mjs")
+            checks.append(self._check([str(Path(str(self.settings["node_path"])) / "node"), "--import", "tsx",
+                          str(script), str(worktree), str(path)], worktree, "preview_content", timeout,
+                          preview_secret=preview_secret, local_payload=True))
+            return checks
+        finally:
+            path.unlink(missing_ok=True)
+
     def _build(self, job: dict[str, Any], branch: str, commit: str, mode: str) -> dict[str, Any]:
         if mode != _COMPILED_PREVIEW:
             raise SourceDeploymentError("production builds and uploads are owned by the central VPS release pipeline")
         checkout = self._local_checkout()
-        worktree, local_head = self._worktree(checkout, branch, commit)
+        run_id = str(job.get("design_run_id") or "")
+        worktree, local_head = (self._worktree(checkout, branch, commit, retained=True)
+                               if run_id else self._worktree(checkout, branch, commit))
         timeout = int(self.settings.get("build_timeout_seconds") or 1_800)
         checks: list[dict[str, Any]] = []
         keep_worktree = False
         preview_secret = secrets.token_urlsafe(48)
         try:
+            checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id"),
+                          **({"design_run_id": run_id} if run_id else {})))
             self._write_revision_marker(worktree, local_head)
-            checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id")))
+            self._prepare_preview_mount(worktree, job)
+            local_secrets = worktree / ".dev.vars"
+            fd = os.open(local_secrets, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write("PAYLOAD_SECRET=" + json.dumps(preview_secret) + "\n")
             npm = self._verify_toolchain(worktree)
             from .release_dependencies import prepare_release_dependencies
 
@@ -802,11 +954,29 @@ class SourceDeploymentService:
             ))
             if len(assets) != 2:
                 raise SourceDeploymentError("candidate source did not resolve the two locked shared packages")
-            checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True, preview_secret=preview_secret))
+            if self.payload_gateway is not None:
+                checks.extend(self._seed_canonical_preview(worktree, job, npm, timeout, preview_secret))
+            if not run_id:
+                # Design candidates are checked by the design quality gates,
+                # which reuse this same inventory and keep browser evidence for
+                # Ada's bounded repair. Source-review previews keep the hard
+                # pre-build gate.
+                checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True, preview_secret=preview_secret))
+            else:
+                job["content_authority"] = self._content_inventory(checkout, worktree, timeout, preview_secret)
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
             checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout, preview_secret=preview_secret))
-            checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout, production=True, preview_secret=preview_secret))
+            # OpenNext invokes the managed Next build itself. A separate build
+            # here compiles the same candidate twice before the owner sees it.
             checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
+
+            if run_id:
+                store = getattr(self.design_service, "output_artifact_store", None)
+                if store is None:
+                    raise SourceDeploymentError("compiled candidate requires its existing immutable output store")
+                artifact = dict(store.publish(worktree / ".open-next", profile="next_react", candidate_sha=local_head))
+                artifact.pop("path", None)
+                job["output_artifact"] = {"status": "passed", "mode": "compiled_runtime", **artifact}
 
             runtime = self._start_runtime(job, worktree, local_head, preview_secret=preview_secret)
             keep_worktree = True
@@ -815,6 +985,8 @@ class SourceDeploymentService:
                 "branch": branch,
                 "commit": local_head,
                 "checks": checks,
+                **({"content_authority": job["content_authority"]} if job.get("content_authority") else {}),
+                **({"output_artifact": job["output_artifact"]} if job.get("output_artifact") else {}),
                 **runtime,
             }
             job.update(result)
@@ -956,10 +1128,12 @@ class SourceDeploymentService:
             job.update({"status": "running", "phase": "building", "updated_at": _now()})
             self._persist()
         try:
+            run_id = str(job.get("design_run_id") or "")
             commit = requested_commit or self._head(branch)
             if requested_commit and not re.fullmatch(r"[0-9a-f]{40}", requested_commit):
                 raise SourceDeploymentError("requested source commit is invalid")
-            current_head = self._head(branch)
+            current_head = (str(self._retained_design_run(run_id, commit)["candidate_sha"])
+                            if run_id else self._head(branch))
             if current_head != commit:
                 raise SourceDeploymentError("deployment branch advanced before its build started; rescan and retry")
             result = self._build(job, branch, commit, mode)
@@ -1010,7 +1184,18 @@ class SourceDeploymentService:
             raise SourceDeploymentError("production release must reference the official main branch")
         draft_id = body.get("draft_id")
         publish = _mapping(body.get("publish"))
-        payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
+        design_run_id = str(body.get("design_run_id") or "")
+        if design_run_id:
+            if mode != _COMPILED_PREVIEW or draft_id is not None:
+                raise SourceDeploymentError("retained design validation is a private preview, not an owner approval")
+            run = self._retained_design_run(design_run_id, requested_commit or "")
+            planning = _mapping(run.get("planning_json"))
+            from ..core.payload_receipts import payload_revision_manifest
+            payload_effects, payload_revision_set_hash = payload_revision_manifest(planning.get("payload_effects") or [])
+            if not payload_effects or payload_revision_set_hash != planning.get("payload_revision_set_hash"):
+                raise SourceDeploymentError("retained design has no exact canonical Payload revision receipts")
+        else:
+            payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
         with self._lock:
             for existing in self._jobs.values():
                 if not isinstance(existing, Mapping):
@@ -1020,6 +1205,7 @@ class SourceDeploymentService:
                     and existing.get("commit") == (requested_commit or existing.get("commit"))
                     and existing.get("mode") == mode
                     and existing.get("draft_id") == draft_id
+                    and existing.get("design_run_id", "") == design_run_id
                     and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
                 ):
                     return dict(existing)
@@ -1036,6 +1222,8 @@ class SourceDeploymentService:
         }
         if draft_id is not None:
             job["draft_id"] = draft_id
+        if design_run_id:
+            job["design_run_id"] = design_run_id
         if payload_effects:
             job["payload_effects"] = payload_effects
             job["payload_revision_set_hash"] = payload_revision_set_hash
@@ -1081,11 +1269,23 @@ class SourceDeploymentService:
             self._jobs[job_id] = job
             self._persist()
         try:
-            self._executor.submit(self._run_job, job_id, branch, requested_commit, mode)
+            self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, requested_commit, mode)
         except Exception as exc:
             self._fail_job(job_id, str(exc))
             raise SourceDeploymentError("source deployment could not be dispatched") from exc
         return self.status(job_id)
+
+    def ensure_design_preview(self, run: Mapping[str, Any]) -> dict[str, Any]:
+        """Build once in the existing source-preview lane before browser gates."""
+        job = self.start({"design_run_id": run["run_id"], "commit": run["candidate_sha"],
+                          "branch": self.site.get("preview_branch") or "preview", "mode": _COMPILED_PREVIEW})
+        future = self._futures.get(str(job["id"]))
+        if future is not None:
+            future.result(timeout=int(self.settings.get("build_timeout_seconds") or 1800) + 300)
+        result = self.status(str(job["id"]))
+        if result.get("status") != "ready" or result.get("commit") != run["candidate_sha"]:
+            raise SourceDeploymentError(str(result.get("error") or "exact candidate preview did not become ready"))
+        return result
 
     def status(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -1190,7 +1390,7 @@ class SourceDeploymentService:
         clean_path = str(path or "").lstrip("/")
         if ".." in Path(clean_path).parts:
             raise SourceDeploymentError("compiled preview path is invalid")
-        target = f"http://127.0.0.1:{port}/{clean_path}"
+        target = f"http://127.0.0.1:{port}{job.get('runtime_base_path') or ''}/{clean_path}"
         if query:
             target = f"{target}?{query}"
         request_headers = {
@@ -1204,7 +1404,7 @@ class SourceDeploymentService:
             with response:
                 return {
                     "status": int(response.status),
-                    "body": response.read(),
+                    "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job),
                     "content_type": response.headers.get("Content-Type", "application/octet-stream"),
                     "commit": str(job.get("commit") or ""),
                 }

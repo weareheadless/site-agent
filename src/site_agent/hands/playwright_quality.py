@@ -1112,6 +1112,17 @@ class PlaywrightQualityAdapter:
         self.owner_surface_url_factory = owner_surface_url_factory
         self.owner_surface_origin = str(owner_surface_origin or "").strip().rstrip("/")
         self._output_artifact: dict[str, Any] = {}
+        self.runtime_url = ""
+        self.runtime_loader: Callable[..., Mapping[str, Any]] | None = None
+
+    def bind_runtime(self, url: str, identity: Mapping[str, Any], *, loader=None) -> None:
+        """Inspect the exact existing compiled source-preview runtime."""
+        parsed = urlsplit(url)
+        if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or not parsed.port:
+            raise PlaywrightQualityError("compiled quality runtime must be the host's isolated loopback preview")
+        self.runtime_url = url.rstrip("/")
+        self.runtime_loader = loader
+        self.bind_output_artifact(identity)
 
     def bind_output_artifact(self, artifact: Mapping[str, Any]) -> None:
         """Bind the host-retained output identity before browser inspection."""
@@ -1166,14 +1177,15 @@ class PlaywrightQualityAdapter:
 
         output = Path(output_dir).expanduser().resolve()
         owner_surface = self.owner_surface_url_factory is not None
-        routes = list(self.routes or ()) if owner_surface else _routes(output)
+        remote_runtime = bool(self.runtime_url)
+        routes = list(self.routes or ("index.html",)) if owner_surface or remote_runtime else _routes(output)
         if self.routes is not None:
             routes = []
             for route_name in self.routes:
                 relative = str(route_name or "").replace("\\", "/").lstrip("/")
                 target = (output / relative).resolve()
                 invalid = not relative or any(part in {"", ".", ".."} for part in relative.split("/")) or Path(relative).suffix.lower() not in {".html", ".htm"}
-                if not owner_surface:
+                if not owner_surface and not remote_runtime:
                     invalid = invalid or output not in target.parents or target.is_symlink() or not target.is_file()
                 if invalid:
                     raise PlaywrightQualityError(f"browser route is not a safe HTML artifact: {route_name}")
@@ -1200,7 +1212,7 @@ class PlaywrightQualityAdapter:
         external_requests: list[dict[str, str]] = []
         route_results: list[dict[str, Any]] = []
 
-        artifact_server = nullcontext(None) if owner_surface else _ArtifactServer(output)
+        artifact_server = nullcontext(None) if owner_surface or remote_runtime else _ArtifactServer(output)
         with artifact_server as server, sync_playwright() as playwright:
             try:
                 browser = playwright.chromium.launch(headless=True, env=self.env)
@@ -1218,10 +1230,21 @@ class PlaywrightQualityAdapter:
                 allowed_origins = [self.owner_surface_origin] if self.owner_surface_origin else []
                 if server is not None:
                     allowed_origins.append(server.origin)
+                if remote_runtime:
+                    parsed_runtime = urlsplit(self.runtime_url)
+                    allowed_origins.append(f"{parsed_runtime.scheme}://{parsed_runtime.netloc}")
 
                 def route_handler(route: Any) -> None:
                     request_url = route.request.url
                     if _is_allowed_url(request_url, allowed_origins):
+                        if remote_runtime and self.runtime_loader is not None:
+                            parsed_request = urlsplit(request_url)
+                            mount = urlsplit(self.runtime_url).path.rstrip("/") + "/"
+                            if parsed_request.path.startswith(mount) and route.request.method == "GET":
+                                response = self.runtime_loader(parsed_request.path[len(mount):], parsed_request.query)
+                                route.fulfill(status=int(response["status"]), body=response["body"],
+                                              headers={"Content-Type": response["content_type"]})
+                                return
                         route.continue_()
                         return
                     external_requests.append({"url": request_url[:500], "error": "external request blocked"})
@@ -1242,7 +1265,14 @@ class PlaywrightQualityAdapter:
                                 failed_requests.append({"url": response.url[:500], "error": f"HTTP {response.status}"})
 
                     def on_request_failed(request: Any) -> None:
-                        item = {"url": request.url[:500], "error": str(request.failure or "request failed")[:300]}
+                        failure = str(request.failure or "request failed")[:300]
+                        # Next prefetches and aborts RSC requests routinely when a
+                        # page settles or the probe navigates. An aborted
+                        # prefetch never returned a broken response, so it is not
+                        # a failed asset; a real 4xx/5xx still reports above.
+                        if "ERR_ABORTED" in failure and "_rsc=" in request.url:
+                            return
+                        item = {"url": request.url[:500], "error": failure}
                         if _is_allowed_url(request.url, allowed_origins):
                             if not any(existing["url"] == item["url"] for existing in failed_requests):
                                 failed_requests.append(item)
@@ -1257,7 +1287,8 @@ class PlaywrightQualityAdapter:
                     page_url = (
                         self.owner_surface_url_factory(route_name)
                         if self.owner_surface_url_factory is not None
-                        else f"{server.origin}/{route_name}"
+                        else (f"{self.runtime_url}/" + ("" if route_name == "index.html" else route_name.removesuffix(".html")))
+                        if remote_runtime else f"{server.origin}/{route_name}"
                     )
                     parsed_page_url = urlsplit(page_url)
                     if parsed_page_url.scheme and parsed_page_url.netloc:
@@ -1267,7 +1298,7 @@ class PlaywrightQualityAdapter:
                     result: dict[str, Any] = {
                         "route": route_name,
                         "url": urlsplit(page_url).path or f"/{route_name}",
-                        "review_surface": "owner_iframe" if owner_surface else "artifact_server",
+                        "review_surface": "owner_iframe" if owner_surface else "compiled_runtime" if remote_runtime else "artifact_server",
                         "artifact_identity": dict(self._output_artifact),
                     }
                     motion_results: dict[str, Any] = {}

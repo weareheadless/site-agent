@@ -205,6 +205,59 @@ def test_compiled_preview_does_not_report_a_404_homepage_as_ready(tmp_path):
         service.close()
 
 
+def test_retained_design_can_supply_preview_identity_before_owner_review(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    run = {"run_id": "retained", "status": "validating", "mode": "production_candidate",
+           "publishable": True, "base_sha": "a" * 40, "candidate_sha": "b" * 40,
+           "candidate_ref": "refs/ada-design/retained"}
+    monkeypatch.setattr(memory, "get_design_run", lambda identifier: run if identifier == "retained" else None)
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path)}}, memory=memory,
+    )
+    try:
+        assert service._retained_design_run("retained", "b" * 40) == run
+        with pytest.raises(source_deployment.SourceDeploymentError, match="exact candidate"):
+            service._retained_design_run("retained", "c" * 40)
+        run["publishable"] = False
+        with pytest.raises(source_deployment.SourceDeploymentError, match="managed candidate"):
+            service._retained_design_run("retained", "b" * 40)
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(tmp_path):
+    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
+    (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",
+        "d1_databases": [{"binding": "D1", "database_id": "local"}],
+        "r2_buckets": [{"binding": "R2", "bucket_name": "local"}],
+        "ai": {"binding": "AI"}, "send_email": [{"name": "EMAIL"}],
+    }))
+    (tmp_path / "public/assets").mkdir(parents=True)
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        job = {"id": "6782629d-412a-425b-99f1-1c19c8a5efbf"}
+        service._prepare_preview_mount(tmp_path, job)
+        mount = job["runtime_base_path"]
+        local = json.loads((tmp_path / "wrangler.jsonc").read_text())
+        assert local["main"] == ".open-next/worker.js"
+        assert "ai" not in local and "send_email" not in local
+        assert 'basePath: ' + json.dumps(mount) in (tmp_path / "next.config.mjs").read_text()
+        assert (tmp_path / ".helloada-source-preview.next.mjs").read_text() == "export default { reactStrictMode: true }\n"
+        samples = [
+            (b'<img src="/assets/owner.webp">', "text/html", f'<img src="{mount}/assets/owner.webp">'),
+            (b'const src="/assets/owner.webp";', "application/javascript", f'const src="{mount}/assets/owner.webp";'),
+            (b'background:url(/assets/owner.webp)', "text/css", f'background:url({mount}/assets/owner.webp)'),
+            (b'{\\"src\\":\\"/assets/owner.webp\\"}', "text/html", '{\\"src\\":\\"' + mount + '/assets/owner.webp\\"}'),
+        ]
+        for body, content_type, expected in samples:
+            assert service._rewrite_runtime_assets(body, content_type, job).decode() == expected
+        external = b'<img src="https://example.com/assets/owner.webp">'
+        assert service._rewrite_runtime_assets(external, "text/html", job) == external
+    finally:
+        service.close()
+
+
 def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
     node_bin = tmp_path / "node-bin"
     node_bin.mkdir()

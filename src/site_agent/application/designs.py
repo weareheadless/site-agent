@@ -81,7 +81,7 @@ def owner_review_requirements_met(run: Mapping[str, Any]) -> bool:
 
     Historical rows without an artifact requirement retain their old read-only
     compatibility behavior. Every current host-composed candidate must prove
-    the immutable output, React source, GSAP usage, build, browser, and locked
+    the immutable output, React source, build, browser, and locked
     experience gates before either review surface can expose it as ready.
     """
     if not str(run.get("candidate_sha") or "").strip():
@@ -120,7 +120,7 @@ def owner_review_requirements_met(run: Mapping[str, Any]) -> bool:
     if any(gates.get(name) != "passed" for name in _OWNER_REQUIRED_GATES):
         return False
     native_source = evidence.get("native_source") if isinstance(evidence.get("native_source"), Mapping) else {}
-    if not native_source.get("react_source_files") or not native_source.get("gsap_usage_files"):
+    if not native_source.get("react_source_files"):
         return False
     return True
 
@@ -1439,6 +1439,11 @@ class DesignService:
                     prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *NEXT_REACT_PROFILE.prohibited_paths))),
                     approved_capabilities=tuple(approved.values()),
                     build_timeout_seconds=900,
+                    # Payload remains the only content authority: a managed
+                    # candidate must bind visible copy and business images, not
+                    # hardcode them beside the CMS. This is the same host-owned
+                    # inventory every customer source change already uses.
+                    react_source_required=True,
                 )
             return policy
         except (TypeError, ValueError) as exc:
@@ -2801,6 +2806,9 @@ class DesignService:
             # but never widen the immutable path boundary selected at build
             # planning. Keep source ownership identical at build and review.
             effective_policy = replace(effective_policy, allowed_patterns=target_paths)
+            if (run.get("publishable") and getattr(self, "source_preview", None) is not None
+                    and (self.config.get("site") or {}).get("adapter") == "payload_gateway"):
+                effective_policy = replace(effective_policy, browser_required=True)
             build_runner = None
             if self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name:
                 # Next/React output is generated rather than committed.  Run
@@ -2811,6 +2819,25 @@ class DesignService:
 
                 def build_runner(workspace: Path):
                     from ..hands.site_build import configured_build_environment
+                    source_preview = getattr(self, "source_preview", None)
+                    if (run.get("publishable") and source_preview is not None
+                            and (self.config.get("site") or {}).get("adapter") == "payload_gateway"):
+                        preview = source_preview.ensure_design_preview(run)
+                        artifact = preview.get("output_artifact") or {}
+                        if artifact.get("candidate_sha") != run["candidate_sha"] or not artifact.get("tree_hash"):
+                            raise DesignServiceError("compiled preview has no retained exact output identity")
+                        self.memory.update_design_run(run_id, output_artifact_id=artifact["artifact_id"],
+                                                      output_tree_hash=artifact["tree_hash"])
+                        binder = getattr(browser, "bind_runtime", None)
+                        if not callable(binder):
+                            raise DesignServiceError("server-rendered candidate requires its runtime browser adapter")
+                        binder(f"http://127.0.0.1:{int(preview['runtime_port'])}{preview.get('runtime_base_path') or ''}", {
+                            **artifact, "source_preview_job_id": preview["id"],
+                        }, loader=lambda path, query: source_preview.runtime(str(preview["id"]), path, query))
+                        return {"ok": True, "status": "passed", "checks": preview.get("checks") or [],
+                                "source_preview_job_id": preview["id"], "candidate_sha": run["candidate_sha"],
+                                "content_authority": preview.get("content_authority") or {},
+                                "output_artifact": artifact}
                     candidate_env = build_env
                     if run.get("publishable") and (self.config.get("site") or {}).get("adapter") == "payload_gateway":
                         candidate_env = configured_build_environment(

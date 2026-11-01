@@ -762,6 +762,8 @@ function ReviewWorkspace() {
   const [adaUnavailable, setAdaUnavailable] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<PreviewUiStatus>('idle')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
+  const [sourceReview, setSourceReview] = useState<{ draftId: number; sha: string; url: string }>()
+  const sourceReviewIdentityRef = useRef('')
   const [message, setMessage] = useState('')
   const preparedAsk = searchParams.get('ask')
   const selectedGrowthTask = searchParams.get('growth_task')
@@ -879,16 +881,19 @@ function ReviewWorkspace() {
   const canEditPage = Boolean(
     websitePresent
       && adaPhase === 'workspace'
-      && workspace,
+      && workspace && !sourceReview,
   )
 
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
-    const baseUrl = `${window.location.origin}${site.routes.preview}/${path}`
+    if (sourceReview && !sourceReview.url) return 'about:blank'
+    const baseUrl = sourceReview
+      ? `${window.location.origin}${sourceReview.url}${path}`
+      : `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [previewRevision, selectedRoute, site.routes.preview])
+  }, [previewRevision, selectedRoute, site.routes.preview, sourceReview])
 
   const handlePreviewLoad = useCallback(() => {
     if (previewPlan?.requires_build) {
@@ -1043,16 +1048,20 @@ function ReviewWorkspace() {
     try {
       const response = await fetchHelloAda('/api/helloada/drafts?status=pending', { cache: 'no-store' })
       const body = (await response.json()) as {
-        drafts?: Array<{ kind?: string; meta?: { preview?: PreviewPlan; head_sha?: string } }>
+        drafts?: Array<{ id: number; kind?: string; meta?: { preview?: PreviewPlan; head_sha?: string; candidate_sha?: string } }>
       }
       if (!response.ok) return
-      const draft = (body.drafts || []).find((item) => item.kind === 'merge')
-      const plan = draft?.meta?.preview
+      const draft = (body.drafts || []).find((item) => item.kind === 'design' || item.kind === 'merge')
+      const plan = draft?.meta?.preview || (draft?.kind === 'design' ? { mode: 'compile' as const, requires_build: true } : undefined)
       if (!plan) {
         setPreviewPlan(undefined)
+        setSourceReview(undefined)
         return
       }
-      const headSha = draft?.meta?.head_sha || plan.head_sha || ''
+      const headSha = draft?.meta?.candidate_sha || draft?.meta?.head_sha || plan.head_sha || ''
+      if (draft?.kind === 'design') setSourceReview((current) => current?.draftId === draft.id && current.sha === headSha
+        ? current : { draftId: draft.id, sha: headSha, url: '' })
+      else setSourceReview(undefined)
       setPreviewPlan({ ...plan, head_sha: headSha })
       if (!plan.requires_build) return
 
@@ -1063,9 +1072,16 @@ function ReviewWorkspace() {
         commit?: string
         error?: string
       }
-      const sameRevision = !headSha || !latest.commit || latest.commit === headSha
+      const sameRevision = draft?.kind === 'design'
+        ? Boolean(headSha && latest.commit === headSha)
+        : !headSha || !latest.commit || latest.commit === headSha
       if (latestResponse.ok && sameRevision && latest.status === 'ready' && latest.id) {
+        if (draft?.kind === 'design') setSourceReview({ draftId: draft.id, sha: headSha,
+          url: `/api/helloada/source/preview/${encodeURIComponent(latest.id)}/runtime/` })
         setPreviewPlan({ ...plan, head_sha: headSha, status: 'ready', requires_build: false })
+        const identity = `${draft?.id || ''}:${headSha}:${latest.id}`
+        if (sourceReviewIdentityRef.current === identity) return
+        sourceReviewIdentityRef.current = identity
         setPreviewStatus('refreshing')
         setPreviewRevision((current) => current + 1)
         return
@@ -1073,6 +1089,12 @@ function ReviewWorkspace() {
       if (latestResponse.ok && sameRevision && latest.status === 'failed') {
         setPreviewStatus('error')
         setError(latest.error || t('workspace.previewError'))
+        return
+      }
+      if (draft?.kind === 'design') {
+        // The durable design worker owns this exact preview. Never substitute
+        // the published site or queue a branch-head build from the browser.
+        setPreviewStatus('build-required')
         return
       }
 
@@ -1502,7 +1524,7 @@ function ReviewWorkspace() {
       void loadPreviewPlan()
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [loadPreviewPlan])
+  }, [loadPreviewPlan, designBuild?.draft_available, designBuild?.run_id])
 
   useEffect(() => {
     if (!previewPlan?.requires_build) return
@@ -1792,7 +1814,7 @@ function ReviewWorkspace() {
     ? `${selectedDocument.collection}:${selectedDocument.id}`
     : undefined
   const hasDraft = Boolean(
-    selectedDocumentKey
+    sourceReview || selectedDocumentKey
       && (selectedDocument?.status === 'draft' || draftUpdatedKey === selectedDocumentKey),
   )
 
@@ -1956,12 +1978,24 @@ function ReviewWorkspace() {
   }, [closeFieldEditor, loadContentFields, loadWorkspace, pendingSaving, selectedDocument, selectedDocumentKey, selectedRoute, t])
 
   const publishDraft = useCallback(async () => {
-    if (!selectedDocument || !selectedDocument.draftHash || !hasDraft || pendingChangeCount || publishing) return
+    if (!hasDraft || pendingChangeCount || publishing
+        || (sourceReview ? !sourceReview.url : !selectedDocument?.draftHash)) return
     setPublishing(true)
     setError('')
     setFieldEditorError('')
 
     try {
+      if (sourceReview) {
+        const response = await fetchHelloAda(`/api/helloada/drafts/${sourceReview.draftId}/approve`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+        })
+        const body = await response.json() as { message?: string }
+        if (!response.ok) throw new Error(body.message || t('error.draftPublish'))
+        setPublishNotice(t('history.publishQueued'))
+        await loadWorkspace(true)
+        return
+      }
+      if (!selectedDocument) return
       const response = await fetchHelloAda('/api/helloada/publish', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1991,7 +2025,7 @@ function ReviewWorkspace() {
     } finally {
       setPublishing(false)
     }
-  }, [closeFieldEditor, hasDraft, loadContentFields, loadWorkspace, pendingChangeCount, publishing, selectedDocument, selectedRoute, t])
+  }, [closeFieldEditor, hasDraft, loadContentFields, loadWorkspace, pendingChangeCount, publishing, selectedDocument, selectedRoute, sourceReview, t])
 
   const syncPreviewEditTargets = useCallback(() => {
     const frame = previewFrameRef.current
