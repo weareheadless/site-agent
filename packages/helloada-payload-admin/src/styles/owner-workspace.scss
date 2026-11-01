@@ -128,6 +128,9 @@
   .helloada-build-stall { display: grid; gap: 10px; justify-items: start; margin-top: 18px; padding: 14px 16px; border: 1px solid var(--helloada-soft-line); border-radius: 12px; background: color-mix(in srgb, var(--helloada-ink) 4%, transparent); }
   .helloada-build-stall p { margin: 0; }
   .helloada-build-surface button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--helloada-ink); color: var(--helloada-panel); }
+  .helloada-build-candidate { display: grid; gap: 10px; margin: 16px 0 20px; }
+  .helloada-build-candidate-note { margin: 0; padding: 10px 12px; border: 1px solid var(--helloada-soft-line); border-radius: 10px; font-size: .82rem; line-height: 1.45; background: color-mix(in srgb, var(--helloada-ink) 4%, transparent); }
+  .helloada-build-candidate .helloada-preview-frame-shell { min-height: 320px; height: clamp(320px, 46vh, 520px); border-radius: 12px; overflow: hidden; }
   .helloada-owner-workspace .helloada-review-window { grid-column: 2; grid-row: 1; border-radius: 0 19px 19px 0; }
   .helloada-owner-workspace .helloada-ada-panel { @include surfaces.chrome; color: var(--helloada-ink); grid-column: 1; grid-row: 1; position: relative; top: auto; border-right: 1px solid var(--helloada-soft-line); border-radius: 19px 0 0 19px; background: var(--helloada-review); }
   .helloada-owner-workspace .helloada-ada-panel::before { display: none; }

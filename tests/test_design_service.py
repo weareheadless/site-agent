@@ -104,6 +104,41 @@ def test_owner_review_accepts_observed_css_behavior_without_mandating_gsap():
     assert not owner_review_requirements_met(run)
 
 
+def test_owner_review_accepts_a_policy_skipped_native_source_scan():
+    """#571: a passing candidate must not be unreviewable because a gate was skipped.
+
+    ``native_source`` only runs when a tenant opts into the extra source scan,
+    yet it sat in the mandatory gate list and its inventory was required
+    unconditionally. A fully passing candidate could therefore never reach
+    owner review.
+    """
+    artifact = {"status": "passed", "artifact_id": "site-output-" + "b" * 64, "tree_hash": "b" * 64}
+    gates = {name: "passed" for name in ("build", "output", "browser", "motion",
+                                        "composition", "experience_journey")}
+    gates["native_source"] = "skipped"
+    run = {"candidate_sha": "a" * 40, "status": "ready_for_review", "artifact_required": True,
+           "output_artifact_id": artifact["artifact_id"], "output_tree_hash": artifact["tree_hash"],
+           "quality_report_json": {"state": "passed", "gates": gates, "evidence": {
+               "output_artifact": artifact,
+               "native_source": {"status": "skipped", "reason": "native_source_not_required"},
+           }}}
+
+    assert owner_review_requirements_met(run)
+
+    # A gate that actually ran still has to pass, and still needs its evidence.
+    gates["native_source"] = "failed"
+    assert not owner_review_requirements_met(run)
+    gates["native_source"] = "passed"
+    assert not owner_review_requirements_met(run)
+    run["quality_report_json"]["evidence"]["native_source"] = {"status": "passed", "react_source_files": ["page.tsx"]}
+    assert owner_review_requirements_met(run)
+    # Hard gates stay mandatory.
+    for gate in ("build", "output", "browser", "motion", "composition", "experience_journey"):
+        broken = {**gates, gate: "skipped"}
+        assert not owner_review_requirements_met({**run, "quality_report_json": {
+            **run["quality_report_json"], "gates": broken}})
+
+
 def _intake() -> SiteIntake:
     return SiteIntake.from_dict({
         "schema_version": 1,

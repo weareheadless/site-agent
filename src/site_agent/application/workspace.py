@@ -1978,8 +1978,14 @@ class ChatService:
                 order = ("queued", "planning", "generating", "building", "validating", "rendering")
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
                 terminal = run.get("status") in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                if not terminal or run.get("status") in {"ready_for_review", "failed"}:
-                    failed = run.get("status") == "failed"
+                # A retained candidate stays visible while its checks are still
+                # running or after they stopped. Hiding the surface entirely
+                # would leave the owner with nothing to look at even though the
+                # exact website already exists.
+                if not terminal or run.get("status") in {
+                    "ready_for_review", "failed", "needs_repair", "incomplete",
+                }:
+                    failed = run.get("status") in {"failed", "needs_repair", "incomplete"}
                     ready = run.get("status") == "ready_for_review"
                     stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
                     stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
@@ -2012,6 +2018,11 @@ class ChatService:
                     build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 600)
                     if failed:
                         build["error"] = str(run.get("error") or "The design build needs attention.")
+                    if run.get("status") in {"needs_repair", "incomplete"}:
+                        build["unverified"] = True
+                    preview = self._candidate_preview(tenant, run)
+                    if preview:
+                        build["preview"] = preview
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
@@ -2033,6 +2044,40 @@ class ChatService:
                 "updated_ts": active_job.get("updated_ts"),
             } if active_job else None,
             "build": build,
+        }
+
+    @staticmethod
+    def _candidate_preview(tenant: Tenant | None, run: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose the exact compiled candidate that already exists for this run.
+
+        The owner should see what Ada produced as soon as it is compiled, not
+        only after every gate finishes. The preview stays bound to the run's
+        immutable candidate SHA, is marked unapproved until the run reaches
+        owner review, and grants nothing: publication still requires the exact
+        validated review draft and an explicit owner approval.
+        """
+        deployer = tenant.context.get("source_deployment") if tenant is not None else None
+        lookup = getattr(deployer, "preview_for_candidate", None)
+        if not callable(lookup):
+            return {}
+        candidate_sha = str(run.get("candidate_sha") or "").strip().lower()
+        run_id = str(run.get("run_id") or "").strip()
+        try:
+            job = lookup(run_id, candidate_sha)
+        except Exception:  # noqa: BLE001 - a preview lookup never blocks the workspace
+            return {}
+        if not isinstance(job, Mapping) or not job.get("id"):
+            return {}
+        reviewable = str(run.get("status") or "") == "ready_for_review" and bool(run.get("draft_id"))
+        revision = (job.get("revision_verification") or {}).get("commit") or ""
+        if str(revision or "").lower() != candidate_sha:
+            # Only ever expose a preview that serves this exact candidate.
+            return {}
+        return {
+            "state": "reviewable" if reviewable else "in_progress",
+            "job_id": str(job["id"]),
+            "candidate_sha": candidate_sha,
+            "approved": False,
         }
 
     @staticmethod
