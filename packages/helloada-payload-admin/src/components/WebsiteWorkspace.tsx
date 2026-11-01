@@ -45,19 +45,6 @@ type DesignBuild = {
   last_event_age_seconds?: number | null
   stall_threshold_seconds?: number
   stalled?: boolean
-  /** The candidate exists but its own checks stopped short of owner review. */
-  unverified?: boolean
-  /**
-   * The exact compiled candidate that already exists for this run. It is shown
-   * while the run is still being checked, and grants nothing: publication still
-   * requires the validated review draft and an explicit owner approval.
-   */
-  preview?: {
-    state: 'in_progress' | 'reviewable'
-    job_id: string
-    candidate_sha: string
-    approved: boolean
-  }
 }
 
 const DESIGN_BUILD_STAGES = ['queued', 'planning', 'generating', 'building', 'validating', 'rendering']
@@ -897,30 +884,16 @@ function ReviewWorkspace() {
       && workspace && !sourceReview,
   )
 
-  // The exact candidate Ada already produced, before its review draft exists.
-  const inProgressPreviewUrl = useMemo(() => {
-    const jobId = designBuild?.preview?.job_id
-    if (!jobId || sourceReview) return ''
-    return `/api/helloada/source/preview/${encodeURIComponent(jobId)}/runtime/`
-  }, [designBuild?.preview?.job_id, sourceReview])
-
-  const candidatePreviewSrc = useMemo(() => {
-    if (!inProgressPreviewUrl || typeof window === 'undefined') return ''
-    return `${window.location.origin}${inProgressPreviewUrl}`
-  }, [inProgressPreviewUrl])
-
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
     if (sourceReview && !sourceReview.url) return 'about:blank'
     const baseUrl = sourceReview
       ? `${window.location.origin}${sourceReview.url}${path}`
-      : inProgressPreviewUrl
-        ? `${window.location.origin}${inProgressPreviewUrl}${path}`
-        : `${window.location.origin}${site.routes.preview}/${path}`
+      : `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [inProgressPreviewUrl, previewRevision, selectedRoute, site.routes.preview, sourceReview])
+  }, [previewRevision, selectedRoute, site.routes.preview, sourceReview])
 
   const handlePreviewLoad = useCallback(() => {
     if (previewPlan?.requires_build) {
@@ -2454,21 +2427,6 @@ function ReviewWorkspace() {
           <section className={`helloada-build-surface ${designBuild.state === 'failed' ? 'is-failed' : ''} ${buildStalled ? 'is-stalled' : ''}`} aria-label={t('workspace.buildTitle')}>
             <p className="helloada-eyebrow">{t('workspace.buildEyebrow')}</p>
             <h2>{designBuild.state === 'failed' ? t('workspace.buildFailed') : t('workspace.buildTitle')}</h2>
-            {inProgressPreviewUrl ? (
-              <div className="helloada-build-candidate">
-                <p className="helloada-build-candidate-note" role="status">
-                  {designBuild.unverified ? t('workspace.candidatePreviewUnverifiedNote') : t('workspace.candidatePreviewNote')}
-                </p>
-                <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
-                  <iframe
-                    className="helloada-preview-frame"
-                    title={t('workspace.candidatePreviewTitle')}
-                    src={candidatePreviewSrc}
-                    loading="lazy"
-                  />
-                </div>
-              </div>
-            ) : null}
             {designBuild.state === 'failed' ? <p role="alert">{t('workspace.buildStopped').replace('{stage}', designBuild.stages.find((stage) => stage.key === designBuild.stage)?.label || designBuild.stage)}</p> : <p>{t('workspace.buildProgress').replace('{done}', String(designBuild.stages.filter((stage) => DESIGN_BUILD_STAGES.includes(stage.key) && stage.state === 'done').length))}</p>}
             {designBuild.state !== 'failed' ? <p className="helloada-build-elapsed">{t('workspace.buildElapsedLive').replace('{time}', formatDuration(buildElapsedSeconds))}</p> : null}
             <ol className="helloada-build-stages">
