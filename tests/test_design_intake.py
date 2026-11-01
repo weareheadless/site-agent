@@ -494,6 +494,16 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Test")
     (clone / "index.html").write_text("<html><body>baseline</body></html>")
+    # Recovery now prepares the real composition adapter before dispatch. Keep
+    # the tenant presentation entrypoint that a canonical Payload clone owns;
+    # the fixture still stops at the provider boundary, not a framework build.
+    presentation = clone / "src/components/site/presentation/PagePresentation.tsx"
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text(
+        "export default function PagePresentation({ document, kind, collection }: "
+        "{ document: Record<string, unknown>; kind: string; collection: string }) "
+        "{ return <main>{String(document.title || '')}</main> }\n"
+    )
     git("add", "-A")
     git("commit", "-qm", "tenant baseline")
     remote = tmp_path / "tenant-origin.git"
