@@ -2531,6 +2531,37 @@ def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
     tenant.memory.close()
 
 
+def test_workspace_shows_the_reviewable_parent_instead_of_a_failed_empty_follow_up():
+    """#573: a failed follow-up with no candidate must not hide the real site."""
+    parent = {"run_id": "parent", "status": "ready_for_review",
+              "candidate_sha": "a" * 40, "draft_id": 4}
+    empty_child = {"run_id": "child", "status": "failed", "parent_run_id": "parent",
+                   "candidate_sha": "", "draft_id": None}
+    with_candidate = {"run_id": "child2", "status": "failed", "parent_run_id": "parent",
+                      "candidate_sha": "b" * 40, "draft_id": None}
+
+    class Runs:
+        def __init__(self, runs):
+            self.runs = runs
+
+        def get_design_run(self, run_id):
+            return self.runs.get(run_id)
+
+    runs = Runs({"parent": parent})
+
+    # A follow-up that produced nothing defers to the reviewable parent.
+    assert ChatService._displayed_design_run(runs, empty_child) is parent
+    # A follow-up with its own candidate keeps reporting its own outcome.
+    assert ChatService._displayed_design_run(runs, with_candidate) is with_candidate
+    # The parent itself is returned unchanged.
+    assert ChatService._displayed_design_run(runs, parent) is parent
+    # A parent that is not actually reviewable is not substituted.
+    runs.runs["parent"] = {**parent, "status": "needs_repair"}
+    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
+    runs.runs["parent"] = {**parent, "draft_id": None}
+    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
+
+
 def test_tenant_reload_keeps_the_shared_frontend_toolchain_contract(tmp_path, monkeypatch):
     """Regression for #568: a runtime reload must not drop the pinned toolchain.
 
