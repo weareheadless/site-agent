@@ -19,6 +19,26 @@ def _run_kwargs():
     }
 
 
+def test_intake_status_selects_one_matching_run_before_decoding(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    memory.create_design_run(**_run_kwargs())
+    with memory.conn:
+        memory.conn.execute("UPDATE design_runs SET intake_session_id=?, intake_revision_id=? WHERE run_id=?",
+                            ("intake-one", 68, "design-run-1"))
+    read = []
+    original = memory.get_design_run
+    def get(run_id):
+        read.append(run_id)
+        return original(run_id)
+    monkeypatch.setattr(memory, "get_design_run", get)
+    assert memory.latest_design_run_for_intake("intake-one", 68)["run_id"] == "design-run-1"
+    assert read == ["design-run-1"]
+    assert memory.latest_design_run_for_intake("other-intake", 68) is None
+    assert memory.latest_design_run_for_intake("intake-one", 69) is None
+    assert read == ["design-run-1"]
+    memory.close()
+
+
 def test_design_run_round_trips_events_and_survives_reopen(tmp_path):
     path = tmp_path / "memory.db"
     memory = Memory(path)
