@@ -19,19 +19,10 @@ from .onboarding_report import persist_initial_onboarding_report
 
 
 def repair_child_blocks_new_repair(item: Mapping[str, Any]) -> bool:
-    """Match the service's own retry rule for a refinement child.
+    """Keep the durable job on the service's single refinement-retry rule."""
+    from .designs import refinement_child_is_replaceable
 
-    A child that never reached visual review (no critique) may be replaced after
-    a host validation failure. A stricter duplicate of that rule consumed the
-    single repair slot with a child that never received actionable host evidence.
-    """
-    status = item.get("status")
-    if status in {DesignRunStatus.FAILED.value, DesignRunStatus.CANCELLED.value}:
-        return False
-    if status != DesignRunStatus.NEEDS_REPAIR.value:
-        return True
-    report = item.get("quality_report_json") or {}
-    return isinstance(report, Mapping) and bool(report.get("visual_critique"))
+    return not refinement_child_is_replaceable(item)
 
 
 class DesignJobExecutor:
