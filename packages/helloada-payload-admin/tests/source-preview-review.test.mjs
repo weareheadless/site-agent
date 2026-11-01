@@ -14,9 +14,9 @@ const compiled = ts.transpileModule(`export default async function(dependencies)
 }`, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText
 const loadPreviewPlan = (await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)).default
 
-async function load(draft, latest) {
+async function load(draft, latest, previousReview) {
   const calls = []
-  const state = {}
+  const state = { review: previousReview }
   const setter = (key) => (value) => { state[key] = typeof value === 'function' ? value(state[key]) : value }
   await loadPreviewPlan({
     fetchHelloAda: async (url, options) => {
@@ -88,4 +88,12 @@ test('existing non-compiled overlay review retains its existing path', async () 
 
 test('publication stays disabled until the exact compiled review is visible', () => {
   assert.match(source, /disabled=\{publishing \|\| Boolean\(sourceReview && !sourceReview\.url\)\}/)
+})
+
+test('a failed or pending recheck clears a previously visible compiled review', async () => {
+  for (const status of ['failed', 'running']) {
+    const { state } = await load(merge, { id: 'rechecked', status, commit: sha, draft_id: 3 },
+      { draftId: 3, sha, url: '/api/helloada/source/preview/old-ready/runtime/' })
+    assert.equal(state.review.url, '')
+  }
 })

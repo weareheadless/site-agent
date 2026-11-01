@@ -46,3 +46,20 @@ test('gallery keeps every assigned image and its editable binding', () => {
     assert.ok(html.includes(`data-helloada-field="gallery.image-${id}"`))
   }
 })
+
+test('reversed composition honors selected image treatment and keeps all text on its light tone', () => {
+  for (const treatment of ['colour', 'monochrome']) {
+    const html = renderToStaticMarkup(createElement(sectionComponents.hero, {
+      content: { headline: 'A clear promise', body: 'Readable copy', image: { src: '/media/5.jpg', alt: 'Work' }, action: { label: 'Contact', href: '#contact' } },
+      direction: { align: 'reversed', treatment },
+    }))
+    assert.equal(/<img[^>]+class="[^"]*\bgrayscale\b/.test(html), treatment === 'monochrome')
+    for (const element of ['h1', 'h2', 'p', 'a']) assert.ok(html.includes(`[&amp;_${element}]:text-paper`))
+  }
+})
+
+test('a hero cannot silently discard extra authored images', () => {
+  assert.throws(() => renderToStaticMarkup(createElement(sectionComponents.hero, {
+    content: { headline: 'Heading', image: { src: '/one.jpg', alt: 'One' }, additionalImages: [{ src: '/two.jpg', alt: 'Two' }] },
+  })), /section content/i)
+})

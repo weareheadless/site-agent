@@ -154,6 +154,7 @@ function Figure({ image, treatment, marker, className = '' }: {
 }
 
 export function Hero({ content, direction = {}, bindings = {}, signature, headingLevel = 'h1' }: HeroProps) {
+  if (content.additionalImages?.length) throw new Error('Section content cannot be rendered: hero supports one image.')
   const align = direction.align ?? 'split-left'
   const rules = direction.rules ?? true
   const treatment = direction.treatment ?? 'colour'
@@ -161,9 +162,9 @@ export function Hero({ content, direction = {}, bindings = {}, signature, headin
 
   if (align === 'reversed') {
     return (
-      <section className="relative overflow-hidden bg-ink text-paper">
+      <section className="relative overflow-hidden bg-ink text-paper [&_h1]:text-paper [&_h2]:text-paper [&_p]:text-paper [&_a]:text-paper [&_a]:border-paper">
         <div className="absolute inset-0">
-          <Figure image={content.image} treatment="monochrome" marker={bindings.image} />
+          <Figure image={content.image} treatment={treatment} marker={bindings.image} />
           <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(18,17,16,.55)_0%,rgba(18,17,16,.15)_42%,rgba(18,17,16,.74)_100%)]" />
         </div>
         <div className={`relative flex min-h-[26rem] flex-col justify-between ${sectionPad}`}>

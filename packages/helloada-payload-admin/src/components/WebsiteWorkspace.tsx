@@ -1092,6 +1092,8 @@ function ReviewWorkspace() {
         setPreviewRevision((current) => current + 1)
         return
       }
+      setSourceReview({ draftId: draft.id, sha: headSha, url: '' })
+      sourceReviewIdentityRef.current = ''
       if (latestResponse.ok && sameRevision && latest.status === 'failed') {
         setPreviewStatus('error')
         setError(latest.error || t('workspace.previewError'))

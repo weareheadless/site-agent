@@ -10,12 +10,13 @@ function GalleryImage({ image, marker, monochrome }: {
 
 /** Supporting sections share the direction grammar, not tenant-specific copy. */
 export default function Supporting({ content, direction, bindings = {}, signature }: SectionProps) {
+  const { additionalImages, ...primaryContent } = content
   return (
     <>
-      <Hero content={content} direction={direction} bindings={bindings} signature={signature} headingLevel="h2" />
-      {content.additionalImages?.length ? (
+      <Hero content={primaryContent} direction={direction} bindings={bindings} signature={signature} headingLevel="h2" />
+      {additionalImages?.length ? (
         <div className="grid grid-cols-1 gap-6 bg-paper px-6 pb-16 sm:grid-cols-2 sm:px-10 md:px-14">
-          {content.additionalImages.map((image, index) => (
+          {additionalImages.map((image, index) => (
             <GalleryImage key={bindings.additionalImages?.[index] ?? image.src} image={image}
               marker={bindings.additionalImages?.[index]} monochrome={direction?.treatment === 'monochrome'} />
           ))}
