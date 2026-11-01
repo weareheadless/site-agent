@@ -226,6 +226,40 @@ def test_retained_design_can_supply_preview_identity_before_owner_review(tmp_pat
         memory.close()
 
 
+def test_candidate_preview_lookup_is_read_only_and_exact(tmp_path):
+    """#570: a retained candidate is viewable before its review draft exists."""
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+    )
+    run_id, sha = "intake-lab-retained", "b" * 40
+    try:
+        service._jobs.update({
+            "exact": {"id": "exact", "mode": "compiled_preview", "design_run_id": run_id,
+                      "commit": sha, "status": "ready", "created_at": "2026-11-01T10:00:00+00:00"},
+            "other-run": {"id": "other-run", "mode": "compiled_preview", "design_run_id": "someone-else",
+                          "commit": sha, "status": "ready", "created_at": "2026-11-01T11:00:00+00:00"},
+            "other-commit": {"id": "other-commit", "mode": "compiled_preview", "design_run_id": run_id,
+                             "commit": "c" * 40, "status": "ready", "created_at": "2026-11-01T12:00:00+00:00"},
+            "building": {"id": "building", "mode": "compiled_preview", "design_run_id": run_id,
+                         "commit": sha, "status": "running", "created_at": "2026-11-01T13:00:00+00:00"},
+        })
+        # Read-only: the lookup returns a copy and never mutates the stored job.
+        found = service.preview_for_candidate(run_id, sha)
+        assert found["id"] == "exact"
+        assert found is not service._jobs["exact"]
+        found["status"] = "mutated"
+        assert service._jobs["exact"]["status"] == "ready"
+        # Each candidate resolves only its own preview, never a neighbouring one.
+        assert service.preview_for_candidate(run_id, "c" * 40)["id"] == "other-commit"
+        assert service.preview_for_candidate(run_id, "d" * 40) == {}
+        assert service.preview_for_candidate("someone-else", sha)["id"] == "other-run"
+        assert service.preview_for_candidate("unknown-run", sha) == {}
+        assert service.preview_for_candidate("", sha) == {}
+        assert service.preview_for_candidate(run_id, "not-a-sha") == {}
+    finally:
+        service.close()
+
+
 def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(tmp_path):
     (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
     (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",

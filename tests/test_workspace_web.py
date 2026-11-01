@@ -2488,6 +2488,49 @@ def test_tenant_reload_waits_for_all_old_workers_before_closing_memory_or_starti
     registry._started = False
 
 
+def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
+    """#570: an existing candidate must not be hidden behind a later gate."""
+    sha = "b" * 40
+    run = {"run_id": "intake-lab-retained", "status": "validating", "candidate_sha": sha}
+
+    class Deployer:
+        def __init__(self, revision=sha):
+            self.revision = revision
+            self.calls = []
+
+        def preview_for_candidate(self, run_id, candidate_sha):
+            self.calls.append((run_id, candidate_sha))
+            if candidate_sha != sha:
+                return {}
+            return {
+                "id": "job-1",
+                "status": "ready",
+                "commit": sha,
+                "revision_verification": {"ok": True, "commit": self.revision},
+            }
+
+    deployer = Deployer()
+    tenant = Tenant("tenant-a", {}, Memory(":memory:"), SimpleNamespace(close=lambda: None),
+                    {"source_deployment": deployer}, "api-token")
+
+    preview = ChatService._candidate_preview(tenant, run)
+
+    assert deployer.calls == [("intake-lab-retained", sha)]
+    assert preview == {"state": "in_progress", "job_id": "job-1", "candidate_sha": sha, "approved": False}
+
+    reviewable = ChatService._candidate_preview(tenant, {**run, "status": "ready_for_review", "draft_id": 7})
+    assert reviewable["state"] == "reviewable"
+    assert reviewable["approved"] is False
+
+    # A preview serving any other commit is never surfaced for this candidate.
+    assert ChatService._candidate_preview(Tenant("t", {}, Memory(":memory:"),
+        SimpleNamespace(close=lambda: None), {"source_deployment": Deployer("c" * 40)}, "token"), run) == {}
+    # No deployer, or no candidate identity, yields no preview at all.
+    assert ChatService._candidate_preview(None, run) == {}
+    assert ChatService._candidate_preview(tenant, {**run, "candidate_sha": ""}) == {}
+    tenant.memory.close()
+
+
 def test_tenant_reload_keeps_the_shared_frontend_toolchain_contract(tmp_path, monkeypatch):
     """Regression for #568: a runtime reload must not drop the pinned toolchain.
 
