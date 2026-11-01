@@ -1367,7 +1367,10 @@ class SectionComposition:
                 raise ContractError(f"{entry_path}.asset_id must reference exact Payload media")
             if block == "helloAdaLink":
                 href = entry["href"]
-                parsed = urlsplit(href)
+                try:
+                    parsed = urlsplit(href)
+                except ValueError as exc:
+                    raise ContractError(f"{entry_path}.href must be a safe confirmed destination") from exc
                 absolute = parsed.scheme == "https" and bool(parsed.hostname) and parsed.username is None and parsed.password is None
                 local = href.startswith(("/", "#")) and not href.startswith("//")
                 contact = parsed.scheme in {"mailto", "tel"} and bool(parsed.path)

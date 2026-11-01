@@ -36,7 +36,7 @@ def test_stages_every_planned_section_in_order_with_its_copy_labels_and_exact_me
                 section("studio", "about", "media-7"), section("invitation", "contact")]
     sections[-1]["entries"].append({"key": "invitation.action", "blockType": "helloAdaLink", "label": "Contact action",
                                    "text": "Talk to us", "href": "https://wa.me/15551234567"})
-    data = runner._initial_homepage_payload_data(_payload_first_request(), plan(sections))
+    data = runner._initial_homepage_payload_data(_payload_first_request("https://wa.me/15551234567"), plan(sections))
     assert [item["key"] for item in data["sections"]] == [item["id"] for item in sections]
     for expected, actual in zip(sections, data["sections"], strict=True):
         assert actual["label"] == expected["label"]
@@ -137,3 +137,51 @@ def test_gallery_preserves_all_its_planned_images():
     gallery["entries"].append({"key": "work.second-image", "blockType": "helloAdaImage", "label": "Second view", "asset_id": "media-7"})
     data = runner._initial_homepage_payload_data(_payload_first_request(), plan([section("opening", "hero"), gallery]))
     assert [entry["image"] for entry in data["sections"][1]["entries"] if "image" in entry] == [6, 7]
+
+
+@pytest.mark.parametrize("change", [
+    lambda items: items.pop(),
+    lambda items: items.reverse(),
+    lambda items: items[1]["entries"][0].update(text="Changed after staging"),
+    lambda items: items[1]["entries"].reverse(),
+])
+def test_stage_refuses_a_readback_that_dropped_planned_section_content(change):
+    class IncompletePayload(Payload):
+        def read(self, *_args, **_kwargs):
+            document = deepcopy(self.document)
+            change(document["sections"])
+            return document
+
+    selected = plan([section("opening", "hero"), section("detail", "about")])
+    with pytest.raises(runner.RunnerError, match="did not persist.*section content"):
+        runner._stage_initial_homepage_payload({"payload_gateway": IncompletePayload()}, _payload_first_request(), selected)
+
+
+def test_stage_accepts_populated_media_and_row_ids_without_losing_content():
+    from site_agent.core.design_contracts import PageBuildRequest
+
+    class PopulatedPayload(Payload):
+        def read(self, *_args, **_kwargs):
+            document = deepcopy(self.document)
+            for item in document["sections"]:
+                item["id"] = "payload-row-id"
+                for entry in item["entries"]:
+                    if "image" in entry:
+                        entry["image"] = {"id": entry["image"], "url": "/canonical-media"}
+            return document
+
+    request = PageBuildRequest.from_dict({**_payload_first_request().to_dict(), "supplied_media_asset_ids": [5, 6]})
+    selected = plan([section("opening", "hero", "media-5"), section("detail", "about", "media-6")])
+    staged = runner._stage_initial_homepage_payload({"payload_gateway": PopulatedPayload()}, request, selected)
+    assert staged.content["payload_draft_receipts"][0]["revision"].startswith("sha256:")
+
+
+@pytest.mark.parametrize("href, diagnostic", [
+    ("https://wa.me/15551234567", "no confirmed intake destination"),
+    ("#missing", "unplanned section"),
+])
+def test_stage_does_not_invent_contact_destinations_or_section_targets(href, diagnostic):
+    opening = section("opening", "hero")
+    opening["entries"].append({"key": "opening.action", "blockType": "helloAdaLink", "label": "Action", "text": "Talk", "href": href})
+    with pytest.raises(runner.RunnerError, match=diagnostic):
+        runner._initial_homepage_payload_data(_payload_first_request(), plan([opening]))

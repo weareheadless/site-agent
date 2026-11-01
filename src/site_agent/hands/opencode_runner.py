@@ -640,6 +640,10 @@ def _native_direction_payload(
                 f"creative experience plan asset evidence is not bound to the frozen snapshot: {item.asset_id}",
                 result=dict(result),
             )
+    if isinstance((request.content or {}).get("site_intake"), Mapping):
+        # Let the existing bounded planning correction handle missing content,
+        # asset mappings and destinations, before any Payload write or coding.
+        _initial_homepage_payload_data(request, plan)
     return direction, plan
 
 
@@ -940,12 +944,20 @@ def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
             f"unmapped={sorted(planned_assets - mapped_assets)}, unplanned={sorted(mapped_assets - planned_assets)}"
         )
     payload_sections = []
+    section_ids = {section.section_id for section in sections}
+    confirmed_destinations = {str(intake.conversion.get(name) or "").strip() for name in ("whatsapp_url", "instagram_url")} - {""}
     for section in sections:
         entries = []
         for source in section.entries:
             entry = dict(source)
             if "asset_id" in entry:
                 entry["image"] = int(entry.pop("asset_id").removeprefix("media-"))
+            if entry["blockType"] == "helloAdaLink":
+                href = entry["href"]
+                if href.startswith("#") and href[1:] not in section_ids:
+                    raise RunnerError(f"section action {entry['key']} targets an unplanned section: {href}")
+                if not href.startswith(("/", "#")) and href not in confirmed_destinations:
+                    raise RunnerError(f"section action {entry['key']} has no confirmed intake destination: {href}")
             entries.append(entry)
         payload_sections.append({
             "key": section.section_id, "label": section.label, "layout": section.layout,
@@ -999,10 +1011,10 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
             raise RunnerError(f"section image media-{media_id} is not an approved intake asset")
         try:
             media = payload.read_media(str(media_id), identifier_kind="id", draft=True)
-            if str(media.get("id")) != str(media_id):
-                raise RunnerError(f"Payload returned a different media identity for media-{media_id}")
         except Exception as exc:  # noqa: BLE001 - verify the exact selected tenant-local asset
             raise RunnerError(f"section image media-{media_id} is not present in this tenant's Payload media library") from exc
+        if str(media.get("id")) != str(media_id):
+            raise RunnerError(f"Payload returned a different media identity for media-{media_id}")
 
     operation = "create"
     try:
@@ -1042,6 +1054,24 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
         raise RunnerError("the initial Payload homepage changed before its exact draft receipt was bound to the build")
     if str(verified.get("slug") or "") != "home" or str(verified.get("sourceId") or "") != "pages:home":
         raise RunnerError("Payload did not persist the homepage at its canonical route identity")
+
+    def persisted(actual: Any, expected: Any) -> bool:
+        # Payload may add row IDs/defaults or populate a media relation. Neither
+        # may conceal missing, reordered or changed authored content.
+        if isinstance(expected, dict):
+            return isinstance(actual, Mapping) and all(
+                key in actual and persisted(actual[key], value) for key, value in expected.items()
+            )
+        if isinstance(expected, list):
+            return isinstance(actual, list) and len(actual) == len(expected) and all(
+                persisted(item, value) for item, value in zip(actual, expected, strict=True)
+            )
+        if isinstance(expected, int) and not isinstance(expected, bool) and isinstance(actual, Mapping):
+            return str(actual.get("id")) == str(expected)
+        return actual == expected
+
+    if not persisted(verified.get("sections"), data["sections"]):
+        raise RunnerError("Payload did not persist the exact planned section content; candidate staging is incomplete")
 
     receipt = {
         "kind": "collection",
