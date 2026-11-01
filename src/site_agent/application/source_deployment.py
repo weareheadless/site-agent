@@ -877,7 +877,7 @@ class SourceDeploymentService:
         try:
             result = subprocess.run(
                 self._inventory_command(checkout, worktree), cwd=str(worktree),
-                env=self._preview_env(production=True, payload_secret=preview_secret),
+                env=self._preview_env(payload_secret=preview_secret),
                 capture_output=True, text=True, timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -885,9 +885,15 @@ class SourceDeploymentService:
         try:
             report = json.loads(result.stdout or "{}")
         except json.JSONDecodeError:
-            return {"status": "incomplete", "error": (result.stderr or "")[-600:]}
+            report = None
         if not isinstance(report, Mapping):
-            return {"status": "incomplete", "error": "source inventory returned an invalid report"}
+            return {"status": "incomplete", "error": (result.stderr or "")[-600:],
+                    "returncode": result.returncode}
+        if result.returncode and not report.get("violations"):
+            # A non-zero exit without violations is a tooling failure, never a
+            # clean candidate. Keep the reason so the gate fails closed.
+            return {"status": "incomplete", "returncode": result.returncode,
+                    "error": (result.stderr or "")[-600:]}
         return dict(report)
 
     def _seed_canonical_preview(self, worktree: Path, job: dict[str, Any], npm: str,
