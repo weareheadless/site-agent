@@ -884,11 +884,11 @@ def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
     candidate; subsequent platform releases cannot replace a live composition.
     """
     source = Path(__file__).resolve().parents[1] / "templates/next-payload/src/components/site/sections"
-    destination = worktree / "src/components/site/presentation/section-library-v2"
+    destination = worktree / "src/components/site/presentation/section-library-v3"
     if not destination.resolve().is_relative_to(worktree.resolve()):
         raise RunnerError("the section template snapshot escapes the candidate workspace")
     paths = []
-    for name in ("hero.tsx", "adapt.ts", "registry.ts", "supporting.tsx"):
+    for name in ("hero.tsx", "adapt.ts", "registry.ts", "supporting.tsx", "composition.tsx"):
         original = source / name
         target = destination / name
         if target.is_symlink():
@@ -902,6 +902,37 @@ def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
         target.write_bytes(data)
         paths.append(target.relative_to(worktree).as_posix())
     return tuple(paths)
+
+
+def _wire_section_composition(worktree: Path) -> tuple[str, ...]:
+    """Wire canonical sections once; Ada does not rediscover Payload plumbing."""
+    presentation = worktree / "src/components/site/presentation"
+    if not presentation.resolve().is_relative_to(worktree.resolve()):
+        raise RunnerError("section composition adapter escapes the candidate workspace")
+    entrypoint = presentation / "PagePresentation.tsx"
+    preserved = presentation / "NonComposedPagePresentation.tsx"
+    wrapper = (
+        "import Composition from './section-library-v3/composition'\n"
+        "import { mediaAlt, mediaUrl } from '@/lib/content'\n"
+        "import ExistingPresentation from './NonComposedPagePresentation'\n"
+        "type Props = Parameters<typeof ExistingPresentation>[0]\n"
+        "export default function PagePresentation(props: Props) {\n"
+        "  const sections = props.document.sections\n"
+        "  if (props.kind === 'page' && Array.isArray(sections) && sections.length && sections[0]?.layout) {\n"
+        "    return <Composition document={props.document} collection={props.collection} media={(value) => ({ src: mediaUrl(value) || '', alt: mediaAlt(value) })} />\n"
+        "  }\n"
+        "  return <ExistingPresentation {...props} />\n"
+        "}\n"
+    )
+    if entrypoint.is_symlink() or preserved.is_symlink() or not entrypoint.is_file():
+        raise RunnerError("section composition requires a regular existing PagePresentation entrypoint")
+    if preserved.exists():
+        if not preserved.is_file() or entrypoint.read_text() != wrapper:
+            raise RunnerError("section composition would overwrite an existing presentation adapter")
+        return ()
+    preserved.write_bytes(entrypoint.read_bytes())
+    entrypoint.write_text(wrapper)
+    return tuple(path.relative_to(worktree).as_posix() for path in (entrypoint, preserved))
 
 
 def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
@@ -1282,6 +1313,7 @@ def _design_prompt(
     is_visual_refinement = request.mode == "visual_refinement" or getattr(target, "operation_kind", "") == "visual_refinement"
     is_technical_repair = getattr(target, "operation_kind", "") == "technical_repair"
     is_parent_repair = is_visual_refinement or is_technical_repair
+    is_section_realization = bool(request.mode == "initial_homepage" and payload_draft_receipts and not is_parent_repair)
     if is_parent_repair:
         # The parent candidate is the source of truth for a repair. Keep the
         # durable snapshot hash for audit evidence, but do not make stale
@@ -1341,6 +1373,20 @@ def _design_prompt(
             "Existing source is an implementation constraint only unless the request explicitly asks for a redesign. "
             "Do not inspect admin surfaces, credentials, or unrelated private files."
         )
+        if is_section_realization:
+            frozen_context = (
+                f"FROZEN CONTEXT SNAPSHOT HASH (host metadata only): {context_hash}\n"
+                "The planning decision is complete. Implement the locked section composition using its pinned "
+                "library and staged Payload content. Preserve the canonical route shell, readers and schema. "
+                "Do not choose another direction, replan the page, invent markup for selected sections, or inspect "
+                "unrelated source. Missing authored content is a concrete blocker, not permission to hardcode copy.\n\n"
+            )
+            inspection = (
+                "Inspect only PagePresentation, its required public props/binding helpers, the pinned section "
+                "registry/adapter, site.css and the approved media. Wire the first selected section immediately "
+                "after that bounded inspection, then complete the stored composition and required behavior. "
+                "Do not inspect admin, schema, migrations, unrelated routes or host application source."
+            )
     else:
         inspection = "Inspect the exact source commit, routes, content, assets, current rendered output, and site chrome."
         if context_hash:
@@ -1555,12 +1601,11 @@ def _design_prompt(
             "Payload values as the sole runtime source for business name, headline, paragraph text, calls to action, "
             "metadata, and the selected image. Do not copy these values into JSX/TS/JS constants, static HTML, a second "
             "JSON file, or a new content store. Compose the page with the supplied section templates under "
-            "src/components/site/presentation/section-library-v2/. Import its registry and adapter in the existing "
-            "PagePresentation component: render the Payload sections in their stored order using each section's "
-            "layout and direction. Resolve images with the existing canonical media resolver, and translate the "
-            "adapter's stable entry keys into helloAdaBindingId markers for every section binding, including each "
-            "supporting paragraph and additionalImages gallery entry. Anchor each section using its stable key so "
-            "planned internal section links resolve. "
+            "src/components/site/presentation/section-library-v3/. The host already wired PagePresentation, canonical "
+            "media resolution and every stable editing binding. Its composition renderer will render the Payload sections in their stored order using each section's "
+            "layout and direction. Canonical media reads and the adapter's stable entry keys are already wired "
+            "to helloAdaBindingId markers, including each "
+            "supporting paragraph and gallery image. Stable section anchors are already wired. Do not rewrite this plumbing. "
             "Do not recreate the hero markup or replace the section templates with a bespoke whole-page component. "
             "Keep non-composed documents on their existing renderer. The composed hero owns its heading and image; "
             "do not print a duplicate document heading or featured image above it. The host already prepared Tailwind "
@@ -1613,14 +1658,20 @@ def _design_prompt(
                 + integrated_motion_block
               + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
-          + "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n"
-            + ("3. For a visual_refinement or technical_repair request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, native source, and behavior; do not rewrite the site or substitute a new visual direction.\n"
-               if is_parent_repair else
-                "3. For an initial_homepage request, inspect the supplied media files and exact request, then make the first implementation edit. Do not write a plan or wait for approval. For other requests, make the first implementation edit immediately after the minimum required inspection.\n")
+          + ("2. The locked plan already owns the creative decisions. Implement it without alternatives, additional planning, repeated inspection or delegation.\n"
+             if is_section_realization else
+             "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n")
+             + ("3. For a visual_refinement or technical_repair request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, native source, and behavior; do not rewrite the site or substitute a new visual direction.\n"
+                if is_parent_repair else
+                 "3. For an initial_homepage request, inspect the supplied media files and exact request, then make the first implementation edit. Do not write a plan or wait for approval. For other requests, make the first implementation edit immediately after the minimum required inspection.\n")
             + ("4. After a refinement or repair edit, verify the repaired elements in the source, confirm the preserved React/GSAP/cleanup/reduced-motion implementation is still present, and run the project's own build/check script to catch regressions.\n"
-               if is_parent_repair else
-                "4. After the first edit, establish the content hierarchy, conversion path, typography, composition, image treatment, responsive translation, motion purpose, and reduced-motion behavior through the implementation itself. You have complete control of the source; do not use a host template, predetermined section markup, or host-generated CSS/token system. Keep critical content visible in a static or full-page capture; never leave offscreen sections hidden behind opacity or visibility until scroll, and provide a visible no-JS/reduced-motion resting state.\n")
-              + "5. Run the project's own build/check script when it helps you catch mistakes, then stop. Do not start a browser, HTTP server, custom CDP harness, or rendering/self-review loop yourself; that work belongs to the host, which observes the retained candidate after this turn.\n"
+                if is_parent_repair else
+                 "4. Implement the locked section composition: Payload reads, template props, stable editable bindings, theme tokens and planned signature behavior. Keep the pinned structures; do not redesign or replace the section library. All copy and media come from the staged draft. Keep content visible with no JavaScript and reduced motion.\n"
+                 if is_section_realization else
+                 "4. After the first edit, establish the content hierarchy, conversion path, typography, composition, image treatment, responsive translation, motion purpose, and reduced-motion behavior through the implementation itself. You have complete control of the source; do not use a host template, predetermined section markup, or host-generated CSS/token system. Keep critical content visible in a static or full-page capture; never leave offscreen sections hidden behind opacity or visibility until scroll, and provide a visible no-JS/reduced-motion resting state.\n")
+               + ("5. Run typecheck at most once after the final edit, then stop. The host owns the single canonical build and actual preview review; do not build, run a browser/server or start another review loop.\n"
+                  if is_section_realization else
+                  "5. Run the project's own build/check script when it helps you catch mistakes, then stop. Do not start a browser, HTTP server, custom CDP harness, or rendering/self-review loop yourself; that work belongs to the host, which observes the retained candidate after this turn.\n")
              + "6. Leave implementation changes uncommitted for host finalization. Do not author or edit the acceptance manifest; the host generates and validates it from the typed request and the changed files. You may include a short design rationale in your final response, but do not turn prose into file paths.\n"
              + "7. The host treats missing browser or visual evidence as incomplete, never passed; final owner-surface validation remains independent of this implementation turn.\n\n"
         + "PAGE BUILD REQUEST (canonical JSON):\n"
@@ -2986,6 +3037,10 @@ def stage_design_build(
                 raise RunnerError("a production first-site build needs Ada's completed Payload-backed experience plan")
             request = _stage_initial_homepage_payload(execution_context, request, staged_plan, progress)
             _stage_section_templates(worktree)
+            _wire_section_composition(worktree)
+            # Prepared plumbing is not Ada's authored implementation. A model
+            # that produces only prose must still fail the no-op boundary.
+            prepared = _change_state(worktree)
         if repair_brief is not None:
             # Repair turns still need the host-written role definition. Keep
             # this independent from planning: a bounded repair is deliberately

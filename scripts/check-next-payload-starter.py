@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from site_agent.application.release_dependencies import prepare_release_dependencies
 from site_agent.credentials import github_api_token
+from site_agent.hands.opencode_runner import _stage_section_templates, _wire_section_composition
 
 
 def main() -> int:
@@ -44,6 +45,8 @@ def main() -> int:
         inventory = root / 'src/site_agent/application/source_inventory_ast.mjs'
         inventory.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / 'src/site_agent/application/source_inventory_ast.mjs', inventory)
+        _stage_section_templates(source)
+        _wire_section_composition(source)
         env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
         env.update(CI='1', TMPDIR=str(root), npm_config_cache=str(root / 'npm-cache'),
                    PAYLOAD_LOCAL_BUILD='1', PAYLOAD_CLI='1',
