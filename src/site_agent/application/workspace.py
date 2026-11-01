@@ -943,6 +943,7 @@ class TenantRegistry:
         proxy = {
             "credentials": dict(self._shared_credentials),
             "observability": dict(self._shared_observability),
+            "source_deployment": dict(self._shared_source_deployment),
             "workspace_api": {
                 "enabled": True,
                 "provisioned_root": str(
