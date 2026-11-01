@@ -1974,6 +1974,8 @@ class ChatService:
             session_id = str(intake_status.get("session_id") or "")
             run = memory.latest_design_run_for_intake(session_id, revision)
             if run is not None:
+                run = self._displayed_design_run(memory, run)
+            if run is not None:
                 events = memory.list_design_run_events(str(run["run_id"]), limit=500)
                 order = ("queued", "planning", "generating", "building", "validating", "rendering")
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
@@ -2045,6 +2047,31 @@ class ChatService:
             } if active_job else None,
             "build": build,
         }
+
+    @staticmethod
+    def _displayed_design_run(memory: Memory, run: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Show the run the owner can actually look at.
+
+        A follow-up operation that failed before producing any candidate has no
+        website to show. Its parent still holds the reviewable candidate, so the
+        workspace keeps presenting that instead of an error for a site that
+        already exists. A run that produced its own candidate is never replaced,
+        so a failed owner-requested change still reports its own failure.
+        """
+        if run.get("candidate_sha"):
+            return run
+        parent_id = str(run.get("parent_run_id") or "").strip()
+        if not parent_id:
+            return run
+        parent = memory.get_design_run(parent_id)
+        if (
+            isinstance(parent, Mapping)
+            and parent.get("candidate_sha")
+            and str(parent.get("status") or "") == "ready_for_review"
+            and parent.get("draft_id")
+        ):
+            return parent
+        return run
 
     @staticmethod
     def _candidate_preview(tenant: Tenant | None, run: Mapping[str, Any]) -> dict[str, Any]:
