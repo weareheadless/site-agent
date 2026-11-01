@@ -12,6 +12,7 @@ from site_agent.hands.playwright_quality import (
     _mark_observed_journey_transitions,
     _observable_delta,
     _observed_signature_behaviors,
+    _signature_scroll_positions,
 )
 
 
@@ -132,6 +133,71 @@ def test_scroll_probe_does_not_accept_an_offscreen_signature_loop():
     }]
 
     assert _observed_signature_behaviors(initial, snapshots) == []
+
+
+def test_signature_scroll_positions_sample_visible_interval_for_short_mobile_behavior():
+    class GeometryPage:
+        def evaluate(self, _script, *_args):
+            return [
+                {"top": 227.89, "bottom": 247.89},
+                {"top": 1200, "bottom": 1250},
+            ]
+
+    positions = _signature_scroll_positions(
+        GeometryPage(), viewport_height=844, max_scroll=2000, route_positions=[0, 281, 562]
+    )
+
+    assert positions == [0, 62, 124, 186, 281, 562, 580, 803, 1026]
+
+
+def test_merged_samples_observe_a_signature_that_finishes_before_the_route_step():
+    """Regression for #567: a hero hairline settles above the first route step.
+
+    Measured on the retained candidate at 390x844: the rule sits at document
+    top 227.89 and reaches scaleX(1) by 120px of scroll, then leaves the
+    viewport. The old route step of height//3 = 281 sampled only the resting
+    and offscreen states, so a visible authored transition looked unobserved.
+    """
+
+    class MobilePage:
+        def evaluate(self, _script, *_args):
+            return [{"top": 227.89, "bottom": 228.89}]
+
+    def fingerprint_at(scroll: int) -> str:
+        return f"scaleX({0.8722 + min(1.0, scroll / 120) * 0.1278:.4f})"
+
+    positions = _signature_scroll_positions(
+        MobilePage(), viewport_height=844, max_scroll=3834, route_positions=[0, 281, 562]
+    )
+    snapshots = [{
+        "position": 0,
+        "signature_behaviors": [{
+            "id": "monogram-line-settle",
+            "trigger": "scroll",
+            "visible": True,
+            "fingerprint": fingerprint_at(0),
+        }],
+    }]
+    for position in positions[1:]:
+        visible = 228.89 - position > 0 and 227.89 - position < 844
+        snapshots.append({
+            "position": position,
+            "signature_behaviors": [{
+                "id": "monogram-line-settle",
+                "trigger": "scroll",
+                "visible": visible,
+                "fingerprint": fingerprint_at(position),
+            }],
+        })
+
+    observed = _observed_signature_behaviors(
+        [{"id": "monogram-line-settle", "trigger": "scroll", "visible": True,
+          "fingerprint": fingerprint_at(0)}],
+        snapshots,
+    )
+
+    assert [item["id"] for item in observed] == ["monogram-line-settle"]
+    assert observed[0]["state"] == "observed"
 
 
 def test_journey_transition_requires_a_rendered_change_not_a_candidate_claim():

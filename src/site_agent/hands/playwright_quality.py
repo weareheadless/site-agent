@@ -672,6 +672,50 @@ def _progressive_scroll(page: Any, target: int) -> None:
     )
 
 
+def _signature_scroll_positions(
+    page: Any,
+    *,
+    viewport_height: int,
+    max_scroll: int,
+    route_positions: Any,
+) -> list[int]:
+    """Merge route samples with bounded geometry-derived signature samples.
+
+    Route sampling alone steps by a third of the viewport, which can jump over a
+    short authored transition that begins and completes above the fold. Each
+    bounded signature element therefore contributes samples across the scroll
+    interval in which it is actually on screen. Only the sample positions are
+    derived from geometry: whether the behavior counts as observed is still
+    decided by a rendered change in the existing snapshots.
+    """
+    try:
+        geometries = page.evaluate(
+            """
+            () => Array.from(document.querySelectorAll('[data-ada-signature-behavior]'))
+              .slice(0, 8)
+              .map((element) => {
+                const rect = element.getBoundingClientRect();
+                return {top: rect.top + window.scrollY, bottom: rect.bottom + window.scrollY};
+              })
+            """
+        ) or []
+    except Exception:  # noqa: BLE001 - keep the route probe, just without extra samples
+        geometries = []
+    positions = {int(value) for value in route_positions}
+    for geometry in geometries:
+        if not isinstance(geometry, Mapping):
+            continue
+        top = float(geometry.get("top") or 0)
+        bottom = float(geometry.get("bottom") or 0)
+        start = max(0.0, top - viewport_height)
+        end = min(float(max_scroll), bottom)
+        if end < start:
+            continue
+        for fraction in (0.25, 0.5, 0.75):
+            positions.add(round(start + (end - start) * fraction))
+    return sorted(position for position in positions if 0 <= position <= max_scroll)
+
+
 def _observed_signature_behaviors(
     initial: Any,
     snapshots: Any,
@@ -1417,7 +1461,13 @@ class PlaywrightQualityAdapter:
                             scroll_height = int(surface.evaluate("() => document.documentElement.scrollHeight") or height)
                             max_scroll = max(0, scroll_height - height)
                             step = max(160, height // 3)
-                            positions = tuple(dict.fromkeys([*range(0, max_scroll + 1, step), max_scroll]))[:12]
+                            route_positions = tuple(dict.fromkeys([*range(0, max_scroll + 1, step), max_scroll]))[:12]
+                            positions = _signature_scroll_positions(
+                                surface,
+                                viewport_height=height,
+                                max_scroll=max_scroll,
+                                route_positions=route_positions,
+                            )
                             scroll_capture_position = positions[len(positions) // 2] if len(positions) > 1 else None
                             for position in positions:
                                 _progressive_scroll(surface, position)

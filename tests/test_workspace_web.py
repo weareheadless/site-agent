@@ -2488,6 +2488,50 @@ def test_tenant_reload_waits_for_all_old_workers_before_closing_memory_or_starti
     registry._started = False
 
 
+def test_tenant_reload_keeps_the_shared_frontend_toolchain_contract(tmp_path, monkeypatch):
+    """Regression for #568: a runtime reload must not drop the pinned toolchain.
+
+    Bootstrap reloads a tenant after its exact Worker health gate. The
+    replacement registry is built from a proxy config, so the shared
+    ``source_deployment`` policy has to travel with it exactly as registration
+    does. Without it, the reloaded tenant loses ``node_path`` and friends and
+    every later source build fails closed before generation.
+    """
+    toolchain = {
+        "node_path": "/opt/helloada/node/bin/node",
+        "node_version": "22.23.3",
+        "npm_command": "/opt/helloada/node/bin/npm",
+        "npm_version": "11.13.0",
+    }
+    old = Tenant("tenant-a", {"instance_name": "tenant-a"}, Memory(tmp_path / "old.db"),
+        SimpleNamespace(close=lambda: None), {}, "api-token", config_path="/registered/config.yaml",
+        api_token_env="TENANT_A_TOKEN")
+    replacement = Tenant("tenant-a", {"instance_name": "tenant-a"}, Memory(tmp_path / "new.db"),
+        SimpleNamespace(close=lambda: None), {}, "api-token", config_path="/registered/config.yaml",
+        api_token_env="TENANT_A_TOKEN")
+
+    captured = {}
+
+    class TemporaryRegistry:
+        tenants = {"tenant-a": replacement}
+        def close(self):
+            return None
+
+    def capture(_cls, config, _env, **_kwargs):
+        captured.update(config)
+        return TemporaryRegistry()
+
+    monkeypatch.setattr(TenantRegistry, "from_config", classmethod(capture))
+    registry = TenantRegistry({"tenant-a": old}, env={}, shared_source_deployment=toolchain)
+    loaded = registry.reload_tenant("tenant-a", "/registered/config.yaml", api_token="api-token")
+
+    assert loaded is replacement
+    assert captured["source_deployment"] == toolchain
+    assert set(captured["source_deployment"]) >= {"node_path", "node_version", "npm_command", "npm_version"}
+    loaded.memory.close()
+    old.memory.close()
+
+
 def test_migration_plan_projects_only_current_durable_activation_receipt(tmp_path, monkeypatch):
     import yaml
     from site_agent.application.crawlseo_migration import evidence_hash
