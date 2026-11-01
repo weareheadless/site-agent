@@ -150,6 +150,22 @@ def test_signature_scroll_positions_sample_visible_interval_for_short_mobile_beh
     assert positions == [0, 62, 124, 186, 281, 562, 580, 803, 1026]
 
 
+def test_reduced_motion_sampling_stays_on_the_route_positions():
+    class GeometryPage:
+        def evaluate(self, _script, *_args):
+            raise AssertionError("reduced motion must not sample signature geometry")
+
+    positions = _signature_scroll_positions(
+        GeometryPage(),
+        viewport_height=844,
+        max_scroll=2000,
+        route_positions=[0, 281, 562],
+        include_signatures=False,
+    )
+
+    assert positions == [0, 281, 562]
+
+
 def test_merged_samples_observe_a_signature_that_finishes_before_the_route_step():
     """Regression for #567: a hero hairline settles above the first route step.
 

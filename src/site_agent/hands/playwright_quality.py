@@ -678,6 +678,7 @@ def _signature_scroll_positions(
     viewport_height: int,
     max_scroll: int,
     route_positions: Any,
+    include_signatures: bool = True,
 ) -> list[int]:
     """Merge route samples with bounded geometry-derived signature samples.
 
@@ -688,6 +689,8 @@ def _signature_scroll_positions(
     derived from geometry: whether the behavior counts as observed is still
     decided by a rendered change in the existing snapshots.
     """
+    if not include_signatures:
+        return sorted({int(value) for value in route_positions if 0 <= int(value) <= max_scroll})
     try:
         geometries = page.evaluate(
             """
@@ -1462,11 +1465,14 @@ class PlaywrightQualityAdapter:
                             max_scroll = max(0, scroll_height - height)
                             step = max(160, height // 3)
                             route_positions = tuple(dict.fromkeys([*range(0, max_scroll + 1, step), max_scroll]))[:12]
+                            # Reduced motion has no authored transition to
+                            # sample, so the route positions stay sufficient.
                             positions = _signature_scroll_positions(
                                 surface,
                                 viewport_height=height,
                                 max_scroll=max_scroll,
                                 route_positions=route_positions,
+                                include_signatures=preference == "no-preference",
                             )
                             scroll_capture_position = positions[len(positions) // 2] if len(positions) > 1 else None
                             for position in positions:
