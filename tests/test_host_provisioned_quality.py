@@ -89,3 +89,35 @@ def test_frozen_owner_media_evidence_accepts_only_exact_path_and_bytes(tmp_path)
     assert _host_provisioned_paths(tmp_path, policy) == {"public/assets/owner.webp"}
     media.write_bytes(b"modified bytes")
     assert not _host_provisioned_paths(tmp_path, policy)
+
+
+def test_retained_media_provenance_reuses_materialization_conversion():
+    import io
+    from types import SimpleNamespace
+    from PIL import Image
+    from site_agent.application.designs import DesignService, DesignServiceError
+    from site_agent.hands.opencode_runner import _canonical_media_webp
+    import pytest
+
+    image = io.BytesIO()
+    Image.new("RGB", (40, 40), "red").save(image, format="PNG")
+    raw = image.getvalue()
+    evidence = {"asset_id": "media-7", "relative_path": "public/assets/owner.webp",
+                "asset_sha256": hashlib.sha256(raw).hexdigest()}
+    item = SimpleNamespace(**evidence, to_dict=lambda: dict(evidence))
+    reads = []
+    stored = SimpleNamespace(asset_id=7)
+    def read(identifier, **kwargs):
+        reads.append(identifier)
+        return raw, "image/png"
+    media = SimpleNamespace(read_preview=read, get=lambda identifier: stored)
+    service = DesignService.__new__(DesignService)
+    service.media_service = media
+    result = service._quality_media_files(SimpleNamespace(asset_visual_evidence=(item,)))
+    canonical = _canonical_media_webp(media, stored, source_bytes=raw)
+    assert reads == [7]
+    assert result[0]["asset_sha256"] == hashlib.sha256(canonical).hexdigest()
+    assert result[0]["asset_sha256"] != evidence["asset_sha256"]
+    item.asset_sha256 = "0" * 64
+    with pytest.raises(DesignServiceError, match="changed from the frozen intake"):
+        service._quality_media_files(SimpleNamespace(asset_visual_evidence=(item,)))

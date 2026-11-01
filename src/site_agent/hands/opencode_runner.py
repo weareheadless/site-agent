@@ -5031,7 +5031,7 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
     return site_clone, clone, base_ref, _change_state(clone)
 
 
-def _canonical_media_webp(service: Any, stored: Any) -> bytes:
+def _canonical_media_webp(service: Any, stored: Any, *, source_bytes: bytes | None = None) -> bytes:
     """Return canonical WebP bytes for one Library asset.
 
     Payload tenants keep the binary in Payload, so the bytes come back through
@@ -5046,7 +5046,9 @@ def _canonical_media_webp(service: Any, stored: Any) -> bytes:
         raise RunnerError("the media Library cannot supply image bytes for this build")
     from .media_processing import MediaProcessingError, process_image
 
-    raw, _content_type = reader(int(stored.asset_id))
+    raw = source_bytes
+    if raw is None:
+        raw, _content_type = reader(int(stored.asset_id))
     try:
         return process_image(raw).normalized
     except MediaProcessingError as exc:
