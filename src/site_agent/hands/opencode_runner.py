@@ -2286,6 +2286,11 @@ def _write_host_design_manifest(
             "font_hashes": font_hashes,
             "evidence_hashes": evidence_hashes,
             "provisioned_runtime_paths": sorted(runtime_paths),
+            "provisioned_file_hashes": {
+                relative: hashlib.sha256((worktree / relative).read_bytes()).hexdigest()
+                for relative in sorted(host_provisioned_paths or ())
+                if (worktree / relative).is_file() and not (worktree / relative).is_symlink()
+            },
         },
     }
     parsed = DesignManifest.from_dict(manifest_data)
@@ -2431,7 +2436,7 @@ def _run_local_design_self_check(
     the first component to discover that the primary implementation cannot
     build. This uses the same host-owned profile as validation and preview.
     """
-    from .site_build import SiteBuildError, build_site, get_build_profile
+    from .site_build import SiteBuildError, build_site, get_build_profile, configured_build_environment
 
     engine = config.get("design_engine") or {}
     builder = config.get("builder") or {}
@@ -2439,14 +2444,17 @@ def _run_local_design_self_check(
     profile_name = str(engine.get("build_profile") or "next_react").strip()
     try:
         profile = get_build_profile(profile_name)
+        build_env = design_lab_environment(
+            execution_context.get("env") or None,
+            model_env_name=str((config.get("env") or {}).get("llm_api_key") or ""),
+        )
+        if (config.get("site") or {}).get("adapter") == "payload_gateway":
+            build_env = configured_build_environment(config.get("source_deployment") or {}, worktree, build_env)
         result = build_site(
             worktree,
             profile,
             npm_cache=npm_cache,
-            env=design_lab_environment(
-                execution_context.get("env") or None,
-                model_env_name=str((config.get("env") or {}).get("llm_api_key") or ""),
-            ),
+            env=build_env,
             timeout_seconds=int(
                 timeout_seconds
                 or quality.get("build_timeout_seconds")
@@ -2647,13 +2655,20 @@ def stage_design_build(
     materialized_font_paths: list[str] = []
     provision_error = ""
     try:
-        from .site_build import NEXT_REACT_PROFILE, prepare_native_workspace, prepare_site_toolchain
+        from .site_build import NEXT_REACT_PROFILE, prepare_native_workspace, prepare_site_toolchain, configured_build_environment
 
         native_next_target = str(target.build_profile or "").strip().lower() == NEXT_REACT_PROFILE.name
         if native_next_target:
             host_provisioned_paths.update(prepare_native_workspace(worktree, NEXT_REACT_PROFILE))
             if payload_first_required:
                 host_provisioned_paths.update(_prepare_section_toolchain(worktree))
+        if (execution_config.get("site") or {}).get("adapter") == "payload_gateway":
+            pinned_env = configured_build_environment(
+                execution_config.get("source_deployment") or {}, worktree,
+                context.get("env") if context.get("env") is not None else os.environ,
+            )
+            context = {**context, "env": pinned_env}
+            execution_context["env"] = pinned_env
         prepared = _change_state(worktree)
 
         raw_data_dir = str(execution_config.get("data_dir") or "").strip()
@@ -3096,7 +3111,13 @@ def stage_design_build(
         recoverable_turn_timeout = bool(
             turn_error and turn_error.startswith("opencode timed out after ")
         )
-        if design_plan is not None and (
+        # A section composition goes straight to the immutable candidate's
+        # canonical build/runtime checks. Do not run a second model that edits
+        # the same template source and triggers two additional full builds.
+        section_composition = bool(payload_first_required and getattr(design_plan, "page_composition", ()))
+        if section_composition and progress:
+            progress("section composition complete; checking the immutable candidate without a second design turn")
+        if design_plan is not None and not section_composition and (
             repair_brief is None or recoverable_turn_timeout
         ) and (
             not turn_error or recoverable_turn_timeout

@@ -423,33 +423,13 @@ class SourceDeploymentService:
         return preview
 
     def _verify_toolchain(self, cwd: Path) -> str:
-        node_path = str(self.settings.get("node_path") or "").strip()
-        npm_command = str(self.settings.get("npm_command") or "").strip()
-        node_version = str(self.settings.get("node_version") or "").strip()
-        npm_version = str(self.settings.get("npm_version") or "").strip()
-        if not node_path or not npm_command or not node_version or not npm_version:
-            raise SourceDeploymentError(
-                "source builds require the shared node_path, node_version, npm_command and npm_version contract"
-            )
-        node_bin = Path(node_path).expanduser()
-        npm = Path(npm_command).expanduser()
-        if not node_bin.is_absolute() or not npm.is_absolute():
-            raise SourceDeploymentError("shared source-build toolchain paths must be absolute")
-        for name, version in (("Node", node_version), ("npm", npm_version)):
-            if not re.fullmatch(r"\d+\.\d+\.\d+", version):
-                raise SourceDeploymentError(f"shared source-build toolchain requires an exact {name} version")
-        node = node_bin / "node"
-        if not node.is_file() or not node.stat().st_mode & 0o111:
-            raise SourceDeploymentError("configured Node executable is missing or not executable")
-        if not npm.is_file() or not npm.stat().st_mode & 0o111:
-            raise SourceDeploymentError("configured npm executable is missing or not executable")
-        actual_node = self._run([str(node), "--version"], cwd, timeout=30).stdout.strip().removeprefix("v")
-        if actual_node != node_version:
-            raise SourceDeploymentError(f"source builds require Node {node_version}; found {actual_node or 'no version'}")
-        actual_npm = self._run([str(npm), "--version"], cwd, timeout=30).stdout.strip()
-        if actual_npm != npm_version:
-            raise SourceDeploymentError(f"source builds require npm {npm_version}; found {actual_npm or 'no version'}")
-        return str(npm)
+        from ..hands.site_build import configured_build_environment, SiteBuildError
+
+        try:
+            configured_build_environment(self.settings, cwd, self._preview_env(production=True), run=self._run)
+        except SiteBuildError as exc:
+            raise SourceDeploymentError(str(exc)) from exc
+        return str(self.settings["npm_command"])
 
     def _run(self, command: list[str], cwd: Path, *, timeout: int) -> subprocess.CompletedProcess[str]:
         try:

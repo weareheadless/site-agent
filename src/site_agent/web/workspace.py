@@ -535,6 +535,18 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/design/runs/{{run_id}}/revalidate")
+    def workspace_design_revalidate(run_id: str, request: Request):
+        tenant = require_service(request)
+        if tenant is None or tenant.design_executor is None:
+            raise HTTPException(status_code=503, detail="tenant design worker is unavailable")
+        try:
+            run = design_service_for(tenant).prepare_revalidation(run_id)
+            tenant.design_executor.enqueue(run_id)
+            return {"run_id": run["run_id"], "candidate_sha": run["candidate_sha"], "status": run["status"]}
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail=str(exc)[:500]) from exc
+
     @app.post(f"{prefix}/design/runs/{{run_id}}/retry")
     async def workspace_design_retry(run_id: str, request: Request):
         tenant = require_service(request)
