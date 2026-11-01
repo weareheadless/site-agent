@@ -547,3 +547,15 @@ def test_compiled_preview_failure_blocks_pending_draft(monkeypatch, tmp_path):
     assert draft["meta"]["preview"]["error"] == "lint failed"
     service.close()
     memory.close()
+
+
+def test_content_inventory_fails_closed_when_the_tool_cannot_run(tmp_path, monkeypatch):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        monkeypatch.setattr(service, "_inventory_command", lambda checkout, worktree: [sys.executable, "-c",
+            "import sys; sys.stderr.write('Cannot find module typescript'); raise SystemExit(1)"])
+        result = service._content_inventory(tmp_path, tmp_path, 30, "secret")
+        assert result["status"] == "incomplete"
+        assert "typescript" in result["error"]
+    finally:
+        service.close()
