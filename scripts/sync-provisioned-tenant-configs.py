@@ -12,6 +12,7 @@ import stat
 import sys
 import tempfile
 from typing import Any, Callable, Mapping
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -103,13 +104,33 @@ def _read_active_worker_contract(tenant_id: str, customer: Mapping[str, Any]) ->
         health_url,
         headers={"Accept": "application/json", "User-Agent": "HelloAda-API-Preflight/1.0"},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=12) as response:
-            if response.status != 200 or response.geturl() != health_url:
-                raise ValueError(f"tenant {tenant_id} active Worker health check did not return its exact HTTPS endpoint")
-            raw = response.read(65537)
-    except (OSError, urllib.error.URLError) as exc:
-        raise ValueError(f"tenant {tenant_id} active Worker health check is unavailable") from exc
+    # A public Worker sits behind Cloudflare's edge protection, which
+    # intermittently answers this read-only probe with a challenge (403/429) or
+    # a timeout. Retrying a bounded number of times keeps the gate strict — the
+    # response must still be the exact endpoint with the exact identity — while
+    # one tenant's transient edge response no longer blocks every API release.
+    raw = None
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                if response.status != 200 or response.geturl() != health_url:
+                    raise ValueError(
+                        f"tenant {tenant_id} active Worker health check did not return its exact HTTPS endpoint")
+                raw = response.read(65537)
+            break
+        except ValueError:
+            raise
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            if exc.code not in {403, 429, 500, 502, 503, 504}:
+                raise ValueError(f"tenant {tenant_id} active Worker health check is unavailable") from exc
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = exc
+        if attempt < 2:
+            time.sleep(2 if attempt == 0 else 5)
+    if raw is None:
+        raise ValueError(f"tenant {tenant_id} active Worker health check is unavailable") from last_error
     if len(raw) > 65536:
         raise ValueError(f"tenant {tenant_id} active Worker health response is too large")
     try:
