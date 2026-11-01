@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 
 def inventory(root: str | Path) -> dict[str, object]:
@@ -70,10 +71,15 @@ def main() -> int:
     parser.add_argument("--root", required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(inventory(args.root), ensure_ascii=False, sort_keys=True))
+        report = inventory(args.root)
     except ValueError as exc:
-        parser.error(str(exc))
-    return 0
+        print(json.dumps({"error": str(exc)[:2_000]}, ensure_ascii=False, sort_keys=True))
+        print(f"source inventory failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    # Violations are a failed gate, but the machine-readable report must always
+    # reach the caller so the repair brief can name exact paths and lines.
+    return 1 if report.get("violations") else 0
 
 
 if __name__ == "__main__":

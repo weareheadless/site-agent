@@ -894,7 +894,9 @@ class SourceDeploymentService:
             # clean candidate. Keep the reason so the gate fails closed.
             return {"status": "incomplete", "returncode": result.returncode,
                     "error": (result.stderr or "")[-600:]}
-        return dict(report)
+        report = dict(report)
+        report.setdefault("status", "failed" if report.get("violations") else "passed")
+        return report
 
     def _seed_canonical_preview(self, worktree: Path, job: dict[str, Any], npm: str,
                                 timeout: int, preview_secret: str) -> list[dict[str, Any]]:

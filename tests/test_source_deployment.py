@@ -559,3 +559,28 @@ def test_content_inventory_fails_closed_when_the_tool_cannot_run(tmp_path, monke
         assert "typescript" in result["error"]
     finally:
         service.close()
+
+
+
+def test_content_inventory_returns_violations_as_actionable_findings(tmp_path):
+    """A violation exit must still deliver the machine-readable report."""
+    import json as _json
+    from site_agent.hands.design_quality import _content_authority_findings
+    payload = _json.dumps({"filesScanned": 2, "editableCount": 0, "bindingCount": 0, "violations": [
+        {"path": "src/components/site/presentation/hero.tsx", "line": 76,
+         "reason": "editable_field_needs_a_shared_binding"},
+    ]})
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        import sys as _sys
+        service._inventory_command = lambda checkout, worktree: [
+            _sys.executable, "-c", f"import sys; sys.stdout.write({payload!r}); raise SystemExit(1)"]
+        report = service._content_inventory(tmp_path, tmp_path, 30, "secret")
+        assert report["status"] == "failed"
+        evidence, findings = _content_authority_findings(report)
+        assert evidence["status"] == "failed"
+        assert findings[0]["code"] == "editable_field_needs_a_shared_binding"
+        assert findings[0]["path"].endswith("hero.tsx")
+        assert findings[0]["line"] == 76
+    finally:
+        service.close()
