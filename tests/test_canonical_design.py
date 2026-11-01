@@ -517,12 +517,21 @@ def test_payload_initial_prompt_reuses_templates_and_existing_candidate_flow():
         "publishable": False, "clone_path": "/tmp/design-clone",
     })
     prompt = runner._design_prompt(request, target)
-    assert "section-library-v2/" in prompt
+    assert "section-library-v3/" in prompt
     assert "render the Payload sections in their stored order" in prompt
+    assert "host already wired PagePresentation" in prompt
     assert "Do not recreate the hero markup" in prompt
     assert "helloAdaBindingId" in prompt
     assert "signature slot" in prompt
     assert "Keep non-composed documents on their existing renderer" in prompt
+    assert "The planning decision is complete" in prompt
+    assert "Implement the locked section composition" in prompt
+    for conflict in (
+        "from-scratch source-authoring pass", "Do not restore or reuse a host visual",
+        "Do not use a host visual scaffold", "do not use a host template",
+        "choose one subject-specific direction silently", "Run the project's own build/check script",
+    ):
+        assert conflict not in prompt
 
 
 def test_initial_typed_prompt_does_not_expose_existing_site_context():

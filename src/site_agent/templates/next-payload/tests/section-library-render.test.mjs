@@ -4,6 +4,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { sectionDirection, sectionEntriesToContent } from '../src/components/site/sections/adapt.ts'
 import { sectionComponents } from '../src/components/site/sections/registry.ts'
+import Composition from '../src/components/site/sections/composition.tsx'
 
 const media = (value) => ({ src: `/media/${value}.jpg`, alt: `Media ${value}` })
 const heading = (key, text) => ({ key, blockType: 'helloAdaHeading', text })
@@ -62,4 +63,32 @@ test('a hero cannot silently discard extra authored images', () => {
   assert.throws(() => renderToStaticMarkup(createElement(sectionComponents.hero, {
     content: { headline: 'Heading', image: { src: '/one.jpg', alt: 'One' }, additionalImages: [{ src: '/two.jpg', alt: 'Two' }] },
   })), /section content/i)
+})
+
+test('host composition already wires ordered content, canonical media, anchors and every owner binding', () => {
+  const sections = ['hero', 'services', 'gallery', 'about', 'contact'].map((layout, index) => ({
+    key: `section-${index}`, label: `Section ${index}`, layout,
+    entries: [heading(`heading-${index}`, `Heading ${index}`), paragraph(`body-${index}`, `Body ${index}`),
+      { key: `image-${index}`, blockType: 'helloAdaImage', image: index + 5 },
+      { key: `action-${index}`, blockType: 'helloAdaLink', text: `Action ${index}`, href: '#section-4' }],
+  }))
+  const html = renderToStaticMarkup(createElement(Composition, { document: { id: 17, sections }, collection: 'pages', media }))
+  assert.ok(html.includes('data-helloada-document-id="17"'))
+  assert.equal((html.match(/data-helloada-field=/g) || []).length, 20)
+  assert.equal((html.match(/<h1\b/g) || []).length, 1)
+  assert.equal((html.match(/<h2\b/g) || []).length, 4)
+  let previous = -1
+  for (let index = 0; index < 5; index++) {
+    const position = html.indexOf(`id="section-${index}"`)
+    assert.ok(position > previous)
+    previous = position
+    assert.ok(html.includes(`/media/${index + 5}.jpg`))
+    assert.ok(html.includes(`Heading ${index}`))
+  }
+  assert.throws(() => renderToStaticMarkup(createElement(Composition, {
+    document: { id: 17, sections }, collection: 'pages', media: () => ({ src: '', alt: '' }),
+  })), /canonical media URL/)
+  assert.throws(() => renderToStaticMarkup(createElement(Composition, {
+    document: { id: 17, sections: [{ ...sections[0], layout: 'invented' }] }, collection: 'pages', media,
+  })), /renderable identity/)
 })

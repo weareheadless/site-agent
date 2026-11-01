@@ -226,6 +226,16 @@ sites. The first section renders the page h1; supporting sections render h2s.
 The content-authority gate, real preview behavior checks and explicit owner
 approval remain mandatory; this does not add another model-review or repair level.
 
+`section-library-v3` includes the reusable composition adapter. Before dispatch,
+the host wires section order, canonical media resolution, section anchors and
+every editable binding, retaining the original presentation for non-composed
+pages/articles/products. This is deterministic plumbing, not host-authored art
+direction or business copy. The realization turn adds only the locked theme and
+planned behavior; it must not choose a second direction or reconstruct the page
+and CMS bindings. Its instructions must not also forbid the required templates
+or invite a second build/review loop. The canonical starter check exercises this
+same wired adapter before typecheck/build. Existing snapshots remain untouched.
+
 Before source mutation, Ada must produce a complete plan composed of the
 existing typed design and experience plan artifacts. It must be sufficient for
 another agent to implement the selected experience without inventing the

@@ -23,8 +23,8 @@ def test_candidate_receives_a_pinned_section_snapshot_without_replacing_presenta
     paths = _stage_section_templates(tmp_path)
     assert presentation.read_text() == "owner composition"
     assert previous.read_text() == "previous pinned presentation"
-    assert len(paths) == 4
-    assert all("section-library-v2/" in path for path in paths)
+    assert len(paths) == 5
+    assert all("section-library-v3/" in path for path in paths)
     for path in paths:
         assert (tmp_path / path).read_bytes() == (SECTIONS / Path(path).name).read_bytes()
     assert _stage_section_templates(tmp_path) == paths
@@ -52,6 +52,29 @@ def test_section_toolchain_is_prepared_before_install_without_replacing_tenant_c
     with pytest.raises(RunnerError, match="PostCSS configuration"):
         _prepare_section_toolchain(tmp_path)
     assert (tmp_path / "postcss.config.mjs").read_text() == "tenant custom config"
+
+
+def test_composition_plumbing_is_prepared_without_designing_or_losing_existing_presentation(tmp_path):
+    from site_agent.hands.opencode_runner import _stage_section_templates, _wire_section_composition, RunnerError
+    import pytest
+
+    _stage_section_templates(tmp_path)
+    presentation = tmp_path / 'src/components/site/presentation'
+    page = presentation / 'PagePresentation.tsx'
+    original = 'export default function Page(props) { return <main>{props.document.title}</main> }\n'
+    page.write_text(original)
+    paths = _wire_section_composition(tmp_path)
+    assert len(paths) == 2
+    assert (presentation / 'NonComposedPagePresentation.tsx').read_text() == original
+    wired = page.read_text()
+    assert 'section-library-v3/composition' in wired
+    assert 'mediaUrl(value)' in wired
+    assert '<ExistingPresentation {...props}' in wired
+    assert _wire_section_composition(tmp_path) == ()
+    page.write_text('another approved composition')
+    with pytest.raises(RunnerError, match='overwrite an existing presentation'):
+        _wire_section_composition(tmp_path)
+    assert page.read_text() == 'another approved composition'
 
 
 def test_sections_are_scaffold_not_shared_runtime():
