@@ -965,6 +965,27 @@ class DesignJobExecutor:
         motion = bundle.get("motion") if isinstance(bundle.get("motion"), Mapping) else {}
         temporal = bundle.get("temporal") if isinstance(bundle.get("temporal"), Mapping) else {}
         journey = bundle.get("experience_journey") if isinstance(bundle.get("experience_journey"), Mapping) else {}
+        failed = [item for item in (bundle.get("findings") or ()) if isinstance(item, Mapping)][:50]
+        content_defects = [
+            item for item in failed
+            if str(item.get("gate") or "") == "content"
+            or str(item.get("code") or "") in {
+                "visible_copy_must_come_from_payload",
+                "business_image_needs_a_shared_payload_binding",
+                "editable_field_needs_a_shared_binding",
+            }
+        ]
+        requirements = [
+            "Realize the locked experience in the visible rendered behavior at every required viewport.",
+            "Preserve the locked plan, composition, copy, and concept; do not introduce a second concept.",
+            "The host will re-render and re-validate this candidate; a coverage claim is not proof.",
+        ]
+        if content_defects:
+            requirements.append(
+                "Bind every visible business string, link and image to the existing Payload document and its "
+                "shared binding markers; remove the literal copy, constant URLs and static business image sources "
+                "listed above. Do not create a second content source."
+            )
         return {
             "source": "host_deterministic_evidence",
             "candidate_sha": str(run.get("candidate_sha") or ""),
@@ -979,17 +1000,14 @@ class DesignJobExecutor:
                     "code": item.get("code"),
                     "gate": item.get("gate"),
                     "message": item.get("message"),
+                    "path": item.get("path"),
+                    "line": item.get("line"),
                     "missing_condition_ids": item.get("missing_condition_ids"),
                     "signature_behavior_id": item.get("signature_behavior_id"),
                 }
-                for item in (bundle.get("findings") or ())
-                if isinstance(item, Mapping)
-            ][:50],
-            "requirements": [
-                "Realize the locked experience in the visible rendered behavior at every required viewport.",
-                "Preserve the locked plan, composition, copy, and concept; do not introduce a second concept.",
-                "The host will re-render and re-validate this candidate; a coverage claim is not proof.",
+                for item in failed
             ],
+            "requirements": requirements,
             "render_status": {
                 "motion": str(motion.get("status") or ""),
                 "temporal": str(temporal.get("status") or ""),

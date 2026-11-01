@@ -77,6 +77,8 @@ def test_owner_review_requires_a_passing_ready_run():
             "visual_critique": {"state": "repair"},
         },
     }) is False
+
+
     assert owner_review_requirements_met({
         **base,
         "status": "ready_for_review",
@@ -86,6 +88,20 @@ def test_owner_review_requires_a_passing_ready_run():
             "visual_critique": {"state": "repair"},
         },
     }) is False
+
+
+def test_owner_review_accepts_observed_css_behavior_without_mandating_gsap():
+    artifact = {"status": "passed", "artifact_id": "site-output-" + "b" * 64, "tree_hash": "b" * 64}
+    gates = {name: "passed" for name in ("build", "output", "native_source", "browser", "motion",
+                                        "composition", "experience_journey")}
+    run = {"candidate_sha": "a" * 40, "status": "ready_for_review", "artifact_required": True,
+           "output_artifact_id": artifact["artifact_id"], "output_tree_hash": artifact["tree_hash"],
+           "quality_report_json": {"state": "passed", "gates": gates, "evidence": {
+               "output_artifact": artifact, "native_source": {"react_source_files": ["page.tsx"]},
+           }}}
+    assert owner_review_requirements_met(run)
+    gates["browser"] = "skipped"
+    assert not owner_review_requirements_met(run)
 
 
 def _intake() -> SiteIntake:

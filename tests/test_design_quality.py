@@ -1080,3 +1080,60 @@ def test_server_rendered_build_skips_static_output_gates_without_failing(tmp_pat
     assert data["gates"]["composition"] == "skipped"
     assert data["gates"]["temporal"] == "skipped"
     assert evidence["build"]["status"] == "passed"
+
+
+def test_server_rendered_candidate_inspects_bound_runtime_and_retains_compiled_identity(tmp_path):
+    from types import SimpleNamespace
+    repo, sha = _repo(tmp_path)
+    inspected = []
+    def inspect(output, viewport):
+        inspected.append(dict(viewport))
+        return {"console_errors": [], "failed_requests": [], "routes": []}
+    artifact = {"status": "passed", "mode": "compiled_runtime", "candidate_sha": sha,
+                "artifact_id": "site-output-" + "a" * 64, "tree_hash": "a" * 64}
+    report = run_quality_gates(repo, base_sha=sha, candidate_sha=sha, run_id="runtime",
+        policy=_policy(static_output_required=False, browser_required=True),
+        browser=SimpleNamespace(runtime_url="http://127.0.0.1:1234/preview", inspect=inspect),
+        build_evidence={"status": "passed", "output_artifact": artifact})
+    data = report.to_dict()
+    assert len(inspected) == 3
+    assert data["evidence"]["browser"]["status"] == "passed"
+    assert data["evidence"]["output_artifact"] == artifact
+    assert data["evidence"]["output"]["mode"] == "compiled_runtime"
+
+
+def test_managed_candidate_must_bind_visible_copy_and_images_to_payload(tmp_path):
+    """The shared inventory keeps Payload the only content authority.
+
+    A server-rendered candidate has no static export, so this is the gate that
+    stops hardcoded business copy or images from reaching owner review.
+    """
+    repo, sha = _repo(tmp_path)
+    page = repo / "src" / "app" / "page.tsx"
+    page.write_text(
+        "export default function Page() {\n"
+        "  return <main><img src=\"/assets/logo.webp\" alt=\"Studio logo\" /><p>Hardcoded offer</p></main>\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "hardcoded copy"], check=True)
+    candidate = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    inventory = {"filesScanned": 1, "editableCount": 0, "bindingCount": 0, "violations": [
+        {"path": "src/app/page.tsx", "line": 2, "reason": "business_image_needs_a_shared_payload_binding"},
+        {"path": "src/app/page.tsx", "line": 2, "reason": "visible_copy_must_come_from_payload"},
+    ]}
+    report = run_quality_gates(
+        repo, base_sha=sha, candidate_sha=candidate, run_id="run-content",
+        policy=_policy(static_output_required=False, react_source_required=True),
+        build_evidence={"status": "passed", "content_authority": inventory},
+    )
+
+    data = report.to_dict()
+    reasons = {finding["code"] for finding in data["findings"] if finding["gate"] == "content"}
+    assert "visible_copy_must_come_from_payload" in reasons
+    assert "business_image_needs_a_shared_payload_binding" in reasons
+    assert data["gates"]["content_authority"] == "failed"

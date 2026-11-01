@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from fnmatch import fnmatch
 from dataclasses import dataclass, field
@@ -1135,6 +1136,45 @@ def _native_source_findings(
     }, findings
 
 
+def _content_authority_findings(evidence: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Apply the shared source inventory so Payload stays the content authority.
+
+    A server-rendered candidate has no static export to inspect, so without this
+    the design pipeline never checked that visible copy and business images are
+    bound to Payload rather than hardcoded beside it. This is the same host-owned
+    inventory used for every customer source change, not a second contract. It
+    runs inside the compiled preview, the only place with the pinned toolchain.
+    """
+    report = evidence if isinstance(evidence, Mapping) else {}
+    if not report:
+        return {"status": "incomplete", "reason": "source_inventory_missing"}, [_finding(
+            "content", "incomplete", "source_inventory_missing",
+            "The host source inventory did not run, so content authority cannot be verified.",
+        )]
+    if report.get("status") == "incomplete":
+        return dict(report), [_finding(
+            "content", "incomplete", "source_inventory_failed",
+            "The host source inventory could not produce a usable report.",
+            error=str(report.get("error") or "")[:400],
+        )]
+    violations = [item for item in report.get("violations") or () if isinstance(item, Mapping)]
+    findings = [
+        _finding(
+            "content", "blocker", str(item.get("reason") or "content_authority"),
+            "Visible copy and business images must be bound to the Payload content contract.",
+            path=str(item.get("path") or ""), line=item.get("line"),
+        )
+        for item in violations[:40]
+    ]
+    return {
+        "status": "failed" if findings else "passed",
+        "files_scanned": report.get("filesScanned"),
+        "editable_count": report.get("editableCount"),
+        "binding_count": report.get("bindingCount"),
+        "violations": violations[:40],
+    }, findings
+
+
 def _font_findings(
     repo: Path,
     base_sha: str,
@@ -2106,6 +2146,7 @@ def _run_quality_in_workspace(
         workspace, base_sha, candidate_sha, policy
     )
     findings.extend(native_source_findings)
+    content_authority_evidence: dict[str, Any] = {"status": "skipped", "reason": "react_source_not_required"}
     originality_evidence, originality_findings = _originality_findings(
         workspace, base_sha, candidate_sha, policy
     )
@@ -2134,6 +2175,11 @@ def _run_quality_in_workspace(
             _finding("build", "blocker", "build_failed", "The canonical Next site build failed.", evidence=build_evidence)
         ]
     findings.extend(build_findings)
+    if policy.react_source_required and "content_authority" in build_evidence:
+        content_authority_evidence, content_authority_findings = _content_authority_findings(
+            build_evidence.get("content_authority")
+        )
+        findings.extend(content_authority_findings)
     runtime_evidence, runtime_findings = _stage_host_runtime_files(workspace, policy)
     findings.extend(runtime_findings)
     static_output = bool(getattr(policy, "static_output_required", True))
@@ -2145,6 +2191,12 @@ def _run_quality_in_workspace(
         output_evidence = {"status": "skipped", "reason": no_static_output}
         output_findings = []
     output_artifact_evidence: dict[str, Any] = {"status": "skipped", "reason": "artifact_store_not_configured"}
+    if not static_output and bool(getattr(browser, "runtime_url", "")):
+        compiled = build_evidence.get("output_artifact") or {}
+        if (compiled.get("status") == "passed" and compiled.get("candidate_sha") == candidate_sha
+                and compiled.get("artifact_id") and compiled.get("tree_hash")):
+            output_artifact_evidence = dict(compiled)
+            output_evidence = {"status": "passed", "mode": "compiled_runtime", "artifact_id": compiled["artifact_id"]}
     output_blockers = {
         "blocker",
         "critical",
@@ -2175,7 +2227,7 @@ def _run_quality_in_workspace(
         conversion_evidence = {"status": "skipped", "reason": no_static_output}
     manifest_evidence, manifest_findings = _manifest_findings(workspace, policy)
     findings.extend(manifest_findings)
-    if static_output:
+    if static_output or bool(getattr(browser, "runtime_url", "")):
         browser_evidence, browser_findings, browser_incomplete = _browser_findings(workspace / policy.output_dir, policy, browser)
         findings.extend(browser_findings)
     else:
@@ -2645,7 +2697,7 @@ def _run_quality_in_workspace(
             "Native motion source exists but browser behavior was not requested, so the candidate cannot be fully verified.",
             paths=native_source_evidence.get("animation_files", []),
         ))
-    if not static_output:
+    if not static_output and not bool(getattr(browser, "runtime_url", "")):
         # A server-rendered candidate is verified on the deployed site, not in
         # a static export tree. Every browser-derived experience gate needs
         # rendered evidence this host cannot produce, so they are deferred with
@@ -2678,6 +2730,7 @@ def _run_quality_in_workspace(
         "output": output_evidence,
         "output_artifact": output_artifact_evidence,
             "content": content_evidence,
+            "content_authority": content_authority_evidence,
             "conversion": conversion_evidence,
             "manifest": manifest_evidence,
             "motion": motion_evidence,
@@ -2694,6 +2747,7 @@ def _run_quality_in_workspace(
             "fonts": font_evidence.get("status"),
             "output": output_evidence.get("status"),
             "content": content_evidence.get("status"),
+            "content_authority": content_authority_evidence.get("status"),
             "conversion": conversion_evidence.get("status"),
             "manifest": manifest_evidence.get("status"),
             "motion": motion_evidence.get("status"),
