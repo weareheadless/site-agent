@@ -1303,6 +1303,26 @@ class DesignService:
             )
         return selected
 
+    def _quality_media_files(self, snapshot: DesignContextSnapshot) -> tuple[dict[str, Any], ...]:
+        """Bind retained materialized WebPs to the frozen original owner bytes."""
+        from ..hands.opencode_runner import _canonical_media_webp
+
+        files = []
+        for item in snapshot.asset_visual_evidence:
+            evidence = item.to_dict()
+            media_id = re.fullmatch(r"media-([1-9][0-9]*)", item.asset_id)
+            if media_id and self.media_service is not None:
+                raw, _ = self.media_service.read_preview(int(media_id.group(1)), thumbnail=False)
+                if hashlib.sha256(raw).hexdigest() != item.asset_sha256:
+                    raise DesignServiceError(f"owner media {item.asset_id} changed from the frozen intake evidence")
+                # Local Library previews already contain its canonical WebP;
+                # Payload uploads use the same conversion as materialization.
+                stored = self.media_service.get(int(media_id.group(1)))
+                canonical = _canonical_media_webp(self.media_service, stored, source_bytes=raw)
+                evidence["asset_sha256"] = hashlib.sha256(canonical).hexdigest()
+            files.append(evidence)
+        return tuple(files)
+
     def quality_policy_for_run(self, run_id: str) -> QualityPolicy:
         """Resolve site-specific validation settings for a persisted run."""
         run = self.get_run(run_id)
@@ -1391,9 +1411,11 @@ class DesignService:
             )
             snapshot = run.get("context_snapshot")
             if snapshot:
+                frozen_snapshot = DesignContextSnapshot.from_dict(snapshot)
                 policy = replace(
                     policy,
-                    approved_capabilities=DesignContextSnapshot.from_dict(snapshot).capabilities,
+                    approved_capabilities=frozen_snapshot.capabilities,
+                    approved_media_files=tuple(item.to_dict() for item in frozen_snapshot.asset_visual_evidence),
                 )
             if run.get("design_manifest_path"):
                 policy = replace(policy, manifest_path=str(run["design_manifest_path"]))
@@ -2758,6 +2780,12 @@ class DesignService:
             raise DesignServiceError("design run has no immutable build identities")
         try:
             effective_policy = policy or self.quality_policy_for_run(run_id)
+            snapshot = run.get("context_snapshot")
+            if snapshot and effective_policy.approved_media_files:
+                effective_policy = replace(
+                    effective_policy,
+                    approved_media_files=self._quality_media_files(DesignContextSnapshot.from_dict(snapshot)),
+                )
             frozen_planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
             frozen_target = frozen_planning.get("build_target") if isinstance(frozen_planning, Mapping) else None
             target_paths = (

@@ -2239,7 +2239,8 @@ def _write_host_design_manifest(
     # The acceptance manifest is factual provenance, not a serialized design
     # system.  In particular, it must not claim ownership of tokens, sections,
     # shell structure, variation points, or motion choreography.
-    media_prefix = str(((config.get("site") or {}).get("media") or {}).get("site_asset_dir") or "").strip().strip("/")
+    from ..config import site_media_destination
+    media_prefix = site_media_destination(config)
     owner_media_hashes: dict[str, str] = {}
     evidence_hashes: dict[str, str] = {}
     font_hashes: dict[str, str] = {}
@@ -5030,7 +5031,7 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
     return site_clone, clone, base_ref, _change_state(clone)
 
 
-def _canonical_media_webp(service: Any, stored: Any) -> bytes:
+def _canonical_media_webp(service: Any, stored: Any, *, source_bytes: bytes | None = None) -> bytes:
     """Return canonical WebP bytes for one Library asset.
 
     Payload tenants keep the binary in Payload, so the bytes come back through
@@ -5045,7 +5046,9 @@ def _canonical_media_webp(service: Any, stored: Any) -> bytes:
         raise RunnerError("the media Library cannot supply image bytes for this build")
     from .media_processing import MediaProcessingError, process_image
 
-    raw, _content_type = reader(int(stored.asset_id))
+    raw = source_bytes
+    if raw is None:
+        raw, _content_type = reader(int(stored.asset_id))
     try:
         return process_image(raw).normalized
     except MediaProcessingError as exc:
