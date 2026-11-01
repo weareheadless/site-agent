@@ -1059,24 +1059,30 @@ function ReviewWorkspace() {
         return
       }
       const headSha = draft?.meta?.candidate_sha || draft?.meta?.head_sha || plan.head_sha || ''
-      if (draft?.kind === 'design') setSourceReview((current) => current?.draftId === draft.id && current.sha === headSha
+      if (!draft) return
+      if (draft.kind === 'merge' && plan.mode === 'overlay' && !plan.requires_build) {
+        setSourceReview(undefined)
+        setPreviewPlan({ ...plan, head_sha: headSha })
+        return
+      }
+      setSourceReview((current) => current?.draftId === draft.id && current.sha === headSha
         ? current : { draftId: draft.id, sha: headSha, url: '' })
-      else setSourceReview(undefined)
       setPreviewPlan({ ...plan, head_sha: headSha })
-      if (!plan.requires_build) return
+      if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error(t('workspace.previewError'))
 
       const latestResponse = await fetchHelloAda('/api/helloada/source/preview?branch=preview', { cache: 'no-store' })
       const latest = (await latestResponse.json()) as {
         id?: string
         status?: string
         commit?: string
+        draft_id?: number
         error?: string
       }
       const sameRevision = draft?.kind === 'design'
         ? Boolean(headSha && latest.commit === headSha)
-        : !headSha || !latest.commit || latest.commit === headSha
+        : Boolean(headSha && latest.commit === headSha && latest.draft_id === draft.id)
       if (latestResponse.ok && sameRevision && latest.status === 'ready' && latest.id) {
-        if (draft?.kind === 'design') setSourceReview({ draftId: draft.id, sha: headSha,
+        setSourceReview({ draftId: draft.id, sha: headSha,
           url: `/api/helloada/source/preview/${encodeURIComponent(latest.id)}/runtime/` })
         setPreviewPlan({ ...plan, head_sha: headSha, status: 'ready', requires_build: false })
         const identity = `${draft?.id || ''}:${headSha}:${latest.id}`
@@ -1105,7 +1111,7 @@ function ReviewWorkspace() {
         const startResponse = await fetchHelloAda('/api/helloada/source/preview', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ branch: 'preview', ...(headSha ? { commit: headSha } : {}), mode: 'compiled_preview' }),
+          body: JSON.stringify({ branch: 'preview', commit: headSha, draft_id: draft.id, mode: 'compiled_preview' }),
         })
         if (!startResponse.ok) {
           const startBody = (await startResponse.json()) as { message?: string }
@@ -2369,7 +2375,7 @@ function ReviewWorkspace() {
                     className="helloada-draft-action is-publish"
                     type="button"
                     onClick={() => publishDialogRef.current?.showModal()}
-                    disabled={publishing}
+                    disabled={publishing || Boolean(sourceReview && !sourceReview.url)}
                   >
                     {publishing ? t('workspace.publishingDraft') : t('owner.publishChanges')}
                   </button>
