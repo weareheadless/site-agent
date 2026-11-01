@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..core.contracts import Artifact, ArtifactKind
-from ..core.design_contracts import DesignPhase, SiteIntake, canonical_hash
+from ..core.design_contracts import MAX_QUALITY_REPORT_BYTES, DesignPhase, SiteIntake, canonical_hash
 
 
 REPORT_RENDERER = "helloada-onboarding-report-v1"
@@ -39,7 +39,7 @@ def persist_initial_onboarding_report(memory, run: Mapping[str, Any]) -> dict[st
 
     intake = SiteIntake.from_dict(run.get("intake_json") or {})
     quality = run.get("quality_report_json") if isinstance(run.get("quality_report_json"), Mapping) else {}
-    quality_hash = canonical_hash(dict(quality))
+    quality_hash = canonical_hash(dict(quality), max_bytes=MAX_QUALITY_REPORT_BYTES)
     context_hash = str(run.get("context_snapshot_hash") or "").strip().lower()
     variant_key = "-".join((candidate_sha[:12], intake_hash[:12], quality_hash[:12], context_hash[:12] or "no-context"))
     claim = memory.claim_design_phase(

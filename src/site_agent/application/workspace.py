@@ -2063,12 +2063,12 @@ class ChatService:
         report_state = "not_started"
         report = None
         if initial_run is not None:
-            from ..core.design_contracts import canonical_hash
+            from ..core.design_contracts import MAX_QUALITY_REPORT_BYTES, canonical_hash
             from .designs import owner_review_requirements_met
 
             candidate_ready = owner_review_requirements_met(initial_run)
             quality = initial_run.get("quality_report_json") if isinstance(initial_run.get("quality_report_json"), Mapping) else {}
-            quality_hash = canonical_hash(dict(quality))
+            quality_hash = canonical_hash(dict(quality), max_bytes=MAX_QUALITY_REPORT_BYTES)
             context_hash = str(initial_run.get("context_snapshot_hash") or "").strip().lower()
             expected_variant = "-".join((
                 str(initial_run.get("candidate_sha") or "")[:12],
