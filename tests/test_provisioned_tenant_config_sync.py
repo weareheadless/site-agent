@@ -216,3 +216,46 @@ def test_runtime_preflight_allows_a_dormant_tenant_without_a_payload_instance(tm
         "validatedTenants": ["dormant-studio", "oceanicvibes"],
         "payloadTenants": ["oceanicvibes"],
     }
+
+
+def test_health_preflight_retries_edge_challenges_but_still_requires_exact_identity(monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    customer = {"health": "https://tenant.example.workers.dev/api/health"}
+    attempts = []
+
+    class Response:
+        status = 200
+        def __init__(self, payload): self._payload = payload
+        def geturl(self): return customer["health"]
+        def read(self, _limit): return self._payload
+        def __enter__(self): return self
+        def __exit__(self, *_exc): return False
+
+    def challenged(request, timeout):
+        attempts.append(timeout)
+        if len(attempts) < 3:
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+        return Response(json.dumps({
+            "ok": True, "tenant": "tenant", "releaseSha": "a" * 40,
+            "payloadAdmin": "0.10.46", "payloadCore": "0.5.10", "contentContract": "helloada-content-v4",
+            "schemaRevision": 9, "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
+            "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac",
+        }).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", challenged)
+    monkeypatch.setattr(sync.time, "sleep", lambda _seconds: None)
+    result = sync._read_active_worker_contract("tenant", customer)
+    assert result["adminVersion"] == "0.10.46"
+    assert len(attempts) == 3
+
+    attempts.clear()
+    def always_blocked(request, timeout):
+        attempts.append(timeout)
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", always_blocked)
+    with pytest.raises(ValueError, match="health check is unavailable"):
+        sync._read_active_worker_contract("tenant", customer)
+    assert len(attempts) == 3
