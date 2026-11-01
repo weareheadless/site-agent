@@ -3467,6 +3467,27 @@ class Memory:
         return result
 
     @_locked
+    def latest_design_run_for_intake(
+        self, session_id: str, revision_id: int | None, *, initial_only: bool = False,
+    ) -> dict[str, Any] | None:
+        """Select the relevant run before decoding large historical artifacts."""
+        clauses = ["mode = 'production_candidate'"]
+        values: list[Any] = []
+        if session_id:
+            clauses.append("intake_session_id = ?")
+            values.append(str(session_id))
+        if revision_id is not None:
+            clauses.append("intake_revision_id = ?")
+            values.append(int(revision_id))
+        if initial_only:
+            clauses.append("COALESCE(NULLIF(operation_kind, ''), 'initial_build') = 'initial_build'")
+        row = self.conn.execute(
+            "SELECT run_id FROM design_runs WHERE " + " AND ".join(clauses)
+            + " ORDER BY id DESC LIMIT 1", values,
+        ).fetchone()
+        return self.get_design_run(str(row[0])) if row else None
+
+    @_locked
     def get_design_run_by_chat_job(self, chat_job_id: int) -> dict[str, Any] | None:
         """Find the design handoff already created by one durable chat job."""
         if isinstance(chat_job_id, bool) or not isinstance(chat_job_id, int) or chat_job_id < 1:

@@ -2274,6 +2274,7 @@ def test_ready_start_build_action_is_idempotent_and_visible_in_workspace_status(
     class _Memory:
         def list_active_chat_jobs(self, **kwargs): return []
         def list_design_runs(self, **kwargs): return [lab.submissions[0][1]]
+        def latest_design_run_for_intake(self, *_args, **_kwargs): return lab.submissions[0][1]
         def list_design_run_events(self, run_id, **kwargs): return []
 
     class _Tenant:

@@ -1967,9 +1967,7 @@ class ChatService:
         if tenant is not None and intake_status.get("confirmed"):
             revision = intake_status.get("confirmed_revision_id") or intake_status.get("confirmed_revision")
             session_id = str(intake_status.get("session_id") or "")
-            run = next((item for item in memory.list_design_runs(mode="production_candidate", limit=500)
-                        if (not session_id or str(item.get("intake_session_id") or "") == session_id)
-                        and (revision is None or item.get("intake_revision_id") == revision)), None)
+            run = memory.latest_design_run_for_intake(session_id, revision)
             if run is not None:
                 events = memory.list_design_run_events(str(run["run_id"]), limit=500)
                 order = ("queued", "planning", "generating", "building", "validating", "rendering")
@@ -2055,12 +2053,7 @@ class ChatService:
             except (TypeError, ValueError):
                 revision_id = None
             if revision_id is not None:
-                initial_run = next((
-                    run for run in memory.list_design_runs(mode="production_candidate", limit=500)
-                    if str(run.get("operation_kind") or "initial_build") == "initial_build"
-                    and str(run.get("intake_session_id") or "") == session_id
-                    and run.get("intake_revision_id") == revision_id
-                ), None)
+                initial_run = memory.latest_design_run_for_intake(session_id, revision_id, initial_only=True)
 
         candidate_ready = False
         report_state = "not_started"

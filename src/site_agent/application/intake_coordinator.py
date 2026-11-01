@@ -231,10 +231,7 @@ class IntakeCoordinator:
                 return False
             session_id = str(session.get("session_id") or "")
             revision_id = session.get("confirmed_revision_id")
-            runs = self.memory.list_design_runs(mode="production_candidate", limit=500)
-            candidate = next((item for item in runs
-                              if str(item.get("intake_session_id") or "") == session_id
-                              and item.get("intake_revision_id") == revision_id), None)
+            candidate = self.memory.latest_design_run_for_intake(session_id, revision_id)
             return candidate is None or str(candidate.get("status") or "") != "ready_for_review"
         # Intake remains the conversational owner surface until explicitly
         # confirmed, including when all required fields are ready to build.
