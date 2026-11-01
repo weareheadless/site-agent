@@ -56,3 +56,51 @@ test('host presentation inventory rejects visible copy outside Payload and count
   assert.equal(nested.editableImages, 2)
   assert.equal(nested.imageElements, 2)
 })
+
+
+test('a section template may receive a marker prop bound by the composing file', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-source-inventory-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const sections = path.join(root, 'src/components/site/presentation/section-library-v1')
+  fs.mkdirSync(sections, { recursive: true })
+  fs.writeFileSync(path.join(root, 'helloada-content-contract.json'), JSON.stringify({
+    collections: { pages: ['title', 'sections'] },
+    globals: {},
+  }))
+  const component = path.join(sections, 'hero.tsx')
+
+  // The host section templates receive the marker from the composing file; the
+  // binding itself is created there with the shared helper.
+  fs.writeFileSync(component, `export default function Hero({ content, marker }: { content: { title: string }; marker?: string }) {
+    return <section><h1 data-helloada-field={marker}>{content.title}</h1></section>
+  }
+`)
+  assert.deepEqual(scanPresentation(root, ts).violations, [])
+
+  // A mapped/computed marker is accepted where the file owns the helper.
+  fs.writeFileSync(component, `import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
+  export default function Hero({ collection, documentId, items }) {
+    const marker = (key: string) => helloAdaBindingId(collection, documentId, { collection, documentId, field: 'entry', property: key })
+    return <section>{items.map((item: { key: string }) => <h1 key={item.key} data-helloada-field={marker(item.key)}>{item.key}</h1>)}</section>
+  }
+`)
+  assert.deepEqual(scanPresentation(root, ts).violations, [])
+
+  // A constant string is still a literal, not a binding.
+  fs.writeFileSync(component, `const HEADING = 'Hardcoded promise'
+  export default function Hero() {
+    return <section><h1 data-helloada-field={HEADING}>x</h1></section>
+  }
+`)
+  const literal = scanPresentation(root, ts)
+  assert.ok(literal.violations.some((item) => item.reason === 'editable_field_needs_a_shared_binding'))
+
+  // A resolvable binding still has to name a field the shared schema declares.
+  fs.writeFileSync(component, `import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
+  export default function Hero({ page }) {
+    return <section><h1 data-helloada-field={helloAdaBindingId('pages', String(page.id), { collection: 'pages', documentId: String(page.id), field: 'inventedField' })}>{page.title}</h1></section>
+  }
+`)
+  const outside = scanPresentation(root, ts)
+  assert.ok(outside.violations.some((item) => item.reason === 'editable_field_is_outside_the_shared_schema'))
+})
