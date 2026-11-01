@@ -1130,6 +1130,7 @@ def test_a_repair_child_without_host_evidence_does_not_consume_the_single_slot(t
         return repair_child_blocks_new_repair({"status": status, "quality_report_json": report})
 
     assert blocks("needs_repair", None) is False
+    assert blocks("incomplete", None) is False
     assert blocks("needs_repair", {"state": "repair"}) is True
     assert blocks("building", None) is True
     assert blocks("failed", None) is False

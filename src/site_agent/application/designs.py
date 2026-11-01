@@ -125,6 +125,23 @@ def owner_review_requirements_met(run: Mapping[str, Any]) -> bool:
     return True
 
 
+def refinement_child_is_replaceable(item: Mapping[str, Any]) -> bool:
+    """Return whether a refinement child may be replaced by another repair.
+
+    One rule, shared by the service and the durable job: a child that never
+    reached visual review (no critique) has not produced a design outcome, so it
+    may be replaced after a host validation failure. Any live child, or one with
+    a critique, remains the active single refinement.
+    """
+    status = item.get("status")
+    if status in {DesignRunStatus.FAILED.value, DesignRunStatus.CANCELLED.value}:
+        return True
+    if status not in {DesignRunStatus.NEEDS_REPAIR.value, DesignRunStatus.INCOMPLETE.value}:
+        return False
+    report = item.get("quality_report_json") or {}
+    return not isinstance(report, Mapping) or not report.get("visual_critique")
+
+
 def _resolved(path: str | Path) -> Path | None:
     value = str(path or "").strip()
     if not value:
@@ -2570,20 +2587,9 @@ class DesignService:
             item for item in self.memory.list_design_run_children(parent_run_id, limit=500)
             if item.get("operation_kind") == "visual_refinement"
         ]
-        def retryable_child(item: Mapping[str, Any]) -> bool:
-            status = item.get("status")
-            if status in {DesignRunStatus.FAILED.value, DesignRunStatus.CANCELLED.value}:
-                return True
-            if status != DesignRunStatus.NEEDS_REPAIR.value:
-                return False
-            report = item.get("quality_report_json") or {}
-            # A child that never reached visual review may be retried after a
-            # host validation failure; a child with a critique is a real
-            # design outcome and remains the active single refinement.
-            return not isinstance(report, Mapping) or not report.get("visual_critique")
         active_existing = [
             item for item in existing
-            if not retryable_child(item)
+            if not refinement_child_is_replaceable(item)
         ]
         if active_existing:
             raise DesignServiceError("a visual refinement child already exists for this candidate")
