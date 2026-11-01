@@ -121,7 +121,11 @@ test("two concurrent submissions for the last unit admit one appointment; idempo
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM messages").get().count, 1);
 });
 
-test("availability omits daylight-saving gaps and emits one deterministic repeated wall time", async () => {
+test("availability omits daylight-saving gaps and emits one deterministic repeated wall time", async (t) => {
+  // Pin the clock: this test is about wall-clock arithmetic, not about when it
+  // happens to run. With the real clock the repeated 01:xx hour disappears once
+  // the current time passes it on the fall-back date itself.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 1, 12) });
   const hours = Array.from({ length: 7 }, (_, day) => ({ day, startTime: "00:00", endTime: "04:00" }));
   const { db: springDb } = fixture({ timeZone: "America/New_York", hours });
   const spring = await details(springDb, "2027-03-14");
