@@ -108,6 +108,7 @@ class QualityPolicy:
     internal_scaffold_fingerprints: tuple[str, ...] = ()
     required_font_families: tuple[str, ...] = ()
     approved_font_files: tuple[dict[str, Any], ...] = ()
+    approved_media_files: tuple[dict[str, Any], ...] = ()
     max_rendered_asset_height_viewport_ratio: float = 2.0
     max_empty_scroll_viewport_ratio: float = 2.0
     immersive_asset_ids: tuple[str, ...] = ()
@@ -688,6 +689,11 @@ def _host_provisioned_paths(repo: Path, policy: QualityPolicy) -> set[str]:
             continue
         provisioned.add(normalize_path(relative))
     hashes = {}
+    # Frozen intake evidence predates per-file manifest provenance on retained
+    # candidates. It binds the same owner assets to exact paths and bytes.
+    for asset in policy.approved_media_files:
+        if isinstance(asset, Mapping):
+            hashes[str(asset.get("relative_path") or "")] = asset.get("asset_sha256")
     for name in ("owner_media_hashes", "font_hashes", "evidence_hashes", "provisioned_file_hashes"):
         recorded = metadata.get(name)
         if isinstance(recorded, Mapping):
@@ -732,17 +738,23 @@ def _repository_findings(repo: Path, base_sha: str, candidate_sha: str, policy: 
     host_provisioned_paths = _host_provisioned_paths(repo, policy)
     for path in sorted(changed):
         clean = normalize_path(path)
-        hard_denied = any(denied in clean and clean not in allowed_hard_denied for denied in HARD_DENY)
+        # Host compiler preparation is not tenant source authoring. Apply its
+        # verified provenance consistently to both overlapping path checks,
+        # without granting exemptions to arbitrary protected runtime files.
+        host_compiler = clean in host_provisioned_paths and clean in {
+            "package.json", "package-lock.json", "postcss.config.mjs",
+        }
+        hard_denied = not host_compiler and any(denied in clean and clean not in allowed_hard_denied for denied in HARD_DENY)
         host_metadata = bool(host_manifest and clean == host_manifest and not hard_denied)
         allowlisted = (
             host_metadata
             or (clean in host_provisioned_paths and not hard_denied)
             or (writable(clean, patterns, allowed_hard_denied_paths=allowed_hard_denied) if patterns else clean in allowed_hard_denied)
         )
-        if not clean or hard_denied or any(
+        if not clean or hard_denied or (not host_compiler and any(
             clean == prohibited or clean.startswith(prohibited.rstrip("/") + "/")
             for prohibited in policy.prohibited_paths
-        ) or (patterns and not allowlisted):
+        )) or (patterns and not allowlisted):
             findings.append(_finding("repository", "blocker", "path_policy", f"Changed path is outside the design allowlist: {path}", path=path))
         raw_target = (repo / clean) if clean else repo
         target = raw_target.resolve() if clean else repo.resolve()

@@ -1391,9 +1391,11 @@ class DesignService:
             )
             snapshot = run.get("context_snapshot")
             if snapshot:
+                frozen_snapshot = DesignContextSnapshot.from_dict(snapshot)
                 policy = replace(
                     policy,
-                    approved_capabilities=DesignContextSnapshot.from_dict(snapshot).capabilities,
+                    approved_capabilities=frozen_snapshot.capabilities,
+                    approved_media_files=tuple(item.to_dict() for item in frozen_snapshot.asset_visual_evidence),
                 )
             if run.get("design_manifest_path"):
                 policy = replace(policy, manifest_path=str(run["design_manifest_path"]))

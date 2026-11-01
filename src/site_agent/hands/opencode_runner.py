@@ -2239,7 +2239,8 @@ def _write_host_design_manifest(
     # The acceptance manifest is factual provenance, not a serialized design
     # system.  In particular, it must not claim ownership of tokens, sections,
     # shell structure, variation points, or motion choreography.
-    media_prefix = str(((config.get("site") or {}).get("media") or {}).get("site_asset_dir") or "").strip().strip("/")
+    from ..config import site_media_destination
+    media_prefix = site_media_destination(config)
     owner_media_hashes: dict[str, str] = {}
     evidence_hashes: dict[str, str] = {}
     font_hashes: dict[str, str] = {}
