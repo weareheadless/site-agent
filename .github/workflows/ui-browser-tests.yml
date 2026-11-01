@@ -1,0 +1,55 @@
+name: UI browser tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/site_agent/qa/**'
+      - 'src/site_agent/web/**'
+      - 'src/site_agent/application/design*'
+      - 'src/site_agent/application/intake*'
+      - 'src/site_agent/application/incubation*'
+      - 'src/site_agent/hands/opencode*'
+      - 'src/site_agent/hands/site_build*'
+      - 'src/site_agent/templates/**'
+      - 'flows/**'
+      - 'tests/test_qa_*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/ui-browser-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/site_agent/**'
+      - 'flows/**'
+      - 'tests/test_qa_*.py'
+      - 'pyproject.toml'
+      - '.github/workflows/ui-browser-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: python -m pip install -e '.[dev,design-lab]'
+      - run: python -m playwright install --with-deps chromium
+      - name: Test browser driver and real local intake shell (no provider calls)
+        env:
+          PYTHONPATH: src
+        run: |
+          mkdir -p .qa/pytest
+          python -m pytest tests/test_qa_*.py -q --basetemp=.qa/pytest
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deterministic-browser-evidence
+          path: .qa/pytest/**/artifacts/*.png
+          if-no-files-found: ignore

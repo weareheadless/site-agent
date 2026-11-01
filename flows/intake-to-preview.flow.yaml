@@ -1,0 +1,161 @@
+id: intake-to-preview
+title: Confirmed intake produces a candidate and a provisioned site
+tier: live
+description: >
+  The product mission, driven as an owner would drive it. A real conversation
+  reaches a buildable brief, Ada builds, the candidate appears in the Design
+  review pane, and the site is provisioned. This is the acceptance flow for
+  UI-056 and the shape every "prove it live" task should reuse.
+
+  An AI owner answers naturally from a business brief, not a lookup table.
+  Ada is not scripted either.
+
+  Live tier on purpose: it spends model tokens and real build time, so it is a
+  bounded exploratory run until canonical onboarding and teardown are qualified.
+requires:
+  - deployed target with working model access
+  - disposable tenant and project (never a customer workspace)
+  - a build that can produce the declared output shape
+  - a ledger so the previous test site is removed before this one is built
+tags:
+  - intake
+  - design
+  - provisioning
+  - acceptance
+  - ui-056
+steps:
+  - id: open-intake
+    action: goto
+    url: /
+    expect:
+      - kind: visible
+        selector: "#composer"
+      - kind: visible
+        selector: "#phase-pill"
+
+  - id: state-the-brief
+    action: fill
+    selector: "#message"
+    text: >
+      I run a small ceramics studio in Lisbon. We teach wheel-throwing classes
+      and sell a few pieces. I need a site that explains the classes, shows the
+      space, and takes enquiries. Keep it calm and handmade, not corporate.
+    expect:
+      - kind: visible
+        selector: "#send"
+
+  - id: send-brief
+    action: click
+    selector: "#send"
+    expect:
+      - kind: count
+        selector: "#messages article.message"
+        op: len_gte
+        value: 2
+        timeout_ms: 300000
+        description: Ada replied to the brief
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "invalid experience plan"
+        description: the UI-056 failure signature is absent
+
+  - id: answer-ada
+    action: converse
+    mark: brief_ready
+    reply_timeout_ms: 300000
+    until:
+      - kind: visible
+        selector: "#confirm-panel"
+        timeout_ms: 1000
+        description: Ada has enough of the brief to build
+    persona:
+      max_turns: 14
+      brief: |
+        You are Mariana, co-owner of Atelier Sete, a small ceramics studio at
+        Rua da Boavista 112 in Lisbon. You run it with one other potter and have
+        been there six years. You are talking to Ada, who is building the studio
+        website.
+
+        What you know:
+        - The studio is called Atelier Sete, because it is the seventh unit on
+          the street. The story is worth telling on the page.
+        - Open Thursday to Sunday, 11:00 to 19:00.
+        - Beginner wheel-throwing course: four sessions of two hours, groups of
+          six, 240 euros. Saturday taster sessions, 45 euros, clay and firing
+          included.
+        - About thirty pieces for sale at a time, 25 to 90 euros, thrown and
+          glazed in small batches. Nothing mass produced.
+        - Audience: people who want a slower weekend, and beginners who have
+          never touched clay. Not a corporate team-building venue.
+        - Enquiries: hello@ateliersete.pt. Booking by email is fine; no online
+          payments for now.
+        - Domain: ateliersete.pt.
+        - No photos or logo yet. Warm neutrals and generous whitespace rather
+          than stock imagery.
+        - Tone: calm and handmade, earthy rather than sleek. No stock photos of
+          people in suits.
+        - No deadline. Get it right rather than fast.
+
+        You are not in a hurry, but you are concise: you are a working potter,
+        not a marketing person. You do not know anything about web design and
+        you are happy to leave those decisions to Ada, as long as the result
+        feels like the studio.
+
+  - id: accept-the-brief
+    action: fill
+    selector: "#message"
+    text: >
+      That is all correct and the brief is complete. Please confirm it and build
+      the site now.
+    expect:
+      - kind: visible
+        selector: "#send"
+
+  - id: send-acceptance
+    action: click
+    selector: "#send"
+    mark: build_requested
+    expect:
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "is required"
+        description: no raw contract error reaches the owner
+
+  - id: candidate-in-review
+    action: assert
+    mark: candidate_ready
+    abort:
+      - kind: visible
+        selector: 'body[data-phase="blocked"]'
+        description: the build reported a terminal failure
+    expect:
+      - kind: visible
+        selector: "#preview-iframe"
+        timeout_ms: 1800000
+        description: the candidate renders in the Design review pane
+      - kind: visible
+        selector: "#preview-heading"
+      - kind: console_clean
+      - kind: network_clean
+      - kind: no_page_errors
+
+  - id: provision-site
+    action: click
+    selector: "#provision"
+    confirm_dialog: "Provision this exact website candidate?"
+    mark: provision_requested
+    expect:
+      - kind: visible
+        selector: "#provision-note"
+
+  - id: site-live
+    action: assert
+    mark: site_live
+    expect:
+      - kind: visible
+        selector: 'body[data-phase="managed"]'
+        timeout_ms: 900000
+        description: the provisioned site reached the managed phase
+      - kind: text_absent
+        selector: "#provision-note"
+        text: "failed"

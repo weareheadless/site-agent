@@ -1,0 +1,68 @@
+id: intake-surface
+title: Owner intake surface loads and starts a conversation
+tier: deterministic
+description: >
+  Drives the real Intake Lab owner surface in Chromium against the real web app
+  with a temporary store. No model is called, so this is free, repeatable and
+  safe as a pull-request gate. It proves the shell renders, the SPA boots its
+  default incubation, a new conversation can be started, and the browser reports
+  a clean console and no failed requests.
+requires:
+  - intake-lab app served with a writable workspace
+tags:
+  - intake
+  - owner-surface
+  - gate
+steps:
+  - id: open-intake
+    action: goto
+    url: /
+    expect:
+      - kind: visible
+        selector: "#composer"
+        description: the owner can see the composer
+      - kind: visible
+        selector: "#message"
+      - kind: visible
+        selector: "#send"
+
+  - id: shell-booted
+    action: assert
+    expect:
+      - kind: visible
+        selector: "#stage-eyebrow"
+        description: the stage indicator rendered
+      - kind: visible
+        selector: "#phase-pill"
+        description: the phase indicator rendered
+      - kind: url_contains
+        text: "/"
+
+  - id: preview-pane-present
+    action: assert
+    expect:
+      - kind: visible
+        selector: "#preview-heading"
+        description: the design review pane is reachable
+      - kind: visible
+        selector: "#thinking-heading"
+        description: Ada's working notes are visible before a candidate exists
+
+  - id: start-new-conversation
+    action: click
+    selector: "#new-chat"
+    expect:
+      - kind: visible
+        selector: "#composer"
+        description: the composer survives starting a new conversation
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "failed"
+        description: starting a conversation reports no failure
+
+  - id: owner-error-surface
+    action: assert
+    expect:
+      - kind: console_clean
+      - kind: network_clean
+      - kind: no_page_errors

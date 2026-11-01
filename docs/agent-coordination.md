@@ -215,6 +215,13 @@ not reviewed at its exact head.
 
 ## Checks and the manager's decision
 
+Live proof is an artifact, not a comment. A task that claims "deploy and prove"
+attaches a flow evidence bundle from `python -m site_agent.qa run`
+(`docs/e2e-flow-harness.md`); the manager reads `status`, `rubric.passed`,
+`failed_step` and `target.deployed_sha` instead of describing a worktree by hand.
+A bundle whose `deployed_sha` does not match the released slot proves nothing, and
+a `live` flow is never run as a pull-request check.
+
 - **Agent task format** runs on PR events using the pinned checker, not task-
   branch code. It verifies the issue/claim, metadata, declared file scope, pins
   and duplicate PRs. It resets previous **Agent coordination** feedback to Pending

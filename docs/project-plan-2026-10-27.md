@@ -113,10 +113,17 @@ Intelligence view distinguishes observed, unobserved and not-applicable.
 - **OPS-009** production build in CI.
 - Rollback rehearsal for a bad Worker/API release.
 - A seeded disposable tenant and project so verification stops improvising
-  fixtures and credentials.
+  fixtures and credentials. This is the prerequisite for any live flow; a flow
+  must never run against a customer workspace.
+- End-to-end flow harness (`docs/e2e-flow-harness.md`): declarative flows driven
+  in a real browser, a deterministic tier that gates merges and a live tier that
+  gates releases. `intake-surface` is the first deterministic flow;
+  `intake-to-preview` is the UI-056 acceptance flow.
 
-Done when: a deliberately broken change is caught before merge, and a bad release
-can be rolled back in one documented step.
+Done when: a deliberately broken change is caught before merge, a bad release
+can be rolled back in one documented step, and every task that claims "deploy and
+prove" attaches a flow evidence bundle whose `target.deployed_sha` matches the
+released slot.
 
 ## Sequencing rule
 
