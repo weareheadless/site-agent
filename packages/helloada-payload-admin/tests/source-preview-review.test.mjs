@@ -6,10 +6,10 @@ import ts from 'typescript'
 // Exercise the real workspace callback without a second implementation of its
 // selection/queue policy or a browser login in unit tests.
 const source = readFileSync(new URL('../src/components/WebsiteWorkspace.tsx', import.meta.url), 'utf8')
-const body = source.split('const loadPreviewPlan = useCallback(async () => {')[1].split('}, [t])')[0]
+const body = source.split('const loadPreviewPlan = useCallback(async () => {')[1].split('}, [designBuild?.draft_id, t])')[0]
 const compiled = ts.transpileModule(`export default async function(dependencies) {
   const { fetchHelloAda, setPreviewPlan, setSourceReview, setPreviewStatus, setPreviewRevision,
-    setError, sourceReviewIdentityRef, t } = dependencies
+    setError, sourceReviewIdentityRef, designBuild, previewPlanRequestRef, selectReviewDraft, t } = dependencies
   ${body}
 }`, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText
 const loadPreviewPlan = (await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)).default
@@ -25,7 +25,9 @@ async function load(draft, latest, previousReview) {
     },
     setPreviewPlan: setter('plan'), setSourceReview: setter('review'), setPreviewStatus: setter('status'),
     setPreviewRevision: setter('revision'), setError: setter('error'),
-    sourceReviewIdentityRef: { current: '' }, t: (key) => key,
+    sourceReviewIdentityRef: { current: '' }, previewPlanRequestRef: { current: 0 },
+    designBuild: { draft_id: draft.id }, selectReviewDraft: (drafts) => drafts.find((item) => item.id === draft.id),
+    t: (key) => key,
   })
   return { calls, state }
 }
