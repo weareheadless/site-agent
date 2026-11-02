@@ -95,6 +95,8 @@ _ALLOWED_FIELD_PATHS = frozenset({
     "site.navigation_intent",
     "site.stable_urls",
     "site.language",
+    "site.locales",
+    "site.default_locale",
     "site.device_priority",
     "constraints.prohibited_claims",
     "constraints.accessibility_needs",
@@ -267,10 +269,12 @@ _STRICT_TEXT_FIELD_PATHS = frozenset({
     "audience.primary",
     "conversion.primary_action",
     "brand.voice",
+    "site.default_locale",
 })
 _STRICT_LIST_FIELD_PATHS = frozenset({
     "business.primary_services",
     "site.required_pages",
+    "site.locales",
 })
 _STRICT_BOOLEAN_FIELD_PATHS = frozenset({
     "business.location_not_applicable",
