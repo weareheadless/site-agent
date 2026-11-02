@@ -205,3 +205,27 @@ def test_initial_locale_runtime_preparation_leaves_adas_presentation_and_tenant_
     assert presentation.read_text() == 'Ada owns the page composition'
     assert config.read_text() == 'Verified tenant config belongs to the release, not Ada'
     assert runner._prepare_initial_locale_runtime(tmp_path, request()) == ()
+
+
+def test_every_image_alternative_is_staged_in_each_requested_language():
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    selected = plan()
+    opening = selected.page_composition[0]
+    selected.page_composition = (replace(opening, entries=(*opening.entries,
+        {'key': 'portrait', 'blockType': 'helloAdaImage', 'label': 'Portrait', 'asset_id': 'media-17'})),)
+    selected.asset_composition_plan = (SimpleNamespace(asset_id='media-17'),)
+    selected.copy_deck['image_alt'] = {'portrait': 'La estilista con su clienta.'}
+    selected.copy_deck['translations']['en']['image_alt'] = {'portrait': 'The stylist with her client.'}
+    value = request().to_dict()
+    value['supplied_media_asset_ids'] = [17]
+    target = PageBuildRequest.from_dict(value)
+    payload = Payload()
+    payload.read_media = lambda identifier, **_kwargs: {'id': int(identifier)}
+    runner._stage_initial_homepage_payload({'payload_gateway': payload}, target, selected)
+    assert payload.documents['es']['sections'][0]['entries'][-1]['alt'] == 'La estilista con su clienta.'
+    assert payload.documents['en']['sections'][0]['entries'][-1]['alt'] == 'The stylist with her client.'
+    del selected.copy_deck['translations']['en']['image_alt']['portrait']
+    with pytest.raises(runner.RunnerError, match='image_alt'):
+        runner._stage_initial_homepage_payload({'payload_gateway': payload}, target, selected)

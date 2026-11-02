@@ -1009,13 +1009,29 @@ def _homepage_payload_by_locale(request, plan: Any, contract: Mapping[str, Any])
     if deck.get("locale") != default or not isinstance(translations, Mapping) or set(translations) != set(locales) - {default}:
         raise RunnerError("the final copy deck must cover every confirmed locale with complete translations")
     text_keys = {entry["key"] for section in data["sections"] for entry in section["entries"] if "text" in entry}
+    image_keys = {entry["key"] for section in data["sections"] for entry in section["entries"] if "image" in entry}
     section_keys = {section["key"] for section in data["sections"]}
+
+    def image_alternatives(page, values, locale):
+        if not isinstance(values, Mapping) or set(values) != image_keys or any(
+            not isinstance(value, str) or not value.strip() or len(value) > 2_000 for value in values.values()
+        ):
+            raise RunnerError(f"locale {locale} needs complete translated image_alt for every stable image key")
+        for section in page["sections"]:
+            for entry in section["entries"]:
+                if "image" in entry:
+                    entry["alt"] = values[entry["key"]]
+
+    if image_keys:
+        image_alternatives(data, deck.get("image_alt"), default)
     result = {default: data}
     for locale in locales:
         if locale == default:
             continue
         translation = translations[locale]
         expected_fields = {"entry_text", "section_labels", "meta_description"} | ({"site_settings"} if "site_settings" in deck else set())
+        if image_keys:
+            expected_fields.add("image_alt")
         if not isinstance(translation, Mapping) or set(translation) != expected_fields:
             raise RunnerError(f"locale {locale} needs exact translated entry_text, section_labels and meta_description")
         texts, labels = translation["entry_text"], translation["section_labels"]
@@ -1036,6 +1052,8 @@ def _homepage_payload_by_locale(request, plan: Any, contract: Mapping[str, Any])
         translated["seo"] = {"title": next(entry["text"] for entry in translated["sections"][0]["entries"]
                                                if entry["blockType"] == "helloAdaHeading")[:300],
                              "description": translation["meta_description"].strip()[:320]}
+        if image_keys:
+            image_alternatives(translated, translation["image_alt"], locale)
         result[locale] = translated
     return result
 
@@ -1684,7 +1702,10 @@ def _design_prompt(
             "Author public composition only inside the tenant presentation boundary under src/components/site/presentation/ "
             "and src/app/(frontend)/site.css. The host-owned Payload route shell, content readers, media resolver, "
             "shared navigation/footer data and typed content components are mandatory and must remain intact. Never create "
-            "business content as JSX literals when it belongs in Payload. Use only the exact host-approved dependencies in "
+            "business content as JSX literals when it belongs in Payload. Preserve the prepared locale runtime and switch. "
+            "All languages, including image alternatives, "
+            "must render the selected locale's canonical page/global fields; use the image entry's localized alt, not "
+            "a media-library description from a different language. Use only the exact host-approved dependencies in "
             "package.json. The approved direct dependency set and versions are: "
             + approved_dependencies
             + ". Do not use ranges or newer versions.\n"
