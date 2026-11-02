@@ -37,6 +37,9 @@ CUSTOMER = {
     "contentContract": TEMPLATE_MANIFEST["contentContract"],
     "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
     "schemaIdentity": TEMPLATE_MANIFEST["schemaIdentity"],
+    "configurationIdentity": TEMPLATE_MANIFEST.get("configurationIdentity", "c" * 64),
+    "locales": ["en", "es-MX"],
+    "defaultLocale": "en",
     "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",
@@ -1095,6 +1098,88 @@ def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key
                              CUSTOMER, SHA)
 
 
+@pytest.mark.parametrize("key,value", [
+    ("configurationIdentity", "f" * 64), ("locales", ["en"]), ("defaultLocale", "es-MX"),
+])
+def test_live_health_requires_exact_locale_configuration_identity(monkeypatch, key, value):
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+            "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
+            "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
+            "migrationHead": CUSTOMER["migrationHead"], "configurationIdentity": CUSTOMER["configurationIdentity"],
+            "locales": CUSTOMER["locales"], "defaultLocale": CUSTOMER["defaultLocale"], "releaseSha": SHA}
+    body[key] = value
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", CUSTOMER, SHA)
+
+
+def test_new_candidate_health_is_bound_to_generated_manifest_locale_tuple(monkeypatch):
+    manifest = {**TEMPLATE_MANIFEST, "configurationIdentity": "c" * 64,
+                "locales": ["en", "es"], "defaultLocale": "en"}
+    expected = dict(CUSTOMER)
+    release.synchronize_customer_payload_contract(expected, manifest, {
+        "coreVersion": manifest["payloadCore"], "contract": manifest["contentContract"],
+        "schemaRevision": manifest["schemaRevision"],
+    })
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": expected["payloadAdmin"],
+            "payloadCore": expected["payloadCore"], "contentContract": expected["contentContract"],
+            "schemaRevision": expected["schemaRevision"], "schemaIdentity": expected["schemaIdentity"],
+            "migrationHead": expected["migrationHead"], "configurationIdentity": "c" * 64,
+            "locales": ["en", "es"], "defaultLocale": "en", "releaseSha": SHA}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    assert release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", expected, SHA)["locales"] == ["en", "es"]
+    body["locales"] = ["en"]
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", expected, SHA)
+
+
+def test_live_health_rejects_partial_locale_identity_tuple(monkeypatch):
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+            "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
+            "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
+            "migrationHead": CUSTOMER["migrationHead"], "configurationIdentity": CUSTOMER["configurationIdentity"],
+            "releaseSha": SHA}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(RuntimeError, match="partial locale"):
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", CUSTOMER, SHA)
+
+
+def test_live_health_accepts_complete_legacy_tuple_omission(monkeypatch):
+    legacy_customer = {key: value for key, value in CUSTOMER.items()
+                       if key not in {"configurationIdentity", "locales", "defaultLocale"}}
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+            "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
+            "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
+            "migrationHead": CUSTOMER["migrationHead"], "releaseSha": SHA}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    assert release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes",
+                                legacy_customer, SHA) == body
+
+
 def artifact(tmp_path):
     customer = CANDIDATE_CUSTOMER
     shutil.copytree(TEMPLATE / "src/migrations", tmp_path / "src/migrations")
@@ -1839,7 +1924,8 @@ def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     events = []
-    monkeypatch.setattr(release, "check_health", lambda *args: events.append("health") or {"ok": True})
+    locale_health = {key: CUSTOMER[key] for key in ("configurationIdentity", "locales", "defaultLocale")}
+    monkeypatch.setattr(release, "check_health", lambda *args, **kwargs: events.append("health") or {"ok": True, **locale_health})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
     monkeypatch.setattr(
         release,
@@ -1869,7 +1955,7 @@ def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch
 def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "other-version"}]})
-    monkeypatch.setattr(release, "check_health", lambda *args: pytest.fail("must reject before health"))
+    monkeypatch.setattr(release, "check_health", lambda *args, **kwargs: pytest.fail("must reject before health"))
     with pytest.raises(RuntimeError, match="exact uploaded"):
         release.verify_live({"uploadedVersion": "version-1"}, {}, {}, {}, {}, lambda _: None)
 
@@ -1915,7 +2001,7 @@ def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bin
     monkeypatch.setattr(release, "cloudflare_worker_version_identity", lambda *_args: identity)
     stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
-    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True, "tenant": "oceanicvibes"})
+    monkeypatch.setattr(release, "check_health", lambda *_args, **_kwargs: {"ok": True, "tenant": "oceanicvibes"})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
     activations = []
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
@@ -1982,7 +2068,7 @@ def test_read_only_gate_rejects_code_drift_and_resolves_active_deployment_change
         "script_etag": "a" * 64, "binding_identity": "b" * 64,
     })
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
-    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True, "tenant": "oceanicvibes"})
+    monkeypatch.setattr(release, "check_health", lambda *_args, **_kwargs: {"ok": True, "tenant": "oceanicvibes"})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *_args: None)
     monkeypatch.setattr(release, "run", lambda *_args: None)
@@ -2017,7 +2103,7 @@ def test_read_only_gate_rejects_worker_change_during_connection_check(monkeypatc
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
     health_checks = []
 
-    def check_health(*_args):
+    def check_health(*_args, **_kwargs):
         health_checks.append(True)
         if len(health_checks) == 1:
             active["deployment"] = changed
@@ -2048,7 +2134,7 @@ def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
     stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
-    monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    monkeypatch.setattr(release, "check_health", lambda *args, **kwargs: {"ok": True, **{key: CUSTOMER[key] for key in ("configurationIdentity", "locales", "defaultLocale")}})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
     activations = []
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
@@ -2121,7 +2207,7 @@ def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(mon
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}],
     })
-    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True})
+    monkeypatch.setattr(release, "check_health", lambda *_args, **_kwargs: {"ok": True, **{key: CUSTOMER[key] for key in ("configurationIdentity", "locales", "defaultLocale")}})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
     activations = []
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))

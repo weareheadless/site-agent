@@ -18,6 +18,9 @@ const wranglerPath = path.join(siteRoot, 'wrangler.jsonc')
 const migrationsPath = path.join(siteRoot, 'src/migrations')
 const contract = createHelloAdaContentContract()
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+// The source used by the Worker is authoritative. A copied template manifest
+// may still describe the scaffold's default rather than this tenant's locales.
+const { helloAdaSite } = await import(pathToFileURL(path.join(siteRoot, 'src/helloada.config.ts')).href)
 const corePackage = JSON.parse(readFileSync(path.join(root, 'packages/helloada-payload-core/package.json'), 'utf8'))
 const sitePackage = JSON.parse(readFileSync(path.join(siteRoot, 'package.json'), 'utf8'))
 const siteLock = JSON.parse(readFileSync(path.join(siteRoot, 'package-lock.json'), 'utf8'))
@@ -82,12 +85,16 @@ manifest.contentContract = contract.contract
 manifest.migrations = migrations
 manifest.migrationIndexSha256 = migrationIndexSha256
 manifest.migrationHead = migrationHead
-manifest.schemaIdentity = createHelloAdaContractIdentity({
-  locales: manifest.locales,
-  defaultLocale: manifest.defaultLocale,
+const contractIdentity = createHelloAdaContractIdentity({
+  locales: helloAdaSite.locales,
+  defaultLocale: helloAdaSite.defaultLocale,
   collections: HELLOADA_CAPABILITIES.collections,
   globals: Object.keys(contract.globals),
-}).schemaIdentity
+})
+manifest.schemaIdentity = contractIdentity.schemaIdentity
+manifest.configurationIdentity = contractIdentity.configurationIdentity
+manifest.locales = contractIdentity.locales
+manifest.defaultLocale = contractIdentity.defaultLocale
 
 let wrangler = readFileSync(wranglerPath, 'utf8')
 const schemaIdentitySlot = /("HELLOADA_SCHEMA_IDENTITY": ")(?:__HELLOADA_SCHEMA_IDENTITY__|[0-9a-f]{64})(")/

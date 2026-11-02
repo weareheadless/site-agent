@@ -71,6 +71,29 @@ def test_status_is_null_without_run_or_for_superseded_revision(tmp_path):
     memory.close()
 
 
+def test_reconfirmed_brief_keeps_exact_earlier_preview_without_current_approval_eligibility(tmp_path):
+    memory = Memory(tmp_path / 'retained.db')
+    run = _run(memory, revision=3, status='ready_for_review')
+    memory.update_design_run(run['run_id'], candidate_sha='c' * 40, draft_id=5)
+    service, tenant = _service(memory, revision=4)
+    tenant.context['source_deployment'] = SimpleNamespace(preview_for_candidate=lambda run_id, sha: {
+        'id': 'retained', 'design_run_id': run_id, 'commit': sha, 'status': 'ready',
+        'preview_url': '/api/workspace/source/preview/retained/runtime/',
+        'revision_verification': {'commit': sha},
+    })
+    build = service.status(tenant=tenant)['build']
+    assert build['run_id'] == run['run_id']
+    assert build['candidate_sha'] == 'c' * 40
+    assert build['preview']['job_id'] == 'retained'
+    assert build['preview']['approved'] is False
+    assert build['draft_id'] == 5
+    assert build['draft_available'] is False
+    assert build['state'] == 'failed'
+    assert 'earlier brief' in build['error']
+    assert memory.get_design_run(run['run_id'])['status'] == 'ready_for_review'
+    memory.close()
+
+
 def test_status_surfaces_live_progress_updates_and_their_age(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.db")
     run = _run(memory, status="building")

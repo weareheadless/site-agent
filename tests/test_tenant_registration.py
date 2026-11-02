@@ -183,6 +183,9 @@ def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_pat
             "schemaRevision": 5,
             "schemaIdentity": "c" * 64,
             "migrationHead": "d" * 64,
+            "configurationIdentity": "e" * 64,
+            "locales": ["fr", "en-CA"],
+            "defaultLocale": "fr",
         }
 
         assert service.sync_payload_runtime("new-site", identity, website_present=True) is True
@@ -191,8 +194,9 @@ def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_pat
         assert updated["site"]["payload"]["contract"] == {
             **identity,
             "media_fields": ["alt", "description"],
-            "locales": ["en", "es-MX"],
-            "defaultLocale": "en",
+            "configurationIdentity": "e" * 64,
+            "locales": ["fr", "en-CA"],
+            "defaultLocale": "fr",
         }
         assert service.sync_payload_runtime("new-site", identity, website_present=True) is False
 

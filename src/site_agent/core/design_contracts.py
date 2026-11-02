@@ -1273,8 +1273,20 @@ def section_composition_contract_description() -> str:
         "as a paragraph, never invent a link. Map every asset_composition_plan asset to an image entry and do not "
         "reference unassigned assets. All visitor copy, captions and labels belong in these entries, not implementation "
         "source. copy_deck contains final meta_description for SEO; section entries are the sole presentation copy "
-        "source. Select all sections, copy, assets, direction and required behavior now. Downstream realization "
-        "stages these exact decisions in Payload and wires the pinned templates; it must not compose a different page. "
+        "source. When site.locales is confirmed, copy_deck.locale must equal site.default_locale and the main "
+        "composition must contain that locale's complete copy. copy_deck.translations is keyed by every other "
+        "confirmed locale, with no missing or extra locales. Each translation contains exactly meta_description, "
+        "section_labels (every stable section ID to translated label), and entry_text (every text-bearing entry key "
+        "to its complete translated text). Keep section/entry IDs, order, block types, shared labels, media and "
+        "confirmed destinations identical across locales. When images are assigned, copy_deck.image_alt maps every "
+        "image entry key to its final descriptive alternative text; every translation also supplies complete image_alt. "
+        "Do not downgrade translation to occasional foreign-language "
+        "snippets. Select all sections, copy, assets, direction and required behavior now. Downstream realization "
+        "stages these decisions in Payload and freely authors their presentation, not a fixed section template. "
+        "copy_deck.site_settings contains exactly siteName (the confirmed business name), description, tagline, "
+        "footerTitle and footerNote. All are final plain text; optional tagline/footer values may be empty. "
+        "Each translated locale also includes site_settings with those same fields and unchanged siteName. "
+        "The host stages these globals alongside the page so header/footer identity and copy come from Payload. "
     )
 
 
