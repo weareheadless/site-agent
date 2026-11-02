@@ -474,8 +474,9 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
     import tempfile
 
     # AF_UNIX paths are capped at 108 bytes on Linux; a normal isolated
-    # worktree can already exceed that before adding the socket filename.
-    with tempfile.TemporaryDirectory(prefix=".s-") as broker_dir:
+    # worktree/release TMPDIR can already exceed that. Only this tiny socket
+    # fixture uses the short Unix path; build/database scratch stays on disk.
+    with tempfile.TemporaryDirectory(prefix=".s-", dir="/tmp") as broker_dir:
         broker_path = str(Path(broker_dir) / "restart.sock")
         received = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
