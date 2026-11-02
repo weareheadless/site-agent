@@ -108,11 +108,31 @@
     box-shadow: inset 0 1px rgba(255,255,255,.8), 0 10px 32px rgba(63,45,29,.065); animation: helloada-workspace-in 600ms var(--helloada-ease) both;
   }
   .helloada-owner-workspace .helloada-workspace-grid.is-chat-only { grid-template-columns: minmax(0, 700px); justify-content: center; max-width: 712px; margin: 0 auto; }
-  .helloada-owner-workspace .helloada-workspace-grid.has-build-surface { grid-template-columns: minmax(0, 1fr) minmax(360px, 620px); max-width: 1600px; }
   .helloada-owner-workspace .helloada-review-window, .helloada-owner-workspace .helloada-ada-panel {
     min-width: 0; height: 100%; border: 0; border-radius: 0; background: var(--helloada-review); box-shadow: none;
   }
-  .helloada-build-surface { grid-column: 2; grid-row: 1; min-width: 0; padding: clamp(24px, 5vw, 64px); border: 1px solid var(--helloada-soft-line); border-radius: 0 19px 19px 0; background: var(--helloada-panel); color: var(--helloada-ink); }
+  .helloada-build-surface { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 0; border: 1px solid var(--helloada-soft-line); border-radius: 0 19px 19px 0; background: var(--helloada-panel); color: var(--helloada-ink); }
+  .helloada-build-strip { flex-shrink: 0; display: grid; gap: 9px; padding: 14px 18px 12px; border-bottom: 1px solid var(--helloada-soft-line); }
+  .helloada-build-strip-title, .helloada-build-strip-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; }
+  .helloada-build-strip-title strong { font-weight: 600; }
+  .helloada-build-strip-title .helloada-build-elapsed, .helloada-build-strip-meta { color: var(--helloada-muted); font-size: 10px; }
+  .helloada-build-strip progress { display: block; width: 100%; height: 3px; border: 0; border-radius: 2px; overflow: hidden; appearance: none; background: var(--helloada-inset); color: var(--helloada-cyan); accent-color: var(--helloada-cyan); }
+  .helloada-build-strip progress::-webkit-progress-bar { background: var(--helloada-inset); }
+  .helloada-build-strip progress::-webkit-progress-value { background: var(--helloada-cyan); }
+  .helloada-build-strip progress::-moz-progress-bar { background: var(--helloada-cyan); }
+  .helloada-build-details { position: relative; }
+  .helloada-build-details > summary { cursor: pointer; padding: 4px 0; text-underline-offset: 3px; }
+  .helloada-build-details > div { position: absolute; top: calc(100% + 8px); right: 0; z-index: 5; width: min(360px, calc(100vw - 76px)); max-height: 300px; overflow: auto; padding: 16px; border: 1px solid var(--helloada-soft-line); border-radius: 10px; background: var(--helloada-panel); box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+  .helloada-build-details .helloada-build-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 14px 0; font-size: 11px; }
+  .helloada-build-details .helloada-build-update { margin: 0; padding: 0; border: 0; }
+  .helloada-build-canvas { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+  .helloada-owner-workspace .helloada-build-canvas .helloada-review-toolbar { display: flex; align-items: center; flex-shrink: 0; min-height: 46px; padding: 6px 14px; }
+  .helloada-build-canvas .helloada-window-title { min-width: 0; font-size: 10px; color: var(--helloada-muted); }
+  .helloada-build-canvas .helloada-segmented button { min-height: 30px; background: transparent; }
+  .helloada-build-canvas .helloada-preview-frame-shell { position: relative; }
+  .helloada-build-canvas .is-frame-pending iframe { visibility: hidden; }
+  .helloada-build-placeholder { display: grid; place-content: center; flex: 1; min-height: 0; padding: 24px; text-align: center; color: var(--helloada-muted); font-size: 13px; }
+  .helloada-build-next-action { flex-shrink: 0; padding: 8px 18px 12px; }
   .helloada-build-surface h2 { margin: 8px 0; font-size: clamp(24px, 3vw, 38px); letter-spacing: -.04em; }
   .helloada-build-stages { display: grid; gap: 12px; margin: 32px 0; padding: 0; list-style: none; }
   .helloada-build-stages li { display: flex; gap: 12px; align-items: center; color: var(--helloada-muted); }
@@ -295,7 +315,7 @@
     .helloada-owner-workspace .helloada-workspace-grid, .helloada-owner-workspace .helloada-workspace-grid.is-chat-only { grid-template-columns: minmax(0, 1fr); height: var(--helloada-review-height); }
     .helloada-owner-workspace .helloada-workspace-grid.has-build-surface { grid-template-columns: minmax(0, 1fr); }
     .helloada-owner-workspace .helloada-review-window, .helloada-owner-workspace .helloada-ada-panel, .helloada-owner-workspace .helloada-build-surface { grid-column: 1; grid-row: 1; position: relative; height: 100%; border: 0; border-radius: 19px; }
-    .helloada-owner-workspace.shows-ada .helloada-review-window, .helloada-owner-workspace.shows-website .helloada-ada-panel { display: none; }
+    .helloada-owner-workspace.shows-ada .helloada-review-window, .helloada-owner-workspace.shows-ada .helloada-build-surface, .helloada-owner-workspace.shows-website .helloada-ada-panel { display: none; }
     .helloada-owner-workspace .is-chat-only .helloada-ada-panel { display: flex; }
     .helloada-owner-workspace .helloada-window-title { display: flex; }
     .helloada-owner-workspace .helloada-page-control select { max-width: 170px; }

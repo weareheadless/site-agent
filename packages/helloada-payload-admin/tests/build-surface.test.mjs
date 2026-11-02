@@ -6,6 +6,18 @@ const workspace = readFileSync(new URL('../src/components/WebsiteWorkspace.tsx',
 const styles = readFileSync(new URL('../src/styles/owner-workspace.scss', import.meta.url), 'utf8');
 const translations = readFileSync(new URL('../src/lib/admin-translations.ts', import.meta.url), 'utf8');
 
+test('candidate preview replaces the large build panel with a compact progress strip', () => {
+  assert.match(workspace, /helloada-build-strip/);
+  assert.match(workspace, /<progress[^>]*max=\{DESIGN_BUILD_STAGES\.length\}/);
+  assert.match(workspace, /<details className="helloada-build-details"/);
+  assert.match(workspace, /onLoad=\{handlePreviewLoad\}/);
+  assert.doesNotMatch(workspace, /helloada-early-candidate-preview/);
+  assert.match(workspace, /websitePresent \|\| buildSurfaceVisible \? '' : 'is-chat-only'/);
+  assert.match(styles, /helloada-build-canvas[^}]*flex:\s*1[^}]*min-height:\s*0/);
+  assert.match(workspace, /websitePresent \|\| buildSurfaceVisible \? <div className="helloada-pane-switch"/);
+  assert.match(styles, /shows-ada \.helloada-build-surface[^}]*display: none/);
+});
+
 test('running build renders recorded pipeline progress, elapsed time, and Ada update', () => {
   assert.match(workspace, /designBuild\?\.state === 'queued' \|\| designBuild\?\.state === 'running'/);
   assert.match(workspace, /DESIGN_BUILD_STAGES\.map/);

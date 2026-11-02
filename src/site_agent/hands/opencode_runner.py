@@ -897,10 +897,8 @@ def _prepare_initial_locale_runtime(worktree: Path, request) -> tuple[str, ...]:
     if request.mode != "initial_homepage" or not site.get("locales"):
         return ()
     template = Path(__file__).resolve().parents[1] / "templates/next-payload"
-    paths = (
-        "src/middleware.ts", "src/lib/locale-routing.ts", "src/lib/request-locale.ts", "src/lib/content.ts",
-        "src/app/(frontend)/layout.tsx", "src/components/SiteChrome.tsx",
-    )
+    from ..frontend_ownership import INITIAL_LOCALE_RUNTIME_PATHS
+    paths = INITIAL_LOCALE_RUNTIME_PATHS
     changed = []
     for relative in paths:
         destination = worktree / relative

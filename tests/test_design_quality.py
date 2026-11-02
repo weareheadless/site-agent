@@ -794,6 +794,39 @@ def test_host_runtime_paths_from_host_manifest_are_exempt_from_source_allowlist(
     )
 
 
+@pytest.mark.parametrize('operation_kind,modified,blocked', [
+    ('initial_build', False, False),
+    ('initial_build', True, True),
+    ('source_edit', False, True),
+])
+@pytest.mark.parametrize('relative', [
+    'src/app/(frontend)/layout.tsx', 'src/components/SiteChrome.tsx', 'src/lib/content.ts',
+    'src/middleware.ts', 'src/lib/locale-routing.ts', 'src/lib/request-locale.ts',
+])
+def test_initial_locale_runtime_requires_exact_host_bytes_and_initial_scope(tmp_path, operation_kind, modified, blocked, relative):
+    import hashlib
+    from pathlib import Path
+
+    repo, base_sha = _repo(tmp_path)
+    template = Path(__file__).resolve().parents[1] / 'src/site_agent/templates/next-payload'
+    target = repo / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes((template / relative).read_bytes() + (b'\n// model mutation\n' if modified else b''))
+    manifest = {'host_generated': True, 'host_metadata': {
+        'provisioned_file_hashes': {relative: hashlib.sha256(target.read_bytes()).hexdigest()},
+    }}
+    (repo / 'design').mkdir()
+    (repo / 'design/ada-design-manifest.json').write_text(json.dumps(manifest))
+    subprocess.run(['git', '-C', str(repo), 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'host locale runtime'], check=True)
+    candidate = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
+    findings = _repository_findings(repo, base_sha, candidate, _policy(
+        allowed_patterns=('index.html', 'design/**'), manifest_path='design/ada-design-manifest.json',
+        operation_kind=operation_kind, prohibited_paths=(relative,),
+    ))
+    assert any(item['code'] == 'path_policy' and item.get('path') == relative for item in findings) is blocked
+
+
 def test_native_source_gate_does_not_scan_host_provisioned_runtime_files(tmp_path):
     repo, base_sha = _repo(tmp_path)
     tenant_source = repo / "src" / "components" / "site" / "presentation" / "App.tsx"

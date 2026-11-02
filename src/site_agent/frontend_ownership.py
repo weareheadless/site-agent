@@ -29,6 +29,12 @@ CRAWL_METADATA_PATTERNS: tuple[str, ...] = (
     "public/sitemap.xml",
 )
 
+# Host-only first-site preparation; these remain forbidden to Ada's editor.
+INITIAL_LOCALE_RUNTIME_PATHS: tuple[str, ...] = (
+    "src/middleware.ts", "src/lib/locale-routing.ts", "src/lib/request-locale.ts", "src/lib/content.ts",
+    "src/app/(frontend)/layout.tsx", "src/components/SiteChrome.tsx",
+)
+
 PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/middleware.ts", "src/lib/workspace-preview-path.ts",
     ".env", ".github", "node_modules", ".next", ".open-next", "out",
