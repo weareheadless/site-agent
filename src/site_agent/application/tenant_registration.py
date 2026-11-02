@@ -374,9 +374,24 @@ class TenantRegistrationService:
             "adminVersion", "contract", "coreVersion", "schemaRevision",
             "schemaIdentity", "migrationHead",
         }
-        if set(runtime_identity) != expected_keys:
+        locale_keys = {"configurationIdentity", "locales", "defaultLocale"}
+        if set(runtime_identity) not in (expected_keys, expected_keys | locale_keys):
             raise TenantRegistrationError("verified Payload runtime identity is incomplete")
-        identity = dict(runtime_identity)
+        identity = {key: runtime_identity[key] for key in expected_keys}
+        verified_locales = None
+        if locale_keys <= set(runtime_identity):
+            verified_locales = runtime_identity["locales"]
+            default_locale = runtime_identity["defaultLocale"]
+            if (
+                not isinstance(runtime_identity["configurationIdentity"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", runtime_identity["configurationIdentity"])
+                or not isinstance(verified_locales, list)
+                or not verified_locales
+                or any(not isinstance(locale, str) or not re.fullmatch(r"[A-Za-z0-9-]{2,20}", locale) for locale in verified_locales)
+                or len(set(verified_locales)) != len(verified_locales)
+                or default_locale not in verified_locales
+            ):
+                raise TenantRegistrationError("verified Payload locale configuration identity is invalid")
         if (
             not isinstance(identity["adminVersion"], str)
             or not re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", identity["adminVersion"])
@@ -435,7 +450,7 @@ class TenantRegistrationService:
                 if not isinstance(contract, Mapping):
                     raise TenantRegistrationError("tenant Payload contract is missing")
                 allowed_keys = expected_keys | {
-                    "media_fields", "locales", "defaultLocale", "collections", "globals",
+                    "media_fields", "locales", "defaultLocale", "configurationIdentity", "collections", "globals",
                 }
                 if set(contract) - allowed_keys:
                     raise TenantRegistrationError("tenant Payload contract has unsupported fields")
@@ -450,8 +465,14 @@ class TenantRegistrationService:
                     or len(set(media_fields)) != len(media_fields)
                 ):
                     raise TenantRegistrationError("tenant Payload media fields are invalid")
-                locales = contract.get("locales")
-                default_locale = contract.get("defaultLocale")
+                locales = verified_locales if verified_locales is not None else contract.get("locales")
+                default_locale = runtime_identity["defaultLocale"] if verified_locales is not None else contract.get("defaultLocale")
+                configuration_identity = runtime_identity.get("configurationIdentity") if verified_locales is not None else contract.get("configurationIdentity")
+                if configuration_identity is not None and (
+                    not isinstance(configuration_identity, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", configuration_identity)
+                ):
+                    raise TenantRegistrationError("tenant Payload configuration identity is invalid")
                 if locales is not None or default_locale is not None:
                     if (
                         not isinstance(locales, list)
@@ -468,6 +489,10 @@ class TenantRegistrationService:
                 if locales is not None:
                     canonical_contract["locales"] = list(locales)
                     canonical_contract["defaultLocale"] = default_locale
+                if configuration_identity is not None:
+                    if locales is None:
+                        raise TenantRegistrationError("tenant Payload configuration identity has no locale tuple")
+                    canonical_contract["configurationIdentity"] = configuration_identity
                 updated = dict(raw)
                 updated_site = dict(site)
                 updated_site["website_present"] = website_present

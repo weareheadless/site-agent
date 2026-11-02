@@ -1482,7 +1482,8 @@ def deploy_worker_with_lifecycle(checkout: Path, sha: str, release_id: str,
         checkout, "deploy", sha, release_id, directory, secrets, env, variables,
     )
 
-def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
+def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str,
+                 *, require_locale_identity: bool = False) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
     request = urllib.request.Request(url + separator + urllib.parse.urlencode({"release": sha}),
                                      headers={"Accept": "application/json", "Cache-Control": "no-cache",
@@ -1500,6 +1501,28 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> d
         "migrationHead": customer["migrationHead"],
         "releaseSha": sha,
     }
+    locale_fields = ("configurationIdentity", "locales", "defaultLocale")
+    configured = [field in customer for field in locale_fields]
+    reported = [field in body for field in locale_fields]
+    # Legacy receipts and Workers are accepted only as the complete absence of
+    # the new tuple. A new candidate must report the tuple atomically.
+    if any(reported) and not all(reported):
+        raise RuntimeError("live release has a partial locale configuration identity")
+    if any(configured) and not all(configured):
+        raise RuntimeError("release candidate has a partial locale configuration identity")
+    if all(configured):
+        expected.update({field: customer[field] for field in locale_fields})
+    elif all(reported):
+        locales = body.get("locales")
+        if (not isinstance(body.get("configurationIdentity"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", body["configurationIdentity"])
+                or not isinstance(locales, list) or not locales
+                or any(not isinstance(locale, str) for locale in locales)
+                or len(set(locales)) != len(locales)
+                or body.get("defaultLocale") not in locales):
+            raise RuntimeError("live release has an invalid locale configuration identity")
+    elif require_locale_identity:
+        raise RuntimeError("new release candidate has no locale configuration identity")
     if any(body.get(key) != value for key, value in expected.items()):
         raise RuntimeError("live release SHA or shared Payload contract version does not match the release")
     return body
@@ -1669,8 +1692,21 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
     # never change the version, identity, endpoint or success criteria.
     for attempt in range(12):
         try:
-            receipt["health"] = check_health(customer["health"], receipt["tenant"],
-                                             customer, receipt["sourceSha"])
+            health_identity = dict(customer)
+            for field in ("configurationIdentity", "locales", "defaultLocale"):
+                if field in receipt:
+                    health_identity[field] = receipt[field]
+            receipt["health"] = check_health(
+                customer["health"], receipt["tenant"], health_identity, receipt["sourceSha"],
+                require_locale_identity=not verify_only,
+            )
+            if not verify_only and not all(
+                field in receipt["health"] for field in ("configurationIdentity", "locales", "defaultLocale")
+            ):
+                raise RuntimeError("new release health has no locale configuration identity")
+            if all(field in receipt["health"] for field in ("configurationIdentity", "locales", "defaultLocale")):
+                for field in ("configurationIdentity", "locales", "defaultLocale"):
+                    receipt[field] = receipt["health"][field]
             stage("verify-connection")
             activation_token = control_plane_token(gate["envFile"], base)
             activation = (
