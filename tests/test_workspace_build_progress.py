@@ -151,11 +151,14 @@ def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path):
     service, tenant = _service(memory)
 
     class PreviewLane:
-        def design_preview(self, run_id):
+        def preview_for_candidate(self, run_id, sha):
             assert run_id == run["run_id"]
+            assert sha == candidate_sha
             return {
-                "job_id": "preview-1", "run_id": run_id, "candidate_sha": candidate_sha,
+                "id": "preview-1", "design_run_id": run_id, "commit": candidate_sha,
                 "status": "ready", "preview_url": "/api/workspace/source/preview/preview-1/runtime/",
+                "revision_verification": {"commit": candidate_sha},
+                "runtime_path": "/private/runtime", "runtime_port": 43123,
             }
 
     tenant.context["source_deployment"] = PreviewLane()
@@ -166,11 +169,12 @@ def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path):
     assert build["preview"] == {
         "job_id": "preview-1", "run_id": run["run_id"], "candidate_sha": candidate_sha,
         "status": "ready", "preview_url": "/api/helloada/source/preview/preview-1/runtime/",
+        "state": "in_progress", "approved": False, "error": None,
     }
 
     class StalePreviewLane:
-        def design_preview(self, _run_id):
-            return {"run_id": run["run_id"], "candidate_sha": "d" * 40, "status": "ready",
+        def preview_for_candidate(self, _run_id, _sha):
+            return {"id": "stale", "design_run_id": run["run_id"], "commit": "d" * 40, "status": "ready",
                     "preview_url": "/api/workspace/source/preview/stale/runtime/"}
 
     tenant.context["source_deployment"] = StalePreviewLane()
@@ -187,10 +191,10 @@ def test_status_keeps_retained_candidate_visible_after_checks_need_attention(tmp
         service, tenant = _service(memory)
 
         class PreviewLane:
-            def design_preview(self, run_id):
+            def preview_for_candidate(self, run_id, sha):
                 return {
-                    "job_id": f"preview-{status}", "run_id": run_id,
-                    "candidate_sha": candidate_sha, "status": "ready",
+                    "id": f"preview-{status}", "design_run_id": run_id,
+                    "commit": sha, "status": "ready", "revision_verification": {"commit": sha},
                     "preview_url": f"/api/workspace/source/preview/{status}/runtime/",
                 }
 

@@ -23,21 +23,22 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
         service.close()
 
 
-def test_design_preview_receipt_is_scoped_to_run_and_omits_runtime_internals(tmp_path):
+def test_candidate_preview_retains_ready_result_after_a_newer_compile_fails(tmp_path):
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
         service._jobs["preview-a"] = {
             "id": "preview-a", "design_run_id": "run-a", "mode": "compiled_preview",
             "commit": "a" * 40, "status": "ready", "preview_url": "/api/workspace/source/preview/preview-a/runtime/",
-            "runtime_path": "/tmp/private/runtime", "runtime_port": 43123,
+            "created_at": "2026-11-01T10:00:00+00:00",
         }
-        result = service.design_preview("run-a")
-        assert result == {
-            "job_id": "preview-a", "run_id": "run-a", "candidate_sha": "a" * 40,
-            "status": "ready", "preview_url": "/api/workspace/source/preview/preview-a/runtime/",
-            "error": None, "updated_at": "",
+        service._jobs["failed-a"] = {
+            "id": "failed-a", "design_run_id": "run-a", "mode": "compiled_preview",
+            "commit": "a" * 40, "status": "failed", "created_at": "2026-11-02T10:00:00+00:00",
         }
-        assert service.design_preview("other-run") is None
+        assert service.preview_for_candidate("run-a", "a" * 40)["id"] == "preview-a"
+        del service._jobs["preview-a"]
+        assert service.preview_for_candidate("run-a", "a" * 40)["id"] == "failed-a"
+        assert service.preview_for_candidate("other-run", "a" * 40) == {}
     finally:
         service.close()
 
@@ -243,6 +244,40 @@ def test_retained_design_can_supply_preview_identity_before_owner_review(tmp_pat
     finally:
         service.close()
         memory.close()
+
+
+def test_candidate_preview_lookup_is_read_only_and_exact(tmp_path):
+    """#570: a retained candidate is viewable before its review draft exists."""
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+    )
+    run_id, sha = "intake-lab-retained", "b" * 40
+    try:
+        service._jobs.update({
+            "exact": {"id": "exact", "mode": "compiled_preview", "design_run_id": run_id,
+                      "commit": sha, "status": "ready", "created_at": "2026-11-01T10:00:00+00:00"},
+            "other-run": {"id": "other-run", "mode": "compiled_preview", "design_run_id": "someone-else",
+                          "commit": sha, "status": "ready", "created_at": "2026-11-01T11:00:00+00:00"},
+            "other-commit": {"id": "other-commit", "mode": "compiled_preview", "design_run_id": run_id,
+                             "commit": "c" * 40, "status": "ready", "created_at": "2026-11-01T12:00:00+00:00"},
+            "building": {"id": "building", "mode": "compiled_preview", "design_run_id": run_id,
+                         "commit": sha, "status": "running", "created_at": "2026-11-01T13:00:00+00:00"},
+        })
+        # Read-only: the lookup returns a copy and never mutates the stored job.
+        found = service.preview_for_candidate(run_id, sha)
+        assert found["id"] == "exact"
+        assert found is not service._jobs["exact"]
+        found["status"] = "mutated"
+        assert service._jobs["exact"]["status"] == "ready"
+        # Each candidate resolves only its own preview, never a neighbouring one.
+        assert service.preview_for_candidate(run_id, "c" * 40)["id"] == "other-commit"
+        assert service.preview_for_candidate(run_id, "d" * 40) == {}
+        assert service.preview_for_candidate("someone-else", sha)["id"] == "other-run"
+        assert service.preview_for_candidate("unknown-run", sha) == {}
+        assert service.preview_for_candidate("", sha) == {}
+        assert service.preview_for_candidate(run_id, "not-a-sha") == {}
+    finally:
+        service.close()
 
 
 def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(tmp_path):

@@ -117,10 +117,21 @@ def owner_review_requirements_met(run: Mapping[str, Any]) -> bool:
         return False
 
     gates = report.get("gates") if isinstance(report.get("gates"), Mapping) else {}
-    if any(gates.get(name) != "passed" for name in _OWNER_REQUIRED_GATES):
-        return False
+    for name in _OWNER_REQUIRED_GATES:
+        status = gates.get(name)
+        # An explicit policy skip is not a failed check. The remaining gates
+        # (build, output, browser, motion, composition, experience journey)
+        # still have to pass, and the output artifact already proves the
+        # candidate was compiled from its own React/TSX source.
+        if name == "native_source" and status == "skipped":
+            continue
+        if status != "passed":
+            return False
     native_source = evidence.get("native_source") if isinstance(evidence.get("native_source"), Mapping) else {}
-    if not native_source.get("react_source_files"):
+    # Require the source inventory only when that gate actually ran. Demanding
+    # it after an explicit skip made a fully passing candidate impossible to
+    # review for every tenant that does not opt into the extra scan.
+    if gates.get("native_source") != "skipped" and not native_source.get("react_source_files"):
         return False
     return True
 

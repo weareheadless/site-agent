@@ -943,6 +943,7 @@ class TenantRegistry:
         proxy = {
             "credentials": dict(self._shared_credentials),
             "observability": dict(self._shared_observability),
+            "source_deployment": dict(self._shared_source_deployment),
             "workspace_api": {
                 "enabled": True,
                 "provisioned_root": str(
@@ -1973,6 +1974,8 @@ class ChatService:
             session_id = str(intake_status.get("session_id") or "")
             run = memory.latest_design_run_for_intake(session_id, revision)
             if run is not None:
+                run = self._displayed_design_run(memory, run)
+            if run is not None:
                 events = memory.list_design_run_events(str(run["run_id"]), limit=500)
                 order = ("queued", "planning", "generating", "building", "validating", "rendering")
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
@@ -1995,25 +1998,11 @@ class ChatService:
                     "started_ts": started_ts, "elapsed_seconds": elapsed,
                     "draft_available": bool(run.get("draft_id") and ready),
                 }
-                preview_service = tenant.context.get("source_deployment")
-                preview_lookup = getattr(preview_service, "design_preview", None)
-                if callable(preview_lookup):
-                    try:
-                        preview = preview_lookup(str(run["run_id"]))
-                    except Exception:
-                        preview = None
-                    if isinstance(preview, Mapping):
-                        # A preview is eligible for display only when its
-                        # immutable source identity is the run currently
-                        # projected by this confirmed intake revision.
-                        if (preview.get("run_id") == str(run["run_id"])
-                                and str(preview.get("candidate_sha") or "").lower()
-                                == str(run.get("candidate_sha") or "").lower()):
-                            projected_preview = dict(preview)
-                            preview_url = str(projected_preview.get("preview_url") or "")
-                            if preview_url.startswith("/api/workspace/"):
-                                projected_preview["preview_url"] = "/api/helloada/" + preview_url[len("/api/workspace/"):]
-                            build["preview"] = projected_preview
+                preview = self._candidate_preview(tenant, run)
+                if preview:
+                    build["preview"] = preview
+                if run_status in {"needs_repair", "incomplete"}:
+                    build["unverified"] = True
                 # Liveness: the build surface must be able to say what Ada is
                 # doing right now and when she last said it. Only owner-copy
                 # events feed the surface; internal worker stages stay out.
@@ -2063,6 +2052,75 @@ class ChatService:
                 "updated_ts": active_job.get("updated_ts"),
             } if active_job else None,
             "build": build,
+        }
+
+    @staticmethod
+    def _displayed_design_run(memory: Memory, run: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Show the run the owner can actually look at.
+
+        A follow-up operation that failed before producing any candidate has no
+        website to show. Its parent still holds the reviewable candidate, so the
+        workspace keeps presenting that instead of an error for a site that
+        already exists. A run that produced its own candidate is never replaced,
+        so a failed owner-requested change still reports its own failure.
+        """
+        if run.get("candidate_sha"):
+            return run
+        parent_id = str(run.get("parent_run_id") or "").strip()
+        if not parent_id:
+            return run
+        parent = memory.get_design_run(parent_id)
+        if (
+            isinstance(parent, Mapping)
+            and parent.get("candidate_sha")
+            and str(parent.get("status") or "") == "ready_for_review"
+            and parent.get("draft_id")
+        ):
+            return parent
+        return run
+
+    @staticmethod
+    def _candidate_preview(tenant: Tenant | None, run: Mapping[str, Any]) -> dict[str, Any]:
+        """Expose the exact compiled candidate that already exists for this run.
+
+        The owner should see what Ada produced as soon as it is compiled, not
+        only after every gate finishes. The preview stays bound to the run's
+        immutable candidate SHA, is marked unapproved until the run reaches
+        owner review, and grants nothing: publication still requires the exact
+        validated review draft and an explicit owner approval.
+        """
+        deployer = tenant.context.get("source_deployment") if tenant is not None else None
+        lookup = getattr(deployer, "preview_for_candidate", None)
+        if not callable(lookup):
+            return {}
+        candidate_sha = str(run.get("candidate_sha") or "").strip().lower()
+        run_id = str(run.get("run_id") or "").strip()
+        try:
+            job = lookup(run_id, candidate_sha)
+        except Exception:  # noqa: BLE001 - a preview lookup never blocks the workspace
+            return {}
+        if not isinstance(job, Mapping) or not job.get("id"):
+            return {}
+        if str(job.get("design_run_id") or "") != run_id or str(job.get("commit") or "").lower() != candidate_sha:
+            return {}
+        reviewable = str(run.get("status") or "") == "ready_for_review" and bool(run.get("draft_id"))
+        status = str(job.get("status") or "")
+        revision = (job.get("revision_verification") or {}).get("commit") or ""
+        if status == "ready" and str(revision or "").lower() != candidate_sha:
+            # Only ever expose a preview that serves this exact candidate.
+            return {}
+        preview_url = str(job.get("preview_url") or "") if status == "ready" else ""
+        if preview_url.startswith("/api/workspace/"):
+            preview_url = "/api/helloada/" + preview_url[len("/api/workspace/"):]
+        return {
+            "state": "reviewable" if reviewable else "in_progress",
+            "job_id": str(job["id"]),
+            "run_id": run_id,
+            "candidate_sha": candidate_sha,
+            "approved": False,
+            "status": status,
+            "preview_url": preview_url or None,
+            "error": str(job.get("error") or "")[:1_000] or None,
         }
 
     @staticmethod

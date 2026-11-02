@@ -1295,30 +1295,6 @@ class SourceDeploymentService:
             raise SourceDeploymentError(str(result.get("error") or "exact candidate preview did not become ready"))
         return result
 
-    def design_preview(self, run_id: str) -> dict[str, Any] | None:
-        """Return the durable compiled-preview receipt for one retained design run."""
-        with self._lock:
-            jobs = [
-                job for job in self._jobs.values()
-                if isinstance(job, Mapping)
-                and job.get("mode") == _COMPILED_PREVIEW
-                and str(job.get("design_run_id") or "") == str(run_id)
-            ]
-            if not jobs:
-                return None
-            job = dict(max(jobs, key=lambda item: str(item.get("created_at") or "")))
-            # Do not expose process, filesystem, or runtime-port internals in
-            # the owner workspace projection.
-            return {
-                "job_id": str(job.get("id") or ""),
-                "run_id": str(job.get("design_run_id") or ""),
-                "candidate_sha": str(job.get("commit") or "").lower(),
-                "status": str(job.get("status") or ""),
-                "preview_url": str(job.get("preview_url") or "") or None,
-                "error": str(job.get("error") or "")[:1_000] or None,
-                "updated_at": str(job.get("updated_at") or ""),
-            }
-
     def status(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(str(job_id))
@@ -1330,6 +1306,32 @@ class SourceDeploymentService:
 
     def latest_preview(self, branch: str | None = None) -> dict[str, Any]:
         return self.latest(branch, mode=_COMPILED_PREVIEW)
+
+    def preview_for_candidate(self, design_run_id: str, candidate_sha: str) -> dict[str, Any]:
+        """Return an existing compiled-preview job for one exact candidate.
+
+        Read-only: it never starts a build and never accepts a different commit.
+        A retained candidate is viewable while its own validation is still
+        running, so the owner is not asked to wait for a finished review before
+        seeing what Ada produced.
+        Prefer an available preview over a later unsuccessful compile of the
+        same identity; otherwise report the latest compile's progress/failure.
+        """
+        run_id = str(design_run_id or "").strip()
+        commit = str(candidate_sha or "").strip().lower()
+        if not run_id or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            return {}
+        with self._lock:
+            matches = [
+                dict(job) for job in self._jobs.values()
+                if isinstance(job, Mapping)
+                and job.get("mode") == _COMPILED_PREVIEW
+                and str(job.get("design_run_id") or "") == run_id
+                and str(job.get("commit") or "").lower() == commit
+            ]
+        if not matches:
+            return {}
+        return max(matches, key=lambda job: (job.get("status") == "ready", str(job.get("created_at") or "")))
 
     def for_draft(self, draft_id: int) -> dict[str, Any]:
         """The latest production receipt, independently of the review preview."""

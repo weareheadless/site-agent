@@ -2488,6 +2488,128 @@ def test_tenant_reload_waits_for_all_old_workers_before_closing_memory_or_starti
     registry._started = False
 
 
+def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
+    """#570: an existing candidate must not be hidden behind a later gate."""
+    sha = "b" * 40
+    run = {"run_id": "intake-lab-retained", "status": "validating", "candidate_sha": sha}
+
+    class Deployer:
+        def __init__(self, revision=sha):
+            self.revision = revision
+            self.calls = []
+
+        def preview_for_candidate(self, run_id, candidate_sha):
+            self.calls.append((run_id, candidate_sha))
+            if candidate_sha != sha:
+                return {}
+            return {
+                "id": "job-1",
+                "design_run_id": run_id,
+                "status": "ready",
+                "commit": sha,
+                "revision_verification": {"ok": True, "commit": self.revision},
+            }
+
+    deployer = Deployer()
+    tenant = Tenant("tenant-a", {}, Memory(":memory:"), SimpleNamespace(close=lambda: None),
+                    {"source_deployment": deployer}, "api-token")
+
+    preview = ChatService._candidate_preview(tenant, run)
+
+    assert deployer.calls == [("intake-lab-retained", sha)]
+    assert preview == {
+        "state": "in_progress", "job_id": "job-1", "candidate_sha": sha, "approved": False,
+        "run_id": run["run_id"], "status": "ready", "preview_url": None, "error": None,
+    }
+
+    reviewable = ChatService._candidate_preview(tenant, {**run, "status": "ready_for_review", "draft_id": 7})
+    assert reviewable["state"] == "reviewable"
+    assert reviewable["approved"] is False
+
+    # A preview serving any other commit is never surfaced for this candidate.
+    assert ChatService._candidate_preview(Tenant("t", {}, Memory(":memory:"),
+        SimpleNamespace(close=lambda: None), {"source_deployment": Deployer("c" * 40)}, "token"), run) == {}
+    # No deployer, or no candidate identity, yields no preview at all.
+    assert ChatService._candidate_preview(None, run) == {}
+    assert ChatService._candidate_preview(tenant, {**run, "candidate_sha": ""}) == {}
+    tenant.memory.close()
+
+
+def test_workspace_shows_the_reviewable_parent_instead_of_a_failed_empty_follow_up():
+    """#573: a failed follow-up with no candidate must not hide the real site."""
+    parent = {"run_id": "parent", "status": "ready_for_review",
+              "candidate_sha": "a" * 40, "draft_id": 4}
+    empty_child = {"run_id": "child", "status": "failed", "parent_run_id": "parent",
+                   "candidate_sha": "", "draft_id": None}
+    with_candidate = {"run_id": "child2", "status": "failed", "parent_run_id": "parent",
+                      "candidate_sha": "b" * 40, "draft_id": None}
+
+    class Runs:
+        def __init__(self, runs):
+            self.runs = runs
+
+        def get_design_run(self, run_id):
+            return self.runs.get(run_id)
+
+    runs = Runs({"parent": parent})
+
+    # A follow-up that produced nothing defers to the reviewable parent.
+    assert ChatService._displayed_design_run(runs, empty_child) is parent
+    # A follow-up with its own candidate keeps reporting its own outcome.
+    assert ChatService._displayed_design_run(runs, with_candidate) is with_candidate
+    # The parent itself is returned unchanged.
+    assert ChatService._displayed_design_run(runs, parent) is parent
+    # A parent that is not actually reviewable is not substituted.
+    runs.runs["parent"] = {**parent, "status": "needs_repair"}
+    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
+    runs.runs["parent"] = {**parent, "draft_id": None}
+    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
+
+
+def test_tenant_reload_keeps_the_shared_frontend_toolchain_contract(tmp_path, monkeypatch):
+    """Regression for #568: a runtime reload must not drop the pinned toolchain.
+
+    Bootstrap reloads a tenant after its exact Worker health gate. The
+    replacement registry is built from a proxy config, so the shared
+    ``source_deployment`` policy has to travel with it exactly as registration
+    does. Without it, the reloaded tenant loses ``node_path`` and friends and
+    every later source build fails closed before generation.
+    """
+    toolchain = {
+        "node_path": "/opt/helloada/node/bin/node",
+        "node_version": "22.23.3",
+        "npm_command": "/opt/helloada/node/bin/npm",
+        "npm_version": "11.13.0",
+    }
+    old = Tenant("tenant-a", {"instance_name": "tenant-a"}, Memory(tmp_path / "old.db"),
+        SimpleNamespace(close=lambda: None), {}, "api-token", config_path="/registered/config.yaml",
+        api_token_env="TENANT_A_TOKEN")
+    replacement = Tenant("tenant-a", {"instance_name": "tenant-a"}, Memory(tmp_path / "new.db"),
+        SimpleNamespace(close=lambda: None), {}, "api-token", config_path="/registered/config.yaml",
+        api_token_env="TENANT_A_TOKEN")
+
+    captured = {}
+
+    class TemporaryRegistry:
+        tenants = {"tenant-a": replacement}
+        def close(self):
+            return None
+
+    def capture(_cls, config, _env, **_kwargs):
+        captured.update(config)
+        return TemporaryRegistry()
+
+    monkeypatch.setattr(TenantRegistry, "from_config", classmethod(capture))
+    registry = TenantRegistry({"tenant-a": old}, env={}, shared_source_deployment=toolchain)
+    loaded = registry.reload_tenant("tenant-a", "/registered/config.yaml", api_token="api-token")
+
+    assert loaded is replacement
+    assert captured["source_deployment"] == toolchain
+    assert set(captured["source_deployment"]) >= {"node_path", "node_version", "npm_command", "npm_version"}
+    loaded.memory.close()
+    old.memory.close()
+
+
 def test_migration_plan_projects_only_current_durable_activation_receipt(tmp_path, monkeypatch):
     import yaml
     from site_agent.application.crawlseo_migration import evidence_hash
