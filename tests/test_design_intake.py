@@ -87,6 +87,12 @@ def test_explicit_locale_intent_survives_confirmed_draft_without_language_infere
     assert restored.value("site.default_locale") == "es"
     assert restored.to_site_intake().site["locales"] == ["es", "en"]
     assert restored.to_site_intake().site["default_locale"] == "es"
+    assert restored.value("site.language") == "Spanish and English, opening in Spanish"
+    for path in ("site.locales", "site.default_locale"):
+        assert restored.provenance[path].origin == "confirmed"
+        assert restored.provenance[path].source_message_id == 7
+        source = restored.to_site_intake().extra["design"]["provenance"][path]
+        assert source["origin"] == "confirmed" and source["source_message_id"] == 7
     # Historical prose is preserved, never classified by host code.
     legacy = _intake().to_dict()
     legacy["site"]["language"] = "Spanish and English, opening in Spanish"
@@ -99,6 +105,7 @@ def test_explicit_locale_intent_survives_confirmed_draft_without_language_infere
 @pytest.mark.parametrize("selection", [
     {"locales": [], "default_locale": "es"},
     {"locales": ["es", "es"], "default_locale": "es"},
+    {"locales": ["es-MX", "es-mx"], "default_locale": "es-MX"},
     {"locales": ["es", "en"], "default_locale": "fr"},
     {"locales": ["Spanish", "English"], "default_locale": "Spanish"},
     {"locales": ["es", None], "default_locale": "es"},

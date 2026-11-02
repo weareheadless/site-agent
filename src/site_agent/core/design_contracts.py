@@ -1731,7 +1731,7 @@ class SiteIntake:
                 or any(not isinstance(locale, str) or len(locale) > 20
                        or not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale)
                        for locale in locales)
-                or len(set(locales)) != len(locales)
+                or len({locale.casefold() for locale in locales}) != len(locales)
             ):
                 raise ContractError("site.locales must contain distinct explicit locale codes")
             if site.get("default_locale") not in locales:
