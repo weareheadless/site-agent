@@ -293,10 +293,19 @@ Extraction priorities (use these paths first):
 - brand.vibe, brand.voice, brand.values, brand.colors, brand.existing_palette,
   brand.typography, brand.existing_fonts, brand.styles_to_avoid,
   brand.visual_preferences, brand.visual_dislikes
-- site.required_pages, site.navigation_intent, site.language,
-  design.assumption_permission
+- site.required_pages, site.navigation_intent, site.language, site.locales, site.default_locale,
+   design.assumption_permission
 
 Integrity rules (these are data facts, not style):
+- Keep the owner's website-language requirements in site.language. When the
+  owner has specified the website languages and opening language, also record
+  site.locales as an array of locale codes and site.default_locale as one of
+  those codes, with the same owner evidence. These are website-content settings,
+  not the language of your reply or the workspace interface.
+  Never infer locale variants from the business location, visitor geography, or conversation
+  language. Retain uncertainty rather than guessing an unspecified opening
+  language. Recording intent does not change deployed locale configuration or
+  prove translated content exists; do not claim either has happened.
 - business.name is the name the OWNER wants displayed. Never derive a brand
   name from a person's first name, the offer, the location, or the industry,
   and never synthesize a compound name or add a descriptor. Only set

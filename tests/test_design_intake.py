@@ -77,6 +77,50 @@ def _intake() -> SiteIntake:
     })
 
 
+def test_explicit_locale_intent_survives_confirmed_draft_without_language_inference():
+    draft = DesignIntakeDraft.from_site_intake(_intake())
+    for path, value in (("site.language", "Spanish and English, opening in Spanish"),
+                        ("site.locales", ["es", "en"]), ("site.default_locale", "es")):
+        draft = draft.with_value(path, value, IntakeFieldProvenance(path, "confirmed", source_message_id=7))
+    restored = DesignIntakeDraft.from_dict(json.loads(json.dumps(draft.to_dict())))
+    assert restored.value("site.locales") == ["es", "en"]
+    assert restored.value("site.default_locale") == "es"
+    assert restored.to_site_intake().site["locales"] == ["es", "en"]
+    assert restored.to_site_intake().site["default_locale"] == "es"
+    assert restored.value("site.language") == "Spanish and English, opening in Spanish"
+    for path in ("site.locales", "site.default_locale"):
+        assert restored.provenance[path].origin == "confirmed"
+        assert restored.provenance[path].source_message_id == 7
+        source = restored.to_site_intake().extra["design"]["provenance"][path]
+        assert source["origin"] == "confirmed" and source["source_message_id"] == 7
+    # Historical prose is preserved, never classified by host code.
+    legacy = _intake().to_dict()
+    legacy["site"]["language"] = "Spanish and English, opening in Spanish"
+    assert "locales" not in SiteIntake.from_dict(legacy).site
+    prompt = _advisor_prompt(DesignIntakeDraft.empty(), [], "design guidance")
+    assert "site.locales" in prompt and "site.default_locale" in prompt
+    assert "Never infer locale variants from the business location" in prompt
+
+
+@pytest.mark.parametrize("selection", [
+    {"locales": [], "default_locale": "es"},
+    {"locales": ["es", "es"], "default_locale": "es"},
+    {"locales": ["es-MX", "es-mx"], "default_locale": "es-MX"},
+    {"locales": ["es", "en"], "default_locale": "fr"},
+    {"locales": ["Spanish", "English"], "default_locale": "Spanish"},
+    {"locales": ["es", None], "default_locale": "es"},
+    {"locales": ["es"]},
+    {"default_locale": "es"},
+])
+def test_confirmed_locale_selection_rejects_incomplete_or_invalid_codes(selection):
+    from site_agent.core.contracts import ContractError
+
+    data = _intake().to_dict()
+    data["site"].update(selection)
+    with pytest.raises(ContractError, match="site\\.(locales|default_locale)"):
+        SiteIntake.from_dict(data)
+
+
 class _Advisor:
     def advise(self, draft, history, owner_message, *, assets=(), knowledge_briefing=()):
         return IntakeTurnResult(

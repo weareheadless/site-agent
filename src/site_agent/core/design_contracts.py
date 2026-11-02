@@ -1724,6 +1724,18 @@ class SiteIntake:
         for index, page in enumerate(pages):
             normalized_pages.append(_page_path(page, f"site.required_pages[{index}]"))
         site["required_pages"] = normalized_pages
+        if "locales" in site or "default_locale" in site:
+            locales = site.get("locales")
+            if (
+                not isinstance(locales, list) or not 0 < len(locales) <= 20
+                or any(not isinstance(locale, str) or len(locale) > 20
+                       or not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale)
+                       for locale in locales)
+                or len({locale.casefold() for locale in locales}) != len(locales)
+            ):
+                raise ContractError("site.locales must contain distinct explicit locale codes")
+            if site.get("default_locale") not in locales:
+                raise ContractError("site.default_locale must be included in site.locales")
 
         raw_assets = _list(value.get("assets"), "assets", item_type=object, required=False)
         assets: list[dict[str, Any]] = []
