@@ -241,7 +241,7 @@
       "mailflareOutboundQueueName": "helloada-site-5fe73d3d38ff6f77-mail-outbound",
       "mailflareR2BucketName": "helloada-site-5fe73d3d38ff6f77-mail-files",
       "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac",
-      "payloadAdmin": "0.10.49",
+      "payloadAdmin": "0.10.50",
       "payloadCore": "0.5.10",
       "privateEmailR2BucketName": "helloada-site-5fe73d3d38ff6f77-email",
       "r2BucketName": "helloada-site-5fe73d3d38ff6f77-media",
