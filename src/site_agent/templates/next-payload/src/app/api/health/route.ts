@@ -40,25 +40,21 @@ const verifyDatabaseContract = async () => {
 export async function GET() {
   const tenant = process.env.HELLOADA_TENANT_ID || ''
   const templateSchema = Number(templateManifest.templateSchema)
+  const identity = createHelloAdaContractIdentity({
+    locales: helloAdaSite.locales,
+    defaultLocale: helloAdaSite.defaultLocale,
+    collections: HELLOADA_CAPABILITIES.collections,
+    globals: HELLOADA_CAPABILITIES.globals,
+  })
   const loaded = {
     payloadCore: HELLOADA_CORE_VERSION,
     contentContract: HELLOADA_CONTENT_CONTRACT_VERSION,
     schemaRevision: HELLOADA_SCHEMA_REVISION,
     payloadAdmin: HELLOADA_PAYLOAD_ADMIN_VERSION,
-    ...(() => {
-      const identity = createHelloAdaContractIdentity({
-      locales: helloAdaSite.locales,
-      defaultLocale: helloAdaSite.defaultLocale,
-      collections: HELLOADA_CAPABILITIES.collections,
-      globals: HELLOADA_CAPABILITIES.globals,
-      })
-      return {
-        schemaIdentity: identity.schemaIdentity,
-        configurationIdentity: identity.configurationIdentity,
-        locales: identity.locales,
-        defaultLocale: identity.defaultLocale,
-      }
-    })(),
+    schemaIdentity: identity.schemaIdentity,
+    configurationIdentity: identity.configurationIdentity,
+    locales: identity.locales,
+    defaultLocale: identity.defaultLocale,
     migrationHead: templateManifest.migrationHead,
   }
   const configured = {
@@ -68,14 +64,9 @@ export async function GET() {
     schemaRevision: Number(process.env.HELLOADA_PAYLOAD_SCHEMA_REVISION || 0),
     payloadAdmin: process.env.HELLOADA_PAYLOAD_ADMIN_VERSION || '',
     schemaIdentity: process.env.HELLOADA_SCHEMA_IDENTITY || '',
-    configurationIdentity: createHelloAdaContractIdentity({
-      locales: helloAdaSite.locales,
-      defaultLocale: helloAdaSite.defaultLocale,
-      collections: HELLOADA_CAPABILITIES.collections,
-      globals: HELLOADA_CAPABILITIES.globals,
-    }).configurationIdentity,
-    locales: [...helloAdaSite.locales].sort(),
-    defaultLocale: helloAdaSite.defaultLocale,
+    configurationIdentity: identity.configurationIdentity,
+    locales: identity.locales,
+    defaultLocale: identity.defaultLocale,
     migrationHead: process.env.HELLOADA_PAYLOAD_MIGRATION_HEAD || '',
   }
   const compatible = Boolean(tenant)

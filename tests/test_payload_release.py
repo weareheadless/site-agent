@@ -1119,6 +1119,32 @@ def test_live_health_requires_exact_locale_configuration_identity(monkeypatch, k
         release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", CUSTOMER, SHA)
 
 
+def test_new_candidate_health_is_bound_to_generated_manifest_locale_tuple(monkeypatch):
+    manifest = {**TEMPLATE_MANIFEST, "configurationIdentity": "c" * 64,
+                "locales": ["en", "es"], "defaultLocale": "en"}
+    expected = dict(CUSTOMER)
+    release.synchronize_customer_payload_contract(expected, manifest, {
+        "coreVersion": manifest["payloadCore"], "contract": manifest["contentContract"],
+        "schemaRevision": manifest["schemaRevision"],
+    })
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": expected["payloadAdmin"],
+            "payloadCore": expected["payloadCore"], "contentContract": expected["contentContract"],
+            "schemaRevision": expected["schemaRevision"], "schemaIdentity": expected["schemaIdentity"],
+            "migrationHead": expected["migrationHead"], "configurationIdentity": "c" * 64,
+            "locales": ["en", "es"], "defaultLocale": "en", "releaseSha": SHA}
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    assert release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", expected, SHA)["locales"] == ["en", "es"]
+    body["locales"] = ["en"]
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", expected, SHA)
+
+
 def test_live_health_rejects_partial_locale_identity_tuple(monkeypatch):
     body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
             "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
@@ -2081,7 +2107,7 @@ def test_read_only_gate_rejects_worker_change_during_connection_check(monkeypatc
         health_checks.append(True)
         if len(health_checks) == 1:
             active["deployment"] = changed
-        return {"ok": True, "tenant": "oceanicvibes", **{key: CUSTOMER[key] for key in ("configurationIdentity", "locales", "defaultLocale")}}
+        return {"ok": True, "tenant": "oceanicvibes"}
 
     monkeypatch.setattr(release, "check_health", check_health)
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")

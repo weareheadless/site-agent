@@ -44,6 +44,7 @@ class PayloadContract:
     core_version: str
     schema_revision: int
     schema_identity: str
+    configuration_identity: str | None = None
 
     @property
     def collections(self) -> tuple[str, ...]:
@@ -70,11 +71,13 @@ class PayloadContract:
         contract_version = str(raw.get("contract") or "").strip()
         core_version = str(raw.get("coreVersion") or "").strip()
         schema_identity = str(raw.get("schemaIdentity") or "").strip()
+        configuration_identity = str(raw.get("configurationIdentity") or "").strip() or None
         if (
             not re.fullmatch(r"helloada-content-v[1-9][0-9]*", contract_version)
             or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", core_version)
             or schema_revision < 1
             or not re.fullmatch(r"[0-9a-f]{64}", schema_identity)
+            or (configuration_identity is not None and not re.fullmatch(r"[0-9a-f]{64}", configuration_identity))
         ):
             raise ConfigError("site.payload.contract must pin contract, coreVersion, schemaRevision, and schemaIdentity")
         return cls(
@@ -83,6 +86,7 @@ class PayloadContract:
             core_version,
             schema_revision,
             schema_identity,
+            configuration_identity,
         )
 
 
@@ -271,6 +275,8 @@ class PayloadGatewayClient:
             or response.get("schemaRevision") != self.contract.schema_revision
             or not re.fullmatch(r"[0-9a-f]{64}", self.contract.schema_identity)
             or response.get("schemaIdentity") != self.contract.schema_identity
+            or (self.contract.configuration_identity is not None
+                and response.get("configurationIdentity") != self.contract.configuration_identity)
         ):
             raise PayloadGatewayError("The destination's canonical Payload authoring contract is missing or incompatible")
         try:
@@ -281,6 +287,9 @@ class PayloadGatewayClient:
         if response.get("authoringContractHash") != authoring_hash:
             raise PayloadGatewayError("The destination's Payload authoring contract hash is invalid")
         enabled = response.get("enabled")
+        if (self.contract.configuration_identity is not None
+                and response.get("configurationIdentity") != self.contract.configuration_identity):
+            raise PayloadGatewayError("The destination's Payload locale configuration identity is stale")
         locales = response.get("locales")
         default_locale = response.get("defaultLocale")
         if not isinstance(enabled, Mapping):

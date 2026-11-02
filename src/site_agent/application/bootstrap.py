@@ -475,6 +475,11 @@ class WebsiteBootstrapService:
             runtime_identity.update({field: receipt[field] for field in locale_fields})
         if not isinstance(health, Mapping) or any(value is None for value in runtime_identity.values()):
             raise BootstrapError("release receipt has no complete Payload health contract")
+        health_locale = [field in health for field in locale_fields]
+        if any(present_locale_fields) != any(health_locale) or (
+            any(present_locale_fields) and (not all(present_locale_fields) or not all(health_locale))
+        ):
+            raise BootstrapError("release receipt and health have an incomplete locale configuration tuple")
         expected_health = {
             "ok": True,
             "tenant": normalized,
@@ -675,6 +680,11 @@ class WebsiteBootstrapService:
             }
             if any(health.get(key) != value for key, value in expected_health.items()):
                 raise BootstrapError("runtime activation Worker health does not match the release contract")
+            health_locale = [field in health for field in locale_fields]
+            if any(present_locale_fields) != any(health_locale) or (
+                any(present_locale_fields) and (not all(present_locale_fields) or not all(health_locale))
+            ):
+                raise BootstrapError("runtime activation receipt and health have an incomplete locale configuration tuple")
             if all(present_locale_fields) and any(health.get(field) != receipt[field] for field in locale_fields):
                 raise BootstrapError("runtime activation health locale configuration does not match its receipt")
             website_present = receipt.get("websitePresent")

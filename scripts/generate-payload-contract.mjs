@@ -82,12 +82,16 @@ manifest.contentContract = contract.contract
 manifest.migrations = migrations
 manifest.migrationIndexSha256 = migrationIndexSha256
 manifest.migrationHead = migrationHead
-manifest.schemaIdentity = createHelloAdaContractIdentity({
+const contractIdentity = createHelloAdaContractIdentity({
   locales: manifest.locales,
   defaultLocale: manifest.defaultLocale,
   collections: HELLOADA_CAPABILITIES.collections,
   globals: Object.keys(contract.globals),
-}).schemaIdentity
+})
+manifest.schemaIdentity = contractIdentity.schemaIdentity
+manifest.configurationIdentity = contractIdentity.configurationIdentity
+manifest.locales = contractIdentity.locales
+manifest.defaultLocale = contractIdentity.defaultLocale
 
 let wrangler = readFileSync(wranglerPath, 'utf8')
 const schemaIdentitySlot = /("HELLOADA_SCHEMA_IDENTITY": ")(?:__HELLOADA_SCHEMA_IDENTITY__|[0-9a-f]{64})(")/

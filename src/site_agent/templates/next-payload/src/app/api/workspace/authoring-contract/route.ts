@@ -16,12 +16,13 @@ export async function GET(request: Request) {
   if (!serviceAuthorized(request)) {
     return NextResponse.json({ error: 'service authentication required' }, { status: 401 })
   }
-  const loadedSchemaIdentity = createHelloAdaContractIdentity({
+  const loadedIdentity = createHelloAdaContractIdentity({
     locales: helloAdaSite.locales,
     defaultLocale: helloAdaSite.defaultLocale,
     collections: HELLOADA_CAPABILITIES.collections,
     globals: HELLOADA_CAPABILITIES.globals,
-  }).schemaIdentity
+  })
+  const loadedSchemaIdentity = loadedIdentity.schemaIdentity
   const configuredSchemaIdentity = process.env.HELLOADA_SCHEMA_IDENTITY || ''
   const enabledCollections = [
     'pages',
@@ -45,6 +46,7 @@ export async function GET(request: Request) {
     contract: HELLOADA_CONTENT_CONTRACT_VERSION,
     schemaRevision: HELLOADA_SCHEMA_REVISION,
     schemaIdentity: loadedSchemaIdentity,
+    configurationIdentity: loadedIdentity.configurationIdentity,
     authoringContractHash,
     authoring,
     enabled: { collections: enabledCollections, globals: enabledGlobals },

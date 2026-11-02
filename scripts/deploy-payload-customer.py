@@ -441,6 +441,9 @@ def synchronize_customer_payload_contract(
     content_version = str(template_manifest.get("contentContract") or "")
     schema_revision = template_manifest.get("schemaRevision")
     schema_identity = str(template_manifest.get("schemaIdentity") or "")
+    configuration_identity = str(template_manifest.get("configurationIdentity") or "")
+    locales = template_manifest.get("locales")
+    default_locale = template_manifest.get("defaultLocale")
     if (
         not re.fullmatch(r"\d+\.\d+\.\d+", payload_admin)
         or not re.fullmatch(r"\d+\.\d+\.\d+", payload_core)
@@ -451,6 +454,10 @@ def synchronize_customer_payload_contract(
         or not isinstance(schema_revision, int)
         or schema_revision < 1
         or not SHA256_RE.fullmatch(schema_identity)
+        or (configuration_identity and not SHA256_RE.fullmatch(configuration_identity))
+        or (configuration_identity and (not isinstance(locales, list) or not locales
+            or any(not isinstance(locale, str) for locale in locales)
+            or len(set(locales)) != len(locales) or default_locale not in locales))
     ):
         raise RuntimeError("generated Payload package, schema and manifest identities do not agree")
     customer.update({
@@ -461,6 +468,8 @@ def synchronize_customer_payload_contract(
         "schemaIdentity": schema_identity,
         "migrationHead": migration_head,
     })
+    if configuration_identity:
+        customer.update(configurationIdentity=configuration_identity, locales=locales, defaultLocale=default_locale)
 
 
 def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
@@ -1693,6 +1702,9 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
     for attempt in range(12):
         try:
             health_identity = dict(customer)
+            if verify_only:
+                for field in ("configurationIdentity", "locales", "defaultLocale"):
+                    health_identity.pop(field, None)
             for field in ("configurationIdentity", "locales", "defaultLocale"):
                 if field in receipt:
                     health_identity[field] = receipt[field]
@@ -1700,12 +1712,20 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
                 customer["health"], receipt["tenant"], health_identity, receipt["sourceSha"],
                 require_locale_identity=not verify_only,
             )
-            if not verify_only and not all(
-                field in receipt["health"] for field in ("configurationIdentity", "locales", "defaultLocale")
-            ):
-                raise RuntimeError("new release health has no locale configuration identity")
-            if all(field in receipt["health"] for field in ("configurationIdentity", "locales", "defaultLocale")):
-                for field in ("configurationIdentity", "locales", "defaultLocale"):
+            locale_fields = ("configurationIdentity", "locales", "defaultLocale")
+            health_present = [field in receipt["health"] for field in locale_fields]
+            if any(health_present) and not all(health_present):
+                raise RuntimeError("live release has a partial locale configuration identity")
+            expected_present = [field in health_identity for field in locale_fields]
+            if any(expected_present) and not all(expected_present):
+                raise RuntimeError("release receipt has a partial locale configuration identity")
+            if all(expected_present):
+                if not all(health_present) or any(receipt["health"].get(field) != health_identity[field] for field in locale_fields):
+                    raise RuntimeError("live release locale configuration differs from the built candidate")
+            elif all(health_present) or not verify_only:
+                raise RuntimeError("release and health locale configuration identities are not a coherent tuple")
+            if all(health_present):
+                for field in locale_fields:
                     receipt[field] = receipt["health"][field]
             stage("verify-connection")
             activation_token = control_plane_token(gate["envFile"], base)
@@ -2031,6 +2051,8 @@ def main() -> int:
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+        "configurationIdentity": customer["configurationIdentity"], "locales": customer["locales"],
+        "defaultLocale": customer["defaultLocale"],
         "websitePresent": customer["websitePresent"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
@@ -2185,6 +2207,9 @@ def main() -> int:
             "contentContract": customer["contentContract"],
             "schemaRevision": customer["schemaRevision"],
             "schemaIdentity": customer["schemaIdentity"],
+            "configurationIdentity": customer["configurationIdentity"],
+            "locales": customer["locales"],
+            "defaultLocale": customer["defaultLocale"],
             "migrationHead": customer["migrationHead"],
         })
         receipt["sharedRuntime"] = runtime_provenance
