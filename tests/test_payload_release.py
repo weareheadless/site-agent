@@ -1491,7 +1491,8 @@ def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(mon
     commands = []
     customer = {**CUSTOMER, "websitePresent": website_present}
 
-    def fake_run(command, cwd, env):
+    def fake_run(command, cwd, env, *, timeout_seconds):
+        assert timeout_seconds == 600
         config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
         config = json.loads(config_path.read_text())
         assert config["d1_databases"][0]["remote"] is True
@@ -1509,6 +1510,33 @@ def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(mon
     assert result == "contract verified"
     assert commands[0][0] == ["npm", "run", "verify:payload"]
     assert not commands[0][1].exists()
+
+
+def test_blocked_verifier_deadline_is_enforced_by_parent_not_child_event_loop(monkeypatch, tmp_path):
+    import signal
+    import subprocess
+    calls = []
+    class Child:
+        pid = 123456
+        stdout = object()
+        returncode = -9
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def communicate(self, timeout=None):
+            calls.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired('npm', timeout)
+            return '[payload-contract] checking: pages published read\n', None
+    def spawn(command, **kwargs):
+        assert kwargs['start_new_session'] is True
+        return Child()
+    killed = []
+    monkeypatch.setattr(release.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(release.os, 'killpg', lambda pid, sig: killed.append((pid, sig)))
+    with pytest.raises(RuntimeError, match='no promotion permitted'):
+        release.run(['npm', 'run', 'verify:payload'], tmp_path, {}, timeout_seconds=600)
+    assert calls == [600, None]
+    assert killed == [(123456, signal.SIGKILL)]
 
 
 def test_payload_migration_uses_the_pinned_package_script():
