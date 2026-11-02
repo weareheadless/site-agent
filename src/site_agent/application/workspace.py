@@ -1973,6 +1973,12 @@ class ChatService:
             revision = intake_status.get("confirmed_revision_id") or intake_status.get("confirmed_revision")
             session_id = str(intake_status.get("session_id") or "")
             run = memory.latest_design_run_for_intake(session_id, revision)
+            earlier_brief = False
+            if run is None and session_id:
+                retained = memory.latest_design_run_for_intake(session_id, None)
+                if retained is not None and retained.get("candidate_sha"):
+                    run = retained
+                    earlier_brief = True
             if run is not None:
                 run = self._displayed_design_run(memory, run)
             if run is not None:
@@ -1981,8 +1987,8 @@ class ChatService:
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
                 run_status = str(run.get("status") or "")
                 terminal = run_status in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                failed = run_status in {"failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                ready = run_status == "ready_for_review"
+                failed = earlier_brief or run_status in {"failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
+                ready = run_status == "ready_for_review" and not earlier_brief
                 stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
                 stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
                 labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
@@ -2031,6 +2037,9 @@ class ChatService:
                         "cancelled": "The run was cancelled; its retained candidate remains available.",
                     }
                     build["error"] = str(run.get("error") or attention_messages.get(run_status) or "The design build needs attention.")
+                if earlier_brief:
+                    build["unverified"] = True
+                    build["error"] = "This retained preview belongs to your earlier brief. It does not yet implement the revised requirements."
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
