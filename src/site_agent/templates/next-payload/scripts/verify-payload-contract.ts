@@ -26,6 +26,7 @@ const websitePresent = websitePresentValue === 'true'
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
   activeCheck = label
+  console.log(`[payload-contract] checking: ${label}`)
   try {
     await operation()
     console.log(`[payload-contract] ok: ${label}`)
@@ -49,6 +50,7 @@ const hasAuthoredText = (value: unknown): boolean => {
 }
 
 const payload = await getPayload({ config })
+console.log('[payload-contract] Payload initialized; checking the exact remote content contract')
 
 try {
   for (const collection of collections) {
