@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import ts from 'typescript'
+import { selectReviewDraft } from '../src/lib/select-review-draft.ts'
 
 // Exercise the real workspace callback without a second implementation of its
 // selection/queue policy or a browser login in unit tests.
@@ -29,7 +30,7 @@ async function load(draft, latest, previousReview, options = {}) {
     setPreviewRevision: setter('revision'), setError: setter('error'),
     sourceReviewIdentityRef: { current: '' }, previewPlanRequestRef,
     designBuild: { draft_id: options.projectedDraftId ?? draft?.id },
-    selectReviewDraft: (drafts) => drafts.find((item) => item.id === (options.projectedDraftId ?? draft?.id)),
+    selectReviewDraft,
     t: (key) => key,
   })
   return { calls, state }
