@@ -39,9 +39,15 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
             if len(rows) >= 100:
                 raise ValueError("compiled preview requires a complete bounded canonical content snapshot")
             for row in rows:
-                record(collection, locale, gateway.read(
+                document = gateway.read(
                     collection, identifier=str(row.get("id")), identifier_kind="id",
-                    draft=False, locale=locale))
+                    draft=False, locale=locale)
+                # Payload draft=False selects the main row; an intake-only
+                # document there can still be unpublished with empty locales.
+                # Only exact candidate effects below may introduce its draft.
+                if collection in {"pages", "posts", "products"} and document.get("_status") != "published":
+                    continue
+                record(collection, locale, document)
 
     for effect in effects:
         locale = effect["locale"]

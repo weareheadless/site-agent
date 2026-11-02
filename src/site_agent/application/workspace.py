@@ -49,6 +49,15 @@ class SourceConflict(BridgeError):
     """A source edit was based on stale or mismatched source evidence."""
 
 
+def _owner_preview_job(job: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep internal build diagnostics in the durable job, not the owner alert."""
+    result = dict(job)
+    if result.get("status") == "failed" and result.get("error"):
+        result["error"] = "The website preview could not be prepared. Build diagnostics have been retained."
+        result["diagnostic_id"] = str(result.get("id") or "")
+    return result
+
+
 def _iso_age_seconds(value: str) -> int | None:
     """Seconds between a persisted ISO timestamp and now, or None if unreadable."""
     text = str(value or "").strip()
@@ -2112,6 +2121,7 @@ class ChatService:
             return {}
         if str(job.get("design_run_id") or "") != run_id or str(job.get("commit") or "").lower() != candidate_sha:
             return {}
+        job = _owner_preview_job(job)
         reviewable = str(run.get("status") or "") == "ready_for_review" and bool(run.get("draft_id"))
         status = str(job.get("status") or "")
         revision = (job.get("revision_verification") or {}).get("commit") or ""
@@ -5749,7 +5759,7 @@ class ChatService:
         from .source_deployment import SourceDeploymentError
 
         try:
-            return self._source_deployer(tenant).status(job_id)
+            return _owner_preview_job(self._source_deployer(tenant).status(job_id))
         except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 
@@ -5780,7 +5790,7 @@ class ChatService:
 
         try:
             deployer = self._source_deployer(tenant)
-            return getattr(deployer, "latest_preview", deployer.latest)(branch)
+            return _owner_preview_job(getattr(deployer, "latest_preview", deployer.latest)(branch))
         except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 
