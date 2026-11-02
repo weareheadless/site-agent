@@ -188,6 +188,88 @@ def test_payload_first_stage_persists_and_binds_the_exact_default_locale_revisio
     assert "payload_draft_receipts" not in request.content
 
 
+@pytest.mark.parametrize("change", [None, "revision", "document", "content", "contract", "plan"])
+def test_payload_first_resume_reuses_only_the_exact_durable_staged_draft(tmp_path, change):
+    import copy
+
+    class Payload:
+        document = None
+        writes = 0
+        contract_hash = "authoring-hash"
+
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["es-MX"],
+                    "defaultLocale": "es-MX", "schemaIdentity": "schema-identity",
+                    "authoringContractHash": self.contract_hash}
+
+        def create(self, collection, data, *, locale):
+            self.writes += 1
+            assert self.writes == 1, "a resumed stage must not write the homepage again"
+            self.document = {"id": 41, "sourceId": "pages:home", **copy.deepcopy(data),
+                             "_helloadaRevision": "sha256:" + "1" * 64}
+            return copy.deepcopy(self.document)
+
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            assert (collection, identifier, identifier_kind, draft, locale) == ("pages", "41", "id", True, "es-MX")
+            return copy.deepcopy(self.document)
+
+    request = _payload_first_request()
+    plan = _composed_plan({"headline": "Heading.", "body": "Body.", "primary_action": "Learn more"})
+    payload = Payload()
+    memory = Memory(tmp_path / "staging.db")
+    memory.create_design_run(run_id=request.run_id, mode="production_candidate",
+        intake_json=request.content["site_intake"], intake_hash="b" * 64, base_sha=request.base_sha,
+        publishable=True, candidate_ref=f"refs/ada-design/{request.run_id}")
+    first = runner._stage_initial_homepage_payload({"payload_gateway": payload, "memory": memory}, request, plan)
+    memory.close()
+
+    if change == "revision":
+        payload.document["_helloadaRevision"] = "sha256:" + "2" * 64
+    elif change == "document":
+        payload.document["id"] = 42
+    elif change == "content":
+        payload.document["sections"][0]["entries"][0]["text"] = "Changed by another writer"
+    elif change == "contract":
+        payload.contract_hash = "changed-contract"
+    elif change == "plan":
+        plan = _composed_plan({"headline": "Changed plan.", "body": "Body.", "primary_action": "Learn more"})
+
+    reopened = Memory(tmp_path / "staging.db")
+    try:
+        context = {"payload_gateway": payload, "memory": reopened}
+        if change is not None:
+            with pytest.raises(runner.RunnerError, match="staged homepage"):
+                runner._stage_initial_homepage_payload(context, request, plan)
+        else:
+            resumed = runner._stage_initial_homepage_payload(context, request, plan)
+            assert resumed.content["payload_draft_receipts"] == first.content["payload_draft_receipts"]
+            assert context["_payload_candidate_receipts"] == resumed.content["payload_draft_receipts"]
+            events = reopened.list_design_run_events(request.run_id)
+            assert len([event for event in events if event["stage"] == "initial_payload_draft_staged"]) == 1
+    finally:
+        reopened.close()
+    assert payload.writes == 1
+
+
+@pytest.mark.parametrize("saved", [None, {}, False, 0, ""])
+def test_payload_first_stage_rejects_present_malformed_receipt_without_writing(saved):
+    class Payload:
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["es-MX"],
+                    "defaultLocale": "es-MX", "schemaIdentity": "schema-identity",
+                    "authoringContractHash": "authoring-hash"}
+
+        def create(self, *_args, **_kwargs):
+            raise AssertionError("malformed receipt must not fall through to a Payload write")
+
+    memory = SimpleNamespace(get_design_run=lambda _run_id: {"planning_json": {"payload_draft_receipts": saved}})
+    with pytest.raises(runner.RunnerError, match="staged homepage receipt requires explicit reconciliation"):
+        runner._stage_initial_homepage_payload(
+            {"payload_gateway": Payload(), "memory": memory}, _payload_first_request(),
+            _composed_plan({"headline": "Heading.", "body": "Body.", "primary_action": "Learn more"}),
+        )
+
+
 def test_payload_first_stage_adopts_existing_home_route_draft_and_binds_run_identity():
     from site_agent.hands.payload_gateway import PayloadGatewayError
 
