@@ -19,7 +19,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.parse import unquote
 
 import yaml
@@ -2109,9 +2109,12 @@ class ChatService:
         if status == "ready" and str(revision or "").lower() != candidate_sha:
             # Only ever expose a preview that serves this exact candidate.
             return {}
-        preview_url = str(job.get("preview_url") or "") if status == "ready" else ""
-        if preview_url.startswith("/api/workspace/"):
-            preview_url = "/api/helloada/" + preview_url[len("/api/workspace/"):]
+        # The owner embeds the canonical Worker bridge, never an internal API
+        # mount. The verified job ID already identifies the exact runtime.
+        preview_url = (
+            f"/api/helloada/source/preview/{quote(str(job['id']), safe='')}/runtime/"
+            if status == "ready" and job.get("preview_url") else None
+        )
         return {
             "state": "reviewable" if reviewable else "in_progress",
             "job_id": str(job["id"]),
