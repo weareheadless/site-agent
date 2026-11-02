@@ -59,3 +59,19 @@ Mission audit: Ada authored the retained candidate; defining experience fidelity
 and behavior in the actual owner review surface remain unproven; this review
 does not bypass the autonomous pipeline; readiness for owner feedback remains
 unproven. The overall design mission is incomplete.
+
+## Latest-diff follow-up
+
+A read-only review of PR #575 at `04a4d0a802f7d5cd425d8faff5d4143773a46975`
+found an unsupported import requirement: the prompt required a newly exported
+`PayloadContentEntry`, while older tenant base commits do not export it. The
+runtime overlay intentionally does not replace tenant-owned presentation.
+
+The correction removes that requirement and the unnecessary starter-only export.
+The prompt now names the existing pinned shared `helloAdaBindingId` API and tells
+Ada to inspect actual candidate renderer exports before importing them. It does
+not copy a new renderer into older tenants or expand the runtime overlay.
+Regression coverage checks that generation does not prescribe the missing export
+and that toolchain preparation preserves both the older renderer and an existing
+tenant presentation byte-for-byte. The larger prepared-renderer interface remains
+replacement-architecture work, not a capability this patch claims to deliver.

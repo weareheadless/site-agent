@@ -16,6 +16,15 @@ def test_pinned_presentation_toolchain_is_prepared_without_replacing_tenant_conf
 
     package = tmp_path / "package.json"
     package.write_text(json.dumps({"dependencies": {"next": "16.3.4"}}))
+    renderer = tmp_path / "src/components/site/TenantSections.tsx"
+    renderer.parent.mkdir(parents=True)
+    renderer.write_bytes((TEMPLATE / "src/components/site/TenantSections.tsx").read_bytes())
+    renderer_before = renderer.read_bytes()
+    assert b"PayloadContentEntry" not in renderer_before
+    presentation = renderer.parent / "presentation/PagePresentation.tsx"
+    presentation.parent.mkdir()
+    presentation.write_text("export default function Page() { return <main /> }\n")
+    presentation_before = presentation.read_bytes()
     paths = _prepare_presentation_toolchain(tmp_path)
     assert set(paths) == {"package.json", "postcss.config.mjs"}
     declared = json.loads(package.read_text())
@@ -24,6 +33,8 @@ def test_pinned_presentation_toolchain_is_prepared_without_replacing_tenant_conf
         assert declared["devDependencies"][name] == approved[name]
     assert declared["dependencies"]["next"] == "16.3.4"
     assert (tmp_path / "postcss.config.mjs").read_bytes() == (TEMPLATE / "postcss.config.mjs").read_bytes()
+    assert renderer.read_bytes() == renderer_before
+    assert presentation.read_bytes() == presentation_before
     assert _prepare_presentation_toolchain(tmp_path) == ()
     (tmp_path / "postcss.config.mjs").write_text("tenant custom config")
     with pytest.raises(RunnerError, match="PostCSS configuration"):

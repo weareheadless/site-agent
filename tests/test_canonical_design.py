@@ -521,7 +521,9 @@ def test_payload_initial_prompt_allows_ada_authored_composition_and_preserves_co
     assert "templates are optional starting points, not constraints" in prompt
     assert "You may author a bespoke page composition" in prompt
     assert "stable data-helloada-field bindings" in prompt
-    assert "PayloadContentEntry helper" in prompt
+    assert "helloAdaBindingId export from @weareheadless/helloada-payload-core/bindings" in prompt
+    assert "Inspect a module's actual exports before importing it" in prompt
+    assert "PayloadContentEntry" not in prompt
     assert "distinctive, complete page" in prompt
     assert "Implement the complete composition" in prompt
     assert "Do not force sections through a generic Hero" in prompt

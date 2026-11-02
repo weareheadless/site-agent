@@ -40,20 +40,13 @@ const requiredMediaUrl = (value: unknown) => {
   return url
 }
 
-export type PayloadContentEntryProps = {
+function ContentEntryView({ entry, collection, documentId, sectionKey, preview }: {
   entry: ContentEntry
   collection: string
   documentId: string
   sectionKey: string
   preview: boolean
-}
-
-/**
- * Render one exact Payload entry with canonical media resolution and a stable
- * owner-editable binding. Tenant presentation may arrange these entries in a
- * bespoke composition without copying content or reimplementing binding IDs.
- */
-export function PayloadContentEntry({ entry, collection, documentId, sectionKey, preview }: PayloadContentEntryProps) {
+}) {
   const key = stableKey(entry.key, 'Content')
   const target = { collection, documentId, sectionKey, entryKey: key }
   switch (entry.blockType) {
@@ -201,7 +194,7 @@ export default function TenantSections({ sections, collection, documentId, previ
         <h2 data-helloada-field={sectionBinding}>{label}</h2>
         {entries.map((rawEntry: unknown) => {
           const entry = rawEntry as ContentEntry
-          return <PayloadContentEntry key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} preview={preview} />
+          return <ContentEntryView key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} preview={preview} />
         })}
       </section>
     })}
