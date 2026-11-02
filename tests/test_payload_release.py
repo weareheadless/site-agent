@@ -194,6 +194,8 @@ def test_api_build_environment_uses_disk_scratch_and_exact_committed_node_npm(tm
         calls.append((command, kwargs))
         return subprocess.CompletedProcess(command, 0, stdout='v22.23.3\n' if command[0].endswith('/node') else '11.13.0\n')
     monkeypatch.setattr(api_deploy, '_run', run)
+    # Version execution is mocked; fake tools need not live on an exec mount.
+    monkeypatch.setattr(api_deploy.os, 'access', lambda path, mode: mode == os.X_OK and Path(path) in {node_bin / 'node', npm_bin / 'npm'})
     scratch = tmp_path / 'disk-backed-staging/temporary'
     env = api_deploy._build_environment(source, scratch, tmp_path / 'deployment.log',
                                         inherited={'PATH': '/usr/bin', 'TMPDIR': '/tmp', 'UNCHANGED': 'yes'})
@@ -205,6 +207,7 @@ def test_api_build_environment_uses_disk_scratch_and_exact_committed_node_npm(tm
 
 
 def test_api_build_environment_rejects_a_toolchain_mismatch_without_path_fallback(tmp_path, monkeypatch):
+    import os
     import subprocess
 
     source = tmp_path / 'source'
@@ -216,7 +219,22 @@ def test_api_build_environment_rejects_a_toolchain_mismatch_without_path_fallbac
         'nodeBin': str(tmp_path), 'nodeVersion': '22.23.3',
         'npmBin': str(tmp_path), 'npmVersion': '11.13.0'}))
     monkeypatch.setattr(api_deploy, '_run', lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout='v12.22.9\n'))
+    monkeypatch.setattr(api_deploy.os, 'access', lambda path, mode: mode == os.X_OK and Path(path) == node)
     with pytest.raises(RuntimeError, match='Node 22.23.3'):
+        api_deploy._build_environment(source, tmp_path / 'temporary', tmp_path / 'deployment.log', inherited={'PATH': '/usr/bin'})
+
+
+def test_api_build_environment_rejects_an_inaccessible_tool_before_execution(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    (source / 'deploy').mkdir(parents=True)
+    node = tmp_path / 'node'
+    node.write_text('not executable')
+    (source / 'deploy/payload-customers.json').write_text(json.dumps({
+        'nodeBin': str(tmp_path), 'nodeVersion': '22.23.3',
+        'npmBin': str(tmp_path), 'npmVersion': '11.13.0'}))
+    monkeypatch.setattr(api_deploy.os, 'access', lambda *_args: False)
+    monkeypatch.setattr(api_deploy, '_run', lambda *_args, **_kwargs: pytest.fail('inaccessible tool must not execute'))
+    with pytest.raises(RuntimeError, match='Node executable is unavailable at its committed path'):
         api_deploy._build_environment(source, tmp_path / 'temporary', tmp_path / 'deployment.log', inherited={'PATH': '/usr/bin'})
 
 
