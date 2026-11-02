@@ -2051,8 +2051,6 @@ def main() -> int:
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
-        "configurationIdentity": customer["configurationIdentity"], "locales": customer["locales"],
-        "defaultLocale": customer["defaultLocale"],
         "websitePresent": customer["websitePresent"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
@@ -2198,6 +2196,8 @@ def main() -> int:
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
         generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
+        if not all(field in customer for field in ("configurationIdentity", "locales", "defaultLocale")):
+            raise RuntimeError("generated candidate has no complete locale configuration identity")
         runtime_provenance["wranglerSha256"] = hashlib.sha256(
             (checkout / "wrangler.jsonc").read_bytes()
         ).hexdigest()

@@ -287,9 +287,6 @@ class PayloadGatewayClient:
         if response.get("authoringContractHash") != authoring_hash:
             raise PayloadGatewayError("The destination's Payload authoring contract hash is invalid")
         enabled = response.get("enabled")
-        if (self.contract.configuration_identity is not None
-                and response.get("configurationIdentity") != self.contract.configuration_identity):
-            raise PayloadGatewayError("The destination's Payload locale configuration identity is stale")
         locales = response.get("locales")
         default_locale = response.get("defaultLocale")
         if not isinstance(enabled, Mapping):

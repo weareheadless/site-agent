@@ -190,3 +190,18 @@ def test_planned_global_identity_cannot_replace_the_confirmed_business_name():
     with pytest.raises(runner.RunnerError, match='confirmed business identity'):
         runner._stage_initial_homepage_payload({'payload_gateway': payload}, request(), selected)
     assert payload.writes == []
+
+
+def test_initial_locale_runtime_preparation_leaves_adas_presentation_and_tenant_config_untouched(tmp_path):
+    presentation = tmp_path / 'src/components/site/presentation/PagePresentation.tsx'
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text('Ada owns the page composition')
+    config = tmp_path / 'src/helloada.config.ts'
+    config.write_text('Verified tenant config belongs to the release, not Ada')
+    changed = runner._prepare_initial_locale_runtime(tmp_path, request())
+    assert 'src/lib/request-locale.ts' in changed
+    assert 'src/middleware.ts' in changed
+    assert 'src/helloada.config.ts' not in changed
+    assert presentation.read_text() == 'Ada owns the page composition'
+    assert config.read_text() == 'Verified tenant config belongs to the release, not Ada'
+    assert runner._prepare_initial_locale_runtime(tmp_path, request()) == ()

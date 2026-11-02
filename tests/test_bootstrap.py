@@ -655,6 +655,42 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     assert len(mounted) == 1
 
 
+@pytest.mark.parametrize("change", ["receipt-partial", "health-partial", "health-only", "receipt-only", "mismatch", "valid"])
+def test_activation_requires_one_exact_locale_tuple_on_receipt_and_health(tmp_path, change):
+    from site_agent.application.bootstrap import BootstrapError
+
+    context = _runtime_activation_composition(tmp_path)
+    service, receipt = context["service"], context["receipt"]
+    locale_identity = {"configurationIdentity": "f" * 64, "locales": ["en", "es"], "defaultLocale": "es"}
+    receipt.update(locale_identity)
+    receipt["health"].update(locale_identity)
+    if change == "receipt-partial":
+        del receipt["defaultLocale"]
+    elif change == "health-partial":
+        del receipt["health"]["locales"]
+    elif change == "health-only":
+        for field in locale_identity:
+            del receipt[field]
+    elif change == "receipt-only":
+        for field in locale_identity:
+            del receipt["health"][field]
+    elif change == "mismatch":
+        receipt["health"]["defaultLocale"] = "en"
+    context["receipt_path"].write_text(json.dumps(receipt))
+    mounted = []
+    service._mount_runtime = lambda *args, **kwargs: mounted.append(kwargs)
+    try:
+        if change == "valid":
+            service.activate_runtime_after_health(context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"])
+            assert all(mounted[0]["runtime_identity"][field] == value for field, value in locale_identity.items())
+        else:
+            with pytest.raises(BootstrapError, match="locale configuration"):
+                service.activate_runtime_after_health(context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"])
+            assert mounted == []
+    finally:
+        context["registry"].close()
+
+
 def _runtime_activation_composition(tmp_path, *, release_id="rel-20261030123456-aabbccdd"):
     """Build the real local activation chain used by provenance composition tests."""
     import yaml

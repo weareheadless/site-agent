@@ -885,6 +885,35 @@ def _prepare_presentation_toolchain(worktree: Path) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def _prepare_initial_locale_runtime(worktree: Path, request) -> tuple[str, ...]:
+    """Prepare the canonical first-site locale plumbing before Ada designs it.
+
+    This is not an overlay onto an approved customer composition: only the
+    initial unpublished-homepage path calls it, before the creative session.
+    Tenant presentation components, sections, styles and locale configuration stay
+    untouched. The live configuration is separately receipt-verified at staging.
+    """
+    site = ((request.content.get("site_intake") or {}).get("site") or {})
+    if request.mode != "initial_homepage" or not site.get("locales"):
+        return ()
+    template = Path(__file__).resolve().parents[1] / "templates/next-payload"
+    paths = (
+        "src/middleware.ts", "src/lib/locale-routing.ts", "src/lib/request-locale.ts", "src/lib/content.ts",
+        "src/app/(frontend)/layout.tsx", "src/components/SiteChrome.tsx",
+    )
+    changed = []
+    for relative in paths:
+        destination = worktree / relative
+        if destination.is_symlink() or worktree.resolve() not in destination.resolve().parents:
+            raise RunnerError("initial locale runtime inputs must be regular files")
+        source = (template / relative).read_bytes()
+        if not destination.exists() or destination.read_bytes() != source:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(source)
+            changed.append(relative)
+    return tuple(changed)
+
+
 def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
     """Map confirmed intake and Ada's final homepage copy into canonical Payload fields."""
     from ..core.design_contracts import ExperiencePlanBundle, SiteIntake
@@ -2766,6 +2795,7 @@ def stage_design_build(
             host_provisioned_paths.update(prepare_native_workspace(worktree, NEXT_REACT_PROFILE))
             if payload_first_required:
                 host_provisioned_paths.update(_prepare_presentation_toolchain(worktree))
+                host_provisioned_paths.update(_prepare_initial_locale_runtime(worktree, request))
         if (execution_config.get("site") or {}).get("adapter") == "payload_gateway":
             pinned_env = configured_build_environment(
                 execution_config.get("source_deployment") or {}, worktree,
