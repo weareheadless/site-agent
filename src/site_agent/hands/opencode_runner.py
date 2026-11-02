@@ -627,6 +627,14 @@ def _native_direction_payload(
         )
     if any(not section.entries for section in plan.page_composition):
         raise RunnerError("creative direction must provide final section content for every selected section", result=dict(result))
+    site = ((request.content.get("site_intake") or {}).get("site") or {})
+    if site.get("locales") is not None:
+        # Missing translations are invalid planning output, not a surprise after
+        # Build starts or a reason to silently abandon the confirmed language.
+        locale_contract = {"locales": site["locales"], "defaultLocale": site["default_locale"],
+                           "enabled": {"globals": ["siteSettings"]}}
+        localized_pages = _homepage_payload_by_locale(request, plan, locale_contract)
+        _homepage_settings_by_locale(request, plan, locale_contract, localized_pages)
     mapped_assets = {entry["asset_id"] for section in plan.page_composition for entry in section.entries if "asset_id" in entry}
     if mapped_assets != {item.asset_id for item in plan.asset_composition_plan}:
         raise RunnerError("creative direction section content must map every assigned asset, without unplanned assets", result=dict(result))
@@ -953,6 +961,104 @@ def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
     return page
 
 
+def _homepage_payload_by_locale(request, plan: Any, contract: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Translate Ada's stable content entries, never infer languages or duplicate structure."""
+    import copy
+
+    data = _initial_homepage_payload_data(request, plan)
+    site = (request.content.get("site_intake") or {}).get("site") or {}
+    locales = site.get("locales")
+    default = contract["defaultLocale"]
+    if locales is None:
+        # Historical single-copy plans remain inspectable. New explicit intent
+        # requires complete coverage and is never reduced to the runtime default.
+        return {default: data}
+    if set(locales) != set(contract["locales"]) or site.get("default_locale") != default:
+        raise RunnerError("confirmed locale intent does not match the verified Payload runtime; prepare its locale configuration first")
+    deck = plan.copy_deck
+    translations = deck.get("translations", {})
+    if deck.get("locale") != default or not isinstance(translations, Mapping) or set(translations) != set(locales) - {default}:
+        raise RunnerError("the final copy deck must cover every confirmed locale with complete translations")
+    text_keys = {entry["key"] for section in data["sections"] for entry in section["entries"] if "text" in entry}
+    section_keys = {section["key"] for section in data["sections"]}
+    result = {default: data}
+    for locale in locales:
+        if locale == default:
+            continue
+        translation = translations[locale]
+        expected_fields = {"entry_text", "section_labels", "meta_description"} | ({"site_settings"} if "site_settings" in deck else set())
+        if not isinstance(translation, Mapping) or set(translation) != expected_fields:
+            raise RunnerError(f"locale {locale} needs exact translated entry_text, section_labels and meta_description")
+        texts, labels = translation["entry_text"], translation["section_labels"]
+        if not isinstance(texts, Mapping) or set(texts) != text_keys or not isinstance(labels, Mapping) or set(labels) != section_keys:
+            raise RunnerError(f"locale {locale} translation coverage does not match the stable page content keys")
+        if any(not isinstance(value, str) or not value.strip() for value in [*texts.values(), *labels.values(), translation["meta_description"]]):
+            raise RunnerError(f"locale {locale} translation contains missing visible copy")
+        translated = copy.deepcopy(data)
+        for section in translated["sections"]:
+            section["label"] = labels[section["key"]]
+            for entry in section["entries"]:
+                if "text" in entry:
+                    entry["text"] = texts[entry["key"]]
+                    if entry["blockType"] == "helloAdaLink" and len(entry["text"]) > 160:
+                        raise RunnerError(f"locale {locale} translated action exceeds the canonical text limit")
+                if len(str(entry.get("text", ""))) > 8_000:
+                    raise RunnerError(f"locale {locale} translated entry exceeds the canonical text limit")
+        translated["seo"] = {"title": next(entry["text"] for entry in translated["sections"][0]["entries"]
+                                               if entry["blockType"] == "helloAdaHeading")[:300],
+                             "description": translation["meta_description"].strip()[:320]}
+        result[locale] = translated
+    return result
+
+
+def _homepage_settings_by_locale(request, plan, contract, localized_pages):
+    if "siteSettings" not in ((contract.get("enabled") or {}).get("globals") or []):
+        return {}
+    # One canonical editable global, not JSX branding or a preview-only identity.
+    fields = {"siteName", "description", "tagline", "footerTitle", "footerNote"}
+    default = contract["defaultLocale"]
+    deck = plan.copy_deck
+    result = {}
+    for locale in localized_pages:
+        data = deck.get("site_settings") if locale == default else (deck.get("translations", {}).get(locale) or {}).get("site_settings")
+        if not isinstance(data, Mapping) or set(data) != fields or any(not isinstance(value, str) for value in data.values()):
+            raise RunnerError(f"locale {locale} requires complete canonical site_settings copy")
+        if data["siteName"] != request.content["site_intake"]["business"]["name"]:
+            raise RunnerError("canonical site_settings.siteName must preserve the confirmed business identity")
+        if any(len(value) > 2_000 for value in data.values()) or not data["description"].strip():
+            raise RunnerError(f"locale {locale} has incomplete or oversized canonical site_settings copy")
+        result[locale] = dict(data)
+    return result
+
+
+def _stage_homepage_settings_locale(context, request, contract, locale, data, saved):
+    payload = context["payload_gateway"]
+    identity = {"kind": "global", "target": "siteSettings", "document_id": "siteSettings", "run_id": request.run_id,
+                "locale": locale, "schema_identity": contract.get("schemaIdentity"),
+                "authoring_contract_hash": contract.get("authoringContractHash")}
+    if saved and (any(saved.get(key) != value for key, value in identity.items()) or saved.get("operation") != "update"):
+        raise RunnerError("the staged site settings receipt no longer matches this run's Payload contract")
+    try:
+        current = payload.read_global("siteSettings", draft=True, locale=locale)
+        revision = current.get("_helloadaRevision")
+        if not isinstance(revision, str) or not _re.fullmatch(r"sha256:[0-9a-f]{64}", revision):
+            raise RunnerError("canonical site settings have no exact revision")
+        if saved:
+            if saved.get("revision") != revision or any(current.get(key) != value for key, value in data.items()):
+                raise RunnerError("the staged site settings revision or planned copy changed")
+        else:
+            result = payload.update_global("siteSettings", data, locale=locale, expected_hash=revision)
+            current = payload.read_global("siteSettings", draft=True, locale=locale)
+            revision = current.get("_helloadaRevision")
+            if not isinstance(revision, str) or not _re.fullmatch(r"sha256:[0-9a-f]{64}", revision) or revision != result.get("_helloadaRevision"):
+                raise RunnerError("canonical site settings changed before their candidate receipt was bound")
+            if any(current.get(key) != value for key, value in data.items()):
+                raise RunnerError("Payload did not persist the exact planned site settings copy")
+    except Exception as exc:
+        raise RunnerError(f"the canonical site settings draft could not be verified: {str(exc)[:500]}") from exc
+    return {**identity, "operation": "update", "revision": revision, "fields": sorted(data)}
+
+
 def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any, progress=None):
     """Persist and verify canonical homepage copy before a production source build."""
     from ..core.design_contracts import PageBuildRequest
@@ -970,14 +1076,59 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
         raise RunnerError("the tenant Payload contract has no valid default authoring locale")
     if "pages" not in ((contract.get("enabled") or {}).get("collections") or []):
         raise RunnerError("first-site generation requires the canonical Payload pages capability")
-
     typed_plan = plan
     if not hasattr(typed_plan, "asset_composition_plan"):
         from ..core.design_contracts import ExperiencePlanBundle
 
         typed_plan = ExperiencePlanBundle.from_dict(plan)
+    localized_data = _homepage_payload_by_locale(request, typed_plan, contract)
+    localized_settings = _homepage_settings_by_locale(request, typed_plan, contract, localized_data)
+    memory = context.get("memory")
+    current = memory.get_design_run(request.run_id) if memory is not None else None
+    planning = dict((current or {}).get("planning_json") or {})
+    saved = planning.get("payload_draft_receipts", [])
+    if not isinstance(saved, list) or any(not isinstance(item, Mapping) for item in saved):
+        raise RunnerError("the staged homepage receipt requires explicit reconciliation")
+    operations = {("collection", "pages", locale): (_stage_homepage_locale, data) for locale, data in localized_data.items()}
+    operations.update({("global", "siteSettings", locale): (_stage_homepage_settings_locale, data) for locale, data in localized_settings.items()})
+    saved_by_key = {(item.get("kind"), item.get("target"), item.get("locale")): item for item in saved}
+    if len(saved_by_key) != len(saved) or set(saved_by_key) - set(operations):
+        raise RunnerError("the staged homepage receipt requires explicit reconciliation")
+    recovered = {key: operations[key][0](context, request, contract, key[2], operations[key][1], receipt)
+                 for key, receipt in saved_by_key.items()}
+    receipts = []
+    for key, (stage, data) in operations.items():
+        locale = key[2]
+        receipt = recovered[key] if key in recovered else stage(context, request, contract, locale, data, None)
+        receipts.append(receipt)
+        if current is not None and key not in saved_by_key:
+            # Persist each exact successful boundary so an interrupted later
+            # locale cannot overwrite an already staged owner/model revision.
+            checkpoint = [*saved, *[item for item in receipts if (item["kind"], item["target"], item["locale"]) not in saved_by_key]]
+            planning["payload_draft_receipts"] = checkpoint
+            from ..core.payload_receipts import payload_revision_manifest
+            planning["payload_effects"], planning["payload_revision_set_hash"] = payload_revision_manifest(checkpoint)
+            memory.update_design_run(request.run_id, planning_json=planning)
+            memory.add_design_run_event(request.run_id, "initial_payload_draft_staged",
+                                       "Canonical homepage locale saved and revision-checked before generation.", receipt)
+    # A later locale writes the same document. Prove earlier locales retained
+    # their exact revision rather than assuming the shared structure survived.
+    for receipt in receipts:
+        verified = (payload.read("pages", identifier=receipt["document_id"], identifier_kind="id", draft=True, locale=receipt["locale"])
+                    if receipt["kind"] == "collection" else payload.read_global("siteSettings", draft=True, locale=receipt["locale"]))
+        if verified.get("_helloadaRevision") != receipt["revision"]:
+            raise RunnerError("the staged homepage locale changed while staging translations")
+    context["_payload_candidate_receipts"] = receipts
+    request_data = request.to_dict()
+    request_data["content"]["payload_draft_receipts"] = receipts
+    if progress:
+        progress("verified every exact homepage locale draft in the tenant's Payload workspace")
+    return PageBuildRequest.from_dict(request_data)
+
+
+def _stage_homepage_locale(context, request, contract, default_locale, data, saved_receipt):
+    payload = context["payload_gateway"]
     approved_media_ids = set(request.supplied_media_asset_ids)
-    data = _initial_homepage_payload_data(request, typed_plan)
     media_ids = sorted({entry["image"] for section in data["sections"] for entry in section["entries"] if "image" in entry})
     for media_id in media_ids:
         if media_id not in approved_media_ids:
@@ -989,17 +1140,7 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
         if str(media.get("id")) != str(media_id):
             raise RunnerError(f"Payload returned a different media identity for media-{media_id}")
 
-    memory = context.get("memory")
-    current = memory.get_design_run(request.run_id) if memory is not None else None
-    planning = dict((current or {}).get("planning_json") or {})
-    saved_receipts = planning.get("payload_draft_receipts", [])
-    if not isinstance(saved_receipts, list):
-        raise RunnerError("the staged homepage receipt requires explicit reconciliation")
-    saved_receipt = None
-    if saved_receipts:
-        if len(saved_receipts) != 1 or not isinstance(saved_receipts[0], Mapping):
-            raise RunnerError("the staged homepage receipt requires explicit reconciliation")
-        saved_receipt = saved_receipts[0]
+    if saved_receipt:
         expected_identity = {
             "run_id": request.run_id, "kind": "collection", "target": "pages",
             "source_id": "pages:home", "slug": "home", "locale": default_locale,
@@ -1039,7 +1180,7 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
                 if not existing_id or not existing_revision.startswith("sha256:"):
                     raise RunnerError("the existing Payload homepage draft has no exact identity and revision")
                 result = payload.update(
-                    "pages", existing_id, data, locale=default_locale,
+                    "pages", existing_id, _preserve_content_row_ids(data, existing), locale=default_locale,
                     expected_hash=existing_revision, expected_fields=sorted(data),
                 )
                 operation = "update"
@@ -1096,28 +1237,20 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
         "schema_identity": contract.get("schemaIdentity"),
         "authoring_contract_hash": contract.get("authoringContractHash"),
     }
-    context["_payload_candidate_receipts"] = [receipt]
-    payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
-    request_data = request.to_dict()
-    request_content = dict(request_data.get("content") or {})
-    request_content["payload_draft_receipts"] = [receipt]
-    request_data["content"] = request_content
-    staged_request = PageBuildRequest.from_dict(request_data)
+    return receipt
 
-    if current is not None and not saved_receipt:
-        planning["payload_draft_receipts"] = [receipt]
-        planning["payload_effects"] = payload_effects
-        planning["payload_revision_set_hash"] = payload_revision_set_hash
-        memory.update_design_run(request.run_id, planning_json=planning)
-        memory.add_design_run_event(
-            request.run_id,
-            "initial_payload_draft_staged",
-            "The confirmed homepage copy was saved and revision-checked in the tenant Payload workspace before source generation.",
-            receipt,
-        )
-    if progress:
-        progress("verified the exact homepage draft in the tenant's Payload workspace")
-    return staged_request
+
+def _preserve_content_row_ids(authored, existing):
+    """Keep canonical array/block IDs when translating stable-keyed content."""
+    if isinstance(authored, dict) and isinstance(existing, Mapping):
+        result = {key: _preserve_content_row_ids(value, existing.get(key)) for key, value in authored.items()}
+        if authored.get("key") and authored.get("key") == existing.get("key") and existing.get("id"):
+            result["id"] = existing["id"]
+        return result
+    if isinstance(authored, list) and isinstance(existing, list):
+        by_key = {item["key"]: item for item in existing if isinstance(item, Mapping) and item.get("key")}
+        return [_preserve_content_row_ids(item, by_key.get(item.get("key"))) if isinstance(item, dict) else item for item in authored]
+    return authored
 
 
 def _remove_builder_worktree(repo: Path, worktree: Path) -> None:
