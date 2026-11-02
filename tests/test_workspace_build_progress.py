@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import pytest
 
 from site_agent.application.workspace import ChatService, Journey
 import site_agent.application.workspace as workspace_module
@@ -142,7 +143,8 @@ def test_ready_status_marks_pipeline_complete_without_terminal_rows(tmp_path):
     memory.close()
 
 
-def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path):
+@pytest.mark.parametrize("runtime_prefix", ["/api/workspace", "/v1/workspace"])
+def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path, runtime_prefix):
     memory = Memory(tmp_path / "candidate-preview.db")
     run = _run(memory, status="building")
     candidate_sha = "c" * 40
@@ -156,7 +158,7 @@ def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path):
             assert sha == candidate_sha
             return {
                 "id": "preview-1", "design_run_id": run_id, "commit": candidate_sha,
-                "status": "ready", "preview_url": "/api/workspace/source/preview/preview-1/runtime/",
+                "status": "ready", "preview_url": f"{runtime_prefix}/source/preview/preview-1/runtime/",
                 "revision_verification": {"commit": candidate_sha},
                 "runtime_path": "/private/runtime", "runtime_port": 43123,
             }
