@@ -737,22 +737,32 @@ def _repository_findings(repo: Path, base_sha: str, candidate_sha: str, policy: 
     allowed_hard_denied = set(policy.allowed_hard_denied_paths)
     host_manifest = normalize_path(policy.manifest_path) if policy.manifest_path else ""
     host_provisioned_paths = _host_provisioned_paths(repo, policy)
+    from ..frontend_ownership import INITIAL_LOCALE_RUNTIME_PATHS
+    canonical_locale_paths = set()
+    if policy.operation_kind == "initial_build":
+        template = Path(__file__).resolve().parents[1] / "templates/next-payload"
+        for relative in host_provisioned_paths.intersection(INITIAL_LOCALE_RUNTIME_PATHS):
+            try:
+                if (repo / relative).read_bytes() == (template / relative).read_bytes():
+                    canonical_locale_paths.add(relative)
+            except OSError:
+                pass  # Missing or changed host input retains the protected-path failure.
     for path in sorted(changed):
         clean = normalize_path(path)
-        # Host compiler preparation is not tenant source authoring. Apply its
+        # Host compiler/initial-locale preparation is not tenant source authoring. Apply its
         # verified provenance consistently to both overlapping path checks,
         # without granting exemptions to arbitrary protected runtime files.
-        host_compiler = clean in host_provisioned_paths and clean in {
+        host_preparation = clean in canonical_locale_paths or (clean in host_provisioned_paths and clean in {
             "package.json", "package-lock.json", "postcss.config.mjs",
-        }
-        hard_denied = not host_compiler and any(denied in clean and clean not in allowed_hard_denied for denied in HARD_DENY)
+        })
+        hard_denied = not host_preparation and any(denied in clean and clean not in allowed_hard_denied for denied in HARD_DENY)
         host_metadata = bool(host_manifest and clean == host_manifest and not hard_denied)
         allowlisted = (
             host_metadata
             or (clean in host_provisioned_paths and not hard_denied)
             or (writable(clean, patterns, allowed_hard_denied_paths=allowed_hard_denied) if patterns else clean in allowed_hard_denied)
         )
-        if not clean or hard_denied or (not host_compiler and any(
+        if not clean or hard_denied or (not host_preparation and any(
             clean == prohibited or clean.startswith(prohibited.rstrip("/") + "/")
             for prohibited in policy.prohibited_paths
         )) or (patterns and not allowlisted):
