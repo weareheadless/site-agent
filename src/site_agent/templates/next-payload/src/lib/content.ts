@@ -9,6 +9,7 @@ import {
 } from '@weareheadless/helloada-payload-core/server'
 
 import config from '@payload-config'
+import { requestLocale } from './request-locale'
 
 export type ContentRecord = Record<string, unknown>
 
@@ -50,27 +51,27 @@ const payload = async (): Promise<PayloadClient> => {
 }
 
 export async function getPageBySlug(slug = 'home', locale?: string): Promise<ContentRecord | undefined> {
-  return await readHelloAdaPage(await payload(), slug, locale) as ContentRecord | undefined
+  return await readHelloAdaPage(await payload(), slug, locale ?? await requestLocale()) as ContentRecord | undefined
 }
 
 export async function getProductBySlug(slug: string, locale?: string): Promise<ContentRecord | undefined> {
-  return await readHelloAdaProduct(await payload(), slug, locale) as ContentRecord | undefined
+  return await readHelloAdaProduct(await payload(), slug, locale ?? await requestLocale()) as ContentRecord | undefined
 }
 
 export async function getPublishedPosts(locale?: string): Promise<ContentRecord[]> {
-  return await readHelloAdaPosts(await payload(), locale) as ContentRecord[]
+  return await readHelloAdaPosts(await payload(), locale ?? await requestLocale()) as ContentRecord[]
 }
 
 export async function getPostBySlug(slug: string, locale?: string): Promise<ContentRecord | undefined> {
-  return await readHelloAdaPost(await payload(), slug, locale) as ContentRecord | undefined
+  return await readHelloAdaPost(await payload(), slug, locale ?? await requestLocale()) as ContentRecord | undefined
 }
 
 export async function getSiteSettings(locale?: string): Promise<ContentRecord> {
-  return await readHelloAdaGlobal(await payload(), 'siteSettings', locale) as ContentRecord
+  return await readHelloAdaGlobal(await payload(), 'siteSettings', locale ?? await requestLocale()) as ContentRecord
 }
 
 export async function getNavigation(locale?: string): Promise<ContentRecord> {
-  return await readHelloAdaGlobal(await payload(), 'navigation', locale) as ContentRecord
+  return await readHelloAdaGlobal(await payload(), 'navigation', locale ?? await requestLocale()) as ContentRecord
 }
 
 export const seoFor = (document: ContentRecord | undefined, settings: ContentRecord) => {

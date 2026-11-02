@@ -6,13 +6,15 @@ import SiteChrome from '@/components/SiteChrome'
 import { getSiteSettings, seoFor } from '@/lib/content'
 import { runtimeValue } from '@/lib/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
+import { requestLocale } from '@/lib/request-locale'
 
 import './site.css'
 
 export const dynamic = 'force-dynamic'
 
 export async function generateMetadata(): Promise<Metadata> {
-  const settings = await getSiteSettings().catch(() => ({}))
+  const locale = await requestLocale()
+  const settings = await getSiteSettings(locale).catch(() => ({}))
   const seo = seoFor(undefined, settings)
   const googleVerification = runtimeValue('GOOGLE_SITE_VERIFICATION')
   return {
@@ -24,9 +26,10 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
+  const locale = await requestLocale()
   const gaMeasurementId = runtimeValue('GA_MEASUREMENT_ID')
   return (
-    <html lang={helloAdaSite.defaultLocale}>
+    <html lang={locale}>
       <body>
         {gaMeasurementId ? <>
           <Script async src={`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(gaMeasurementId)}`} />
