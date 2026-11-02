@@ -23,7 +23,8 @@ test('the pinned section library itself satisfies the unchanged content-authorit
 test('bespoke tenant composition can reuse the canonical Payload entry renderer', () => {
   const source = fs.readFileSync(fileURLToPath(new URL('../src/components/site/TenantSections.tsx', import.meta.url)), 'utf8')
   assert.match(source, /export function PayloadContentEntry\(/)
-  assert.match(source, /helloAdaBindingId\(collection, documentId, \{ \.\.\.target, entryKey: key, field: 'entry', property: 'text' \}\)/)
+  assert.match(source, /const target = \{ collection, documentId, sectionKey, entryKey: key \}/)
+  assert.match(source, /helloAdaBindingId\(collection, documentId, \{ \.\.\.target, field: 'entry', property: 'text' \}\)/)
   assert.match(source, /requiredMediaUrl\(entry\.image\)/)
   assert.match(source, /safeHref\(entry\.href\)/)
 })
