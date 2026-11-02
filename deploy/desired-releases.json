@@ -26,9 +26,9 @@
       "sharedRuntimeFingerprint": "c0e8f646168d3f0567b25cf837c1fe17dae1f0a45d3506947c334d72152219f8"
     },
     "site-5fe73d3d38ff6f77": {
-      "id": "20261102174834-spanish-first-runtime",
+      "id": "20261102183908-global-revision-runtime",
       "sha": "d8c52cbfa30bd91f876af717586f5b21e0e62450",
-      "sharedRuntimeFingerprint": "16d2357a5b0969c326222a53f75e267073fde77caffaa13ffeccbd11ce554741"
+      "sharedRuntimeFingerprint": "c0e8f646168d3f0567b25cf837c1fe17dae1f0a45d3506947c334d72152219f8"
     }
   },
   "schema": 1
