@@ -23,6 +23,26 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
         service.close()
 
 
+def test_candidate_preview_retains_ready_result_after_a_newer_compile_fails(tmp_path):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        service._jobs["preview-a"] = {
+            "id": "preview-a", "design_run_id": "run-a", "mode": "compiled_preview",
+            "commit": "a" * 40, "status": "ready", "preview_url": "/api/workspace/source/preview/preview-a/runtime/",
+            "created_at": "2026-11-01T10:00:00+00:00",
+        }
+        service._jobs["failed-a"] = {
+            "id": "failed-a", "design_run_id": "run-a", "mode": "compiled_preview",
+            "commit": "a" * 40, "status": "failed", "created_at": "2026-11-02T10:00:00+00:00",
+        }
+        assert service.preview_for_candidate("run-a", "a" * 40)["id"] == "preview-a"
+        del service._jobs["preview-a"]
+        assert service.preview_for_candidate("run-a", "a" * 40)["id"] == "failed-a"
+        assert service.preview_for_candidate("other-run", "a" * 40) == {}
+    finally:
+        service.close()
+
+
 def test_preview_inventory_uses_only_the_host_owned_implementation(tmp_path):
     service = source_deployment.SourceDeploymentService(
         {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"},

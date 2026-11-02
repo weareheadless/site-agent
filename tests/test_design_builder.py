@@ -676,7 +676,10 @@ def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, 
     assert all("memory" not in call for call in calls)
 
 
-@pytest.mark.parametrize("outcome", ["invalid", "provider_error", "corrected_valid", "checkpoint_resume"])
+@pytest.mark.parametrize("outcome", [
+    "invalid", "provider_error", "correction_provider_error",
+    "corrected_valid", "correction_resume", "checkpoint_resume",
+])
 def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, outcome):
     from site_agent.hands.builder import BuilderError, NativeOpenCodeBuilder
 
@@ -735,7 +738,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
 
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
-    if outcome in {"corrected_valid", "checkpoint_resume"}:
+    if outcome in {"corrected_valid", "correction_resume", "checkpoint_resume"}:
         from site_agent.application.design_orchestration import SpecialistDesignCoordinator as RealCoordinator
 
         class FakeCoordinator:
@@ -774,7 +777,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
             _write_presentation(_worktree, "<html><body><h1>Candidate</h1></body></html>")
             return {"session_id": "build-session", "reply": "implemented", "transcript": "build transcript\n"}
         assert kwargs.get("agent_name") == "native-direction"
-        if outcome == "provider_error":
+        if outcome == "provider_error" or (outcome == "correction_provider_error" and len(calls) == 2):
             raise runner.RunnerError("provider process failed", result={"transcript": "provider failure\n"})
         from tests.test_design_contracts import _experience_plan
 
@@ -783,9 +786,9 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         valid_plan.pop("asset_composition_plan")
         invalid_plan = json.loads(json.dumps(valid_plan))
         invalid_plan["behavior_system"]["utility_behaviors"][0].pop("meaning")
-        if outcome == "checkpoint_resume" or (outcome == "corrected_valid" and len(calls) == 2):
+        if outcome == "checkpoint_resume" or (outcome in {"corrected_valid", "correction_resume"} and len(calls) == 2):
             return {
-                "session_id": "direction-corrected" if outcome == "corrected_valid" else "direction-valid",
+                "session_id": "direction-valid" if outcome == "checkpoint_resume" else "direction-corrected",
                 "structured": {"direction": "A specific measured arrival.", "experience_plan": valid_plan},
                 "transcript": "valid structured plan\n",
             }
@@ -796,6 +799,26 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         }
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    if outcome == "correction_resume":
+        class SimulatedInterruption(Exception):
+            pass
+
+        original_claim = runner._claim_native_phase
+
+        def interrupt_before_correction(memory, request, target, phase, **kwargs):
+            if phase == "native_direction" and len(calls) == 1:
+                raise SimulatedInterruption()
+            return original_claim(memory, request, target, phase, **kwargs)
+
+        monkeypatch.setattr(runner, "_claim_native_phase", interrupt_before_correction)
+        with pytest.raises(SimulatedInterruption):
+            runner.stage_design_build({"config": config, "memory": memory}, request, target)
+        assert len(calls) == 1
+        assert memory.list_design_phase_artifacts(run_id, phase="native_direction")[0]["status"] == "failed"
+        memory.close()
+        memory = Memory(tmp_path / "data" / "memory.db")
+        monkeypatch.setattr(runner, "_claim_native_phase", original_claim)
 
     if outcome == "checkpoint_resume":
         class SimulatedInterruption(Exception):
@@ -816,6 +839,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         persisted_hash = completed[0]["input_hashes"]
         persisted_context_hash = completed[0]["context_snapshot_hash"]
         assert completed[0]["payload"]["direction"] == "A specific measured arrival."
+        assert completed[0]["payload"]["session_id"] == "direction-valid"
         memory.close()
         reopened = Memory(tmp_path / "data" / "memory.db")
         receipt = NativeOpenCodeBuilder({"config": config, "memory": reopened}).build_design(request, target)
@@ -828,6 +852,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
             "Build dispatch was already claimed for this run; safe reconciliation is required before another invocation",
         ]
         assert calls[-1]["memory"] is reopened
+        assert calls[-1]["session_id"] == "direction-valid"
         assert "A specific measured arrival." in prompts[-1]
         assert "image_files" not in calls[0] or calls[0]["image_files"] == calls[-1].get("image_files")
         reopened_completed = reopened.list_design_phase_artifacts(run_id, phase="native_direction")
@@ -875,7 +900,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         reopened.close()
         return
 
-    if outcome == "corrected_valid":
+    if outcome in {"corrected_valid", "correction_resume"}:
         receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
         assert receipt.experience_plan["behavior_system"]["utility_behaviors"][0]["meaning"]
         assert [call["agent_name"] for call in calls] == ["native-direction", "native-direction", "build"]
@@ -889,6 +914,8 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         # diagnostic; replaying the frozen request and the previous answer
         # made a one-field repair as expensive as the original turn.
         assert calls[1]["session_id"] == "direction-invalid"
+        assert calls[2]["session_id"] == "direction-corrected"
+        assert phase[1]["payload"]["session_id"] == "direction-corrected"
         assert "A considered threshold." not in prompts[1]
         assert "PAGE BUILD REQUEST" not in prompts[1]
         assert "failed typed validation" in prompts[1]
@@ -900,20 +927,23 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         assert [call["agent_name"] for call in calls] == ["native-direction", "native-direction", "build"]
     else:
         with pytest.raises(runner.RunnerError, match=(
-            "provider process failed" if outcome == "provider_error" else r"utility_behaviors\[0\].meaning"
+            "provider process failed" if outcome in {"provider_error", "correction_provider_error"} else r"utility_behaviors\[0\].meaning"
         )):
             runner.stage_design_build({"config": config, "memory": memory}, request, target)
         assert len(calls) == (1 if outcome == "provider_error" else 2)
         assert all(call["agent_name"] == "native-direction" for call in calls)
     phases = memory.list_design_phase_artifacts(run_id, phase="native_direction")
-    if outcome == "provider_error":
-        assert [phase["status"] for phase in phases] == ["failed"]
-        assert phases[0]["error_code"] == "provider_or_process_failure"
+    if outcome in {"provider_error", "correction_provider_error"}:
+        expected_calls = 1 if outcome == "provider_error" else 2
+        assert [phase["status"] for phase in phases] == ["failed"] * expected_calls
+        assert phases[-1]["error_code"] == "provider_or_process_failure"
+        if outcome == "correction_provider_error":
+            assert phases[0]["error_code"] == "invalid_generated_plan"
         memory.close()
         reopened = Memory(tmp_path / "data" / "memory.db")
         with pytest.raises(runner.RunnerError, match="provider/process failure is terminal"):
             runner.stage_design_build({"config": config, "memory": reopened}, request, target)
-        assert len(calls) == 1
+        assert len(calls) == expected_calls
         reopened.close()
         return
     elif outcome == "invalid":
@@ -1293,7 +1323,13 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
     assert "first visible heading, offer, and primary action never sit beneath it" in calls[1]["prompt"]
     assert "a static document wrapper such as main is not evidence" in calls[1]["prompt"]
     assert "A quiet threshold opens" in calls[1]["prompt"]
-    assert "LOCKED CREATIVE PLAN" in calls[1]["prompt"]
+    assert "ADA'S CREATIVE BRIEF AND CONFIRMED EXPERIENCE REQUIREMENTS" in calls[1]["prompt"]
+    for marker in (
+        "data-ada-asset-id", "data-ada-asset-sha256", "data-ada-composition-role",
+        "data-ada-signature-behavior", "data-ada-journey-condition",
+        "data-ada-journey-scene", "data-ada-journey-trigger",
+    ):
+        assert marker in calls[1]["prompt"]
     assert phase_calls == ["implementation", "experience_fidelity"]
     assert receipt.experience_plan["run_id"] == request.run_id
     assert receipt.experience_plan["base_sha"] == base_sha

@@ -3,12 +3,15 @@
 ## Status
 
 Authoritative corrective implementation contract for autonomous creative
-planning, integrated realization, and experience fidelity. This plan extends
-`docs/opencode-first-design-pipeline-implementation-plan.md`. Where the two
-documents differ about creative planning, implementation-agent responsibility,
-motion ownership, experience fidelity, or design completion, this document is
-authoritative. The OpenCode-first plan remains authoritative for durable jobs,
-candidate retention, Git identity, provider isolation, and approval safety.
+realization. This plan extends `docs/opencode-first-design-pipeline-implementation-plan.md`.
+The owner-approved replacement architecture is documented in
+`docs/fast-faithful-design-replacement-architecture.md` and supersedes this
+document wherever it requires a separate expansive direction pass, mandatory
+section-template composition, forbids Ada from authoring presentation structure,
+or makes the approximately twenty-minute objective a reason to trade away
+design quality. This document remains authoritative for preserving the confirmed
+experience requirements, canonical Payload/content bindings, candidate identity,
+owner review, approval safety, and proving behavior in the real preview.
 
 This plan changes design planning, realization, and review without changing the
 owner approval or production publishing rules.
@@ -200,46 +203,52 @@ Specialists may be separate provider sessions, but the selected plan and its
 hash are the authority across every handoff. No specialist may silently
 substitute a generic site pattern for a run-specific decision.
 
-### The locked creative plan
+### Historical locked creative plan (not mandatory for new builds)
 
-For section-template builds, `page_composition.sections` is the executable page,
-not a suggestion for the coding turn. Ada selects ordered layouts from the
-canonical section registry and supplies each section's stable ID, editable
-label, direction, and ordered canonical content entries. Entries carry final
-copy, labels, actions/destinations and exact approved media asset IDs. Every
-assigned composition asset must have a content slot; none may be silently
-dropped. Repeated supporting layouts use distinct section and content keys.
-`copy_deck.meta_description` carries SEO copy; section entries own presentation
-copy. Historical plans remain readable but cannot realize a new candidate
-without complete section content: resume Ada planning instead of inventing it.
+The detailed plan below records the previous section-template architecture. For
+new builds, it is superseded by the single-session, free-presentation-authoring
+contract in `docs/fast-faithful-design-replacement-architecture.md`. Retain typed
+experience requirements and asset evidence; do not require the realization turn
+to implement a host-selected visual layout or prohibit it from creating
+candidate-specific presentation markup. Templates are optional starting points,
+not the owner of composition.
 
-The host verifies every selected tenant media relation before any draft write,
-stages all sections in one unpublished Payload page, and binds the exact revision
-to the existing candidate flow. Realization reads that Payload draft, renders
-the selected sections in their stored order, wires every editable binding, and
-implements the planned behavior through the existing signature/wrapper slots.
-It must not invent additional sections, hardcode missing copy, or redesign the
-page. Source prompts omit staged wording and destinations. Section-library
-changes ship as a new pinned tenant-presentation snapshot (`section-library-v2`
-for complete section staging), never as a runtime overlay that restyles existing
-sites. The first section renders the page h1; supporting sections render h2s.
-The content-authority gate, real preview behavior checks and explicit owner
-approval remain mandatory; this does not add another model-review or repair level.
+For new builds, confirmed section ordering, exact copy, actions and approved
+media remain executable content requirements, but section identity does not
+select a mandatory visual component. Ada authors the presentation around the
+canonical Payload document and its stable editable field identities. When final
+copy or presentation decisions are missing, Ada makes those decisions in the
+same creative session; do not launch a separate verbose direction session just
+to populate a template registry. Historical typed plans remain readable and
+their owner-approved experience conditions remain binding.
 
-`section-library-v3` includes the reusable composition adapter. Before dispatch,
-the host wires section order, canonical media resolution, section anchors and
-every editable binding, retaining the original presentation for non-composed
-pages/articles/products. This is deterministic plumbing, not host-authored art
-direction or business copy. The realization turn adds only the locked theme and
-planned behavior; it must not choose a second direction or reconstruct the page
-and CMS bindings. Its instructions must not also forbid the required templates
-or invite a second build/review loop. The canonical starter check exercises this
-same wired adapter before typecheck/build. Existing snapshots remain untouched.
+The host verifies tenant media identities and stages the exact copy/actions in
+one unpublished Payload page through the application service, binding its exact
+revision to the existing candidate flow. Ada receives those staged values as
+read-only design context, renders them from Payload at runtime, and preserves
+stable editable field identity. It may choose the markup and visual structure.
+It must not duplicate business copy into a second runtime store, invent
+unconfirmed business facts/destinations, change the schema, or modify the owner
+approval boundary. New presentation is candidate-local and pinned; it must not
+restyle existing sites through a shared runtime overlay. The content-authority
+gate, real preview behavior checks and explicit owner approval remain mandatory;
+this does not add another model-review or repair level.
 
-Before source mutation, Ada must produce a complete plan composed of the
-existing typed design and experience plan artifacts. It must be sufficient for
-another agent to implement the selected experience without inventing the
-missing creative decisions.
+Canonical media reads and editable-field identity must continue to use the
+existing Payload readers and binding contract. Before dispatch the host may
+prepare these deterministic helpers, but must not force new builds through
+`section-library-v3`, normalize every semantic section into Hero props, or
+require Ada to spend its turn writing repeated observation-marker plumbing.
+Helpers may derive marker attributes from stable IDs. Non-composed existing
+pages/articles/products and historical snapshots remain unchanged. The canonical
+starter check exercises the actual renderer and bindings before build.
+
+Before source mutation, Ada must have enough context to preserve all confirmed
+facts, content, assets and defining experience outcomes. A separate exhaustive
+plan for another agent is not a prerequisite: Ada owns direction and realization
+in one session. Persist a concise direction/requirement record using existing
+durable artifacts where useful; do not add a parallel plan store or turn its
+length into a quality proxy.
 
 The plan must contain, at minimum:
 

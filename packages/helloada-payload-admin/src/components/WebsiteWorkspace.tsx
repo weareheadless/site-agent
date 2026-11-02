@@ -37,6 +37,16 @@ type DesignBuild = {
   started_ts: string
   elapsed_seconds: number
   draft_available: boolean
+  candidate_sha?: string
+  draft_id?: number | null
+  preview?: {
+    job_id: string
+    run_id: string
+    candidate_sha: string
+    status: 'queued' | 'running' | 'ready' | 'failed' | string
+    preview_url?: string | null
+    error?: string | null
+  } | null
   error?: string
   update?: string | null
   update_ts?: string | null
@@ -884,8 +894,26 @@ function ReviewWorkspace() {
       && workspace && !sourceReview,
   )
 
+  const candidatePreviewReady = designBuild?.preview?.status === 'ready' && Boolean(designBuild.preview.preview_url)
+  const candidateReviewLinked = Boolean(
+    websitePresent
+      && sourceReview
+      && designBuild?.draft_id
+      && sourceReview.draftId === designBuild.draft_id
+      && sourceReview.sha.toLowerCase() === String(designBuild.candidate_sha || '').toLowerCase()
+      && designBuild.preview?.run_id === designBuild.run_id
+      && String(designBuild.preview?.candidate_sha || '').toLowerCase() === String(designBuild.candidate_sha || '').toLowerCase(),
+  )
+  const candidateReviewPreviewReady = candidateReviewLinked && candidatePreviewReady
+
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
+    if (designBuild?.preview?.preview_url && candidatePreviewReady
+      && ((!websitePresent) || candidateReviewPreviewReady)) {
+      const base = designBuild.preview.preview_url
+      const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
+      return `${window.location.origin}${base}${path}`
+    }
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
     if (sourceReview && !sourceReview.url) return 'about:blank'
     const baseUrl = sourceReview
@@ -893,7 +921,7 @@ function ReviewWorkspace() {
       : `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [previewRevision, selectedRoute, site.routes.preview, sourceReview])
+  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, previewRevision, selectedRoute, site.routes.preview, sourceReview, websitePresent])
 
   const handlePreviewLoad = useCallback(() => {
     if (previewPlan?.requires_build) {
@@ -1548,6 +1576,7 @@ function ReviewWorkspace() {
   }, [loadAdaStatus])
 
   const buildRunning = designBuild?.state === 'queued' || designBuild?.state === 'running'
+  const candidatePreviewRunning = designBuild?.preview?.status === 'queued' || designBuild?.preview?.status === 'running'
 
   useEffect(() => {
     // Poll on a fixed cadence while a build runs. The ref keeps the interval
@@ -1555,11 +1584,17 @@ function ReviewWorkspace() {
     // a stale snapshot.
     const timer = window.setInterval(() => {
       loadAdaStatusRef.current(conversationId, true, false)
-    }, buildRunning ? 2_000 : 30_000)
+    }, buildRunning || candidatePreviewRunning ? 2_000 : 30_000)
     return () => window.clearInterval(timer)
-  }, [conversationId, buildRunning])
+  }, [conversationId, buildRunning, candidatePreviewRunning])
 
-  const buildSurfaceVisible = buildRunning && !websitePresent && !designBuild?.draft_available
+  const buildSurfaceVisible = !websitePresent && adaPhase === 'workspace' && Boolean(designBuild) && (
+    buildRunning
+      || designBuild?.state === 'failed'
+      || candidatePreviewRunning
+      || candidatePreviewReady
+      || designBuild?.preview?.status === 'failed'
+  )
 
   useEffect(() => {
     if (!buildSurfaceVisible) return
@@ -2300,7 +2335,7 @@ function ReviewWorkspace() {
         <button type="button" id="helloada-ada-tab" aria-controls="helloada-ada-pane" aria-pressed={mobilePane === 'ada'} onClick={() => setMobilePane('ada')}>{t('workspace.askAda')}</button>
         <button type="button" id="helloada-website-tab" aria-controls="helloada-website-pane" aria-pressed={mobilePane === 'website'} onClick={() => setMobilePane('website')}>{t('owner.website')}{hasDraft ? <i aria-label={t('owner.readyReview')} /> : null}</button>
       </div> : null}
-       <div className={`helloada-workspace-grid ${websitePresent ? '' : 'is-chat-only'} ${!websitePresent && designBuild && !designBuild.draft_available ? 'has-build-surface' : ''}`}>
+        <div className={`helloada-workspace-grid ${websitePresent ? '' : 'is-chat-only'} ${buildSurfaceVisible ? 'has-build-surface' : ''}`}>
          {websitePresent ? <section id="helloada-website-pane" className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
           <div className="helloada-review-toolbar">
             <div className="helloada-window-dots" aria-hidden="true">
@@ -2384,8 +2419,17 @@ function ReviewWorkspace() {
                 ) : null}
                 {publishNotice ? <p className="helloada-draft-confirmation" role="status" aria-live="polite">{publishNotice}</p> : null}
               </div> : null}
-            </div>
+             </div>
 
+             {candidateReviewLinked ? (
+               <p className="helloada-candidate-review-status" role="status">
+                 {candidateReviewPreviewReady
+                   ? `${t('workspace.candidatePreviewReady')} · ${t('workspace.candidateNotApproved')}`
+                   : designBuild?.preview?.status === 'failed'
+                     ? `${t('workspace.candidatePreviewFailed')} ${designBuild.preview.error || ''}`
+                     : t('workspace.candidatePreviewPreparing')}
+               </p>
+             ) : null}
              <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
                <iframe
                  ref={previewFrameRef}
@@ -2423,20 +2467,43 @@ function ReviewWorkspace() {
               ) : null}
             </div>
           <footer className="helloada-preview-footer"><span className={hasDraft ? 'is-draft' : ''}><i aria-hidden="true" />{hasDraft ? t('owner.readyReview') : t('owner.websitePreview')}</span><span>{hasDraft ? t('owner.notLive') : t('owner.previewHint')}</span></footer>
-        </section> : !websitePresent && adaPhase === 'workspace' && designBuild && !designBuild.draft_available && (designBuild.state === 'queued' || designBuild.state === 'running' || designBuild.state === 'failed') ? (
+        </section> : buildSurfaceVisible && designBuild ? (
           <section className={`helloada-build-surface ${designBuild.state === 'failed' ? 'is-failed' : ''} ${buildStalled ? 'is-stalled' : ''}`} aria-label={t('workspace.buildTitle')}>
             <p className="helloada-eyebrow">{t('workspace.buildEyebrow')}</p>
-            <h2>{designBuild.state === 'failed' ? t('workspace.buildFailed') : t('workspace.buildTitle')}</h2>
-            {designBuild.state === 'failed' ? <p role="alert">{t('workspace.buildStopped').replace('{stage}', designBuild.stages.find((stage) => stage.key === designBuild.stage)?.label || designBuild.stage)}</p> : <p>{t('workspace.buildProgress').replace('{done}', String(designBuild.stages.filter((stage) => DESIGN_BUILD_STAGES.includes(stage.key) && stage.state === 'done').length))}</p>}
-            {designBuild.state !== 'failed' ? <p className="helloada-build-elapsed">{t('workspace.buildElapsedLive').replace('{time}', formatDuration(buildElapsedSeconds))}</p> : null}
+            <h2>{designBuild.state === 'failed' ? t('workspace.buildFailed') : designBuild.state === 'ready' ? t('workspace.candidateReady') : t('workspace.buildTitle')}</h2>
+            {designBuild.state === 'failed' ? <p role="alert">{designBuild.error || t('workspace.buildStopped').replace('{stage}', designBuild.stages.find((stage) => stage.key === designBuild.stage)?.label || designBuild.stage)}</p> : designBuild.state === 'ready' ? <p>{t('workspace.candidateReadyDescription')}</p> : <p>{t('workspace.buildProgress').replace('{done}', String(designBuild.stages.filter((stage) => DESIGN_BUILD_STAGES.includes(stage.key) && stage.state === 'done').length))}</p>}
+            {designBuild.state !== 'failed' && designBuild.state !== 'ready' ? <p className="helloada-build-elapsed">{t('workspace.buildElapsedLive').replace('{time}', formatDuration(buildElapsedSeconds))}</p> : null}
             <ol className="helloada-build-stages">
               {DESIGN_BUILD_STAGES.map((key) => {
                 const stage = designBuild.stages.find((item) => item.key === key)
                 if (!stage) return null
                 return <li key={key} className={`is-${stage.state}`} aria-current={stage.state === 'current' ? 'step' : undefined}><span aria-hidden="true">{stage.state === 'done' ? '✓' : stage.state === 'current' ? '•' : '○'}</span>{stage.label}</li>
               })}
-            </ol>
-            {designBuild.state === 'failed' ? <><p>{designBuild.error || t('workspace.buildErrorFallback')}</p><button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildRetryPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildNextAction')}</button></> : <>
+        </ol>
+            {candidatePreviewReady && designBuild.preview?.preview_url ? (
+              <section className="helloada-early-candidate-preview" aria-label={t('workspace.candidatePreview')}>
+                <p className="helloada-eyebrow">{designBuild.state === 'ready' ? t('workspace.candidatePreviewReady') : t('workspace.candidatePreviewChecking')}</p>
+            <div className="helloada-segmented" role="group" aria-label={t('workspace.previewViewport')}>
+              <button type="button" aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>{t('workspace.previewDesktop')}</button>
+              <button type="button" aria-pressed={previewViewport === 'tablet'} onClick={() => setPreviewViewport('tablet')}>{t('workspace.previewTablet')}</button>
+              <button type="button" aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>{t('workspace.previewMobile')}</button>
+            </div>
+            <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
+              <iframe
+                key={`${designBuild.preview?.candidate_sha}:${designBuild.preview?.job_id}:${previewRevision}`}
+                className="helloada-preview-frame"
+                title={t('workspace.candidatePreview')}
+                src={previewUrl}
+              />
+            </div>
+            <p>{t('workspace.candidateNotApproved')}</p>
+          </section>
+        ) : designBuild.preview?.status === 'failed' ? (
+          <p role="status">{t('workspace.candidatePreviewFailed')} {designBuild.preview.error || ''}</p>
+        ) : designBuild.preview?.status === 'queued' || designBuild.preview?.status === 'running' ? (
+          <p role="status">{t('workspace.candidatePreviewPreparing')}</p>
+        ) : null}
+            {designBuild.state === 'failed' ? <button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildRetryPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildNextAction')}</button> : designBuild.state !== 'ready' ? <>
               <p className="helloada-build-update" aria-live="polite">{buildUpdateText}</p>
               <p className="helloada-build-age">{buildUpdateAge === null ? t('workspace.buildUpdateStarting') : t('workspace.buildUpdated').replace('{age}', formatAge(buildUpdateAge))}</p>
               {recentBuildUpdates.length > 1 ? (
@@ -2454,7 +2521,7 @@ function ReviewWorkspace() {
                   <button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildStalledPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildStalledAction')}</button>
                 </div>
               ) : null}
-            </>}
+            </> : null}
           </section>
         ) : null}
 

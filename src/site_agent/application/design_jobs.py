@@ -97,6 +97,37 @@ class DesignJobExecutor:
             except Exception:
                 pass
 
+    def _start_compiled_owner_preview(self, run: Mapping[str, Any]) -> None:
+        """Queue the exact retained source in the existing private preview lane.
+
+        Preview compilation is deliberately independent of quality status and
+        owner approval. A failure is recorded on the preview job, never used to
+        erase or rewrite the retained candidate.
+        """
+        deployer = self.context.get("source_deployment")
+        if deployer is None or not run.get("candidate_sha"):
+            return
+        starter = getattr(deployer, "start", None)
+        if not callable(starter):
+            return
+        try:
+            starter({
+                "design_run_id": str(run.get("run_id") or ""),
+                "commit": str(run.get("candidate_sha") or "").lower(),
+                "branch": str(((self.context.get("config") or {}).get("site") or {}).get("preview_branch") or "preview"),
+                "mode": "compiled_preview",
+            })
+        except Exception as exc:  # noqa: BLE001 — preview cannot downgrade candidate state
+            try:
+                self.memory.add_design_run_event(
+                    str(run.get("run_id") or ""),
+                    "owner_preview_start_error",
+                    "The retained candidate is available, but its owner preview could not be queued.",
+                    {"candidate_sha": str(run.get("candidate_sha") or ""), "error": str(exc)[:1_000]},
+                )
+            except Exception:
+                pass
+
     def _run_visual_review_if_pending(self, run_id: str) -> None:
         """Run only the configured read-only visual gate; never mutate code."""
         run = self.service.get_run(run_id)
@@ -635,6 +666,7 @@ class DesignJobExecutor:
                 DesignRunStatus.CANDIDATE_READY.value,
                 DesignRunStatus.VALIDATING.value,
             }:
+                self._start_compiled_owner_preview(run)
                 self._validate_retained(run_id, run)
                 self._finish_validation(run_id)
                 return
@@ -661,6 +693,7 @@ class DesignJobExecutor:
                 DesignRunStatus.CANDIDATE_READY.value,
                 DesignRunStatus.VALIDATING.value,
             }:
+                self._start_compiled_owner_preview(built)
                 self._validate_retained(run_id, built)
             elif built.get("status") not in {
                 DesignRunStatus.FAILED.value,

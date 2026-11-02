@@ -557,6 +557,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
             return {"session_id": "direction", "structured": {"direction": "A measured arrival.",
                     "experience_plan": plan}, "transcript": "valid native direction\n"}
         if kwargs.get("agent_name") == "build":
+            assert kwargs.get("session_id") == "direction", "implementation must continue Ada's creative session"
             build_dispatched.set()
         raise AssertionError("fixture stops after the one recovered Build provider dispatch")
 
@@ -584,9 +585,13 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         pytest.fail(f"worker stopped before pre-Build barrier: status={service.get_run(run_id).get('status')!r}; "
                     f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}")
     phases = memory.list_design_phase_artifacts(run_id)
-    assert any(item["phase"] == "native_direction" and item["status"] == "completed" for item in phases), (
+    direction_phase = next((item for item in phases if item["phase"] == "native_direction"), None)
+    assert direction_phase and direction_phase["status"] == "completed", (
         f"native checkpoint was not reached; worker_error={service.get_run(run_id).get('error')!r}; "
         f"provider_calls={direction_calls!r}; phases={phases!r}"
+    )
+    assert direction_phase["payload"].get("session_id") == "direction", (
+        "the exact creative session identity must survive the durable planning checkpoint"
     )
     run = service.get_run(run_id)
     planning = run["planning_json"]

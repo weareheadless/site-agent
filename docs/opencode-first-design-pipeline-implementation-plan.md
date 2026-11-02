@@ -9,6 +9,17 @@ motion/fidelity specialist behavior, and the evidence required to call a design
 complete. This document remains authoritative for durable execution, candidate
 retention, Git/provider isolation, host build ownership, and approval safety.
 
+**Owner-approved generation-boundary replacement:**
+`docs/fast-faithful-design-replacement-architecture.md` now supersedes this
+document's multi-session creative direction/realization split, mandatory
+section-template composition, and any instruction that constrains Ada to a
+host-selected presentation structure. It does not supersede durable candidate
+identity, safe provider isolation, host-controlled builds, canonical Payload,
+authenticated owner preview, or explicit approval/release contracts. New
+generation code must follow the replacement architecture. This document's
+historical acceptance-run details are not a reason to add duplicate planning or
+review loops to the product's new-run path.
+
 **Date:** 2026-08-31
 
 **Acceptance implementation model:** `deepseek-ai/DeepSeek-V4-Flash`

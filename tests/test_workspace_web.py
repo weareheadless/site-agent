@@ -2504,6 +2504,7 @@ def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
                 return {}
             return {
                 "id": "job-1",
+                "design_run_id": run_id,
                 "status": "ready",
                 "commit": sha,
                 "revision_verification": {"ok": True, "commit": self.revision},
@@ -2516,7 +2517,10 @@ def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
     preview = ChatService._candidate_preview(tenant, run)
 
     assert deployer.calls == [("intake-lab-retained", sha)]
-    assert preview == {"state": "in_progress", "job_id": "job-1", "candidate_sha": sha, "approved": False}
+    assert preview == {
+        "state": "in_progress", "job_id": "job-1", "candidate_sha": sha, "approved": False,
+        "run_id": run["run_id"], "status": "ready", "preview_url": None, "error": None,
+    }
 
     reviewable = ChatService._candidate_preview(tenant, {**run, "status": "ready_for_review", "draft_id": 7})
     assert reviewable["state"] == "reviewable"

@@ -1308,12 +1308,14 @@ class SourceDeploymentService:
         return self.latest(branch, mode=_COMPILED_PREVIEW)
 
     def preview_for_candidate(self, design_run_id: str, candidate_sha: str) -> dict[str, Any]:
-        """Return the compiled preview already built for one exact candidate.
+        """Return an existing compiled-preview job for one exact candidate.
 
         Read-only: it never starts a build and never accepts a different commit.
         A retained candidate is viewable while its own validation is still
         running, so the owner is not asked to wait for a finished review before
         seeing what Ada produced.
+        Prefer an available preview over a later unsuccessful compile of the
+        same identity; otherwise report the latest compile's progress/failure.
         """
         run_id = str(design_run_id or "").strip()
         commit = str(candidate_sha or "").strip().lower()
@@ -1326,11 +1328,10 @@ class SourceDeploymentService:
                 and job.get("mode") == _COMPILED_PREVIEW
                 and str(job.get("design_run_id") or "") == run_id
                 and str(job.get("commit") or "").lower() == commit
-                and job.get("status") == "ready"
             ]
         if not matches:
             return {}
-        return max(matches, key=lambda job: str(job.get("created_at") or ""))
+        return max(matches, key=lambda job: (job.get("status") == "ready", str(job.get("created_at") or "")))
 
     def for_draft(self, draft_id: int) -> dict[str, Any]:
         """The latest production receipt, independently of the review preview."""

@@ -1979,52 +1979,58 @@ class ChatService:
                 events = memory.list_design_run_events(str(run["run_id"]), limit=500)
                 order = ("queued", "planning", "generating", "building", "validating", "rendering")
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
-                terminal = run.get("status") in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                # A retained candidate stays visible while its checks are still
-                # running or after they stopped. Hiding the surface entirely
-                # would leave the owner with nothing to look at even though the
-                # exact website already exists.
-                if not terminal or run.get("status") in {
-                    "ready_for_review", "failed", "needs_repair", "incomplete",
-                }:
-                    failed = run.get("status") in {"failed", "needs_repair", "incomplete"}
-                    ready = run.get("status") == "ready_for_review"
-                    stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
-                    stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
-                    labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
-                    current_i = order.index(stopped_at)
-                    stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
-                    started_ts = str(run.get("created_ts") or "")
-                    elapsed = _iso_age_seconds(started_ts) or 0
-                    state = "failed" if failed else "ready" if run.get("status") == "ready_for_review" else "queued" if stage == "queued" else "running"
-                    build = {"state": state, "run_id": str(run["run_id"]), "stage": stage, "stages": stages, "started_ts": started_ts, "elapsed_seconds": elapsed, "draft_available": bool(run.get("draft_id") and run.get("status") == "ready_for_review")}
-                    # Liveness: the build surface must be able to say what Ada is
-                    # doing right now and when she last said it. Only owner-copy
-                    # events feed the surface; internal worker stages stay out.
-                    updates = [
-                        {"stage": str(event.get("stage") or ""), "message": str(event["message"])[:240], "ts": str(event.get("created_ts") or "")}
-                        for event in events
-                        if event.get("stage") in {*order, "progress"} and str(event.get("message") or "").strip()
-                    ][-5:]
-                    last_event_ts = updates[-1]["ts"] if updates else ""
-                    last_event_age = _iso_age_seconds(last_event_ts) if last_event_ts else None
-                    build["updates"] = updates
-                    build["update"] = updates[-1]["message"] if updates else None
-                    build["update_ts"] = last_event_ts or None
-                    build["last_event_ts"] = last_event_ts or None
-                    build["last_event_age_seconds"] = last_event_age
-                    # The runner emits a heartbeat every minute while a long turn
-                    # is genuinely in flight, so this only fires when the build
-                    # stopped reporting altogether.
-                    build["stall_threshold_seconds"] = 600
-                    build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 600)
-                    if failed:
-                        build["error"] = str(run.get("error") or "The design build needs attention.")
-                    if run.get("status") in {"needs_repair", "incomplete"}:
-                        build["unverified"] = True
-                    preview = self._candidate_preview(tenant, run)
-                    if preview:
-                        build["preview"] = preview
+                run_status = str(run.get("status") or "")
+                terminal = run_status in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
+                failed = run_status in {"failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
+                ready = run_status == "ready_for_review"
+                stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
+                stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
+                labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
+                current_i = order.index(stopped_at)
+                stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
+                started_ts = str(run.get("created_ts") or "")
+                elapsed = _iso_age_seconds(started_ts) or 0
+                state = "failed" if failed else "ready" if ready else "queued" if stage == "queued" else "running"
+                build = {
+                    "state": state, "status": run_status, "run_id": str(run["run_id"]),
+                    "candidate_sha": str(run.get("candidate_sha") or "").lower(),
+                    "draft_id": run.get("draft_id"), "stage": stage, "stages": stages,
+                    "started_ts": started_ts, "elapsed_seconds": elapsed,
+                    "draft_available": bool(run.get("draft_id") and ready),
+                }
+                preview = self._candidate_preview(tenant, run)
+                if preview:
+                    build["preview"] = preview
+                if run_status in {"needs_repair", "incomplete"}:
+                    build["unverified"] = True
+                # Liveness: the build surface must be able to say what Ada is
+                # doing right now and when she last said it. Only owner-copy
+                # events feed the surface; internal worker stages stay out.
+                updates = [
+                    {"stage": str(event.get("stage") or ""), "message": str(event["message"])[:240], "ts": str(event.get("created_ts") or "")}
+                    for event in events
+                    if event.get("stage") in {*order, "progress"} and str(event.get("message") or "").strip()
+                ][-5:]
+                last_event_ts = updates[-1]["ts"] if updates else ""
+                last_event_age = _iso_age_seconds(last_event_ts) if last_event_ts else None
+                build["updates"] = updates
+                build["update"] = updates[-1]["message"] if updates else None
+                build["update_ts"] = last_event_ts or None
+                build["last_event_ts"] = last_event_ts or None
+                build["last_event_age_seconds"] = last_event_age
+                # The runner emits a heartbeat every minute while a long turn
+                # is genuinely in flight, so this only fires when the build
+                # stopped reporting altogether.
+                build["stall_threshold_seconds"] = 600
+                build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 600)
+                if failed:
+                    attention_messages = {
+                        "needs_repair": "The retained candidate needs a bounded repair before review.",
+                        "incomplete": "The run stopped before required checks completed.",
+                        "interrupted": "The run was interrupted; its retained candidate remains available.",
+                        "cancelled": "The run was cancelled; its retained candidate remains available.",
+                    }
+                    build["error"] = str(run.get("error") or attention_messages.get(run_status) or "The design build needs attention.")
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
@@ -2095,16 +2101,26 @@ class ChatService:
             return {}
         if not isinstance(job, Mapping) or not job.get("id"):
             return {}
+        if str(job.get("design_run_id") or "") != run_id or str(job.get("commit") or "").lower() != candidate_sha:
+            return {}
         reviewable = str(run.get("status") or "") == "ready_for_review" and bool(run.get("draft_id"))
+        status = str(job.get("status") or "")
         revision = (job.get("revision_verification") or {}).get("commit") or ""
-        if str(revision or "").lower() != candidate_sha:
+        if status == "ready" and str(revision or "").lower() != candidate_sha:
             # Only ever expose a preview that serves this exact candidate.
             return {}
+        preview_url = str(job.get("preview_url") or "") if status == "ready" else ""
+        if preview_url.startswith("/api/workspace/"):
+            preview_url = "/api/helloada/" + preview_url[len("/api/workspace/"):]
         return {
             "state": "reviewable" if reviewable else "in_progress",
             "job_id": str(job["id"]),
+            "run_id": run_id,
             "candidate_sha": candidate_sha,
             "approved": False,
+            "status": status,
+            "preview_url": preview_url or None,
+            "error": str(job.get("error") or "")[:1_000] or None,
         }
 
     @staticmethod

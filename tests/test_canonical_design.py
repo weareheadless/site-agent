@@ -432,7 +432,7 @@ def test_next_target_prompt_keeps_legacy_source_out_of_native_authoring():
     assert all(dependency in prompt for dependency in approved)
 
 
-def test_payload_first_build_prompt_does_not_send_copydeck_values_to_the_source_author():
+def test_payload_first_build_prompt_exposes_readonly_copy_context_without_runtime_hardcoding():
     secret_copy = "Never hardcode this owner-facing headline"
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -470,12 +470,13 @@ def test_payload_first_build_prompt_does_not_send_copydeck_values_to_the_source_
 
     prompt = runner._design_prompt(request, target, design_plan=plan)
 
-    assert secret_copy not in prompt
-    assert all(value not in prompt for value in ["PRIVATE_SECTION_LABEL", "PRIVATE_ENTRY_LABEL", "PRIVATE_ACTION", "private-destination.example"])
+    assert secret_copy in prompt
+    assert all(value in prompt for value in ["PRIVATE_SECTION_LABEL", "PRIVATE_ENTRY_LABEL", "PRIVATE_ACTION", "private-destination.example"])
     assert '"key":"opening.heading"' in prompt
     assert plan_data["page_composition"]["sections"][0]["entries"][0]["text"] == secret_copy
     assert "PAYLOAD-FIRST HOMEPAGE BINDING" in prompt
-    assert "staged copy, labels and destinations are intentionally omitted" in prompt
+    assert "read-only design context" in prompt
+    assert "render runtime values from canonical Payload" in prompt
     assert "payload_draft_receipts" in prompt
     assert "data-helloada-field" in prompt
 
@@ -504,7 +505,7 @@ def test_technical_repair_manifest_keeps_the_complete_intake_route_inventory():
     assert runner._manifest_required_pages(request, target) == ["index.html", "articles.html"]
 
 
-def test_payload_initial_prompt_reuses_templates_and_existing_candidate_flow():
+def test_payload_initial_prompt_allows_ada_authored_composition_and_preserves_contracts():
     request = PageBuildRequest.from_dict({
         "schema_version": 1, "run_id": "section-handoff", "mode": "initial_homepage",
         "base_sha": "a" * 40, "page_path": "index.html", "purpose": "Compose the homepage.",
@@ -517,19 +518,17 @@ def test_payload_initial_prompt_reuses_templates_and_existing_candidate_flow():
         "publishable": False, "clone_path": "/tmp/design-clone",
     })
     prompt = runner._design_prompt(request, target)
-    assert "section-library-v3/" in prompt
-    assert "render the Payload sections in their stored order" in prompt
-    assert "host already wired PagePresentation" in prompt
-    assert "Do not recreate the hero markup" in prompt
-    assert "helloAdaBindingId" in prompt
-    assert "signature slot" in prompt
-    assert "Keep non-composed documents on their existing renderer" in prompt
-    assert "The planning decision is complete" in prompt
-    assert "Implement the locked section composition" in prompt
+    assert "templates are optional starting points, not constraints" in prompt
+    assert "You may author a bespoke page composition" in prompt
+    assert "stable data-helloada-field bindings" in prompt
+    assert "helloAdaBindingId export from @weareheadless/helloada-payload-core/bindings" in prompt
+    assert "Inspect a module's actual exports before importing it" in prompt
+    assert "PayloadContentEntry" not in prompt
+    assert "distinctive, complete page" in prompt
+    assert "Implement the complete composition" in prompt
+    assert "Do not force sections through a generic Hero" in prompt
     for conflict in (
-        "from-scratch source-authoring pass", "Do not restore or reuse a host visual",
-        "Do not use a host visual scaffold", "do not use a host template",
-        "choose one subject-specific direction silently", "Run the project's own build/check script",
+        "Do not recreate the hero markup", "section-library-v3/", "invent markup for selected sections",
     ):
         assert conflict not in prompt
 
