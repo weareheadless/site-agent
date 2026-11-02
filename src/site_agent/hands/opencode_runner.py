@@ -992,10 +992,12 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
     memory = context.get("memory")
     current = memory.get_design_run(request.run_id) if memory is not None else None
     planning = dict((current or {}).get("planning_json") or {})
-    saved_receipts = planning.get("payload_draft_receipts") or []
+    saved_receipts = planning.get("payload_draft_receipts", [])
+    if not isinstance(saved_receipts, list):
+        raise RunnerError("the staged homepage receipt requires explicit reconciliation")
     saved_receipt = None
     if saved_receipts:
-        if not isinstance(saved_receipts, list) or len(saved_receipts) != 1 or not isinstance(saved_receipts[0], Mapping):
+        if len(saved_receipts) != 1 or not isinstance(saved_receipts[0], Mapping):
             raise RunnerError("the staged homepage receipt requires explicit reconciliation")
         saved_receipt = saved_receipts[0]
         expected_identity = {

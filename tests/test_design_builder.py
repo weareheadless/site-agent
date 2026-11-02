@@ -251,6 +251,25 @@ def test_payload_first_resume_reuses_only_the_exact_durable_staged_draft(tmp_pat
     assert payload.writes == 1
 
 
+@pytest.mark.parametrize("saved", [None, {}, False, 0, ""])
+def test_payload_first_stage_rejects_present_malformed_receipt_without_writing(saved):
+    class Payload:
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["es-MX"],
+                    "defaultLocale": "es-MX", "schemaIdentity": "schema-identity",
+                    "authoringContractHash": "authoring-hash"}
+
+        def create(self, *_args, **_kwargs):
+            raise AssertionError("malformed receipt must not fall through to a Payload write")
+
+    memory = SimpleNamespace(get_design_run=lambda _run_id: {"planning_json": {"payload_draft_receipts": saved}})
+    with pytest.raises(runner.RunnerError, match="staged homepage receipt requires explicit reconciliation"):
+        runner._stage_initial_homepage_payload(
+            {"payload_gateway": Payload(), "memory": memory}, _payload_first_request(),
+            _composed_plan({"headline": "Heading.", "body": "Body.", "primary_action": "Learn more"}),
+        )
+
+
 def test_payload_first_stage_adopts_existing_home_route_draft_and_binds_run_identity():
     from site_agent.hands.payload_gateway import PayloadGatewayError
 
