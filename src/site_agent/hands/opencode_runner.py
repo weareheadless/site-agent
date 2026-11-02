@@ -989,33 +989,58 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
         if str(media.get("id")) != str(media_id):
             raise RunnerError(f"Payload returned a different media identity for media-{media_id}")
 
-    operation = "create"
+    memory = context.get("memory")
+    current = memory.get_design_run(request.run_id) if memory is not None else None
+    planning = dict((current or {}).get("planning_json") or {})
+    saved_receipts = planning.get("payload_draft_receipts") or []
+    saved_receipt = None
+    if saved_receipts:
+        if not isinstance(saved_receipts, list) or len(saved_receipts) != 1 or not isinstance(saved_receipts[0], Mapping):
+            raise RunnerError("the staged homepage receipt requires explicit reconciliation")
+        saved_receipt = saved_receipts[0]
+        expected_identity = {
+            "run_id": request.run_id, "kind": "collection", "target": "pages",
+            "source_id": "pages:home", "slug": "home", "locale": default_locale,
+            "schema_identity": contract.get("schemaIdentity"),
+            "authoring_contract_hash": contract.get("authoringContractHash"),
+        }
+        if any(saved_receipt.get(key) != value for key, value in expected_identity.items()):
+            raise RunnerError("the staged homepage receipt no longer matches this run's Payload contract")
+        if saved_receipt.get("operation") not in {"create", "update"}:
+            raise RunnerError("the staged homepage receipt has an invalid operation")
+
+    operation = str(saved_receipt["operation"]) if saved_receipt else "create"
     try:
-        try:
-            result = payload.create("pages", data, locale=default_locale)
-        except Exception as exc:
-            # A route conflict may be reconciled only by reading the expected route
-            # and updating that exact document with its current revision as a CAS.
-            if getattr(exc, "status_code", None) != 409:
-                raise
-            existing = payload.read(
-                "pages", identifier=str(data["slug"]), identifier_kind="slug",
-                draft=True, locale=default_locale,
-            )
-            if (
-                str(existing.get("slug") or "") != str(data["slug"])
-                or str(existing.get("sourceId") or "") != "pages:home"
-            ):
-                raise RunnerError("the existing Payload document does not match the requested homepage route")
-            existing_id = str(existing.get("id") or "").strip()
-            existing_revision = str(existing.get("_helloadaRevision") or "")
-            if not existing_id or not existing_revision.startswith("sha256:"):
-                raise RunnerError("the existing Payload homepage draft has no exact identity and revision")
-            result = payload.update(
-                "pages", existing_id, data, locale=default_locale,
-                expected_hash=existing_revision, expected_fields=sorted(data),
-            )
-            operation = "update"
+        if saved_receipt:
+            # A completed same-run stage is read-only on recovery. Never write
+            # over a newer owner/model revision while trying to resume Build.
+            result = {"id": saved_receipt.get("document_id"), "_helloadaRevision": saved_receipt.get("revision")}
+        else:
+            try:
+                result = payload.create("pages", data, locale=default_locale)
+            except Exception as exc:
+                # A route conflict may be reconciled only by reading the expected route
+                # and updating that exact document with its current revision as a CAS.
+                if getattr(exc, "status_code", None) != 409:
+                    raise
+                existing = payload.read(
+                    "pages", identifier=str(data["slug"]), identifier_kind="slug",
+                    draft=True, locale=default_locale,
+                )
+                if (
+                    str(existing.get("slug") or "") != str(data["slug"])
+                    or str(existing.get("sourceId") or "") != "pages:home"
+                ):
+                    raise RunnerError("the existing Payload document does not match the requested homepage route")
+                existing_id = str(existing.get("id") or "").strip()
+                existing_revision = str(existing.get("_helloadaRevision") or "")
+                if not existing_id or not existing_revision.startswith("sha256:"):
+                    raise RunnerError("the existing Payload homepage draft has no exact identity and revision")
+                result = payload.update(
+                    "pages", existing_id, data, locale=default_locale,
+                    expected_hash=existing_revision, expected_fields=sorted(data),
+                )
+                operation = "update"
         document_id = str(result.get("id") or "").strip()
         if not document_id:
             raise RunnerError("Payload did not return the homepage document identity")
@@ -1023,8 +1048,10 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
     except Exception as exc:  # noqa: BLE001 - keep the design run blocked and its effect explicit
         raise RunnerError(f"the initial Payload homepage draft could not be verified: {str(exc)[:500]}") from exc
     revision = str(verified.get("_helloadaRevision") or "")
+    if str(verified.get("id") or "") != document_id:
+        raise RunnerError("the staged homepage read returned a different document identity")
     if not revision.startswith("sha256:") or revision != str(result.get("_helloadaRevision") or ""):
-        raise RunnerError("the initial Payload homepage changed before its exact draft receipt was bound to the build")
+        raise RunnerError("the staged homepage changed before its exact draft receipt was bound to the build")
     if str(verified.get("slug") or "") != "home" or str(verified.get("sourceId") or "") != "pages:home":
         raise RunnerError("Payload did not persist the homepage at its canonical route identity")
 
@@ -1043,6 +1070,8 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
             return str(actual.get("id")) == str(expected)
         return actual == expected
 
+    if saved_receipt and not persisted(verified, data):
+        raise RunnerError("the staged homepage no longer matches this run's planned content")
     if not persisted(verified.get("sections"), data["sections"]):
         raise RunnerError("Payload did not persist the exact planned section content; candidate staging is incomplete")
 
@@ -1073,10 +1102,7 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
     request_data["content"] = request_content
     staged_request = PageBuildRequest.from_dict(request_data)
 
-    memory = context.get("memory")
-    if memory is not None and memory.get_design_run(request.run_id) is not None:
-        current = memory.get_design_run(request.run_id)
-        planning = dict(current.get("planning_json") or {})
+    if current is not None and not saved_receipt:
         planning["payload_draft_receipts"] = [receipt]
         planning["payload_effects"] = payload_effects
         planning["payload_revision_set_hash"] = payload_revision_set_hash
