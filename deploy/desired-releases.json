@@ -21,9 +21,9 @@
       "sharedRuntimeFingerprint": "c0e8f646168d3f0567b25cf837c1fe17dae1f0a45d3506947c334d72152219f8"
     },
     "oceanicvibes": {
-      "id": "runtime-20261102182418-global-revision-canary",
+      "id": "runtime-20261102201652-compact-preview-canary",
       "sha": "f2e317b1ef2e00be859f23af725fa0a84a794ab2",
-      "sharedRuntimeFingerprint": "c0e8f646168d3f0567b25cf837c1fe17dae1f0a45d3506947c334d72152219f8"
+      "sharedRuntimeFingerprint": "0c88313d826b19be6c1852d49d71042b27af0d476fefa7e32d17bf425abbab8d"
     },
     "site-5fe73d3d38ff6f77": {
       "id": "20261102183908-global-revision-runtime",
