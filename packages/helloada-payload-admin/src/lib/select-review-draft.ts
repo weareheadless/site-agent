@@ -12,6 +12,5 @@ export function selectReviewDraft<T extends PendingReviewDraft>(
   if (projectedDesignDraftId != null) {
     return reviewDrafts.find((draft) => draft.id === projectedDesignDraftId)
   }
-  return reviewDrafts.find((draft) => draft.kind === 'merge')
-    || reviewDrafts.find((draft) => draft.kind === 'design')
+  return reviewDrafts[0]
 }

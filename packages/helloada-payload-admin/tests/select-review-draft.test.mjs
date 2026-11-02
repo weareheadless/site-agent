@@ -15,8 +15,10 @@ test('does not fall back to an unrelated draft while the projected draft is abse
   assert.equal(selectReviewDraft([draft4], 5), undefined);
 });
 
-test('without a projected design id, preserves merge review selection', () => {
-  assert.equal(selectReviewDraft([draft4, merge]), merge);
+test('without a projected design id, preserves the first eligible draft in API order', () => {
+  assert.equal(selectReviewDraft([draft4, merge]), draft4);
+  assert.equal(selectReviewDraft([merge, draft4]), merge);
+  assert.equal(selectReviewDraft([draft4, merge]), draft4);
 });
 
 test('preview-plan refresh is keyed to projected draft and ignores stale request responses', () => {
