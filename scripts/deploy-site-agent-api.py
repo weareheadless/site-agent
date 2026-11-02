@@ -377,6 +377,29 @@ def _recover_interrupted(receipt_path: Path, receipt: dict[str, Any], current: P
     return True
 
 
+def _build_environment(source_dir: Path, temporary: Path, log_path: Path, *,
+                       inherited: dict[str, str] | None = None) -> dict[str, str]:
+    """Use the committed build toolchain and this release's disk-backed scratch."""
+    manifest = json.loads((source_dir / "deploy/payload-customers.json").read_text(encoding="utf-8"))
+    toolchain = (("nodeBin", "nodeVersion", "node", "Node"), ("npmBin", "npmVersion", "npm", "npm"))
+    for bin_key, version_key, _executable, label in toolchain:
+        directory, version = manifest.get(bin_key), manifest.get(version_key)
+        if not isinstance(directory, str) or not Path(directory).is_absolute() or not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+            raise RuntimeError(f"API release requires an explicit committed {label} toolchain")
+    temporary.mkdir(parents=True, mode=0o700, exist_ok=False)
+    env = dict(os.environ if inherited is None else inherited)
+    env["TMPDIR"] = str(temporary)
+    env["PATH"] = os.pathsep.join([manifest["nodeBin"], manifest["npmBin"], env.get("PATH", "")])
+    for bin_key, version_key, executable, label in toolchain:
+        path = Path(manifest[bin_key]) / executable
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise RuntimeError(f"API release {label} executable is unavailable at its committed path")
+        actual = _run([str(path), "--version"], cwd=source_dir, env=env, log_path=log_path).stdout.strip()
+        if (actual.removeprefix("v") if executable == "node" else actual) != manifest[version_key]:
+            raise RuntimeError(f"API release requires {label} {manifest[version_key]} at its committed path")
+    return env
+
+
 def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
            python: str, health_url: str) -> dict[str, Any]:
     if not SHA_RE.fullmatch(source_sha) or not RELEASE_ID_RE.fullmatch(release_id):
@@ -428,15 +451,17 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if staging.exists():
             raise RuntimeError("API staging directory already exists")
         staging.mkdir(mode=0o700)
+        temporary = staging / "temporary"
+        build_env = _build_environment(source_dir, temporary, log_path)
         _runtime_config_preflight(source_dir, python, log_path)
         _record(receipt_path, receipt, "runtime-config-passed")
-        test_env = {**os.environ, "PYTHONPATH": str(source_dir / "src")}
+        test_env = {**build_env, "PYTHONPATH": str(source_dir / "src")}
         _run([python, "-m", "pytest", "-q"], cwd=source_dir, env=test_env, log_path=log_path)
         _record(receipt_path, receipt, "tests-passed")
 
         wheel_dir = staging / "wheel"
         wheel_dir.mkdir(mode=0o700)
-        clean_env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+        clean_env = {key: value for key, value in build_env.items() if key != "PYTHONPATH"}
         _run([python, "-m", "pip", "wheel", "--no-deps",
               "--wheel-dir", str(wheel_dir), str(source_dir)], cwd=source_dir, env=clean_env,
              log_path=log_path)
@@ -477,6 +502,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         _record(receipt_path, receipt, "wheel-verified", wheel=wheel.name,
                 wheelSha256=wheel_hash, packageVersion=smoke_result["version"])
         (staging / "source-sha").write_text(source_sha + "\n", encoding="ascii")
+        shutil.rmtree(temporary)
         staging.rename(release_dir)
 
         if prior_path is None:

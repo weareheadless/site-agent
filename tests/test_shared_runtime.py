@@ -121,6 +121,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert not (checkout / "src/app/api/helloada/bookings/route.ts").exists()
     assert (checkout / "worker.ts").read_bytes() == (TEMPLATE / "worker.ts").read_bytes()
     for relative in (
+        "scripts/verify-payload-contract.ts",
         "src/app/api/helloada/admin-entry/route.ts",
         "src/app/api/workspace/authoring-contract/route.ts",
         "src/app/api/helloada/handoff/route.ts",

@@ -174,6 +174,52 @@ def test_api_deploy_runs_the_snapshot_runtime_config_gate_before_service_activat
     assert options["env"]["PYTHONPATH"] == str(source / "src")
 
 
+def test_api_build_environment_uses_disk_scratch_and_exact_committed_node_npm(tmp_path, monkeypatch):
+    import os
+    import subprocess
+
+    source = tmp_path / 'source'
+    (source / 'deploy').mkdir(parents=True)
+    node_bin, npm_bin = tmp_path / 'node-bin', tmp_path / 'npm-bin'
+    for folder, name in ((node_bin, 'node'), (npm_bin, 'npm')):
+        folder.mkdir()
+        executable = folder / name
+        executable.write_text('#!/bin/sh\nexit 0\n')
+        executable.chmod(0o700)
+    manifest = {'nodeBin': str(node_bin), 'nodeVersion': '22.23.3',
+                'npmBin': str(npm_bin), 'npmVersion': '11.13.0'}
+    (source / 'deploy/payload-customers.json').write_text(json.dumps(manifest))
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout='v22.23.3\n' if command[0].endswith('/node') else '11.13.0\n')
+    monkeypatch.setattr(api_deploy, '_run', run)
+    scratch = tmp_path / 'disk-backed-staging/temporary'
+    env = api_deploy._build_environment(source, scratch, tmp_path / 'deployment.log',
+                                        inherited={'PATH': '/usr/bin', 'TMPDIR': '/tmp', 'UNCHANGED': 'yes'})
+    assert scratch.is_dir()
+    assert env['TMPDIR'] == str(scratch)
+    assert env['PATH'].split(os.pathsep)[:2] == [str(node_bin), str(npm_bin)]
+    assert env['UNCHANGED'] == 'yes'
+    assert [command for command, _ in calls] == [[str(node_bin / 'node'), '--version'], [str(npm_bin / 'npm'), '--version']]
+
+
+def test_api_build_environment_rejects_a_toolchain_mismatch_without_path_fallback(tmp_path, monkeypatch):
+    import subprocess
+
+    source = tmp_path / 'source'
+    (source / 'deploy').mkdir(parents=True)
+    node = tmp_path / 'node'
+    node.write_text('#!/bin/sh\nexit 0\n')
+    node.chmod(0o700)
+    (source / 'deploy/payload-customers.json').write_text(json.dumps({
+        'nodeBin': str(tmp_path), 'nodeVersion': '22.23.3',
+        'npmBin': str(tmp_path), 'npmVersion': '11.13.0'}))
+    monkeypatch.setattr(api_deploy, '_run', lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout='v12.22.9\n'))
+    with pytest.raises(RuntimeError, match='Node 22.23.3'):
+        api_deploy._build_environment(source, tmp_path / 'temporary', tmp_path / 'deployment.log', inherited={'PATH': '/usr/bin'})
+
+
 def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path):
     def wheel_with_requirement(filename, requirement):
         wheel = tmp_path / filename
@@ -1445,7 +1491,8 @@ def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(mon
     commands = []
     customer = {**CUSTOMER, "websitePresent": website_present}
 
-    def fake_run(command, cwd, env):
+    def fake_run(command, cwd, env, *, timeout_seconds):
+        assert timeout_seconds == 600
         config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
         config = json.loads(config_path.read_text())
         assert config["d1_databases"][0]["remote"] is True
@@ -1463,6 +1510,33 @@ def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(mon
     assert result == "contract verified"
     assert commands[0][0] == ["npm", "run", "verify:payload"]
     assert not commands[0][1].exists()
+
+
+def test_blocked_verifier_deadline_is_enforced_by_parent_not_child_event_loop(monkeypatch, tmp_path):
+    import signal
+    import subprocess
+    calls = []
+    class Child:
+        pid = 123456
+        stdout = object()
+        returncode = -9
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def communicate(self, timeout=None):
+            calls.append(timeout)
+            if timeout is not None:
+                raise subprocess.TimeoutExpired('npm', timeout)
+            return '[payload-contract] checking: pages published read\n', None
+    def spawn(command, **kwargs):
+        assert kwargs['start_new_session'] is True
+        return Child()
+    killed = []
+    monkeypatch.setattr(release.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(release.os, 'killpg', lambda pid, sig: killed.append((pid, sig)))
+    with pytest.raises(RuntimeError, match='no promotion permitted'):
+        release.run(['npm', 'run', 'verify:payload'], tmp_path, {}, timeout_seconds=600)
+    assert calls == [600, None]
+    assert killed == [(123456, signal.SIGKILL)]
 
 
 def test_payload_migration_uses_the_pinned_package_script():

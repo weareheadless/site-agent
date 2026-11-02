@@ -2,6 +2,16 @@ import type { CollectionSlug } from 'payload'
 
 process.env.PAYLOAD_CLI = '1'
 
+// A stalled remote-binding request must fail this gate, not monopolize the
+// shared release queue forever. This covers configuration/Payload initialization
+// as well as reads and cleanup; it never changes a failed check into success.
+let activeCheck = 'Payload initialization'
+const verificationDeadline = setTimeout(() => {
+  console.error(`[payload-contract] timed out waiting for ${activeCheck}; verification failed, no promotion permitted`)
+  process.exit(1)
+}, 10 * 60 * 1000)
+verificationDeadline.unref()
+
 const { getPayload } = await import('payload')
 const { default: config } = await import('@payload-config')
 
@@ -15,6 +25,8 @@ if (websitePresentValue !== 'true' && websitePresentValue !== 'false') {
 const websitePresent = websitePresentValue === 'true'
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
+  activeCheck = label
+  console.log(`[payload-contract] checking: ${label}`)
   try {
     await operation()
     console.log(`[payload-contract] ok: ${label}`)
@@ -38,6 +50,7 @@ const hasAuthoredText = (value: unknown): boolean => {
 }
 
 const payload = await getPayload({ config })
+console.log('[payload-contract] Payload initialized; checking the exact remote content contract')
 
 try {
   for (const collection of collections) {
@@ -107,7 +120,9 @@ try {
     ? '[payload-contract] schema, shared chrome, published homepage, drafts, versions, and media reads passed'
     : '[payload-contract] schema, empty-intake state, drafts, versions, and media reads passed')
 } finally {
+  activeCheck = 'Payload cleanup'
   await payload.destroy()
+  clearTimeout(verificationDeadline)
 }
 
 process.exit(0)

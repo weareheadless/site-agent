@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import signal
 import re
 import random
 import shutil
@@ -174,12 +175,26 @@ def validate_payload_verifier(checkout: Path) -> None:
         raise RuntimeError("tenant Payload verifier source must match the site-agent template exactly")
 
 
-def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
+def run(command: list[str], cwd: Path, env: dict[str, str], *, timeout_seconds: int | None = None) -> str:
     print("[release] " + " ".join(command), flush=True)
     output: list[str] = []
     with subprocess.Popen(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT) as process:
+                          stderr=subprocess.STDOUT, start_new_session=timeout_seconds is not None) as process:
         assert process.stdout is not None
+        if timeout_seconds is not None:
+            try:
+                captured, _ = process.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                # Wrangler's remote-binding bridge can block the child JS
+                # thread. A timer inside that process is not a failure bound.
+                os.killpg(process.pid, signal.SIGKILL)
+                captured, _ = process.communicate()
+                print(captured, end="", flush=True)
+                raise RuntimeError(f"read-only Payload verification exceeded {timeout_seconds}s; no promotion permitted") from None
+            print(captured, end="", flush=True)
+            if process.returncode:
+                raise RuntimeError(f"command failed ({process.returncode}): {command[0]}")
+            return captured
         for line in process.stdout:
             print(line, end="", flush=True)
             output.append(line)
@@ -1063,7 +1078,7 @@ def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
             "HELLOADA_WEBSITE_PRESENT": "true" if website_present else "false",
         }
-        return run(["npm", "run", "verify:payload"], checkout, verifier_env)
+        return run(["npm", "run", "verify:payload"], checkout, verifier_env, timeout_seconds=600)
     finally:
         config_path.unlink(missing_ok=True)
 

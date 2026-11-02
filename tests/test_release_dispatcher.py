@@ -28,6 +28,12 @@ def _no_disk_gate(monkeypatch):
     monkeypatch.setattr(api_deploy, "MINIMUM_FREE_GIB", 0)
 
 
+def _fixture_build_environment(_source, temporary, _log):
+    """Health/rollback tests isolate the separately tested toolchain preflight."""
+    temporary.mkdir(parents=True)
+    return {"PATH": "/test/bin", "TMPDIR": str(temporary)}
+
+
 def test_api_health_check_uses_extended_window_and_exact_contract(monkeypatch):
     class Response:
         status = 200
@@ -66,6 +72,7 @@ def test_api_deploy_failure_receipt_has_health_diagnostics(tmp_path, monkeypatch
     monkeypatch.setattr(Path, "is_file", lambda path: True if path == host else real_is_file(path))
     monkeypatch.setattr(Path, "read_bytes", lambda path: b"[Service]\n" if path == host else real_read_bytes(path))
     monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_a: None)
+    monkeypatch.setattr(api_deploy, "_build_environment", _fixture_build_environment)
     monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_a, **_k: None)
     monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_a: None)
     def run(command, **kwargs):
@@ -148,6 +155,7 @@ def test_api_deploy_rolls_back_candidate_health_failure(tmp_path, monkeypatch, r
     monkeypatch.setattr(Path, "is_file", host_contract_is_file)
     monkeypatch.setattr(Path, "read_bytes", host_contract_read_bytes)
     monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_args: None)
+    monkeypatch.setattr(api_deploy, "_build_environment", _fixture_build_environment)
     monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_args: None)
 
@@ -219,6 +227,7 @@ def test_api_deploy_smoke_failure_never_promotes_or_restarts(tmp_path, monkeypat
     monkeypatch.setattr(Path, "is_file", lambda p: True if p == unit else real_is_file(p))
     monkeypatch.setattr(Path, "read_bytes", lambda p: b"[Service]\n" if p == unit else real_read_bytes(p))
     monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_args: None)
+    monkeypatch.setattr(api_deploy, "_build_environment", _fixture_build_environment)
     monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_args: None)
     calls = []

@@ -2,6 +2,7 @@
   "schema": 2,
   "contract": "helloada-shared-runtime-v2",
   "copy": [
+    "scripts/verify-payload-contract.ts",
     "worker.ts",
     "mailflare-owner-gate.ts",
     "mailflare-payload-migration.ts",
