@@ -32,6 +32,27 @@ def _target():
     })
 
 
+def test_candidate_preview_queues_exact_source_without_affecting_approval():
+    class Memory:
+        def __init__(self): self.events = []
+        def add_design_run_event(self, *args): self.events.append(args)
+
+    class PreviewLane:
+        def __init__(self): self.request = None
+        def start(self, request): self.request = request; return {"id": "preview-1"}
+
+    memory = Memory()
+    lane = PreviewLane()
+    context = {"memory": memory, "config": {"site": {"preview_branch": "preview"}}, "source_deployment": lane}
+    executor = DesignJobExecutor(context, service=object())
+    executor._start_compiled_owner_preview({"run_id": "design-job", "candidate_sha": "c" * 40})
+    assert lane.request == {
+        "design_run_id": "design-job", "commit": "c" * 40,
+        "branch": "preview", "mode": "compiled_preview",
+    }
+    assert memory.events == []
+
+
 def test_design_worker_rehydrates_typed_request_and_target():
     request, target = _request(), _target()
     run = {

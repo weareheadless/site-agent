@@ -23,6 +23,25 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
         service.close()
 
 
+def test_design_preview_receipt_is_scoped_to_run_and_omits_runtime_internals(tmp_path):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        service._jobs["preview-a"] = {
+            "id": "preview-a", "design_run_id": "run-a", "mode": "compiled_preview",
+            "commit": "a" * 40, "status": "ready", "preview_url": "/api/workspace/source/preview/preview-a/runtime/",
+            "runtime_path": "/tmp/private/runtime", "runtime_port": 43123,
+        }
+        result = service.design_preview("run-a")
+        assert result == {
+            "job_id": "preview-a", "run_id": "run-a", "candidate_sha": "a" * 40,
+            "status": "ready", "preview_url": "/api/workspace/source/preview/preview-a/runtime/",
+            "error": None, "updated_at": "",
+        }
+        assert service.design_preview("other-run") is None
+    finally:
+        service.close()
+
+
 def test_preview_inventory_uses_only_the_host_owned_implementation(tmp_path):
     service = source_deployment.SourceDeploymentService(
         {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"},

@@ -1,4 +1,4 @@
-"""The section library is pinned tenant presentation, not a runtime overlay."""
+"""Optional scaffold sections remain available without constraining generation."""
 
 from __future__ import annotations
 
@@ -10,36 +10,13 @@ TEMPLATE = ROOT / "src" / "site_agent" / "templates" / "next-payload"
 SECTIONS = TEMPLATE / "src" / "components" / "site" / "sections"
 
 
-def test_candidate_receives_a_pinned_section_snapshot_without_replacing_presentation(tmp_path):
-    from site_agent.hands.opencode_runner import _stage_section_templates, RunnerError
-    import pytest
-
-    presentation = tmp_path / "src/components/site/presentation/PagePresentation.tsx"
-    presentation.parent.mkdir(parents=True)
-    presentation.write_text("owner composition")
-    previous = presentation.parent / "section-library-v1/hero.tsx"
-    previous.parent.mkdir()
-    previous.write_text("previous pinned presentation")
-    paths = _stage_section_templates(tmp_path)
-    assert presentation.read_text() == "owner composition"
-    assert previous.read_text() == "previous pinned presentation"
-    assert len(paths) == 5
-    assert all("section-library-v3/" in path for path in paths)
-    for path in paths:
-        assert (tmp_path / path).read_bytes() == (SECTIONS / Path(path).name).read_bytes()
-    assert _stage_section_templates(tmp_path) == paths
-    (tmp_path / paths[0]).write_text("different pinned version")
-    with pytest.raises(RunnerError, match="section template snapshot"):
-        _stage_section_templates(tmp_path)
-
-
-def test_section_toolchain_is_prepared_before_install_without_replacing_tenant_config(tmp_path):
-    from site_agent.hands.opencode_runner import _prepare_section_toolchain, RunnerError
+def test_pinned_presentation_toolchain_is_prepared_without_replacing_tenant_config(tmp_path):
+    from site_agent.hands.opencode_runner import _prepare_presentation_toolchain, RunnerError
     import pytest
 
     package = tmp_path / "package.json"
     package.write_text(json.dumps({"dependencies": {"next": "16.3.4"}}))
-    paths = _prepare_section_toolchain(tmp_path)
+    paths = _prepare_presentation_toolchain(tmp_path)
     assert set(paths) == {"package.json", "postcss.config.mjs"}
     declared = json.loads(package.read_text())
     approved = json.loads((TEMPLATE / "package.json").read_text())["devDependencies"]
@@ -47,34 +24,11 @@ def test_section_toolchain_is_prepared_before_install_without_replacing_tenant_c
         assert declared["devDependencies"][name] == approved[name]
     assert declared["dependencies"]["next"] == "16.3.4"
     assert (tmp_path / "postcss.config.mjs").read_bytes() == (TEMPLATE / "postcss.config.mjs").read_bytes()
-    assert _prepare_section_toolchain(tmp_path) == ()
+    assert _prepare_presentation_toolchain(tmp_path) == ()
     (tmp_path / "postcss.config.mjs").write_text("tenant custom config")
     with pytest.raises(RunnerError, match="PostCSS configuration"):
-        _prepare_section_toolchain(tmp_path)
+        _prepare_presentation_toolchain(tmp_path)
     assert (tmp_path / "postcss.config.mjs").read_text() == "tenant custom config"
-
-
-def test_composition_plumbing_is_prepared_without_designing_or_losing_existing_presentation(tmp_path):
-    from site_agent.hands.opencode_runner import _stage_section_templates, _wire_section_composition, RunnerError
-    import pytest
-
-    _stage_section_templates(tmp_path)
-    presentation = tmp_path / 'src/components/site/presentation'
-    page = presentation / 'PagePresentation.tsx'
-    original = 'export default function Page(props) { return <main>{props.document.title}</main> }\n'
-    page.write_text(original)
-    paths = _wire_section_composition(tmp_path)
-    assert len(paths) == 2
-    assert (presentation / 'NonComposedPagePresentation.tsx').read_text() == original
-    wired = page.read_text()
-    assert 'section-library-v3/composition' in wired
-    assert 'mediaUrl(value)' in wired
-    assert '<ExistingPresentation {...props}' in wired
-    assert _wire_section_composition(tmp_path) == ()
-    page.write_text('another approved composition')
-    with pytest.raises(RunnerError, match='overwrite an existing presentation'):
-        _wire_section_composition(tmp_path)
-    assert page.read_text() == 'another approved composition'
 
 
 def test_sections_are_scaffold_not_shared_runtime():

@@ -1295,6 +1295,30 @@ class SourceDeploymentService:
             raise SourceDeploymentError(str(result.get("error") or "exact candidate preview did not become ready"))
         return result
 
+    def design_preview(self, run_id: str) -> dict[str, Any] | None:
+        """Return the durable compiled-preview receipt for one retained design run."""
+        with self._lock:
+            jobs = [
+                job for job in self._jobs.values()
+                if isinstance(job, Mapping)
+                and job.get("mode") == _COMPILED_PREVIEW
+                and str(job.get("design_run_id") or "") == str(run_id)
+            ]
+            if not jobs:
+                return None
+            job = dict(max(jobs, key=lambda item: str(item.get("created_at") or "")))
+            # Do not expose process, filesystem, or runtime-port internals in
+            # the owner workspace projection.
+            return {
+                "job_id": str(job.get("id") or ""),
+                "run_id": str(job.get("design_run_id") or ""),
+                "candidate_sha": str(job.get("commit") or "").lower(),
+                "status": str(job.get("status") or ""),
+                "preview_url": str(job.get("preview_url") or "") or None,
+                "error": str(job.get("error") or "")[:1_000] or None,
+                "updated_at": str(job.get("updated_at") or ""),
+            }
+
     def status(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             job = self._jobs.get(str(job_id))

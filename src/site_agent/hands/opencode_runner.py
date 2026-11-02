@@ -846,8 +846,8 @@ def _claim_native_phase(memory, request, target, phase: str, *, max_attempts: in
     )
 
 
-def _prepare_section_toolchain(worktree: Path) -> tuple[str, ...]:
-    """Add only the canonical section compiler before the normal npm install."""
+def _prepare_presentation_toolchain(worktree: Path) -> tuple[str, ...]:
+    """Prepare the pinned Tailwind/PostCSS compiler before the normal install."""
     template = Path(__file__).resolve().parents[1] / "templates/next-payload"
     package = worktree / "package.json"
     postcss = worktree / "postcss.config.mjs"
@@ -875,64 +875,6 @@ def _prepare_section_toolchain(worktree: Path) -> tuple[str, ...]:
         postcss.write_bytes(canonical_postcss)
         paths.append("postcss.config.mjs")
     return tuple(paths)
-
-
-def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
-    """Supply section building blocks in the candidate, never a runtime overlay.
-
-    Existing presentation is left to Ada. Git pins these exact files with the
-    candidate; subsequent platform releases cannot replace a live composition.
-    """
-    source = Path(__file__).resolve().parents[1] / "templates/next-payload/src/components/site/sections"
-    destination = worktree / "src/components/site/presentation/section-library-v3"
-    if not destination.resolve().is_relative_to(worktree.resolve()):
-        raise RunnerError("the section template snapshot escapes the candidate workspace")
-    paths = []
-    for name in ("hero.tsx", "adapt.ts", "registry.ts", "supporting.tsx", "composition.tsx"):
-        original = source / name
-        target = destination / name
-        if target.is_symlink():
-            raise RunnerError(f"the section template snapshot must not contain symlinks: {name}")
-        if not original.is_file():
-            raise RunnerError(f"the packaged section template snapshot is missing {name}")
-        data = original.read_bytes()
-        if target.exists() and target.read_bytes() != data:
-            raise RunnerError(f"the candidate already contains a different section template snapshot: {name}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        paths.append(target.relative_to(worktree).as_posix())
-    return tuple(paths)
-
-
-def _wire_section_composition(worktree: Path) -> tuple[str, ...]:
-    """Wire canonical sections once; Ada does not rediscover Payload plumbing."""
-    presentation = worktree / "src/components/site/presentation"
-    if not presentation.resolve().is_relative_to(worktree.resolve()):
-        raise RunnerError("section composition adapter escapes the candidate workspace")
-    entrypoint = presentation / "PagePresentation.tsx"
-    preserved = presentation / "NonComposedPagePresentation.tsx"
-    wrapper = (
-        "import Composition from './section-library-v3/composition'\n"
-        "import { mediaAlt, mediaUrl } from '@/lib/content'\n"
-        "import ExistingPresentation from './NonComposedPagePresentation'\n"
-        "type Props = Parameters<typeof ExistingPresentation>[0]\n"
-        "export default function PagePresentation(props: Props) {\n"
-        "  const sections = props.document.sections\n"
-        "  if (props.kind === 'page' && Array.isArray(sections) && sections.length && sections[0]?.layout) {\n"
-        "    return <Composition document={props.document} collection={props.collection} media={(value) => ({ src: mediaUrl(value) || '', alt: mediaAlt(value) })} />\n"
-        "  }\n"
-        "  return <ExistingPresentation {...props} />\n"
-        "}\n"
-    )
-    if entrypoint.is_symlink() or preserved.is_symlink() or not entrypoint.is_file():
-        raise RunnerError("section composition requires a regular existing PagePresentation entrypoint")
-    if preserved.exists():
-        if not preserved.is_file() or entrypoint.read_text() != wrapper:
-            raise RunnerError("section composition would overwrite an existing presentation adapter")
-        return ()
-    preserved.write_bytes(entrypoint.read_bytes())
-    entrypoint.write_text(wrapper)
-    return tuple(path.relative_to(worktree).as_posix() for path in (entrypoint, preserved))
 
 
 def _initial_homepage_payload_data(request, plan: Any) -> dict[str, Any]:
@@ -1376,16 +1318,17 @@ def _design_prompt(
         if is_section_realization:
             frozen_context = (
                 f"FROZEN CONTEXT SNAPSHOT HASH (host metadata only): {context_hash}\n"
-                "The planning decision is complete. Implement the locked section composition using its pinned "
-                "library and staged Payload content. Preserve the canonical route shell, readers and schema. "
-                "Do not choose another direction, replan the page, invent markup for selected sections, or inspect "
-                "unrelated source. Missing authored content is a concrete blocker, not permission to hardcode copy.\n\n"
+                "The confirmed content and experience requirements are available. Create a distinctive, complete page "
+                "using the provided canonical content and media. Preserve the canonical route shell, Payload readers, "
+                "schema, stable field identities and approval boundary, but design the actual presentation markup and "
+                "styles yourself. Do not force sections through a generic Hero component when a more fitting composition "
+                "is warranted. Do not inspect unrelated source. Missing authored content is a concrete blocker, not "
+                "permission to hardcode copy.\n\n"
             )
             inspection = (
-                "Inspect only PagePresentation, its required public props/binding helpers, the pinned section "
-                "registry/adapter, site.css and the approved media. Wire the first selected section immediately "
-                "after that bounded inspection, then complete the stored composition and required behavior. "
-                "Do not inspect admin, schema, migrations, unrelated routes or host application source."
+                "Inspect the canonical Payload page renderer and stable field-binding helper, the relevant presentation "
+                "styles and approved media. Then author the page composition in the presentation boundary. Preserve the "
+                "owner-controlled Payload schema and route shell; do not inspect admin, migrations or unrelated source."
             )
     else:
         inspection = "Inspect the exact source commit, routes, content, assets, current rendered output, and site chrome."
@@ -1467,56 +1410,26 @@ def _design_prompt(
     locked_plan_block = ""
     if design_plan is not None:
         plan_data = design_plan.to_dict() if hasattr(design_plan, "to_dict") else dict(design_plan)
-        if request.mode == "initial_homepage" and payload_draft_receipts:
-            plan_data.pop("copy_deck", None)
-            composition = plan_data.get("page_composition")
-            if isinstance(composition, Mapping):
-                plan_data["page_composition"] = {
-                    **composition,
-                    "sections": [
-                        {**{key: value for key, value in section.items() if key not in {"label", "entries"}},
-                         "entries": [{key: value for key, value in entry.items() if key in {"key", "blockType", "asset_id"}}
-                                     for entry in section.get("entries", [])]}
-                        for section in composition.get("sections", [])
-                    ],
-                }
         locked_plan_block = (
-            "LOCKED CREATIVE PLAN (host-selected; implement this direction rather than inventing a new one):\n"
+            "ADA'S CREATIVE BRIEF AND CONFIRMED EXPERIENCE REQUIREMENTS:\n"
             + canonical_json(plan_data)
-            + "\nUse the selected direction, composition, asset treatment, and motion intent in this plan. "
-            "The experience_journey is executable: implement every scene and every must-pass condition, including its "
-            "trigger, visible transition, completion/exit condition, responsive translations, keyboard/touch behavior, "
-            "reduced-motion translation, interruption, reverse, resize, and rapid-input behavior. Do not replace it "
-            "with a generic hero animation or section reveal. "
-            "If a plan field conflicts with a verified intake fact or host policy, preserve the fact/policy and record "
-            "the conflict instead of silently inventing a replacement. If the plan contains asset_composition_plan, "
-            "mark each rendered approved asset element with data-ada-asset-id and data-ada-asset-sha256 using the exact "
-            "frozen values, add data-ada-composition-role for measurable roles such as logo or navigation, and add "
-             "data-ada-focal-coverage only when the implementation can support an honest measured value. Mark the element "
-              "that realizes signature_behavior with data-ada-signature-behavior using the exact behavior id; do not add "
-              "a hidden marker. For every must-pass experience journey condition, mark the actual visible realization "
-              "with data-ada-journey-condition using the exact condition ID, data-ada-journey-scene using its scene ID, "
-               "and data-ada-journey-trigger as selector metadata. These markers must be on the rendered behavior rather "
-               "than a hidden manifest or comment. Put each scene marker on the element whose visible style, geometry, or "
-               "content state actually changes for that scene; a static document wrapper such as main is not evidence of "
-               "a scene transition. Do not add candidate-authored state or completion claims; the host "
-              "compares rendered geometry, style, visibility, and text before and after bounded probes. Never use "
-              "external asset URLs or claim behavior that the implementation does not actually execute. These attributes "
-               "are host selectors, not a substitute for the locked plan.\n\n"
-               "SEMANTIC CONTENT ROOT (required for quality evidence): keep the public page copy in a real semantic "
-               "content root such as <main> (with the header outside it when appropriate), rather than only a generic "
-               "wrapper. Do not put critical page copy outside that root or hide it before the host's resting-state probe. "
-               "For reduced-motion journey conditions, mark a visible readable or interactive element whose rendered state "
-               "is actually observed in both no-preference and reduced-motion probes; never put the only condition marker "
-               "on a zero-size or decorative underline/icon. If the transition is an underline or other decoration, mark "
-               "the visible action label or action wrapper as the condition target and leave the decoration unmarked.\n\n"
-              "JOURNEY MARKER RUNTIME CONTRACT (non-negotiable): every data-ada-journey-condition marker must be the "
-              "exact DOM node whose own computed style, geometry, or content changes during that condition. Apply the "
-              "runtime transition to the marked node itself; do not mark a static ancestor while only a descendant moves, "
-              "and do not mark a child while only its parent moves. Every ordered scene must have a real progressive "
-              "scroll, pointer, keyboard, or interaction transition that changes its marked node after initial render; "
-              "a one-shot entrance, a candidate-authored state label, or viewport position alone is not evidence. Keep "
-              "the marked conditions visible and readable under reduced motion while preserving the locked scene order.\n\n"
+            + "\nConfirmed facts, approved assets and required experience outcomes are binding. The visual composition, "
+            "section markup, typography, copy hierarchy and responsive layout are yours to design; no component library "
+            "or fixed visual layout is prescribed. Use the supplied copy and destinations to make design decisions, "
+            "but render runtime values from canonical Payload, not JSX literals. Realize the required journey visibly "
+            "in the composition, and preserve its meaning on mobile and reduced motion. Keep critical content readable "
+            "without JavaScript, use only approved assets, and mark the actual visible elements for required experience "
+            "and asset observations using the supplied stable IDs. Put each scene marker on the element whose visible "
+            "style, geometry or content actually changes; a static document wrapper such as main is not evidence of a "
+            "scene transition. A marker is a selector, not proof by itself: never claim behavior that the browser does "
+            "not run, and keep all marked content visible and readable under reduced motion. "
+            "Resolve conflicts in favor of confirmed facts and host policy.\n"
+            "Observation selectors: approved assets use data-ada-asset-id and data-ada-asset-sha256 from the frozen "
+            "evidence, with data-ada-composition-role for their rendered role. The signature target uses "
+            "data-ada-signature-behavior with the behavior ID. Each must-pass target uses data-ada-journey-condition, "
+            "data-ada-journey-scene and data-ada-journey-trigger with its condition ID, scene ID and trigger selector. "
+            "The marked node itself must realize the observed change. Keep public copy in a semantic content root "
+            "and critical content visible in its no-JavaScript resting state.\n\n"
          )
     repair_brief_block = ""
     if repair_brief is not None:
@@ -1600,21 +1513,25 @@ def _design_prompt(
             "contract; keep the site routes, data readers, Payload schema, and migrations untouched. Treat the saved "
             "Payload values as the sole runtime source for business name, headline, paragraph text, calls to action, "
             "metadata, and the selected image. Do not copy these values into JSX/TS/JS constants, static HTML, a second "
-            "JSON file, or a new content store. Compose the page with the supplied section templates under "
-            "src/components/site/presentation/section-library-v3/. The host already wired PagePresentation, canonical "
-            "media resolution and every stable editing binding. Its composition renderer will render the Payload sections in their stored order using each section's "
-            "layout and direction. Canonical media reads and the adapter's stable entry keys are already wired "
-            "to helloAdaBindingId markers, including each "
-            "supporting paragraph and gallery image. Stable section anchors are already wired. Do not rewrite this plumbing. "
-            "Do not recreate the hero markup or replace the section templates with a bespoke whole-page component. "
-            "Keep non-composed documents on their existing renderer. The composed hero owns its heading and image; "
-            "do not print a duplicate document heading or featured image above it. The host already prepared Tailwind "
+            "JSON file, or a new content store. The staged Payload values and labels are included in this request as "
+            "read-only design context so you can compose the page around the real content. Render them from the exact "
+            "canonical Payload document. For bespoke ordered compositions, render each Payload entry with the exported "
+            "PayloadContentEntry helper from @/components/site/TenantSections; it preserves the exact shared edit binding, "
+            "safe action handling and canonical media behavior. Do not write a second reader or hand-author repetitive "
+            "observation markers. You may create or "
+            "replace presentation components and structure to realize the design. Keep the host-owned route shell, schema, "
+            "shared navigation/footer data and non-homepage renderers intact. "
+            "Create a composition that fits the approved content and imagery; templates are optional starting points, not constraints. "
+            "The host provides the Payload route, media resolver and stable entry IDs. Bind each displayed value to its "
+            "existing editable field identity; preserve all content and actions. You may reorganize visual layout "
+            "without changing the underlying document or losing entries. "
+            "You may author a bespoke page composition when it best realizes the brief. "
+            "Keep non-homepage documents on their existing renderer. The host already prepared Tailwind "
             "and its PostCSS configuration; leave package pins and build configuration untouched. Declare its theme "
             "utilities in site.css and choose palette and typography through --tenant-* "
-            "tokens in site.css. Add any defining behavior through the template's signature slot and a scoped wrapper "
-            "rather than rebuilding its layout. Preserve all stable data-helloada-field bindings. "
-            "The locked plan's staged copy, labels and destinations are intentionally omitted from your source prompt: implement its "
-            "composition and motion intent, but read all wording from Payload.\n\n"
+            "tokens in site.css. Preserve all stable data-helloada-field bindings. "
+            "All runtime wording and destinations must still come from Payload; the values in this prompt are read-only "
+            "design context.\n\n"
         )
     retained_implementation_block = ""
     if is_technical_repair:
@@ -1658,7 +1575,7 @@ def _design_prompt(
                 + integrated_motion_block
               + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
-          + ("2. The locked plan already owns the creative decisions. Implement it without alternatives, additional planning, repeated inspection or delegation.\n"
+           + ("2. Confirm the required outcomes and facts, make one concise visual direction decision, then design and implement it together. Do not write an expansive separate plan.\n"
              if is_section_realization else
              "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n")
              + ("3. For a visual_refinement or technical_repair request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, native source, and behavior; do not rewrite the site or substitute a new visual direction.\n"
@@ -1666,7 +1583,7 @@ def _design_prompt(
                  "3. For an initial_homepage request, inspect the supplied media files and exact request, then make the first implementation edit. Do not write a plan or wait for approval. For other requests, make the first implementation edit immediately after the minimum required inspection.\n")
             + ("4. After a refinement or repair edit, verify the repaired elements in the source, confirm the preserved React/GSAP/cleanup/reduced-motion implementation is still present, and run the project's own build/check script to catch regressions.\n"
                 if is_parent_repair else
-                 "4. Implement the locked section composition: Payload reads, template props, stable editable bindings, theme tokens and planned signature behavior. Keep the pinned structures; do not redesign or replace the section library. All copy and media come from the staged draft. Keep content visible with no JavaScript and reduced motion.\n"
+                  "4. Implement the complete composition using canonical Payload values, approved media and stable editable bindings. You may redesign the section presentation and author distinct structures. Keep content visible with no JavaScript and reduced motion.\n"
                  if is_section_realization else
                  "4. After the first edit, establish the content hierarchy, conversion path, typography, composition, image treatment, responsive translation, motion purpose, and reduced-motion behavior through the implementation itself. You have complete control of the source; do not use a host template, predetermined section markup, or host-generated CSS/token system. Keep critical content visible in a static or full-page capture; never leave offscreen sections hidden behind opacity or visibility until scroll, and provide a visible no-JS/reduced-motion resting state.\n")
                + ("5. Run typecheck at most once after the final edit, then stop. The host owns the single canonical build and actual preview review; do not build, run a browser/server or start another review loop.\n"
@@ -2686,7 +2603,7 @@ def stage_design_build(
         if native_next_target:
             host_provisioned_paths.update(prepare_native_workspace(worktree, NEXT_REACT_PROFILE))
             if payload_first_required:
-                host_provisioned_paths.update(_prepare_section_toolchain(worktree))
+                host_provisioned_paths.update(_prepare_presentation_toolchain(worktree))
         if (execution_config.get("site") or {}).get("adapter") == "payload_gateway":
             pinned_env = configured_build_environment(
                 execution_config.get("source_deployment") or {}, worktree,
@@ -2741,12 +2658,9 @@ def stage_design_build(
         elif request.mode == "initial_homepage":
             digest = ""
             tokens = ""
-        elif is_parent_repair:
-            # A refinement must see the actual parent candidate, not the
-            # baseline snapshot captured before the initial build.
-            digest = _site_digest(execution_context, worktree, ref=base_sha)
-            tokens = _template_tokens(execution_context, worktree, ref=base_sha)
         else:
+            # Repairs inspect the actual parent candidate at base_sha, not
+            # the baseline snapshot captured before the initial build.
             digest = _site_digest(execution_context, worktree, ref=base_sha)
             tokens = _template_tokens(execution_context, worktree, ref=base_sha)
         from ..config import resolve_secret
@@ -2839,6 +2753,7 @@ def stage_design_build(
                 "creative generation requires complete attached visual evidence for the frozen owner assets"
             )
         native_direction = ""
+        creative_session_id: str | None = None
         attached_image_files = [*materialized_media_paths, *evidence_paths]
         # The composition turn must see the same approved media that the Build
         # turn will realize. Semantic evidence alone cannot prevent a model from
@@ -2877,6 +2792,7 @@ def stage_design_build(
                     if native_phase.get("status") == "completed":
                         cached = native_phase.get("payload") or {}
                         native_direction = str(cached.get("direction") or "")
+                        creative_session_id = str(cached.get("session_id") or "").strip() or None
                         experience_plan = ExperiencePlanBundle.from_dict(cached["experience_plan"])
                         direction_path = str(cached["direction_path"])
                         direction_hash = str(cached["direction_hash"])
@@ -2891,73 +2807,26 @@ def stage_design_build(
                         request, target, tuple(direction_image_files),
                         require_experience_plan=creative_orchestration,
                     )
-                    if native_phase and int(native_phase.get("attempt") or 0) == 2:
-                        previous_attempts = native_memory.list_design_phase_artifacts(
-                            request.run_id, phase="native_direction",
-                        )
-                        first_failure = next(
-                            (item for item in previous_attempts if item.get("attempt") == 1), {}
-                        )
-                        failed_payload = first_failure.get("payload") or {}
-                        direction_prompt, correction_session = _direction_correction(
-                            failed_payload.get("response") or {},
-                            str(failed_payload.get("diagnostic") or first_failure.get("error_detail") or ""),
-                        )
-                        direction_kwargs.update(correction_session)
-                    direction_result = run_opencode_turn(
-                        worktree, direction_prompt, execution_config, **direction_kwargs,
-                    )
-                    direction_transcript_path = _persist_design_transcript(
-                        execution_config, request.run_id,
-                        str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
-                        filename="direction-opencode.jsonl",
-                    )
-                    try:
-                        native_direction, experience_plan = _native_direction_payload(
-                            direction_result, request, require_experience_plan=creative_orchestration,
-                        )
-                    except RunnerError as parse_error:
-                        if not (creative_orchestration and native_phase and native_phase.get("claimed")):
-                            raise
-                        native_memory.fail_design_phase(
-                            int(native_phase["id"]), error_code="invalid_generated_plan",
-                            error_detail=str(parse_error), payload={
-                                "response": dict(direction_result),
-                                "transcript": str(direction_result.get("transcript") or ""),
-                                "diagnostic": str(parse_error),
-                            },
-                        )
-                        if int(native_phase.get("attempt") or 0) >= 2:
-                            raise parse_error
-                        correction_phase = _claim_native_phase(
-                            native_memory, request, target, "native_direction", max_attempts=2,
-                        )
-                        if not correction_phase or not correction_phase.get("claimed"):
-                            raise RunnerError("native direction correction is not safely claimable") from parse_error
-                        previous_attempts = native_memory.list_design_phase_artifacts(
-                            request.run_id, phase="native_direction",
-                        )
-                        first_failure = next(
-                            (item for item in previous_attempts if item.get("attempt") == 1), {}
-                        )
-                        failed_payload = first_failure.get("payload") or {}
-                        correction_prompt, correction_session = _direction_correction(
-                            failed_payload.get("response") or direction_result,
-                            str(failed_payload.get("diagnostic") or parse_error),
-                        )
-                        try:
-                            direction_result = run_opencode_turn(
-                                worktree, correction_prompt, execution_config,
-                                **{**direction_kwargs, **correction_session},
+                    # Initial generation and its one typed correction share
+                    # the same dispatch/validation path, including on restart.
+                    while True:
+                        if native_phase and int(native_phase.get("attempt") or 0) == 2:
+                            previous_attempts = native_memory.list_design_phase_artifacts(
+                                request.run_id, phase="native_direction",
                             )
-                        except RunnerError as correction_error:
-                            native_memory.fail_design_phase(
-                                int(correction_phase["id"]), error_code="provider_or_process_failure",
-                                error_detail=str(correction_error), payload={
-                                    "response": dict(getattr(correction_error, "result", {}) or {}),
-                                },
+                            first_failure = next(
+                                (item for item in previous_attempts if item.get("attempt") == 1), {}
                             )
-                            raise
+                            failed_payload = first_failure.get("payload") or {}
+                            direction_prompt, correction_session = _direction_correction(
+                                failed_payload.get("response") or {},
+                                str(failed_payload.get("diagnostic") or first_failure.get("error_detail") or ""),
+                            )
+                            direction_kwargs.update(correction_session)
+                        direction_result = run_opencode_turn(
+                            worktree, direction_prompt, execution_config, **direction_kwargs,
+                        )
+                        creative_session_id = str(direction_result.get("session_id") or "").strip() or None
                         direction_transcript_path = _persist_design_transcript(
                             execution_config, request.run_id,
                             str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
@@ -2965,23 +2834,29 @@ def stage_design_build(
                         )
                         try:
                             native_direction, experience_plan = _native_direction_payload(
-                                direction_result, request, require_experience_plan=True,
+                                direction_result, request, require_experience_plan=creative_orchestration,
                             )
-                        except RunnerError as correction_error:
+                        except RunnerError as parse_error:
+                            if not (creative_orchestration and native_phase and native_phase.get("claimed")):
+                                raise
                             native_memory.fail_design_phase(
-                                int(correction_phase["id"]), error_code="invalid_generated_plan",
-                                error_detail=str(correction_error), payload={
-                                    "response": dict(getattr(correction_error, "result", {}) or direction_result),
+                                int(native_phase["id"]), error_code="invalid_generated_plan",
+                                error_detail=str(parse_error), payload={
+                                    "response": dict(direction_result),
                                     "transcript": str(direction_result.get("transcript") or ""),
-                                    "diagnostic": str(correction_error),
+                                    "diagnostic": str(parse_error),
                                 },
                             )
-                            raise
-                    finally:
-                        try:
-                            direction_agent_path.unlink()
-                        except FileNotFoundError:
-                            pass
+                            native_phase["status"] = "failed"
+                            if int(native_phase.get("attempt") or 0) >= 2:
+                                raise
+                            native_phase = _claim_native_phase(
+                                native_memory, request, target, "native_direction", max_attempts=2,
+                            )
+                            if not native_phase or not native_phase.get("claimed"):
+                                raise RunnerError("native direction correction is not safely claimable") from parse_error
+                            continue
+                        break
                     direction_path, direction_hash = _persist_design_direction(
                         execution_config, request.run_id, native_direction,
                     )
@@ -2996,13 +2871,14 @@ def stage_design_build(
                         )
                         if native_phase and native_phase.get("claimed"):
                             native_memory.complete_design_phase(
-                                int(correction_phase["id"] if 'correction_phase' in locals() else native_phase["id"]),
+                                int(native_phase["id"]),
                                 {
                                     "direction": native_direction,
                                     "experience_plan": experience_plan.to_dict(),
                                     "direction_path": direction_path,
                                     "direction_hash": direction_hash,
                                     "transcript_path": direction_transcript_path,
+                                    "session_id": creative_session_id,
                                 },
                             )
             except RunnerError as exc:
@@ -3016,9 +2892,7 @@ def stage_design_build(
                         filename="direction-opencode.jsonl",
                     )
                     partial["direction_transcript_path"] = direction_transcript_path
-                if (native_phase and native_phase.get("claimed")
-                        and native_phase.get("status") == "running"
-                        and "correction_phase" not in locals()):
+                if native_phase and native_phase.get("claimed") and native_phase.get("status") == "running":
                     native_memory.fail_design_phase(
                         int(native_phase["id"]), error_code="provider_or_process_failure",
                         error_detail=str(exc), payload={"response": partial},
@@ -3036,10 +2910,11 @@ def stage_design_build(
             if staged_plan is None:
                 raise RunnerError("a production first-site build needs Ada's completed Payload-backed experience plan")
             request = _stage_initial_homepage_payload(execution_context, request, staged_plan, progress)
-            _stage_section_templates(worktree)
-            _wire_section_composition(worktree)
             # Prepared plumbing is not Ada's authored implementation. A model
-            # that produces only prose must still fail the no-op boundary.
+            # that produces only prose must still fail the no-op boundary. The
+            # canonical scaffold is available as an optional starting point;
+            # this new path does not pre-wire its presentation to a fixed
+            # section library before Ada sees the real content and media.
             prepared = _change_state(worktree)
         if repair_brief is not None:
             # Repair turns still need the host-written role definition. Keep
@@ -3097,6 +2972,7 @@ def stage_design_build(
                     native_direction=native_direction,
                 ),
                 execution_config,
+                session_id=creative_session_id,
                 agent_name=(
                     "repair-implementer"
                     if repair_brief is not None

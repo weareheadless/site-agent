@@ -142,6 +142,68 @@ def test_ready_status_marks_pipeline_complete_without_terminal_rows(tmp_path):
     memory.close()
 
 
+def test_status_projects_only_the_exact_candidate_compiled_preview(tmp_path):
+    memory = Memory(tmp_path / "candidate-preview.db")
+    run = _run(memory, status="building")
+    candidate_sha = "c" * 40
+    memory.update_design_run(run["run_id"], candidate_sha=candidate_sha)
+    memory.conn.execute("UPDATE design_runs SET draft_id=? WHERE run_id=?", (4, run["run_id"]))
+    service, tenant = _service(memory)
+
+    class PreviewLane:
+        def design_preview(self, run_id):
+            assert run_id == run["run_id"]
+            return {
+                "job_id": "preview-1", "run_id": run_id, "candidate_sha": candidate_sha,
+                "status": "ready", "preview_url": "/api/workspace/source/preview/preview-1/runtime/",
+            }
+
+    tenant.context["source_deployment"] = PreviewLane()
+    build = service.status(tenant=tenant)["build"]
+    assert build["draft_available"] is False
+    assert build["candidate_sha"] == candidate_sha
+    assert build["draft_id"] == 4
+    assert build["preview"] == {
+        "job_id": "preview-1", "run_id": run["run_id"], "candidate_sha": candidate_sha,
+        "status": "ready", "preview_url": "/api/helloada/source/preview/preview-1/runtime/",
+    }
+
+    class StalePreviewLane:
+        def design_preview(self, _run_id):
+            return {"run_id": run["run_id"], "candidate_sha": "d" * 40, "status": "ready",
+                    "preview_url": "/api/workspace/source/preview/stale/runtime/"}
+
+    tenant.context["source_deployment"] = StalePreviewLane()
+    assert "preview" not in service.status(tenant=tenant)["build"]
+    memory.close()
+
+
+def test_status_keeps_retained_candidate_visible_after_checks_need_attention(tmp_path):
+    for status in ("needs_repair", "incomplete"):
+        memory = Memory(tmp_path / f"{status}.db")
+        run = _run(memory, status=status)
+        candidate_sha = "e" * 40
+        memory.update_design_run(run["run_id"], candidate_sha=candidate_sha)
+        service, tenant = _service(memory)
+
+        class PreviewLane:
+            def design_preview(self, run_id):
+                return {
+                    "job_id": f"preview-{status}", "run_id": run_id,
+                    "candidate_sha": candidate_sha, "status": "ready",
+                    "preview_url": f"/api/workspace/source/preview/{status}/runtime/",
+                }
+
+        tenant.context["source_deployment"] = PreviewLane()
+        build = service.status(tenant=tenant)["build"]
+        assert build is not None
+        assert build["state"] == "failed"
+        assert build["status"] == status
+        assert build["draft_available"] is False
+        assert build["preview"]["candidate_sha"] == candidate_sha
+        memory.close()
+
+
 def test_confirmed_failed_candidate_routes_owner_turn_to_intake_advisor(tmp_path):
     memory = Memory(tmp_path / "routing.db")
     _run(memory, status="failed")
