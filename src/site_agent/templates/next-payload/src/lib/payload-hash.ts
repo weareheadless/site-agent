@@ -18,6 +18,6 @@ export const hashJson = async (value: unknown) => {
 
 export const withoutPayloadMetadata = (value: PayloadObject) => {
   const result = { ...value }
-  for (const key of ['id', 'createdAt', 'updatedAt', '_status']) delete result[key]
+  for (const key of ['id', 'createdAt', 'updatedAt', '_status', 'globalType']) delete result[key]
   return result
 }
