@@ -14,6 +14,7 @@ import { fetchHelloAda } from '../api/fetchHelloAda'
 import { helloAdaPath } from '../config/site'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
+import { selectReviewDraft } from '../lib/select-review-draft'
 import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImage, uploadChatImages } from '../lib/chat-attachments'
 import { useHelloAdaSite } from '../config/provider'
 import { HelloAdaMark } from './HelloAdaLogo'
@@ -774,6 +775,7 @@ function ReviewWorkspace() {
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [sourceReview, setSourceReview] = useState<{ draftId: number; sha: string; url: string }>()
   const sourceReviewIdentityRef = useRef('')
+  const previewPlanRequestRef = useRef(0)
   const [message, setMessage] = useState('')
   const preparedAsk = searchParams.get('ask')
   const selectedGrowthTask = searchParams.get('growth_task')
@@ -1073,13 +1075,17 @@ function ReviewWorkspace() {
   }, [t])
 
   const loadPreviewPlan = useCallback(async () => {
+    const requestId = ++previewPlanRequestRef.current
+    const isCurrentRequest = () => previewPlanRequestRef.current === requestId
     try {
       const response = await fetchHelloAda('/api/helloada/drafts?status=pending', { cache: 'no-store' })
       const body = (await response.json()) as {
         drafts?: Array<{ id: number; kind?: string; meta?: { preview?: PreviewPlan; head_sha?: string; candidate_sha?: string } }>
       }
       if (!response.ok) return
-      const draft = (body.drafts || []).find((item) => item.kind === 'design' || item.kind === 'merge')
+      if (!isCurrentRequest()) return
+      const projectedDraftId = designBuild?.draft_id
+      const draft = selectReviewDraft(body.drafts || [], projectedDraftId)
       const plan = draft?.meta?.preview || (draft?.kind === 'design' ? { mode: 'compile' as const, requires_build: true } : undefined)
       if (!plan) {
         setPreviewPlan(undefined)
@@ -1106,6 +1112,7 @@ function ReviewWorkspace() {
         draft_id?: number
         error?: string
       }
+      if (!isCurrentRequest()) return
       const sameRevision = draft?.kind === 'design'
         ? Boolean(headSha && latest.commit === headSha)
         : Boolean(headSha && latest.commit === headSha && latest.draft_id === draft.id)
@@ -1143,6 +1150,7 @@ function ReviewWorkspace() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ branch: 'preview', commit: headSha, draft_id: draft.id, mode: 'compiled_preview' }),
         })
+        if (!isCurrentRequest()) return
         if (!startResponse.ok) {
           const startBody = (await startResponse.json()) as { message?: string }
           throw new Error(startBody.message || t('workspace.previewError'))
@@ -1150,10 +1158,11 @@ function ReviewWorkspace() {
       }
       setPreviewStatus('refreshing')
     } catch (cause) {
+      if (!isCurrentRequest()) return
       setPreviewStatus('error')
       setError(cause instanceof Error ? cause.message : t('workspace.previewError'))
     }
-  }, [t])
+  }, [designBuild?.draft_id, t])
 
   const openEditor = useCallback((focusKey?: string) => {
     if (!canEditPage) return

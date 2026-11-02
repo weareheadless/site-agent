@@ -2,30 +2,36 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import ts from 'typescript'
+import { selectReviewDraft } from '../src/lib/select-review-draft.ts'
 
 // Exercise the real workspace callback without a second implementation of its
 // selection/queue policy or a browser login in unit tests.
 const source = readFileSync(new URL('../src/components/WebsiteWorkspace.tsx', import.meta.url), 'utf8')
-const body = source.split('const loadPreviewPlan = useCallback(async () => {')[1].split('}, [t])')[0]
+const body = source.split('const loadPreviewPlan = useCallback(async () => {')[1].split('}, [designBuild?.draft_id, t])')[0]
 const compiled = ts.transpileModule(`export default async function(dependencies) {
   const { fetchHelloAda, setPreviewPlan, setSourceReview, setPreviewStatus, setPreviewRevision,
-    setError, sourceReviewIdentityRef, t } = dependencies
+    setError, sourceReviewIdentityRef, designBuild, previewPlanRequestRef, selectReviewDraft, t } = dependencies
   ${body}
 }`, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText
 const loadPreviewPlan = (await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)).default
 
-async function load(draft, latest, previousReview) {
+async function load(draft, latest, previousReview, options = {}) {
   const calls = []
-  const state = { review: previousReview }
+  const state = options.state || { review: previousReview }
+  const previewPlanRequestRef = options.previewPlanRequestRef || { current: 0 }
   const setter = (key) => (value) => { state[key] = typeof value === 'function' ? value(state[key]) : value }
   await loadPreviewPlan({
-    fetchHelloAda: async (url, options) => {
-      calls.push({ url, options })
+    fetchHelloAda: async (url, requestOptions) => {
+      calls.push({ url, options: requestOptions })
+      if (options.fetchHelloAda) return options.fetchHelloAda(url, requestOptions)
       return { ok: true, json: async () => url.includes('drafts?') ? { drafts: [draft] } : latest }
     },
     setPreviewPlan: setter('plan'), setSourceReview: setter('review'), setPreviewStatus: setter('status'),
     setPreviewRevision: setter('revision'), setError: setter('error'),
-    sourceReviewIdentityRef: { current: '' }, t: (key) => key,
+    sourceReviewIdentityRef: { current: '' }, previewPlanRequestRef,
+    designBuild: { draft_id: options.projectedDraftId ?? draft?.id },
+    selectReviewDraft,
+    t: (key) => key,
   })
   return { calls, state }
 }
@@ -96,4 +102,33 @@ test('a failed or pending recheck clears a previously visible compiled review', 
       { draftId: 3, sha, url: '/api/helloada/source/preview/old-ready/runtime/' })
     assert.equal(state.review.url, '')
   }
+})
+
+test('a stale deferred draft response cannot restore a review after a newer response clears it', async () => {
+  let resolveStaleDrafts
+  const state = { review: { draftId: 4, sha, url: '/old-preview/' }, plan: { mode: 'compile' } }
+  const previewPlanRequestRef = { current: 0 }
+  const stale = load({ id: 5, kind: 'design', meta: { candidate_sha: sha } }, {}, undefined, {
+    state,
+    previewPlanRequestRef,
+    fetchHelloAda: async () => ({
+      ok: true,
+      json: () => new Promise((resolve) => {
+        resolveStaleDrafts = () => resolve({ drafts: [{ id: 5, kind: 'design', meta: { candidate_sha: sha } }] })
+      }),
+    }),
+  })
+  await Promise.resolve()
+
+  await load(undefined, {}, undefined, {
+    state,
+    previewPlanRequestRef,
+    projectedDraftId: 5,
+    fetchHelloAda: async () => ({ ok: true, json: async () => ({ drafts: [] }) }),
+  })
+  assert.equal(state.review, undefined)
+  resolveStaleDrafts()
+  await stale
+  assert.equal(state.review, undefined)
+  assert.equal(state.plan, undefined)
 })
