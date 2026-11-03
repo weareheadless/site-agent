@@ -26,9 +26,9 @@
       "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
     },
     "site-5fe73d3d38ff6f77": {
-      "id": "runtime-20261103041638-21b70559",
-      "sha": "d8c52cbfa30bd91f876af717586f5b21e0e62450",
-      "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
+      "approvalId": 6,
+      "id": "rel-20261103065238-48fb4dc7",
+      "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d"
     }
   },
   "schema": 1
