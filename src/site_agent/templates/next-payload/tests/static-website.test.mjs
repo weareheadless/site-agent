@@ -56,6 +56,17 @@ test('a missing declared page is an error, never a CMS or static fallback', asyn
   await assert.rejects(staticWebsiteResponse(request(), env({ HELLOADA_PRESENTATION_PROFILE: 'other' })))
 })
 
+test('the original error document is used only for unknown paths, with a real 404 status', async () => {
+  const errorManifest = { ...manifest, files: { ...manifest.files, '/404.html': 'hash' } }
+  const settings = env({ HELLOADA_STATIC_MANIFEST: JSON.stringify(errorManifest), GOOGLE_SITE_VERIFICATION: 'not-for-error-pages',
+    ASSETS: { fetch: async () => new Response('<html lang="es"><title>Not found</title><main>Not found</main></html>') } })
+  const response = await staticWebsiteResponse(request('/unknown'), settings)
+  assert.equal(response.status, 404)
+  assert.doesNotMatch(await response.text(), /not-for-error-pages/)
+  const broken = await staticWebsiteResponse(request(), { ...settings, ASSETS: { fetch: async () => new Response('missing', { status: 404 }) } })
+  assert.equal(broken.status, 503)
+})
+
 test('HEAD returns the same headers without HTML and asset bytes are unchanged', async () => {
   const head = await staticWebsiteResponse(request('/', 'HEAD'), env())
   assert.equal(await head.text(), '')

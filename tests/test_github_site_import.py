@@ -35,6 +35,7 @@ def test_static_inventory_preserves_pages_and_requires_assets(tmp_path):
         inspect_static_site(tmp_path)
     (public / 'assets').mkdir()
     (public / 'assets/logo.webp').write_bytes(b'image')
+    (public / '404.html').write_text('<html lang="es"><title>Not found</title><main>Not found</main></html>')
     result = inspect_static_site(tmp_path)
     assert result['kind'] == 'static'
     assert result['routes'] == {'/': '/index.html'}

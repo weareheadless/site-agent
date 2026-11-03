@@ -78,7 +78,7 @@ def inspect_static_site(root: Path) -> dict:
         if path.suffix == '.html':
             parser = _References()
             html = path.read_text(encoding='utf-8')
-            if not re.search(r'</head\s*>', html, re.IGNORECASE):
+            if relative != '/404.html' and not re.search(r'</head\s*>', html, re.IGNORECASE):
                 raise GitHubSiteImportError(f'An explicit HTML head boundary is required: {relative}')
             parser.feed(html)
             if not re.fullmatch('[a-z]{2,3}', parser.locale):

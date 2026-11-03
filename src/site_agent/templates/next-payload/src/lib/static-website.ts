@@ -40,6 +40,7 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   }
   const file = manifest.routes[url.pathname] || manifest.routes[canonicalPath]
     || (Object.hasOwn(manifest.files, url.pathname) ? url.pathname : null)
+    || (Object.hasOwn(manifest.files, '/404.html') ? '/404.html' : null)
   if (!file) return new Response('Page not found', { status: 404 })
   if (!Object.hasOwn(manifest.files, file) || !file.startsWith('/') || file.includes('..')) {
     throw new Error('Static website route is outside its declared assets')
@@ -47,6 +48,9 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   const assetUrl = new URL(file, url.origin)
   const asset = await env.ASSETS.fetch(new Request(assetUrl, { method: 'GET' }))
   if (!asset.ok) return new Response('Declared website asset is unavailable', { status: 503 })
+  // Preserve the operator's error document, including valid optional-head HTML.
+  // It is not a publishable page and receives no indexing/tracking injection.
+  if (file === '/404.html') return new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: asset.headers })
   if (!file.endsWith('.html')) return request.method === 'HEAD'
     ? new Response(null, { status: asset.status, headers: asset.headers }) : asset
   let html = await asset.text()
