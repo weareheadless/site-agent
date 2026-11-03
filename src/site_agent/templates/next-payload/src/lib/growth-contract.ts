@@ -1,5 +1,6 @@
 import { getPayloadCloudflareContext } from '@/lib/cloudflare-context'
-import { stableJson } from '@/lib/payload-hash'
+import { hashJson, stableJson } from '@/lib/payload-hash'
+import { runtimeValue } from '@/lib/runtime-env'
 
 export { hashJson, stableJson } from '@/lib/payload-hash'
 
@@ -22,7 +23,7 @@ const database = async () => {
 
 const now = () => new Date().toISOString()
 
-export const tenantId = () => String(process.env.HELLOADA_TENANT_ID || '').trim()
+export const tenantId = () => runtimeValue('HELLOADA_TENANT_ID')
 
 export const asObject = (value: unknown): JsonObject =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
@@ -158,12 +159,91 @@ export const operationContext = (req: { context?: Record<string, unknown> }, ope
   req.context = { ...(req.context || {}), helloAdaGrowthOperation: operationKey }
 }
 
-export const assertNativeWriteAllowed = async (collection: string, id: unknown, req: { context?: Record<string, unknown> } | undefined) => {
-  if (!id) return
-  const currentOperation = String(req?.context?.helloAdaGrowthOperation || '')
-  const key = `${collection}:${String(id)}`
-  const row = await activeOperation(key, currentOperation)
-  if (row) throw new Error('This document is being prepared by Ada. The owner edit was not overwritten; review or wait for the current operation.')
+type WriteRequest = { context?: Record<string, unknown> }
+type WriteLease = { operationKey: string; depth: number; attempted: boolean; settled: boolean }
+const writeLeaseKey = Symbol.for('helloada.payload.write-lease')
+const contentWriteKey = 'payload:content'
+const writeConflict = (message: string) => Object.assign(new Error(message), { status: 409, statusCode: 409 })
+const writeContext = (req: WriteRequest | undefined) => {
+  if (!req) throw writeConflict('Payload write request identity is required.')
+  req.context ||= {}
+  return req.context as Record<PropertyKey, unknown>
+}
+
+const acquireContentWrite = async (req: WriteRequest | undefined): Promise<WriteLease> => {
+  const context = writeContext(req)
+  const nested = context[writeLeaseKey] as WriteLease | undefined
+  if (nested && !nested.settled) {
+    nested.depth += 1
+    return nested
+  }
+  const tenant = tenantId()
+  if (!tenant) throw writeConflict('The Payload tenant identity is not configured.')
+  const operationKey = `payload-write:${tenant}:${crypto.randomUUID()}`
+  const packageHash = await hashJson({ tenant, scope: contentWriteKey })
+  // The existing D1 unique-writing-document index is the atomic acquisition.
+  // All native operations, including bulk operations, use the same tenant-local
+  // content key. A request-local depth only permits that operation's own hooks.
+  const claimed = await claimOperation(operationKey, contentWriteKey, packageHash)
+  if (!claimed.inserted) throw writeConflict('Another website write is in progress. No edit was applied; reload after it completes.')
+  const unresolved = await activeOperation(contentWriteKey, operationKey)
+  if (unresolved) {
+    await completeOperation(operationKey, { state: 'blocked-before-write', blockedBy: String(unresolved.operation_key) })
+    throw writeConflict('A prior website write has an unverified outcome. Reconcile that operation before writing again.')
+  }
+  const lease: WriteLease = { operationKey, depth: 1, attempted: false, settled: false }
+  context[writeLeaseKey] = lease
+  return lease
+}
+
+const settleContentWrite = async (req: WriteRequest | undefined, failed: boolean) => {
+  if (!req?.context) return
+  const context = req.context as Record<PropertyKey, unknown>
+  const lease = context[writeLeaseKey] as WriteLease | undefined
+  if (!lease || lease.settled) return
+  if (!failed && lease.depth > 1) { lease.depth -= 1; return }
+  if (failed && lease.attempted) await failOperation(lease.operationKey, { state: 'uncertain', scope: contentWriteKey })
+  else await completeOperation(lease.operationKey, { state: 'completed', scope: contentWriteKey })
+  lease.settled = true
+  delete context[writeLeaseKey]
+}
+
+/** Hold the same native-writer boundary across an exact multi-document action. */
+export const withPayloadWriteGuard = async <T>(req: WriteRequest, action: () => Promise<T>): Promise<T> => {
+  await acquireContentWrite(req)
+  try {
+    const result = await action()
+    await settleContentWrite(req, false)
+    return result
+  } catch (error) {
+    await settleContentWrite(req, true)
+    throw error
+  }
+}
+
+export const assertNativeWriteAllowed = async (
+  collection: string, id: unknown, req: WriteRequest | undefined, operation = 'update', _data?: unknown,
+) => {
+  if (operation === 'complete' || operation === 'failed') {
+    await settleContentWrite(req, operation === 'failed')
+    return
+  }
+  const lease = await acquireContentWrite(req)
+  try {
+    const currentOperation = String(req?.context?.helloAdaGrowthOperation || '')
+    const row = id
+      ? await activeOperation(`${collection}:${String(id)}`, currentOperation)
+      : await (await database()).prepare(
+        "SELECT * FROM helloada_growth_operations WHERE document_key LIKE ?1 AND state IN ('writing', 'uncertain') AND operation_key != ?2 LIMIT 1",
+      ).bind(`${collection}:%`, currentOperation).first()
+    if (row) throw writeConflict('This document is being prepared by Ada. The owner edit was not overwritten; review the current operation.')
+    lease.attempted = true
+  } catch (error) {
+    // No Payload write has crossed this hook. Release only this nested entry;
+    // an enclosing action still owns its lease and any earlier effects.
+    await settleContentWrite(req, false)
+    throw error
+  }
 }
 
 export const contractCapabilities = [

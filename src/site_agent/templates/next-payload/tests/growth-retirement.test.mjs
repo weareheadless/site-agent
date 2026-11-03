@@ -9,6 +9,7 @@ const contractSource = readFileSync(new URL('../src/lib/growth-contract.ts', imp
   .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*\n/gm, '')
   .replace(/^export\s+\{\s*hashJson,\s*stableJson\s*\}\s+from\s+['"][^'"]+['"]\s*\n/m, '')
   .replace(/^const database = async \(\) => \{[\s\S]*?\n\}\n/m, `const database = async () => { const context = await getPayloadCloudflareContext(); if (!context.env?.D1) throw new Error('missing D1'); return context.env.D1 }\n`)
+  .replace(/^export const tenantId = \(\) => runtimeValue\('HELLOADA_TENANT_ID'\)$/m, 'export const tenantId = () => String(process.env.HELLOADA_TENANT_ID || \'\').trim()')
 const operationsSource = readFileSync(new URL('../src/lib/growth-operations.ts', import.meta.url), 'utf8')
   .replace(/^import\s+[\s\S]*?from\s+['"][^'"]+['"]\s*\n/gm, '')
 const payloadHashSource = readFileSync(new URL('../src/lib/payload-hash.ts', import.meta.url), 'utf8')
