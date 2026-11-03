@@ -5,9 +5,11 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 import yaml
+import pytest
 
 from site_agent.application.tenant_registration import (
     TenantRegistrationService,
+    TenantRegistrationError,
     load_provisioned_tenants,
 )
 from site_agent.application.workspace import TenantRegistry
@@ -70,6 +72,31 @@ def test_registration_creates_pending_identity_without_a_temporary_site(tmp_path
         assert retried["api_token_env"] == first["api_token_env"]
         assert (tmp_path / "websites" / "new-site" / "site").exists() is False
         retry_registry.close()
+    finally:
+        registry.close()
+
+
+def test_github_registration_freezes_repository_and_prevents_duplicate_owner(tmp_path):
+    config, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register('imported-site', github_repository='https://github.com/weareheadless/astrid-rincon-website.git')
+        service.register('imported-site', github_repository='weareheadless/astrid-rincon-website')
+        persisted = yaml.safe_load((service.root / 'imported-site/config.yaml').read_text())
+        assert persisted['provisioning_source'] == {'kind': 'github_static', 'branch': 'main', 'repository': 'weareheadless/astrid-rincon-website'}
+        for value in ['', 'weareheadless/different']:
+            with pytest.raises(TenantRegistrationError, match='cannot change'):
+                service.register('imported-site', github_repository=value)
+        with pytest.raises(TenantRegistrationError, match='already registered'):
+            service.register('different-site', github_repository='weareheadless/astrid-rincon-website')
+        assert not (service.root / 'different-site').exists()
+        with pytest.raises(TenantRegistrationError):
+            service.register('invalid-site', github_repository='https://evil.invalid/x')
+        assert not (service.root / 'invalid-site').exists()
+        service.register('intake-site')
+        with pytest.raises(TenantRegistrationError, match='cannot change'):
+            service.register('intake-site', github_repository='weareheadless/different')
     finally:
         registry.close()
 

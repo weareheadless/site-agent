@@ -270,6 +270,7 @@ class WebsiteBootstrapService:
             "diagnostic": state.get("diagnostic", ""),
             "workspace_ready": bool(state.get("workspace_ready", False)),
             "website_live": bool(state.get("website_live", False)),
+            "provisioning_source": public_value(state.get("provisioning_source", {})),
             "resource_receipts": public_value(state.get("resource_receipts", {})),
             "steps": {
                 str(key): {
@@ -709,17 +710,19 @@ class WebsiteBootstrapService:
                 "runtime_active": True,
             }
 
-    def start(self, tenant_id: str, *, display_name: str = "") -> dict[str, Any]:
+    def start(self, tenant_id: str, *, display_name: str = "", github_repository: str | None = None) -> dict[str, Any]:
         normalized = _component(tenant_id, "website id")
         if not bool(self.settings.get("enabled", True)):
             raise BootstrapError("website bootstrap is disabled")
         self._handoff_public_key()
         try:
-            self.registration.register(normalized, display_name=display_name, env=self.env)
+            source_args = {"github_repository": github_repository} if github_repository is not None else {}
+            registration = self.registration.register(normalized, display_name=display_name, env=self.env, **source_args)
         except TenantRegistrationError as exc:
             raise BootstrapError(str(exc)) from exc
         with self._lock:
             state = self._read_state(normalized)
+            state["provisioning_source"] = registration.get("provisioning_source", {})
             if state.get("status") == "done" and state.get("step") == "ready":
                 return self._public_state(state)
             current = self._futures.get(normalized)
@@ -873,7 +876,7 @@ class WebsiteBootstrapService:
                 step="ready",
                 diagnostic="",
                 workspace_ready=True,
-                website_live=False,
+                website_live=receipt.get("websitePresent") is True,
                 deployment_receipt={
                     key: receipt.get(key)
                     for key in ("pipelineSha", "uploadedVersion", "connectionVerifiedAt", "finishedAt")
@@ -1087,6 +1090,10 @@ class WebsiteBootstrapService:
         }
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        source = _mapping(raw.get("provisioning_source"))
+        if source.get("kind") == "github_static":
+            return self._import_repository(tenant_id, display_name, config_path, source)
         _env, github_token, _cloudflare_token, _account_id = self._credentials()
         names = self._names(tenant_id)
         owner = str(self.settings.get("github_owner") or "weareheadless").strip()
@@ -1125,6 +1132,81 @@ class WebsiteBootstrapService:
         self._configure_template(site_dir, tenant_id, display_name)
         self._git_init_and_push(site_dir, receipt)
         return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": names["worker"]}
+
+    def _import_repository(self, tenant_id: str, display_name: str, config_path: Path,
+                           source: Mapping[str, Any]) -> Mapping[str, Any]:
+        from .github_site_import import normalize_repository, inspect_static_site
+
+        repository = normalize_repository(str(source.get("repository") or ""))
+        site_dir = config_path.parent / "site"
+        remote = f"git@github.com:{repository}.git"
+        owner, name = repository.split("/")
+        receipt = GitHubRepositoryReceipt(owner, name, repository,
+            f"https://github.com/{repository}.git", remote, f"https://github.com/{repository}", False)
+        if (site_dir / ".git").is_dir():
+            if self._git(site_dir, "remote", "get-url", "origin") != remote:
+                raise BootstrapError("existing checkout points at a different repository")
+            self._verify_existing_repository(site_dir, tenant_id)
+            return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": self._names(tenant_id)["worker"]}
+        # Never replace a registered site's baseline or reuse an unrelated clone.
+        if site_dir.exists() and any(site_dir.iterdir()):
+            raise BootstrapError("existing website directory is not empty; refusing repository import")
+        staging = config_path.parent / "github-source"
+        if staging.exists():
+            if (not (staging / ".git").is_dir()
+                    or self._git(staging, "remote", "get-url", "origin") != remote
+                    or self._git(staging, "status", "--porcelain")
+                    or self._git(staging, "branch", "--show-current") != "main"):
+                raise BootstrapError("interrupted GitHub import has an unrecognized or edited source checkout")
+            # A source-admission failure (for example missing images) has not
+            # published a baseline. Permit a reviewed fix on official main,
+            # without resetting or discarding any local work.
+            self._git(staging, "fetch", "origin", "main")
+            self._git(staging, "merge", "--ff-only", "origin/main")
+        else:
+            self._git(config_path.parent, "clone", "--single-branch", "--branch", "main", remote, str(staging))
+        original_sha = self._git(staging, "rev-parse", "HEAD")
+        if (staging / "public/helloada-release.json").exists():
+            raise BootstrapError("source repository contains the reserved platform release marker")
+        # Bound this flow to the convention we own, not arbitrary framework code.
+        allowed = {".git", ".gitignore", "README.md", "package.json", "package-lock.json", "public", "scripts", "wrangler.jsonc"}
+        if any(item.name not in allowed for item in staging.iterdir()):
+            raise BootstrapError("repository does not match the supported static public/ convention")
+        if any(path.is_symlink() for path in staging.rglob("*") if ".git" not in path.parts):
+            raise BootstrapError("repository import does not permit symlinks")
+        frontend = inspect_static_site(staging)
+        frontend["sourceSha"] = original_sha
+        self._materialize_template(site_dir)
+        # Public presentation is preserved byte-for-byte. Platform package,
+        # migrations, auth, Worker and build scripts come only from the template.
+        for path in (staging / "public").rglob('*'):
+            destination = site_dir / "public" / path.relative_to(staging / "public")
+            if path.is_file() and destination.exists():
+                raise BootstrapError("source public file collides with a platform asset")
+        shutil.copytree(staging / "public", site_dir / "public", dirs_exist_ok=True)
+        if (staging / "scripts").is_dir():
+            for path in (staging / "scripts").rglob('*'):
+                if path.is_file() and (site_dir / "scripts" / path.relative_to(staging / "scripts")).exists():
+                    raise BootstrapError("source script collides with a canonical platform script")
+            shutil.copytree(staging / "scripts", site_dir / "scripts", dirs_exist_ok=True)
+        frontend = {**inspect_static_site(site_dir), "sourceSha": original_sha}
+        shutil.copytree(staging / ".git", site_dir / ".git")
+        self._git(site_dir, "config", "user.email", "helloada-bootstrap@localhost")
+        self._git(site_dir, "config", "user.name", "HelloAda Bootstrap")
+        (site_dir / "helloada-frontend.json").write_text(json.dumps(frontend, indent=2) + "\n")
+        self._configure_template(site_dir, tenant_id, display_name)
+        config_file = site_dir / "src/helloada.config.ts"
+        text = config_file.read_text().replace("defaultLocale: 'en'", f"defaultLocale: {json.dumps(frontend['defaultLocale'])}")
+        text = text.replace("locales: ['en']", f"locales: {json.dumps(frontend['locales'])}")
+        config_file.write_text(text)
+        manifest_path = site_dir / "template-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest.update(locales=frontend["locales"], defaultLocale=frontend["defaultLocale"])
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+        self._git_init_and_push(site_dir, receipt)
+        shutil.rmtree(staging)
+        return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": self._names(tenant_id)["worker"],
+                "source_sha": original_sha, "presentation_profile": "static"}
 
     def _verify_existing_repository(self, site_dir: Path, tenant_id: str) -> None:
         if self._git(site_dir, "status", "--porcelain"):
@@ -1391,6 +1473,16 @@ class WebsiteBootstrapService:
                 "verification_request_timeout_seconds": 10,
             },
         })
+        static_path = site_dir / "helloada-frontend.json"
+        if static_path.is_file():
+            frontend = json.loads(static_path.read_text())
+            if frontend.get("kind") != "static":
+                raise BootstrapError("unsupported imported presentation profile")
+            site["presentation_profile"] = "static"
+            site["website_present"] = True
+            raw["design_engine"] = {**_mapping(raw.get("design_engine")), "enabled": False}
+            raw["ada_journey"] = {**_mapping(raw.get("ada_journey")), "website_present": True, "incubation_needed": False}
+            raw["intake"] = {**_mapping(raw.get("intake")), "enabled": False}
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
         messages = _mapping(raw.get("messages"))
         email_settings = _mapping(messages.get("email"))
@@ -1463,6 +1555,13 @@ class WebsiteBootstrapService:
             payload_contract,
             self._handoff_public_key(),
         )
+        if static_path.is_file():
+            worker_config = site_dir / "wrangler.jsonc"
+            worker = json.loads(worker_config.read_text())
+            worker["vars"]["HELLOADA_PRESENTATION_PROFILE"] = "static"
+            worker["vars"]["HELLOADA_STATIC_MANIFEST"] = json.dumps(frontend, separators=(",", ":"))
+            worker["assets"].update(run_worker_first=True, html_handling="none")
+            worker_config.write_text(json.dumps(worker, indent=2) + "\n")
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
 
     @staticmethod

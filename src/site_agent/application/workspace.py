@@ -629,7 +629,7 @@ class TenantRegistry:
                     tenant_config,
                     dict(env),
                     adapter=get_adapter(
-                        site_adapter_name,
+                        "github_static" if site_config.get("presentation_profile") == "static" else site_adapter_name,
                         tenant_config,
                         payload_client=payload_client,
                     ),

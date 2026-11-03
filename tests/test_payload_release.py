@@ -30,6 +30,28 @@ SHA = "a" * 40
 REGISTRY = json.loads((ROOT / "deploy/payload-customers.json").read_text())
 TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
 TEMPLATE_MANIFEST = json.loads((TEMPLATE / "template-manifest.json").read_text())
+
+
+def test_static_source_admission_is_required_for_every_release_purpose(tmp_path):
+    from site_agent.application.github_site_import import inspect_static_site
+    public = tmp_path / 'public'
+    public.mkdir()
+    page = public / 'index.html'
+    page.write_text('<html lang="es"><head></head><body>Owner website</body></html>')
+    declaration = {**inspect_static_site(tmp_path), 'sourceSha': 'a' * 40}
+    (tmp_path / 'helloada-frontend.json').write_text(json.dumps(declaration))
+    worker = {'vars': {'HELLOADA_PRESENTATION_PROFILE': 'static', 'HELLOADA_STATIC_MANIFEST': json.dumps(declaration)},
+              'assets': {'run_worker_first': True, 'html_handling': 'none'}}
+    customer = {'presentationProfile': 'static', 'websitePresent': True}
+    proof = release.validate_presentation_source(tmp_path, customer, worker)
+    assert proof['profile'] == 'static' and proof['pages'] == 1 and proof['importedSourceSha'] == 'a' * 40
+    with pytest.raises(RuntimeError, match='requires explicit'):
+        release.validate_presentation_source(tmp_path, {**customer, 'websitePresent': False}, worker)
+    with pytest.raises(RuntimeError, match='differs'):
+        release.validate_presentation_source(tmp_path, {'websitePresent': True}, worker)
+    page.write_text('<html lang="es"><head></head><body>Unrecorded change</body></html>')
+    with pytest.raises(ValueError, match='differs'):
+        release.validate_presentation_source(tmp_path, customer, worker)
 CUSTOMER = {
     **REGISTRY["customers"]["oceanicvibes"],
     "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],

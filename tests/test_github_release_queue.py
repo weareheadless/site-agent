@@ -34,6 +34,15 @@ CUSTOMER = {
 }
 
 
+def test_explicit_static_presentation_survives_queue_contract_projection():
+    customer = {**CUSTOMER, 'websitePresent': True, 'presentationProfile': 'static'}
+    assert GitHubReleaseQueue._required_customer(customer)['presentationProfile'] == 'static'
+    assert 'presentationProfile' not in GitHubReleaseQueue._required_customer(CUSTOMER)
+    for change in [{'websitePresent': False}, {'presentationProfile': 'guessed'}]:
+        with pytest.raises(GitHubReleaseQueueError):
+            GitHubReleaseQueue._required_customer({**customer, **change})
+
+
 @pytest.mark.parametrize('registered_only', [False, True])
 def test_release_request_commits_registry_and_exact_approval_together(monkeypatch, registered_only):
     queue = GitHubReleaseQueue("token")

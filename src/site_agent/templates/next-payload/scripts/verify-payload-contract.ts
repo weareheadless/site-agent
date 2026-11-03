@@ -23,6 +23,11 @@ if (websitePresentValue !== 'true' && websitePresentValue !== 'false') {
   throw new Error('HELLOADA_WEBSITE_PRESENT must be explicitly set to true or false.')
 }
 const websitePresent = websitePresentValue === 'true'
+// The release runner validates static source files, hashes and Worker routing
+// before selecting this explicit profile. All CMS schema/draft/version/media
+// checks below still run; only the source-owned homepage/chrome differ.
+const presentationProfile = process.env.HELLOADA_PRESENTATION_PROFILE || 'payload'
+if (!['payload', 'static'].includes(presentationProfile)) throw new Error('Unsupported presentation profile')
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
   activeCheck = label
@@ -71,7 +76,7 @@ try {
     await check(`${slug} draft read`, () => payload.findGlobal({ slug, draft: true, depth: 0, overrideAccess: true }))
   }
 
-  if (websitePresent) {
+  if (websitePresent && presentationProfile === 'payload') {
     await check('siteSettings publishable name', async () => {
       if (!String(globals.siteSettings?.siteName ?? '').trim()) {
         throw new Error('Published siteSettings.siteName is empty; publish the business identity in Payload before release.')
@@ -109,7 +114,9 @@ try {
       }
     })
   } else {
-    console.log('[payload-contract] published business content checks skipped: intake site is explicitly empty')
+    console.log(presentationProfile === 'static'
+      ? '[payload-contract] public presentation is the explicitly validated static source; CMS collections remain independent'
+      : '[payload-contract] published business content checks skipped: intake site is explicitly empty')
   }
 
   await check('media read', () => payload.find({ collection: 'media', depth: 0, limit: 1, pagination: false, overrideAccess: true }))

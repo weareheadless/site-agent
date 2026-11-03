@@ -171,6 +171,18 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         "mailflareOutboundQueueName": queue_names["MAILFLARE_OUTBOUND_QUEUE"],
         "mailflareAgentQueueName": queue_names["MAILFLARE_AGENT_QUEUE"],
     }
+    profile = site.get("presentation_profile") or "payload"
+    if profile == "static":
+        from .github_site_import import validate_static_declaration
+        try:
+            validate_static_declaration(root, wrangler)
+        except (OSError, ValueError) as exc:
+            raise ReleaseQueueError(str(exc)) from exc
+        if not website_present:
+            raise ReleaseQueueError("imported static presentation must declare websitePresent")
+        contract["presentationProfile"] = "static"
+    elif profile != "payload" or variables.get("HELLOADA_PRESENTATION_PROFILE") not in (None, "", "payload"):
+        raise ReleaseQueueError("registered presentation profile differs from Worker source")
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
     payload_contract = payload.get("contract") if isinstance(payload.get("contract"), Mapping) else {}
     for key in ("payloadAdmin", "payloadCore", "contentContract", "schemaRevision", "schemaIdentity", "migrationHead"):

@@ -97,6 +97,10 @@ class GitHubReleaseQueue:
             raise GitHubReleaseQueueError("release does not use the canonical HelloAda API")
         if not isinstance(result["websitePresent"], bool):
             raise GitHubReleaseQueueError("explicit website-present state is required")
+        if "presentationProfile" in customer:
+            if customer["presentationProfile"] != "static" or result["websitePresent"] is not True:
+                raise GitHubReleaseQueueError("explicit static presentation requires a present website")
+            result["presentationProfile"] = "static"
         if not _VERSION.fullmatch(str(result["payloadAdmin"] or "")) or not _VERSION.fullmatch(str(result["payloadCore"] or "")):
             raise GitHubReleaseQueueError("exact shared Payload package versions are required")
         if not _CONTRACT.fullmatch(str(result["contentContract"] or "")):
