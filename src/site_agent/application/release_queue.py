@@ -181,7 +181,7 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         if not website_present:
             raise ReleaseQueueError("imported static presentation must declare websitePresent")
         contract["presentationProfile"] = "static"
-    elif profile != "payload" or variables.get("HELLOADA_PRESENTATION_PROFILE") == "static":
+    elif profile != "payload" or variables.get("HELLOADA_PRESENTATION_PROFILE") not in (None, "", "payload"):
         raise ReleaseQueueError("registered presentation profile differs from Worker source")
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
     payload_contract = payload.get("contract") if isinstance(payload.get("contract"), Mapping) else {}

@@ -1065,6 +1065,22 @@ def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_confi
         config_path.unlink(missing_ok=True)
 
 
+def validate_presentation_source(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any]) -> dict[str, Any]:
+    """Source admission is mandatory for bootstrap as well as ordinary releases."""
+    profile = customer.get("presentationProfile", "payload")
+    if profile == "static":
+        from site_agent.application.github_site_import import validate_static_declaration
+        if customer.get("websitePresent") is not True:
+            raise RuntimeError("static presentation requires explicit websitePresent")
+        declaration = validate_static_declaration(checkout, worker_config)
+        return {"profile": "static", "importedSourceSha": declaration["sourceSha"],
+                "pages": len(declaration["routes"]), "files": len(declaration["files"]),
+                "manifestHash": hashlib.sha256((checkout / "helloada-frontend.json").read_bytes()).hexdigest()}
+    if profile != "payload" or worker_config.get("vars", {}).get("HELLOADA_PRESENTATION_PROFILE") not in (None, "", "payload"):
+        raise RuntimeError("registered presentation profile differs from Worker source")
+    return {"profile": "payload"}
+
+
 def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
                                    worker_config: dict[str, Any], env: dict[str, str],
                                    base: dict[str, str], temporary_directory: Path) -> str:
@@ -1074,11 +1090,7 @@ def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
         if not isinstance(website_present, bool):
             raise RuntimeError("release manifest must explicitly declare websitePresent")
         profile = customer.get("presentationProfile", "payload")
-        if profile == "static":
-            from site_agent.application.github_site_import import validate_static_declaration
-            validate_static_declaration(checkout, worker_config)
-        elif profile != "payload" or worker_config.get("vars", {}).get("HELLOADA_PRESENTATION_PROFILE") == "static":
-            raise RuntimeError("registered presentation profile differs from Worker source")
+        validate_presentation_source(checkout, customer, worker_config)
         verifier_env = {
             **base, **env,
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
@@ -2275,12 +2287,15 @@ def main() -> int:
                       "publicDomains:(()=>{const d=new Set();const addUrl=v=>{try{const u=new URL(v);if(u.protocol==='https:'||u.protocol==='http:')d.add(u.hostname.toLowerCase())}catch{}};"
                       "addUrl(c.vars?.NEXT_PUBLIC_SITE_URL);for(const r of c.routes||[]){const p=typeof r==='string'?r:r?.pattern;if(typeof p!=='string')continue;"
                       "const h=p.split('/')[0].toLowerCase().replace(/^\\*\\./,'');if(h&&!h.includes('*'))d.add(h)}return [...d].sort()})(),"
+                      "vars:{HELLOADA_PRESENTATION_PROFILE:c.vars?.HELLOADA_PRESENTATION_PROFILE,HELLOADA_STATIC_MANIFEST:c.vars?.HELLOADA_STATIC_MANIFEST},"
+                      "assets:{run_worker_first:c.assets?.run_worker_first,html_handling:c.assets?.html_handling},"
                       "compatibilityDate:c.compatibility_date,compatibilityFlags:c.compatibility_flags||[],"
                       "d1Binding:c.d1_databases?.[0]?.binding,r2Binding:c.r2_buckets?.find(b=>b.binding==='R2')?.binding}));"], checkout, base)
         wrangler = json.loads(parsed)
         worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
         wrangler["handlers"] = worker_handlers(worker_entry)
         validate_worker_contract(wrangler, customer, args.tenant)
+        receipt["presentation"] = validate_presentation_source(checkout, customer, wrangler)
         lifecycle_identity = durable_object_migration_identity(wrangler["durableObjectMigrations"])
         rollout_mode, applied_lifecycle_release = select_worker_rollout_mode(
             directory.parent, lifecycle_identity,
