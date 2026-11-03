@@ -79,7 +79,7 @@ def publish_reviewed_effects(
         identity = _effect_identity(effect)
         try:
             current = _published(gateway, effect)
-            if current.get("_helloadaRevision") == revision:
+            if current.get("_helloadaRevision") == revision and current.get("_status") == "published":
                 receipts.append({"effect": identity, "revision": revision, "state": "already-published"})
                 continue
             draft = _draft(gateway, effect)

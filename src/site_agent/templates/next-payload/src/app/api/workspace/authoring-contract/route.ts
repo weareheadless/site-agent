@@ -27,7 +27,7 @@ export async function GET(request: Request) {
   const enabledCollections = [
     'pages',
     ...(helloAdaSite.features?.posts ? ['posts'] : []),
-    ...(helloAdaSite.features?.commerce ? ['products'] : []),
+    ...(helloAdaSite.features?.commerce ? ['products', 'productAttributes', 'productVariants'] : []),
   ]
   const enabledGlobals = ['siteSettings', 'navigation']
   const completeAuthoring = createHelloAdaAuthoringContract()

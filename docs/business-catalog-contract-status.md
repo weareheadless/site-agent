@@ -1,7 +1,8 @@
-# Business catalog contract — revision 10 draft
+# Business catalog contract — revision 10 release candidate
 
-Status: source implementation in progress; **not release-ready**. No package
-artifact, tenant pin, database, release queue, or live website has been changed.
+Status: implementation complete; final release validation in progress. Core
+0.6.0, scaffold pins, committed migration and contract identities are staged
+together. No existing tenant database, release queue or live site has changed.
 
 ## Source changes
 
@@ -22,41 +23,55 @@ artifact, tenant pin, database, release queue, or live website has been changed.
   collections. A public catalog reader excludes drafts, paginates child rows,
   and rejects published variants inconsistent with published product options.
 
-## Required before release
+## Completed release work
 
-1. Extend the existing workspace content gateway for the child collections.
-   It currently accepts only pages/posts/products and requires a public slug
-   for creation. Children need product/key or SKU idempotency, no invented
-   standalone route, exact-draft publication, and conflict tests. The source
-   authoring schema alone is not a working Ada integration.
-2. Generate/review committed migration SQL and snapshots from each registered
-   tenant's actual prior ledger. Backfill localized slugs **and historical
-   versions** before removing old global columns/indexes. Preserve each live
-   URL. `product_categories.slug` is currently NOT NULL, so simply leaving its
-   old column behind would prevent new inserts.
-3. Reconcile the existing scaffold snapshot/source drift separately. The last
-   committed snapshot still has `appointment_type_id` booking relationships,
-   while current source uses Mailflare `booking_type_id`. There is also an
-   outbound-provider default difference. Do not let an automatic catalog diff
-   rename/drop these fields or invent booking IDs. The additive migration tool
-   correctly refuses the required booking column without a reviewed backfill.
-4. Preserve retail presentation and migrate Atelier cart identity from product
-   ID to variant ID (with product ID retained as context). Test two options of
-   one product as two cart lines. No Stripe implementation is included here.
-5. Pack/release the exact core artifact; update scaffold/tenant pins, lockfile
-   integrities, contracts and migration identities together. The three current
-   scaffold/core compatibility tests remain hard failures until this is done;
-   they have not been weakened to hide the staged mismatch.
-6. Use the canonical release queue with explicit prior/target migration ledger
-   identities, then perform authenticated owner-edit/publish and public URL
-   checks. Do not merge/deploy this draft as an ordinary runtime fan-out.
+- The existing content gateway supports child identity, idempotent retries,
+  exact-draft updates/publication and conflict rejection. Children have no
+  fabricated route. Ada's client and bounded planning use the same product/key
+  and SKU identities. The authoring validator excludes server-derived fields.
+- The append-only migration chain bootstraps a new database and backfills all
+  existing locale rows and historical versions before retiring global slugs.
+  New category inserts no longer depend on an obsolete NOT NULL global slug.
+- Legacy booking tables are replaced only after **all** preflight checks pass
+  and only if they contain no rows. Retained booking content requires an
+  explicit operator-owned Mailflare mapping; no IDs or content are invented.
+  Existing mailbox provider values and historical SQL defaults are preserved.
+- Native Payload/D1 tests cover real drafts, publication, localization, typed
+  facts, variant option/currency consistency and stock validation. Public reads
+  require `_status=published` as well as the visibility flag. New catalog rows
+  default to visible after explicit publication, not while drafted.
+- Publication no longer treats an identical unpublished base-row hash as a
+  publication receipt. The service gateway explicitly publishes the reviewed
+  `_status` and verifies it on read-back.
+- The staged exact artifact, scaffold lockfile integrity, contracts, Wrangler
+  identity, verifier and migration manifest agree; compatibility gates remain
+  enabled rather than being relaxed for the new schema.
+
+## Release and existing-customer boundary
+
+Final full-suite/build checks and the official versioned package release must
+pass before this is marked release-ready. No tenant rollout is implicit.
+Casamigo can start from the new scaffold on an empty dedicated D1/R2 deployment
+after that package is available. Existing tenants need a separately reviewed
+prior/target ledger migration, D1 backup and coordinated forward-only cutover:
+the old Worker cannot read retired global slug columns. Ordinary runtime fan-out
+must not apply this schema change.
+
+Atelier's cart/presentation has not changed. Legacy `price` remains available,
+so it is not silently converted to cents. Adopting its new variant catalog in
+the storefront is separate work: cart lines must use variant ID with product ID
+as context, and two variants must remain separate lines. Payments, orders,
+stock reservations, and Stripe are not supplied by this schema release.
 
 ## Verification
 
-Focused catalog, D1 schema and public-reader tests: 12 passing. Core TypeScript
-check passes. Full core suite: 34 passing, 3 scaffold/core compatibility failures
-because the scaffold remains pinned to released 0.5.10/revision 9 while source
-stages 0.6.0/revision 10. These are release blockers, not an accepted green suite.
+Core suite: 44 passing, including the previous three compatibility gates; core
+TypeScript passes. The template suite passed 123 tests and the scaffold passed
+typecheck/lint (warnings only) and an OpenNext build. The final clean build/full
+Python rerun remains pending after the shared `/tmp` volume filled. The cause was
+a test fixture copying installed template dependencies/build output; it now uses
+the canonical source-only ignore function. Task-only temporary output was removed,
+and subsequent builds/tests use disk-backed temporary storage.
 
 The SQLite test builds the actual Payload 3.88.0 D1 schema without credentials
 and verifies localized slug uniqueness, product/key uniqueness, SKU and variant

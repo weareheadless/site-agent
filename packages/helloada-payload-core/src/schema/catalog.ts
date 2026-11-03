@@ -1,9 +1,31 @@
-import type { CollectionConfig, Field } from 'payload'
+import type { CollectionConfig, Field, Where } from 'payload'
 
 type Row = Record<string, unknown>
 const row = (value: unknown): Row => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : {}
 const present = (value: unknown) => value !== null && value !== undefined
-const key = (value: unknown) => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,79}$/.test(value)
+const key = (value: unknown): value is string => typeof value === 'string' && /^[a-z][a-z0-9_-]{0,79}$/.test(value)
+
+export type CatalogChildCollection = 'productAttributes' | 'productVariants'
+export const isCatalogChildCollection = (value: string): value is CatalogChildCollection =>
+  value === 'productAttributes' || value === 'productVariants'
+
+/** Destination uniqueness, not a made-up public route, is the create key. */
+export const helloAdaContentCreateKey = (collection: string, data: Row): { where: Where; effectKey: string } => {
+  if (collection === 'productAttributes') {
+    if ((typeof data.product !== 'string' && typeof data.product !== 'number') || !String(data.product).trim() || !key(data.key)) {
+      throw new Error('An attribute create requires a product ID and a stable attribute key.')
+    }
+    return { where: { and: [{ product: { equals: data.product } }, { key: { equals: data.key } }] }, effectKey: JSON.stringify([collection, String(data.product), data.key]) }
+  }
+  if (collection === 'productVariants') {
+    if (typeof data.sku !== 'string' || !data.sku.trim() || data.sku !== data.sku.trim()) throw new Error('A variant create requires an exact non-empty SKU.')
+    return { where: { sku: { equals: data.sku } }, effectKey: JSON.stringify([collection, data.sku]) }
+  }
+  if (!['pages', 'posts', 'products'].includes(collection)) throw new Error('Unsupported content collection.')
+  const slug = String(data.slug || '').trim()
+  if (!slug) throw new Error('A stable route slug is required for an idempotent Payload draft create.')
+  return { where: { slug: { equals: slug } }, effectKey: `${collection}:${slug}` }
+}
 
 /** Amounts use the currency's minor unit, not a hard-coded two-decimal rule. */
 export const validateMinorAmount = (value: unknown): true | string =>
@@ -65,6 +87,9 @@ export const validateCatalogProduct = (value: unknown): true | string => {
   return validateCatalogOptions(data.options)
 }
 
+export const validateCatalogCurrency = (value: unknown): true | string =>
+  typeof value === 'string' && /^[A-Z]{3}$/.test(value) ? true : 'Declare a three-letter uppercase currency before using minor-unit prices.'
+
 export const catalogProductFields = (): Field[] => [
   { name: 'priceMinor', type: 'number', min: 0, validate: validateMinorAmount, admin: { description: 'Integer minor units for the declared currency. Never infer a conversion from legacy price.' } },
   {
@@ -113,7 +138,7 @@ export const createProductAttributesCollection = (hooks: CollectionConfig['hooks
     { name: 'unit', type: 'text' },
     { name: 'group', type: 'text' },
     { name: 'filterable', type: 'checkbox', defaultValue: false },
-    { name: 'published', type: 'checkbox', defaultValue: false },
+    { name: 'published', type: 'checkbox', defaultValue: true },
   ],
   hooks: { ...hooks, beforeValidate: [async ({ data, originalDoc }) => {
     const result = validateCatalogAttribute({ ...originalDoc, ...data })
@@ -138,7 +163,7 @@ export const createProductVariantsCollection = (hooks: CollectionConfig['hooks']
     { name: 'stock', type: 'number', min: 0, validate: validateMinorAmount, admin: { description: 'Optional inventory count, not a reservation or order ledger.' } },
     { name: 'image', type: 'upload', relationTo: 'media' },
     { name: 'position', type: 'number', defaultValue: 0 },
-    { name: 'published', type: 'checkbox', defaultValue: false },
+    { name: 'published', type: 'checkbox', defaultValue: true },
   ],
   hooks: { ...hooks, beforeValidate: [async ({ data, originalDoc, req }) => {
     const merged = { ...originalDoc, ...data }
@@ -149,7 +174,13 @@ export const createProductVariantsCollection = (hooks: CollectionConfig['hooks']
     if (present(merged.compareAtPriceMinor) && merged.compareAtPriceMinor < merged.priceMinor) throw new Error('Compare-at price must not be below the variant price.')
     const productID = typeof merged.product === 'object' ? merged.product?.id : merged.product
     if (typeof productID !== 'number' && typeof productID !== 'string') throw new Error('Choose a product for this variant.')
-    const product = await req.payload.findByID({ collection: 'products', id: productID, draft: true, depth: 0, req, overrideAccess: false })
+    const publishing = merged._status === 'published'
+    // The outer write has already crossed Payload/service authentication. The
+    // service gateway does not impersonate an owner session for invariant reads.
+    const product = await req.payload.findByID({ collection: 'products', id: productID, draft: !publishing, depth: 0, req, overrideAccess: true })
+    const currency = validateCatalogCurrency(product.currency)
+    if (currency !== true) throw new Error(currency)
+    if (publishing && (!product.published || product._status !== 'published')) throw new Error('Publish the product before publishing its variants.')
     const validation = validateVariantSelection(product.options, merged.options)
     if (validation !== true) throw new Error(validation)
     const selectionKey = JSON.stringify((merged.options as unknown[]).map(row).map((item) => [item.option, item.value]).sort((a, b) => String(a[0]).localeCompare(String(b[0]), 'en')))

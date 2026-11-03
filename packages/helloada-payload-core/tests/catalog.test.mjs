@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createHelloAdaSchema, createHelloAdaAuthoringContract, validateHelloAdaAuthoringData } from '../src/schema/index.ts'
-import { validateCatalogAttribute, validateCatalogOptions, validateVariantSelection, validateMinorAmount } from '../src/schema/catalog.ts'
+import { helloAdaContentCreateKey, validateCatalogAttribute, validateCatalogOptions, validateVariantSelection, validateMinorAmount } from '../src/schema/catalog.ts'
 
 const schema = createHelloAdaSchema(async () => undefined)
 const collection = (slug) => schema.collections.find((item) => item.slug === slug)
@@ -55,7 +55,7 @@ test('native and Ada writes enforce catalog validation, including partial update
 
 test('variants validate options against the actual product and derive stable selection identity', async () => {
   const hook = collection('productVariants').hooks.beforeValidate[0]
-  const req = { payload: { findByID: async () => ({ options: [{ key: 'size', label: 'Size', values: [{ key: 'm', label: 'Medium' }] }] }) } }
+  const req = { payload: { findByID: async () => ({ currency: 'EUR', options: [{ key: 'size', label: 'Size', values: [{ key: 'm', label: 'Medium' }] }] }) } }
   const data = { product: 3, sku: 'SHIRT-M', options: [{ option: 'size', value: 'm' }], priceMinor: 1250 }
   const result = await hook({ data, req })
   assert.equal(typeof result.selectionKey, 'string')
@@ -70,4 +70,28 @@ test('Astrid pages support translated slugs and a gallery without a retail catal
   }
   assert.equal(field('pages', 'gallery').hasMany, true)
   assert.equal(validateHelloAdaAuthoringData('collection', 'pages', { title: 'Colour and cuts', slug: 'color-and-cuts', gallery: [1, 2] }), true)
+})
+
+test('catalog child create keys use real uniqueness and have no public slug requirement', () => {
+  const one = helloAdaContentCreateKey('productAttributes', { product: 1, key: 'beds' })
+  const two = helloAdaContentCreateKey('productAttributes', { product: 2, key: 'beds' })
+  assert.notEqual(one.effectKey, two.effectKey)
+  assert.equal(one.effectKey, helloAdaContentCreateKey('productAttributes', { product: '1', key: 'beds' }).effectKey)
+  assert.deepEqual(one.where, { and: [{ product: { equals: 1 } }, { key: { equals: 'beds' } }] })
+  assert.deepEqual(helloAdaContentCreateKey('productVariants', { sku: 'SHIRT-M' }).where, { sku: { equals: 'SHIRT-M' } })
+  assert.throws(() => helloAdaContentCreateKey('productVariants', { sku: ' SHIRT-M' }), /exact/)
+  assert.throws(() => helloAdaContentCreateKey('productAttributes', { slug: 'beds' }), /product ID/)
+  const variant = { product: 1, sku: 'SHIRT-M', priceMinor: 1250, options: [{ option: 'size', value: 'm' }] }
+  assert.equal(validateHelloAdaAuthoringData('collection', 'productVariants', variant, { operation: 'create' }), true)
+  assert.throws(() => validateHelloAdaAuthoringData('collection', 'productVariants', { ...variant, selectionKey: 'spoofed' }, { operation: 'create' }), /unsupported fields/)
+})
+
+test('publication cannot strand live variants on removed options or reinterpret their currency', async () => {
+  const hook = collection('products').hooks.beforeValidate[1]
+  const originalDoc = { id: 1, currency: 'EUR', published: true, _status: 'published', options: [{ key: 'size', values: [{ key: 'm' }] }] }
+  const req = { payload: { find: async () => ({ docs: [{ id: 2, options: [{ option: 'size', value: 'm' }] }], hasNextPage: false }) } }
+  await assert.rejects(() => hook({ data: { options: [] }, originalDoc, req }), /published variant/)
+  await assert.rejects(() => hook({ data: { currency: 'USD' }, originalDoc, req }), /inherited currency/)
+  assert.deepEqual(await hook({ data: { options: [], _status: 'draft' }, originalDoc, req }), { options: [], _status: 'draft' })
+  await assert.rejects(() => hook({ data: { priceMinor: 1200 }, originalDoc: {}, req }), /currency/)
 })

@@ -23,7 +23,7 @@ from ..config import ConfigError
 from .base import AdapterError, SiteAdapter, register
 
 
-_WEBSITE_COLLECTIONS = frozenset({"pages", "posts", "products"})
+_WEBSITE_COLLECTIONS = frozenset({"pages", "posts", "products", "productAttributes", "productVariants"})
 _WEBSITE_GLOBALS = frozenset({"siteSettings", "navigation"})
 
 
@@ -683,7 +683,8 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("Payload gateway is unreachable") from exc
 
     def _collection(self, collection: str) -> str:
-        collection = str(collection or "").strip().lower()
+        requested = str(collection or "").strip()
+        collection = next((name for name in _WEBSITE_COLLECTIONS if name.casefold() == requested.casefold()), requested)
         if collection not in self.contract.collections or collection not in _WEBSITE_COLLECTIONS:
             raise PayloadGatewayError(f"unsupported Payload collection: {collection or '(empty)'}")
         return collection
@@ -727,6 +728,8 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("a document identifier is required")
         if identifier_kind not in {"id", "sourceId", "slug"}:
             raise PayloadGatewayError("identifier_kind must be id, sourceId, or slug")
+        if collection in {"productAttributes", "productVariants"} and identifier_kind == "slug":
+            raise PayloadGatewayError("catalog children use id or sourceId, not a route slug")
         response = self._request(
             "GET",
             self._gateway_path("content"),

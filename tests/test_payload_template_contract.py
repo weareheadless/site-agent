@@ -29,7 +29,7 @@ def test_payload_template_has_remote_payload_contract_gate():
     for expected in ['draft: false', 'draft: true', 'findVersions', 'findGlobal', "collection: 'media'"]:
         assert expected in verifier
     assert "'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'" in verifier
-    assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products', 'contactForms'] as const" in verifier
+    assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products', 'contactForms', 'productAttributes', 'productVariants'] as const" in verifier
     assert "await import('@payload-config')" in verifier
     assert 'for (const collection of versionedCollections)' in verifier
 

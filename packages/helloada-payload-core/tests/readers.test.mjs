@@ -53,7 +53,7 @@ test('catalog readers paginate child rows and never query a draft or unrelated p
   for (const args of calls.slice(1)) {
     assert.equal(args.draft, false)
     assert.equal(args.locale, 'fr')
-    assert.deepEqual(args.where.and, [{ product: { equals: 7 } }, { published: { equals: true } }])
+    assert.deepEqual(args.where.and, [{ product: { equals: 7 } }, { published: { equals: true } }, { _status: { equals: 'published' } }])
   }
   assert.equal(await readHelloAdaProductCatalog({ find: async () => ({ docs: [] }) }, 'absent', 'en'), undefined)
 })

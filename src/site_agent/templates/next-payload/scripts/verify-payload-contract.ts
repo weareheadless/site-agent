@@ -15,8 +15,8 @@ verificationDeadline.unref()
 const { getPayload } = await import('payload')
 const { default: config } = await import('@payload-config')
 
-const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'] as const
-const versionedCollections = ['pages', 'posts', 'postCategories', 'products', 'contactForms'] as const
+const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations', 'productAttributes', 'productVariants'] as const
+const versionedCollections = ['pages', 'posts', 'postCategories', 'products', 'contactForms', 'productAttributes', 'productVariants'] as const
 const failures: string[] = []
 const websitePresentValue = process.env.HELLOADA_WEBSITE_PRESENT
 if (websitePresentValue !== 'true' && websitePresentValue !== 'false') {

@@ -1,6 +1,7 @@
 import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
-import { catalogProductFields, createProductAttributesCollection, createProductVariantsCollection, validateCatalogAttribute, validateCatalogProduct, validateMinorAmount } from './catalog.ts'
+import { catalogProductFields, createProductAttributesCollection, createProductVariantsCollection, validateCatalogAttribute, validateCatalogProduct, validateCatalogCurrency, validateMinorAmount, validateVariantSelection } from './catalog.ts'
+export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
 export const HELLOADA_CORE_VERSION = '0.6.0'
@@ -639,7 +640,7 @@ const validateAuthoringRecord = (
   const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
   if (!row) throw new Error(`${path} must be an object.`)
   const allowed = new Map(fields
-    .filter((field) => typeof field.name === 'string' && !AUTHORING_RESERVED_FIELDS.has(field.name))
+    .filter((field) => typeof field.name === 'string' && !AUTHORING_RESERVED_FIELDS.has(field.name) && asRow(field.admin).hidden !== true)
     .map((field) => [field.name as string, field]))
   for (const field of allowed.values()) {
     if (!authoringFieldTypes.has(String(field.type || ''))) {
@@ -1079,15 +1080,33 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
     { name: 'category', type: 'relationship', relationTo: 'productCategories' },
     { name: 'canonicalUrl', type: 'text' },
     seoFields(),
-    { name: 'published', type: 'checkbox', defaultValue: false },
+    { name: 'published', type: 'checkbox', defaultValue: true },
   ],
   hooks: {
     ...sectionCollectionHooks('products', guard),
     beforeValidate: [
       ...sectionCollectionHooks('products', guard)!.beforeValidate!,
-      async ({ data, originalDoc }) => {
+      async ({ data, originalDoc, req }) => {
         const validation = validateCatalogProduct({ ...originalDoc, ...data })
         if (validation !== true) throw new Error(validation)
+        const merged = { ...originalDoc, ...data }
+        if (merged.priceMinor !== undefined && merged.priceMinor !== null) {
+          const currency = validateCatalogCurrency(merged.currency)
+          if (currency !== true) throw new Error(currency)
+        }
+        if (originalDoc?.id && merged.published && merged._status === 'published') {
+          let page = 1
+          while (true) {
+            const variants = await req.payload.find({ collection: 'productVariants', draft: false, req, depth: 0, limit: 100, page, overrideAccess: true, where: { and: [{ product: { equals: originalDoc.id } }, { published: { equals: true } }, { _status: { equals: 'published' } }] } })
+            for (const variant of variants.docs) {
+              if (merged.currency !== originalDoc.currency) throw new Error('Retire published variants before changing their inherited currency.')
+              const selection = validateVariantSelection(merged.options, variant.options)
+              if (selection !== true) throw new Error(`A published variant still uses these product options: ${selection}`)
+            }
+            if (!variants.hasNextPage) break
+            page += 1
+          }
+        }
         return data
       },
     ],

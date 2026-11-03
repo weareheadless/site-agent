@@ -3,6 +3,7 @@ import * as migration_20261004_090000_growth_operations from './20261004_090000_
 import * as migration_20261006_061835_helloada_owner_handoff from './20261006_061835_helloada_owner_handoff';
 import * as migration_20261009_123644_helloada_mailbox_calendar from './20261009_123644_helloada_mailbox_calendar';
 import * as migration_20261031_090000_helloada_section_layout from './20261031_090000_helloada_section_layout';
+import * as migration_20261104_010000_business_catalog from './20261104_010000_business_catalog';
 
 export const migrations = [
   {
@@ -29,5 +30,10 @@ export const migrations = [
     up: migration_20261031_090000_helloada_section_layout.up,
     down: migration_20261031_090000_helloada_section_layout.down,
     name: '20261031_090000_helloada_section_layout'
+  },
+  {
+    up: migration_20261104_010000_business_catalog.up,
+    down: migration_20261104_010000_business_catalog.down,
+    name: '20261104_010000_business_catalog'
   },
 ];

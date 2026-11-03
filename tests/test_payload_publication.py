@@ -34,12 +34,12 @@ class Gateway:
         assert identifier_kind == "id"
         kind = "collection" if draft else "published-collection"
         return {"_helloadaRevision": self.drafts.get(("collection", collection, locale), "")} if draft else {
-            "_helloadaRevision": self.published.get(("collection", collection, locale), "")}
+            "_helloadaRevision": self.published.get(("collection", collection, locale), ""), "_status": "published"}
 
     def read_global(self, slug, *, draft, locale):
         if draft:
             return {"_helloadaRevision": self.drafts.get(("global", slug, locale), "")}
-        return {"_helloadaRevision": self.published.get(("global", slug, locale), "")}
+        return {"_helloadaRevision": self.published.get(("global", slug, locale), ""), "_status": "published"}
 
     def publish(self, collection, document_id, *, locale, expected_hash, expected_fields):
         self.calls.append(("publish", collection, document_id, locale, expected_hash, tuple(expected_fields)))
@@ -64,6 +64,20 @@ def test_publishes_each_exact_reviewed_revision_once():
     assert [call[0] for call in gateway.calls] == ["publish", "publish", "publish_global", "publish_global"]
     assert gateway.calls[0][4] == effect_list[0]["revision"]
     assert gateway.calls[2][3] == effect_list[2]["revision"]
+
+
+def test_identical_content_in_an_unpublished_base_row_is_not_a_publication_receipt():
+    effect_list = effects()[:1]
+
+    class DraftBaseGateway(Gateway):
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            return {"_helloadaRevision": effect_list[0]["revision"], "_status": "draft"}
+
+    gateway = DraftBaseGateway()
+    receipt = publish_reviewed_effects(gateway, effect_list, revision_set_hash="reviewed")
+    assert receipt["published"] == 1
+    assert receipt["satisfied"] == 0
+    assert len(gateway.calls) == 1
 
 
 def test_already_published_revision_is_satisfied_without_rewriting():

@@ -18,3 +18,4 @@ coverage.xml
 .agent-home/
 .opencode/
 packages/helloada-payload-admin/.release/
+packages/helloada-payload-core/.release/

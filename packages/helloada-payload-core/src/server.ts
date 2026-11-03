@@ -14,7 +14,7 @@ export const readHelloAdaPage = async (payload: HelloAdaContentReader, slug: str
   const result = await payload.find({
     collection: 'pages', draft: false, depth: 2, limit: 1, pagination: false,
     overrideAccess: true, locale: locale as never,
-    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
+    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }, { _status: { equals: 'published' } }] },
   })
   return result.docs[0] as unknown as ContentRecord | undefined
 }
@@ -23,7 +23,7 @@ export const readHelloAdaProduct = async (payload: HelloAdaContentReader, slug: 
   const result = await payload.find({
     collection: 'products', draft: false, depth: 2, limit: 1, pagination: false,
     overrideAccess: true, locale: locale as never,
-    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
+    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }, { _status: { equals: 'published' } }] },
   })
   return result.docs[0] as unknown as ContentRecord | undefined
 }
@@ -40,7 +40,7 @@ export const readHelloAdaProductCatalog = async (payload: HelloAdaContentReader,
       const result = await payload.find({
         collection, draft: false, depth: 1, limit: 100, page, pagination: true,
         overrideAccess: true, locale: locale as never,
-        where: { and: [{ product: { equals: product.id } }, { published: { equals: true } }] },
+        where: { and: [{ product: { equals: product.id } }, { published: { equals: true } }, { _status: { equals: 'published' } }] },
         sort: collection === 'productVariants' ? 'position' : 'key',
       })
       documents.push(...result.docs as unknown as ContentRecord[])
@@ -60,7 +60,7 @@ export const readHelloAdaPost = async (payload: HelloAdaContentReader, slug: str
   const result = await payload.find({
     collection: 'posts', draft: false, depth: 2, limit: 1, pagination: false,
     overrideAccess: true, locale: locale as never,
-    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
+    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }, { _status: { equals: 'published' } }] },
   })
   return result.docs[0] as unknown as ContentRecord | undefined
 }
@@ -69,7 +69,7 @@ export const readHelloAdaPosts = async (payload: HelloAdaContentReader, locale?:
   const result = await payload.find({
     collection: 'posts', draft: false, depth: 2, limit: 100, pagination: false,
     overrideAccess: true, locale: locale as never, sort: '-publishedAt',
-    where: { published: { equals: true } },
+    where: { published: { equals: true }, _status: { equals: 'published' } },
   })
   return result.docs as unknown as ContentRecord[]
 }
