@@ -26,6 +26,7 @@ def _config(tmp_path: Path):
             "public_url": "https://oceanicvibes.com/",
             "preview_url": "https://oceanicvibes.weareheadless.workers.dev",
             "source_deployment": {"worker_name": "oceanicvibes"},
+            "payload": {"contract": {"contract": "helloada-content-v3"}},
         },
         "messages": {"email": {"enabled": True, "local_part": "contact", "provisioning": {"auto": True}}},
     }
@@ -193,6 +194,36 @@ def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
 
     assert worker == "oceanicvibes"
     assert error == ""
+
+
+@pytest.mark.parametrize("configured,reported,ready", [
+    ("helloada-content-v4", "helloada-content-v4", True),
+    ("helloada-content-v4", "helloada-content-v3", False),
+    ("helloada-content-v3", "helloada-content-v4", False),
+    (None, "helloada-content-v4", False),
+    ("", "helloada-content-v4", False),
+])
+def test_worker_readiness_requires_the_registered_contract(monkeypatch, tmp_path, configured, reported, ready):
+    config = _config(tmp_path)
+    config["site"]["payload"]["contract"]["contract"] = configured
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return bootstrap.json.dumps({
+                "ok": True, "tenant": "oceanicvibes", "contentContract": reported,
+                "mailflareProvisioningVersion": 1,
+            }).encode()
+
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes")
+    assert bool(worker) is ready
+    assert bool(error) is not ready
 
 
 def test_worker_readiness_rejects_a_public_origin_outside_the_registered_domain(monkeypatch, tmp_path):

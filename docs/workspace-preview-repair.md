@@ -21,6 +21,14 @@ its exact document/hash checks. Compiled source candidates remain a separate
 existing review contract. Never substitute a public display alias for draft or
 candidate approval evidence.
 
+For an explicitly declared static presentation, the Worker serves public assets
+before Next middleware runs. It therefore passes the same configured preview
+mount into `staticWebsiteResponse`, which uses `workspacePreviewPath` to resolve
+the display alias against the exact static inventory. Successful preview HTML
+retains same-origin framing and is marked noindex; trailing-slash redirects
+retain the mount. The Payload renderer and signed revision-preview route remain
+platform-owned and unchanged. An unknown path remains a real 404.
+
 Atelier's migration deleted its mount. Oceanic retained a homepage-only component
 that returned 404 for other routes. Both now use the scaffold implementation;
 the obsolete Oceanic component is removed. No schema or tenant content changed.
