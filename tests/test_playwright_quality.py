@@ -11,6 +11,7 @@ from site_agent.hands.playwright_quality import (
     _keyboard_metrics,
     _mark_observed_journey_transitions,
     _observable_delta,
+    _observable_snapshot,
     _observed_signature_behaviors,
     _signature_scroll_positions,
 )
@@ -300,6 +301,38 @@ def test_observable_delta_ignores_signature_position_changes_during_scroll():
         "signature_behaviors": [],
         "sample_count": 2,
     }
+
+
+def test_observable_snapshot_includes_css_position_and_svg_rendering():
+    class Page:
+        def evaluate(self, script):
+            # Both marked nodes and their rendered descendants can animate.
+            for field in ("top: style.top", "left: style.left", "strokeDashoffset: style.strokeDashoffset",
+                          "strokeDasharray: style.strokeDasharray"):
+                assert script.count(field) == 2
+            assert "visible: visible(element) &&" in script
+            assert "rect.bottom > 0" in script
+            assert "rect.top < window.innerHeight" in script
+            return {"nodes": [], "signature_behaviors": []}
+
+    assert _observable_snapshot(Page()) == {"nodes": [], "signature_behaviors": []}
+
+
+def test_scroll_signature_retains_rendered_position_and_svg_changes():
+    for changed_style in ({"left": "90px", "top": "350px"}, {"strokeDashoffset": "100px"}):
+        initial = {"left": "80px", "top": "0px", "strokeDashoffset": "135px",
+                   "box": {"x": 80, "y": 0, "width": 6, "height": 6}}
+        samples = [{"nodes": [], "signature_behaviors": [{"id": "signature", "visible": True,
+                    "fingerprint": value}]} for value in (initial, {**initial, **changed_style})]
+        assert _observable_delta(samples, ignore_scroll_position=True)["signature_behaviors"]
+
+
+def test_scroll_signature_does_not_observe_offscreen_only_changes():
+    samples = [{"nodes": [], "signature_behaviors": [{"id": "signature", "visible": False,
+                "fingerprint": {"top": top}}]} for top in ("2000px", "2500px")]
+    assert not _observable_delta(samples, ignore_scroll_position=True)["signature_behaviors"]
+    samples[0]["signature_behaviors"][0]["visible"] = True
+    assert not _observable_delta(samples, ignore_scroll_position=True)["signature_behaviors"]
 
 
 def test_observable_delta_observes_signature_descendant_render_change():

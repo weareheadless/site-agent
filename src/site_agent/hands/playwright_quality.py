@@ -792,6 +792,10 @@ def _observable_snapshot(page: Any) -> dict[str, Any]:
               visibility: style.visibility,
               backgroundImage: style.backgroundImage,
               filter: style.filter,
+              top: style.top,
+              left: style.left,
+              strokeDashoffset: style.strokeDashoffset,
+              strokeDasharray: style.strokeDasharray,
               lampX: style.getPropertyValue('--lamp-x'),
               lampY: style.getPropertyValue('--lamp-y'),
               lampR: style.getPropertyValue('--lamp-r'),
@@ -811,6 +815,13 @@ def _observable_snapshot(page: Any) -> dict[str, Any]:
               visibility: style.visibility,
               clipPath: style.clipPath,
               filter: style.filter,
+              // Computed layout/SVG styles change during real motion even when
+              // transform stays none. Unlike viewport box x/y, they do not
+              // change merely because the document was scrolled.
+              top: style.top,
+              left: style.left,
+              strokeDashoffset: style.strokeDashoffset,
+              strokeDasharray: style.strokeDasharray,
             };
           };
           const signatureFingerprint = (element) => ({
@@ -827,10 +838,15 @@ def _observable_snapshot(page: Any) -> dict[str, Any]:
               visible: visible(element),
               fingerprint: fingerprint(element),
             }));
-          const signature = Array.from(document.querySelectorAll('[data-ada-signature-behavior]')).map((element) => ({
-            id: element.getAttribute('data-ada-signature-behavior') || '',
-            fingerprint: signatureFingerprint(element),
-          })).filter((item) => item.id);
+          const signature = Array.from(document.querySelectorAll('[data-ada-signature-behavior]')).map((element) => {
+            const rect = element.getBoundingClientRect();
+            return {
+              id: element.getAttribute('data-ada-signature-behavior') || '',
+              visible: visible(element) && rect.bottom > 0 && rect.right > 0 &&
+                rect.top < window.innerHeight && rect.left < window.innerWidth,
+              fingerprint: signatureFingerprint(element),
+            };
+          }).filter((item) => item.id);
           return {
             nodes,
             signature_behaviors: signature,
@@ -925,6 +941,8 @@ def _observable_delta(
                 continue
             behavior_id = str(item.get("id") or "")
             if not behavior_id or behavior_id in seen or behavior_id not in signature_initial:
+                continue
+            if item.get("visible") is False:
                 continue
             if signature_fingerprint(item.get("fingerprint")) != signature_initial[behavior_id]:
                 signatures.append({"id": behavior_id, "state": "observed", "observed_via": "rendered_delta"})
