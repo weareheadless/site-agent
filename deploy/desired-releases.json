@@ -28,6 +28,13 @@
       "id": "runtime-20261103193848-42ad5ebf",
       "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d",
       "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
+    },
+    "site-ff8e9af06f56201f": {
+      "id": "rel-20261103194001-add56f25",
+      "initializeSchema": {
+        "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
+      },
+      "sha": "0dd341071ba515b3c2b7d0b939c047cf8e1d636c"
     }
   },
   "schema": 1
