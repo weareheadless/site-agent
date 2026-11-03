@@ -312,6 +312,29 @@ def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(
         service.close()
 
 
+def test_compiled_preview_navigation_stays_on_exact_mounted_candidate():
+    mount = '/api/helloada/source/preview/exact-job/runtime'
+    job = {'runtime_base_path': mount, 'public_asset_roots': []}
+    samples = [
+        ('<a href="/?locale=en">English</a>', 'text/html', '<a href="?locale=en">English</a>'),
+        ('{"href":"/?locale=en"}', 'text/x-component', '{"href":"?locale=en"}'),
+        (r'{\"href\":\"/?locale=en\"}', 'text/html', r'{\"href\":\"?locale=en\"}'),
+    ]
+    for body, content_type, expected in samples:
+        rewritten = source_deployment.SourceDeploymentService._rewrite_runtime_assets(body.encode(), content_type, job)
+        assert rewritten.decode() == expected
+        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(rewritten, content_type, job) == rewritten
+    for href in ('https://instagram.com/example', '//example.com/', '#work', '?locale=en',
+                 'mailto:owner@example.com', '/api/helloada/media/file', '/admin', '/mail/inbox', '/_next/script.js',
+                 '/', '/work?locale=en', mount + '/?locale=en'):
+        body = f'<a href="{href}">Link</a>'.encode()
+        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job) == body
+    text = b'<p>The path /?locale=en is not a navigation attribute.</p>'
+    assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(text, 'text/html', job) == text
+    body = b"<a href='/work?locale=es#colour'>"
+    assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job, 'work') == b"<a href='?locale=es#colour'>"
+
+
 def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
     node_bin = tmp_path / "node-bin"
     node_bin.mkdir()

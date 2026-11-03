@@ -21,6 +21,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -737,16 +738,34 @@ class SourceDeploymentService:
                                     for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
 
     @staticmethod
-    def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any]) -> bytes:
+    def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any], request_path: str = "") -> bytes:
         base = str(job.get("runtime_base_path") or "")
         roots = list(job.get("public_asset_roots") or [])
-        if not base or not roots or not any(kind in content_type for kind in ("text/html", "text/css", "javascript")):
+        if not base or not any(kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")):
             return body
         # Root-relative public URLs occur in SSR HTML, its RSC payload and the
         # matching client bundles. Rewrite all three so hydration sees the same
         # props; Next's own chunks/router use its explicit basePath above.
-        pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
-        return pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8")).encode("utf-8")
+        text = body.decode("utf-8")
+        if roots:
+            pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
+            text = pattern.sub(lambda match: match["prefix"] + base + match["asset"], text)
+        # Same-page query links must stay in this preview, not jump to the
+        # unpublished public site. Query-relative hrefs work for plain anchors
+        # and Next links without adding Next's basePath twice. Keep SSR and RSC
+        # props identical; leave other routes and external destinations alone.
+        navigation = re.compile(r'''(?P<prefix>(?<![\w-])href(?:\\?["'])?\s*[=:]\s*\\?["'])(?P<path>/(?!/)[^"'\\<>\s]*)(?P<suffix>\\?["'])''')
+
+        def mounted_link(match: re.Match[str]) -> str:
+            path = match["path"]
+            parsed = urllib.parse.urlsplit(path)
+            current = "/" + request_path.strip("/")
+            if parsed.path.rstrip("/") != current.rstrip("/") or not parsed.query:
+                return match[0]
+            relative = "?" + parsed.query + ("#" + parsed.fragment if parsed.fragment else "")
+            return match["prefix"] + relative + match["suffix"]
+
+        return navigation.sub(mounted_link, text).encode("utf-8")
 
     @staticmethod
     def _preview_root_is_ready(status: int) -> bool:
@@ -1438,7 +1457,7 @@ class SourceDeploymentService:
             with response:
                 return {
                     "status": int(response.status),
-                    "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job),
+                    "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job, clean_path),
                     "content_type": response.headers.get("Content-Type", "application/octet-stream"),
                     "commit": str(job.get("commit") or ""),
                 }
