@@ -21,6 +21,7 @@
     "src/app/api/helloada/mailflare-identity/route.ts",
     "src/app/api/workspace/growth/[...path]/route.ts",
     "src/app/api/workspace/content/route.ts",
+    "src/app/api/workspace/global/route.ts",
     "src/app/api/workspace/authoring-contract/route.ts",
     "src/lib/cloudflare-context.ts",
     "src/lib/content-routes.ts",
