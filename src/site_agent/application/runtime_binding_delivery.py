@@ -64,7 +64,16 @@ def deliver_runtime_bindings(config: Mapping[str, Any], env: Mapping[str, str], 
             current_config = yaml.safe_load(path.with_name('config.yaml').read_text())
             if current_config.get('instance_name') != tenant:
                 raise RuntimeBindingError('Registered tenant configuration identity changed')
-            activation = RuntimeActivation.from_mapping(current_config.get('site', {}).get('payload', {}).get('runtime_activation', {}))
+            binding = (current_config.get('site') or {}).get('payload', {}).get('runtime_activation')
+            if not binding:
+                # A tenant with no verified activation has not completed a
+                # release under this contract. That is a pending state, not a
+                # defect: stage nothing and retry once a release is verified.
+                return {'state': 'awaiting_runtime_release', 'reason': 'no verified runtime activation'}
+            try:
+                activation = RuntimeActivation.from_mapping(binding)
+            except ValueError as exc:
+                raise RuntimeBindingError('Registered runtime activation binding is invalid') from exc
             if activation.tenant_id != tenant:
                 raise RuntimeBindingError('Runtime activation belongs to another tenant')
             root = release_root(config)

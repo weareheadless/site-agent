@@ -211,3 +211,18 @@ def test_one_retry_is_allowed_for_a_binding_staged_during_the_build(tmp_path, mo
         assert memory.kv_get('runtime_binding_delivery')['completed_retries'] == 1
     finally:
         memory.close()
+
+
+def test_a_tenant_without_verified_activation_stages_nothing(tmp_path, monkeypatch):
+    import site_agent.application.runtime_binding_delivery as module
+    config, path, memory, receipt, save = fixture(tmp_path)
+    current = yaml.safe_load(path.with_name('config.yaml').read_text())
+    current['site']['payload'].pop('runtime_activation')
+    path.with_name('config.yaml').write_text(yaml.safe_dump(current))
+    monkeypatch.setattr(module, 'request_release', lambda *a, **kw: pytest.fail('nothing to release against'))
+    try:
+        result = deliver_runtime_bindings(config, {}, memory, path, {'GA_MEASUREMENT_ID': 'G-ONE'})
+        assert result['state'] == 'awaiting_runtime_release'
+        assert 'GA_MEASUREMENT_ID' not in path.with_name('tenant.env').read_text()
+    finally:
+        memory.close()
