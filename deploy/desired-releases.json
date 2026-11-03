@@ -1,30 +1,33 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261103041638-ad6b21ee",
+      "id": "runtime-20261103193848-832141c6",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
+      "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "rel-20261103185536-ce3d082b",
-      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
+      "id": "runtime-20261103193848-254eb009",
+      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
+      "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261103185546-e12cf723",
-      "sha": "b8d4614b07336aadfe312925d1c4f5705522accd"
+      "id": "runtime-20261103193848-227c6558",
+      "sha": "b8d4614b07336aadfe312925d1c4f5705522accd",
+      "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "rel-20261103185555-dda0ad22",
-      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4"
+      "id": "runtime-20261103193848-5038d5a6",
+      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
+      "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     },
     "oceanicvibes": {
       "id": "rel-20261103191624-15285486",
       "sha": "f2e317b1ef2e00be859f23af725fa0a84a794ab2"
     },
     "site-5fe73d3d38ff6f77": {
-      "approvalId": 6,
-      "id": "rel-20261103065238-48fb4dc7",
-      "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d"
+      "id": "runtime-20261103193848-42ad5ebf",
+      "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d",
+      "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     }
   },
   "schema": 1
