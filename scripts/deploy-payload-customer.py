@@ -1336,6 +1336,40 @@ def tenant_email_auto_provisioning_enabled(environment_path: Path) -> bool:
     )
 
 
+def _registered_scheduler_memory(manifest: dict[str, Any], tenant: str):
+    import yaml
+    environment_path = tenant_environment_path(manifest, tenant)
+    config_path = environment_path.with_name("config.yaml")
+    tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(tenant_config, dict) or tenant_config.get("instance_name") != tenant:
+        raise RuntimeError("registered tenant configuration identity does not match the release")
+    data_dir_value = str(tenant_config.get("data_dir") or "").strip()
+    configured_data_dir = Path(data_dir_value).expanduser() if data_dir_value else Path("/")
+    if not configured_data_dir.is_absolute():
+        raise RuntimeError("registered tenant memory path must be absolute")
+    data_dir = configured_data_dir.resolve()
+    if data_dir == Path(data_dir.anchor) or data_dir.name != "data" or data_dir.parent.name != tenant:
+        raise RuntimeError("registered tenant memory path is not canonical")
+    memory_path = data_dir / "memory.db"
+    if not memory_path.is_file():
+        raise RuntimeError("registered tenant scheduler state is unavailable")
+    return tenant_config, memory_path
+
+
+def trigger_seo_provisioning_after_worker_release(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
+    from site_agent.core.memory import Memory
+    config, path = _registered_scheduler_memory(manifest, tenant)
+    seo = config.get("seo") or {}
+    if seo.get("enabled") is False or (seo.get("provisioning") or {}).get("auto") is False:
+        return {"state": "manual"}
+    memory = Memory(path)
+    try:
+        memory.kv_set("next_run:seo_provisioning", round(time.time(), 3))
+        return {"state": "scheduled"}
+    finally:
+        memory.close()
+
+
 def trigger_email_provisioning_after_worker_release(
     manifest: dict[str, Any],
     tenant: str,
@@ -1357,20 +1391,7 @@ def trigger_email_provisioning_after_worker_release(
     if any(present) and not all(present):
         raise RuntimeError("registered tenant Mailflare runtime settings are incomplete")
 
-    config_path = environment_path.with_name("config.yaml")
-    tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    if not isinstance(tenant_config, dict) or tenant_config.get("instance_name") != tenant:
-        raise RuntimeError("registered tenant configuration identity does not match the release")
-    data_dir_value = str(tenant_config.get("data_dir") or "").strip()
-    configured_data_dir = Path(data_dir_value).expanduser() if data_dir_value else Path("/")
-    if not configured_data_dir.is_absolute():
-        raise RuntimeError("registered tenant memory path must be absolute")
-    data_dir = configured_data_dir.resolve()
-    if data_dir == Path(data_dir.anchor) or data_dir.name != "data" or data_dir.parent.name != tenant:
-        raise RuntimeError("registered tenant memory path is not canonical")
-    memory_path = data_dir / "memory.db"
-    if not memory_path.is_file():
-        raise RuntimeError("registered tenant scheduler state is unavailable")
+    _config, memory_path = _registered_scheduler_memory(manifest, tenant)
 
     memory = Memory(memory_path)
     try:
@@ -1435,6 +1456,9 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
             result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
         if all(mailflare_present):
             result.update(mailflare_values)
+        for name in ("GA_MEASUREMENT_ID", "GOOGLE_SITE_VERIFICATION"):
+            if values.get(name):
+                result[name] = values[name]
         return result
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error
@@ -2364,6 +2388,8 @@ def main() -> int:
             args.tenant, customer, wrangler, manifest, deploy_env,
         )
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
+        from site_agent.application.runtime_binding_delivery import binding_hashes
+        receipt["runtimeBindings"] = binding_hashes(runtime_secrets)
         if not runtime_secrets.get("HELLOADA_TURNSTILE_SECRET_KEY"):
             raise RuntimeError("tenant Turnstile secret was not persisted before Worker upload")
         def verify_candidate_schema() -> None:
@@ -2460,11 +2486,16 @@ def main() -> int:
                 raise RuntimeError("Cloudflare did not create a new deployment")
         receipt["deployment"] = deployment
         verify_live(receipt, customer, manifest, deploy_env, base, stage)
-        stage("trigger-email-provisioning")
-        receipt["emailProvisioning"] = trigger_email_provisioning_after_worker_release(
-            manifest, args.tenant,
-        )
         receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
+        atomic_json(receipt_path, receipt)
+        # Publish the completed receipt before waking reconcilers. They must
+        # never replace a bootstrap release still marked running.
+        for key, wake in (("emailProvisioning", trigger_email_provisioning_after_worker_release),
+                          ("seoProvisioning", trigger_seo_provisioning_after_worker_release)):
+            try:
+                receipt[key] = wake(manifest, args.tenant)
+            except Exception as exc:
+                receipt[key] = {"state": "error", "error": type(exc).__name__, "action": "reconcile registered tenant scheduler"}
         atomic_json(receipt_path, receipt)
         print(f"[release] DEPLOYED receipt={receipt_path}", flush=True)
         return 0

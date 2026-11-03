@@ -26,6 +26,13 @@ class FakeWorker:
         self.writes.append((name, value))
         return {"name": name, "status": "written"}
 
+    def deliver(self, config, env, memory, path, values):
+        for name, value in values.items():
+            if self.secrets.get(name) != value:
+                self.secrets[name] = value
+                self.writes.append((name, value))
+        return {"state": "delivered", "release_id": "verified-runtime-release"}
+
 
 def _config(tmp_path: Path):
     return {
@@ -88,7 +95,7 @@ def test_bootstrap_installs_verification_and_runtime_secrets(monkeypatch, tmp_pa
 
     written = []
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", worker.deliver)
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
     monkeypatch.setattr(bootstrap, "write_token_env", lambda directory, name, token: written.append((directory, name, token)))
 
@@ -251,7 +258,7 @@ def test_ready_workspace_recovery_does_not_redeploy_unchanged_ga_secret(monkeypa
             }
 
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", worker.deliver)
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
 
     state, _ = bootstrap.auto_provision_seo(
@@ -261,7 +268,8 @@ def test_ready_workspace_recovery_does_not_redeploy_unchanged_ga_secret(monkeypa
     )
 
     assert state["state"] == "ready"
-    assert worker.writes == []
+    assert worker.writes == [("GA_MEASUREMENT_ID", "G-UNCHANGED")]
+    assert state["runtime_delivery"]["state"] == "delivered"
 
 
 def test_changed_ga_measurement_id_is_written_once_and_persisted(monkeypatch, tmp_path):
@@ -289,7 +297,7 @@ def test_changed_ga_measurement_id_is_written_once_and_persisted(monkeypatch, tm
             }
 
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", worker.deliver)
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
 
     state, _ = bootstrap.auto_provision_seo(
@@ -328,29 +336,20 @@ def test_pending_gsc_secret_is_reused_only_for_the_same_target_and_token(monkeyp
             }
 
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", lambda *args: {"state": "awaiting_release", "release_id": "exact-release"})
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: env or {})
     config = _config(tmp_path)
     env = {"CLOUDFLARE_ACCOUNT_ID": "account-one"}
 
-    for _ in range(2):
-        bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
-    assert len(worker.writes) == 1
-    config["site"]["source_deployment"]["worker_name"] = "workspace-harmonie-next"
-    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
-    env["CLOUDFLARE_ACCOUNT_ID"] = "account-two"
-    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
-    current_tag["value"] = "google-site-verification=GSC-TOKEN-2"
-    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
-
-    assert len(worker.writes) == 4
-    assert [value for _name, value in worker.writes] == [
-        "GSC-TOKEN-1", "GSC-TOKEN-1", "GSC-TOKEN-1", "GSC-TOKEN-2",
-    ]
+    result, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
+    assert result["state"] == "awaiting_runtime_release"
+    assert result["runtime_delivery"]["release_id"] == "exact-release"
+    assert worker.writes == []
+    assert not result.get("gsc_verified")
 
 
 def test_uncertain_gsc_put_stays_pending_and_blocks_retries_and_rotation(monkeypatch, tmp_path):
-    memory = FakeMemory()
+    memory = FakeMemory({"seo_provisioning_state": {"gsc_secret_pending_fingerprint": "legacy-unknown-outcome"}})
     worker = FakeWorker()
     calls = []
     tag = {"value": "google-site-verification=GSC-TOKEN-1"}
@@ -376,7 +375,6 @@ def test_uncertain_gsc_put_stays_pending_and_blocks_retries_and_rotation(monkeyp
             }
 
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {"CLOUDFLARE_ACCOUNT_ID": "account"})
     config = _config(tmp_path)
 
@@ -389,8 +387,8 @@ def test_uncertain_gsc_put_stays_pending_and_blocks_retries_and_rotation(monkeyp
     second, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory)
     assert second["state"] == "error"
     assert "operator reconciliation is required" in second["error"]
-    assert len(calls) == 1
-    assert len(worker.writes) == 1
+    assert len(calls) == 0
+    assert len(worker.writes) == 0
     assert "gsc_secret_pending_fingerprint" in memory.state["seo_provisioning_state"]
 
 
@@ -416,13 +414,13 @@ def test_later_seo_error_keeps_confirmed_gsc_secret_marker(monkeypatch, tmp_path
             }
 
     monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
-    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", worker.deliver)
     monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {"CLOUDFLARE_ACCOUNT_ID": "account"})
     config = _config(tmp_path)
 
     state, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory)
     persisted = memory.state["seo_provisioning_state"]
     assert state["state"] == "error"
-    assert "gsc_secret_fingerprint" in persisted
+    assert persisted["runtime_delivery"]["state"] == "delivered"
     assert "gsc_secret_pending_fingerprint" not in persisted
     assert len(worker.writes) == 1
