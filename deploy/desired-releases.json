@@ -31,11 +31,11 @@
       "sharedRuntimeFingerprint": "21e48ca2ffa660f8a6dde8f8a29569401068da8b1d174d727ea1ec62186d5e7b"
     },
     "site-ff8e9af06f56201f": {
-      "id": "rel-20261103194001-add56f25",
+      "id": "rel-20261103204831-7ad118fe",
       "initializeSchema": {
         "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
       },
-      "sha": "0dd341071ba515b3c2b7d0b939c047cf8e1d636c"
+      "sha": "03bb50ac36cd7b9ac2020da24d598eba2f2133cf"
     }
   },
   "schema": 1
