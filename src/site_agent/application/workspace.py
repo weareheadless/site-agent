@@ -4879,6 +4879,13 @@ class ChatService:
                     raise BridgeError(f"design approved but live deployment could not be queued: {str(exc)[:400]}") from exc
                 result["status"] = {"deployed": "live", "failed": "publish_failed"}.get(production_deployment.get("status"), "publishing")
                 result["deployment"] = dict(production_deployment)
+                # An approved design supersedes older pending designs: leaving
+                # them pending would offer the owner a stale candidate.
+                for older in memory.list_drafts(status="pending", limit=500):
+                    if (int(older.get("id") or 0) != normalized_id
+                            and str(older.get("kind") or "") == "design"):
+                        memory.update_draft_status(int(older["id"]), "discarded")
+                        memory.record_action("superseded", f"#{older['id']}: replaced by approved #{normalized_id}")
         elif kind in {"merge", "rollback"}:
             adapter = self._merge_adapter(tenant)
             config = tenant.config if tenant is not None else self.config
