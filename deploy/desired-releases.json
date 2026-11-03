@@ -1,9 +1,8 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261103205606-f838bea1",
-      "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "34d666eb44d2d25ba3ab55ee58c6d32a2089e5625e7c0f8dce982d7aad740d6d"
+      "id": "rel-20261103222247-2ef7ad10",
+      "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "runtime-20261103205606-c1debb44",
