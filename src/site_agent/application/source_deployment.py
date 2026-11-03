@@ -1353,10 +1353,19 @@ class SourceDeploymentService:
         return max(matches, key=lambda job: (job.get("status") == "ready", str(job.get("created_at") or "")))
 
     def for_draft(self, draft_id: int) -> dict[str, Any]:
-        """The latest production receipt, independently of the review preview."""
+        """The latest production receipt, independently of the review preview.
+
+        This is the projection the workspace reads, so it must reflect the
+        central VPS receipt: otherwise a successfully deployed approval keeps
+        looking queued to the owner.
+        """
         with self._lock:
             jobs = [j for j in self._jobs.values() if j.get("mode") == _PRODUCTION and j.get("draft_id") == draft_id]
-            return dict(max(jobs, key=lambda j: str(j.get("created_at") or ""))) if jobs else {}
+            if not jobs:
+                return {}
+            job = max(jobs, key=lambda j: str(j.get("created_at") or ""))
+            self._refresh_release_job(job)
+            return dict(job)
 
     def reconcile_growth_delivery(self) -> list[dict[str, Any]]:
         """Explicit durable Growth-job hook; resume journal, never a release.

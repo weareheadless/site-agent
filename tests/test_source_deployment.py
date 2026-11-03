@@ -661,3 +661,35 @@ def test_content_inventory_returns_violations_as_actionable_findings(tmp_path):
         assert findings[0]["line"] == 76
     finally:
         service.close()
+
+
+def test_for_draft_projects_the_central_release_receipt(tmp_path, monkeypatch):
+    """The workspace reads for_draft, so a deployed release must not look queued."""
+    from site_agent.core.memory import Memory
+
+    memory = Memory(tmp_path / "for-draft" / "memory.db")
+    draft_id = memory.save_draft("Approved candidate", "Review", kind="design")
+    memory.update_draft_status(draft_id, "publishing")
+    releases = tmp_path / "releases"
+    (releases / "runs" / "tenant-a" / "rel-1").mkdir(parents=True)
+    (releases / "runs" / "tenant-a" / "rel-1" / "receipt.json").write_text(json.dumps({
+        "tenant": "tenant-a", "releaseId": "rel-1", "sourceSha": "a" * 40,
+        "approvalId": draft_id, "status": "deployed", "stage": "verified",
+    }))
+    service = source_deployment.SourceDeploymentService({
+        "instance_name": "tenant-a",
+        "site": {"clone_path": str(tmp_path)},
+        "deployment_pipeline": {"release_root": str(releases)},
+    }, memory=memory)
+    try:
+        service._jobs["job-1"] = {
+            "id": "job-1", "mode": "production", "status": "queued", "draft_id": draft_id,
+            "commit": "a" * 40, "tenant_id": "tenant-a", "release_id": "rel-1",
+            "created_at": "2026-11-03T00:00:00+00:00",
+        }
+        projected = service.for_draft(draft_id)
+        assert projected["status"] == "deployed" and projected["ok"] is True
+        assert memory.get_draft(draft_id)["status"] == "live"
+    finally:
+        service.close()
+        memory.close()
