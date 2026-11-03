@@ -93,3 +93,29 @@ def test_an_already_merged_retry_still_fails_closed():
     with pytest.raises(DesignServiceError, match="production branch advanced"):
         service.approve_review_draft(6, lambda run: {
             "merged": False, "reason": "production branch advanced since this candidate was built"})
+
+
+def test_a_publishable_candidate_is_pushed_to_its_isolated_remote_ref():
+    from types import SimpleNamespace
+
+    from site_agent.application.designs import DesignService
+
+    run = {"run_id": "r", "mode": "production_candidate", "publishable": True,
+           "base_sha": "b" * 40, "candidate_ref": "refs/ada-design/r"}
+    experiment = {**run, "mode": "local_experiment", "publishable": False}
+
+    def service(push_mode=None):
+        engine = {"push_mode": push_mode} if push_mode else {}
+        instance = DesignService(SimpleNamespace(), config={
+            "site": {"repository": "weareheadless/x", "clone_path": "/tmp/x"},
+            "design_engine": engine})
+        instance.get_run = lambda run_id: run
+        instance.clone_path_for_run = lambda run_id: "/tmp/x"
+        instance.build_profile_for_run = lambda run_id: "next_react"
+        return instance
+
+    assert service().build_target_for_run("r").push_mode == "isolated_remote_ref"
+    assert service("shared_preview").build_target_for_run("r").push_mode == "shared_preview"
+    local = service()
+    local.get_run = lambda run_id: experiment
+    assert local.build_target_for_run("r").push_mode == "none"

@@ -711,7 +711,12 @@ class DesignService:
                 "candidate_ref": run.get("candidate_ref") or "",
                 "publishable": bool(run.get("publishable")),
                 "build_profile": build_profile,
-                "push_mode": "none" if run["mode"] == "local_experiment" else str(design_engine.get("push_mode") or "none"),
+                "push_mode": (
+                    "none" if run["mode"] == "local_experiment"
+                    else str(design_engine.get("push_mode") or (
+                        "isolated_remote_ref" if run["mode"] == "production_candidate" else "none"
+                    ))
+                ),
             },
         }
         quality_config = design_engine.get("quality") or {}
@@ -1292,7 +1297,15 @@ class DesignService:
         build_profile = self.build_profile_for_run(run_id)
         if build_profile == NEXT_REACT_PROFILE.name:
             allowed = NEXT_REACT_PROFILE.writable_patterns
-        push_mode = "none" if run["mode"] == "local_experiment" else str(engine.get("push_mode") or "none")
+        # A publishable candidate must exist on the managed remote: approval
+        # merges that exact SHA through the Git adapter, so a local-only ref
+        # could never be published. Local experiments never push.
+        if run["mode"] == "local_experiment":
+            push_mode = "none"
+        elif run["mode"] == "production_candidate":
+            push_mode = str(engine.get("push_mode") or "isolated_remote_ref")
+        else:
+            push_mode = str(engine.get("push_mode") or "none")
         return BuildTarget.from_dict({
             "mode": run["mode"],
             "repository": str(site.get("repository") or ""),
