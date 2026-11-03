@@ -3923,3 +3923,22 @@ def test_handoff_failure_marks_the_run_failed_instead_of_leaving_it_created():
     assert service.memory.events == [
         ("run-stranded", "failed", "The design build could not be started."),
     ]
+
+
+def test_design_approval_retries_after_a_failed_publication(tmp_path):
+    order = []
+    gateway = _PublicationGateway(drafts={
+        ("pages", "en"): "sha256:" + "1" * 64, ("pages", "es"): "sha256:" + "2" * 64,
+        ("siteSettings", "en"): "sha256:" + "3" * 64, ("siteSettings", "es"): "sha256:" + "4" * 64,
+    }, order=order)
+    memory, draft_id, app = _design_approval_app(tmp_path, gateway=gateway, order=order)
+    # A prior attempt failed after publishing part of the set but before merging.
+    memory.update_draft_status(draft_id, "publish_failed")
+    gateway.drafts[("pages", "en")] = "sha256:" + "1" * 64
+    with TestClient(app) as client:
+        response = client.post(f"/v1/workspace/drafts/{draft_id}/approve",
+                               headers={"Authorization": "Bearer publish-token"})
+    assert response.status_code == 200, response.text
+    assert "merge" in order and "release" in order
+    assert memory.get_draft(draft_id)["status"] != "publish_failed"
+    memory.close()

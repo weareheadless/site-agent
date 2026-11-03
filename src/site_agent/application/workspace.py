@@ -4793,7 +4793,14 @@ class ChatService:
                 return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
                         "status": {"deployed": "live", "failed": "publish_failed"}.get(receipt.get("status"), "publishing"),
                         "deployment": dict(receipt), "idempotent": True}
-            raise BridgeError(f"draft already {draft.get('status')}")
+            # A design approval that failed before its source was merged has no
+            # approved release to replay. Retrying it must re-run the same exact
+            # decision: the reviewed Payload revisions are published
+            # idempotently and the identical candidate is merged and released.
+            if draft.get("status") == "publish_failed" and str(draft.get("kind") or "") == "design":
+                memory.record_action("publish_retry", f"#{normalized_id}: retrying the same exact design approval")
+            else:
+                raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "edit")
         if meta_package := (draft.get("meta") or {}).get("growth_package"):
