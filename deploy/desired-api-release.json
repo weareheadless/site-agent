@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261103031323-api-exact-payload-publication",
-    "sha": "d3e5a9fc7db808bcb8f8cbf00e43655b6ace4e4b"
+    "id": "20261103045348-api-approval-retry",
+    "sha": "738a1a437cf9ad585e11019a1f105ac32fd0d010"
   }
 }
