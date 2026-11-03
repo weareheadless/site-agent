@@ -160,7 +160,8 @@ def test_email_provisioning_starts_on_tenant_scheduler_when_general_scheduler_is
     memory.close()
 
 
-def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
+@pytest.mark.parametrize('static_site', [False, True])
+def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path, static_site):
     tenant_token_env = "PROVISIONED_DEMO_TOKEN"
     tenant_config = tmp_path / "websites" / "demo" / "config.yaml"
     tenant_config.parent.mkdir(parents=True)
@@ -170,6 +171,7 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
         "site:\n"
         "  adapter: payload_gateway\n"
         "  website_present: true\n"
+        f"  presentation_profile: {'static' if static_site else 'payload'}\n"
         "  payload:\n"
         "    enabled: true\n"
         "    url: https://demo.example.test\n"
@@ -202,9 +204,13 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
         tenant = registry.tenants["demo"]
         adapter = tenant.context["source_editor"].adapter
         assert tenant.context["payload_gateway"] is not None
-        assert isinstance(adapter, PayloadGatewaySiteAdapter)
-        assert adapter.payload_client is tenant.context["payload_gateway"]
-        assert adapter.payload_client.token == "tenant-private-token"
+        if static_site:
+            from site_agent.hands.github_static import GithubStatic
+            assert isinstance(adapter, GithubStatic)
+        else:
+            assert isinstance(adapter, PayloadGatewaySiteAdapter)
+            assert adapter.payload_client is tenant.context["payload_gateway"]
+        assert tenant.context["payload_gateway"].token == "tenant-private-token"
     finally:
         registry.close()
 
