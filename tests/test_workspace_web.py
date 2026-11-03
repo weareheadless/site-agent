@@ -1316,10 +1316,11 @@ def test_shared_api_exposes_media_library_and_analysis(tmp_path):
     memory.close()
 
 
-def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path):
+@pytest.mark.parametrize("payload_read_adapter", [False, True])
+def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path, payload_read_adapter):
     class DesignService:
         def approve_review_draft(self, draft_id, publish):
-            published = publish({"candidate_sha": "candidate-sha", "base_sha": "base-sha", "run_id": "run-1"})
+            published = publish({"candidate_sha": "candidate-sha", "base_sha": "generation-base", "publication_base_sha": "base-sha", "run_id": "run-1"})
             return {
                 "published": published,
                 "run": {"run_id": "run-1", "candidate_sha": "candidate-sha", "base_sha": "base-sha"},
@@ -1333,12 +1334,16 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path)
             return {"committed": True, "commit_sha": "published-sha", "parent_sha": base_sha, "path": "site"}
 
     memory = Memory(tmp_path / "workspace-design" / "memory.db")
+    context = {"llm": object(), "design_service": DesignService(), "design_adapter": Adapter()}
+    if payload_read_adapter:
+        from types import SimpleNamespace
+        context.update(design_adapter=object(), source_deployment=SimpleNamespace(adapter=Adapter()))
     tenant = Tenant(
         tenant_id="workspace-design",
         config={"site": {"branch": "main"}},
         memory=memory,
         runtime=None,
-        context={"llm": object(), "design_service": DesignService(), "design_adapter": Adapter()},
+        context=context,
         api_token="design-token",
     )
     registry = TenantRegistry({tenant.tenant_id: tenant})

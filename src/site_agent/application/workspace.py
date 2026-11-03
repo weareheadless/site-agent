@@ -1520,18 +1520,19 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
             raise BridgeError(str(exc)[:500]) from exc
 
-    def _merge_adapter(self, tenant: Tenant | None) -> Any:
+    def _merge_adapter(self, tenant: Tenant | None, *, capability: str | None = None) -> Any:
         """Resolve the existing tenant-scoped Git-backed publish adapter."""
+        capabilities = (capability,) if capability else ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
         if tenant is not None:
             for context_key in ("design_adapter", "source_deployment", "source_editor"):
                 candidate = tenant.context.get(context_key)
                 if candidate is not None and any(
                     callable(getattr(candidate, capability, None))
-                    for capability in ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
+                    for capability in capabilities
                 ):
                     return candidate
                 adapter = getattr(candidate, "adapter", None) if candidate is not None else None
-                if adapter is not None:
+                if adapter is not None and (capability is None or callable(getattr(adapter, capability, None))):
                     return adapter
             site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
             config = tenant.config
@@ -1539,11 +1540,11 @@ class ChatService:
             for candidate in (self.source_deployment, self.source_editor):
                 if candidate is not None and any(
                     callable(getattr(candidate, capability, None))
-                    for capability in ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
+                    for capability in capabilities
                 ):
                     return candidate
                 adapter = getattr(candidate, "adapter", None) if candidate is not None else None
-                if adapter is not None:
+                if adapter is not None and (capability is None or callable(getattr(adapter, capability, None))):
                     return adapter
             if not self.config:
                 raise BridgeError("tenant publish adapter is not configured")
@@ -4757,7 +4758,7 @@ class ChatService:
         if kind == "design":
             if tenant is None or tenant.context.get("design_service") is None:
                 raise BridgeError("tenant design service is not enabled")
-            adapter = tenant.context.get("design_adapter")
+            adapter = self._merge_adapter(tenant, capability="merge_design_candidate")
             from ..hands.base import DesignMergeAdapter
 
             if not isinstance(adapter, DesignMergeAdapter):
@@ -4769,7 +4770,7 @@ class ChatService:
                     lambda run: adapter.merge_design_candidate(
                         tenant.config,
                         run["candidate_sha"],
-                        run["base_sha"],
+                        run["publication_base_sha"],
                         f"Approve design candidate: {normalized_id}",
                     ),
                 )

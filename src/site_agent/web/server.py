@@ -1900,7 +1900,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                     lambda run: ad.merge_design_candidate(
                         config,
                         run["candidate_sha"],
-                        run["base_sha"],
+                        run["publication_base_sha"],
                         f"Approve design candidate: {draft['title']}",
                     ),
                 )
