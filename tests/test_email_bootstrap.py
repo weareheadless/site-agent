@@ -579,3 +579,61 @@ def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monke
     assert state["cloudflareRouteId"] == "rule-id"
     assert "Mailflare timeout" in state["error"]
     assert memory.state["email_provisioning_state"]["cloudflareRouteId"] == "rule-id"
+
+
+class _ResendLedger:
+    def __init__(self):
+        self.deleted = []
+        self.created = []
+
+    def api_keys_named(self, _name):
+        return []
+
+    def delete_api_key(self, key_id):
+        self.deleted.append(key_id)
+
+    def create_sending_key(self, _name, _domain_id):
+        self.created.append("new-key-id")
+        return "new-key-id", "re_new_secret"
+
+
+def test_a_rotated_sender_key_is_not_retired_before_delivery_is_proven(tmp_path):
+    """Old sender keys stay valid until the promoted version proves the new one."""
+    path = tmp_path / "tenant.env"
+    path.write_text(
+        "RESEND_API_KEY=old-secret\n"
+        "RESEND_API_KEY_ID=11111111-1111-1111-1111-111111111111\n"
+        "RESEND_API_KEY_DOMAIN_ID=domain-one\n"
+        "RESEND_API_KEY_PREVIOUS_IDS=22222222-2222-2222-2222-222222222222\n",
+        encoding="utf-8",
+    )
+    ledger = _ResendLedger()
+    key_id = bootstrap._ensure_tenant_resend_key(
+        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
+        config={}, env={}, resend=ledger,
+    )
+    # Not yet installed in a promoted version: nothing may be revoked.
+    assert key_id == "11111111-1111-1111-1111-111111111111"
+    assert ledger.deleted == []
+    bootstrap._write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": key_id})
+    bootstrap._ensure_tenant_resend_key(
+        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
+        config={}, env={}, resend=ledger,
+    )
+    assert ledger.deleted == ["22222222-2222-2222-2222-222222222222"]
+
+
+def test_a_new_sender_key_is_staged_without_touching_the_worker(tmp_path):
+    path = tmp_path / "tenant.env"
+    path.write_text("PAYLOAD_SECRET=kept\n", encoding="utf-8")
+    ledger = _ResendLedger()
+    key_id = bootstrap._ensure_tenant_resend_key(
+        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
+        config={}, env={}, resend=ledger,
+    )
+    assert key_id == "new-key-id"
+    values = bootstrap._tenant_secret_values(path)
+    assert values["RESEND_API_KEY"] == "re_new_secret"
+    assert "RESEND_API_KEY_INSTALLED_ID" not in values
+    assert values["PAYLOAD_SECRET"] == "kept"
+    assert ledger.deleted == []
