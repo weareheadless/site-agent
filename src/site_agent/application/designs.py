@@ -1829,7 +1829,10 @@ class DesignService:
         draft = next((item for item in self.memory.list_drafts(limit=500) if item["id"] == draft_id), None)
         if draft is None or draft.get("kind") != "design":
             raise DesignServiceError("no such design review draft")
-        if draft.get("status") != "pending":
+        # A publication that failed before the source merge leaves the same
+        # exact decision retryable. The merge adapter still rejects an already
+        # advanced production branch, so a retry cannot merge twice.
+        if draft.get("status") not in {"pending", "publish_failed"}:
             raise DesignServiceError(f"design draft already {draft.get('status')}")
         run_id = str((draft.get("meta") or {}).get("run_id") or "")
         run = self.memory.get_design_run(run_id) if run_id else None
