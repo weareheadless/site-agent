@@ -3942,3 +3942,16 @@ def test_design_approval_retries_after_a_failed_publication(tmp_path):
     assert "merge" in order and "release" in order
     assert memory.get_draft(draft_id)["status"] != "publish_failed"
     memory.close()
+
+
+def test_a_failed_publication_remains_the_current_owner_update(tmp_path):
+    """A publish_failed design must not be treated as superseded by an older pending row."""
+    from site_agent.application.workspace import ChatService
+
+    memory = Memory(tmp_path / "current-update" / "memory.db")
+    older = memory.save_draft("Older candidate", "Review", kind="design")
+    newer = memory.save_draft("Newer candidate", "Review", kind="design")
+    memory.update_draft_status(newer, "publish_failed")
+    current = ChatService._current_pending_owner_update(memory)
+    assert current["id"] == newer, (current, older)
+    memory.close()

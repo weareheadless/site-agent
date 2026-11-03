@@ -2749,11 +2749,14 @@ class ChatService:
 
         Older pending rows remain in the durable record for auditability, but
         approval must not be able to act on an obsolete row after a newer
-        website update has replaced it.
+        website update has replaced it. A design whose publication failed is
+        still the current owner decision: it is awaiting an exact retry, not
+        superseded.
         """
         candidates = [
-            item for item in memory.list_drafts(status="pending", limit=500)
+            item for item in memory.list_drafts(limit=500)
             if item.get("kind") in {"design", "merge", "rollback"}
+            and item.get("status") in {"pending", "publish_failed"}
         ]
         return candidates[0] if candidates else None
 
