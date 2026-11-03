@@ -2068,7 +2068,13 @@ class ChatService:
                     "candidate_sha": str(run.get("candidate_sha") or "").lower(),
                     "draft_id": run.get("draft_id"), "stage": stage, "stages": stages,
                     "started_ts": started_ts, "elapsed_seconds": elapsed,
-                    "draft_available": bool(run.get("draft_id") and ready),
+                    # A live or discarded decision is no longer reviewable;
+                    # only a pending (or retryable failed) draft is offered.
+                    "draft_available": bool(run.get("draft_id") and ready and (
+                        next((row.get("status") for row in memory.list_drafts(limit=500)
+                              if int(row.get("id") or 0) == int(run.get("draft_id") or 0)), None)
+                        in {"pending", "publish_failed"}
+                    )),
                 }
                 preview = self._candidate_preview(tenant, run)
                 if preview:
