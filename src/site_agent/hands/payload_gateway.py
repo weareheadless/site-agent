@@ -879,6 +879,27 @@ class PayloadGatewayClient:
         )
         return _revision(response.get("global"), response, "updated global")
 
+    def publish_global(self, slug: str, *, locale: str | None = None, expected_hash: str | None = None) -> dict[str, Any]:
+        """Publish one exact owner-reviewed global revision for one locale."""
+        slug = self._global(slug)
+        capabilities = self.require_authoring_contract()
+        locale = self._authoring_locale(capabilities, locale)
+        if slug not in ((capabilities.get("enabled") or {}).get("globals") or []):
+            raise PayloadGatewayError(f"the {slug} global is not enabled for this website")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("publication requires the exact owner-reviewed global revision")
+        response = self._request(
+            "POST",
+            self._gateway_path("global"),
+            payload={
+                "operation": "publish",
+                "global": slug,
+                "expectedHash": expected_hash,
+                "locale": locale,
+            },
+        )
+        return _revision(response.get("global"), response, "published global")
+
     def read_booking_configuration(self) -> dict[str, Any]:
         response = self._request("GET", self._gateway_path("booking"))
         settings, types = response.get("settings"), response.get("types")

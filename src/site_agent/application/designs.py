@@ -1790,6 +1790,36 @@ class DesignService:
         })
         return {"run": self.get_run(new_run_id), "request": request.to_dict()}
 
+    def publication_base_sha(self, run: Mapping[str, Any]) -> str:
+        """Resolve frozen production ancestry, not a repair's generation base.
+
+        A repair is built from its retained parent candidate, but neither has
+        been merged into production. Preserve both immutable run identities and
+        let the merge adapter compare production against the original baseline.
+        """
+        current = run
+        visited: set[str] = set()
+        while True:
+            run_id = str(current.get("run_id") or "")
+            if not run_id or run_id in visited:
+                raise DesignServiceError("design publication ancestry is missing or cyclic")
+            visited.add(run_id)
+            if current.get("mode") != "production_candidate" or not current.get("publishable"):
+                raise DesignServiceError("design publication ancestry is not publishable")
+            parent_id = str(current.get("parent_run_id") or "")
+            if not parent_id:
+                base = str(current.get("base_sha") or "")
+                if not re.fullmatch(r"[0-9a-f]{40}", base):
+                    raise DesignServiceError("design publication baseline is invalid")
+                return base
+            parent = self.memory.get_design_run(parent_id)
+            parent_sha = str((parent or {}).get("candidate_sha") or "")
+            if (parent is None or not re.fullmatch(r"[0-9a-f]{40}", parent_sha)
+                    or current.get("base_sha") != parent_sha
+                    or current.get("source_candidate_sha") != parent_sha):
+                raise DesignServiceError("design publication ancestry no longer matches its frozen candidate")
+            current = parent
+
     def approve_review_draft(
         self,
         draft_id: int,
@@ -1814,7 +1844,9 @@ class DesignService:
             raise DesignServiceError("design review draft is stale")
         if (run.get("quality_report_json") or {}).get("state") != "passed":
             raise DesignServiceError("design candidate no longer has passing quality gates")
-        result = dict(merger(run))
+        # This is a merger descriptor, not a mutation of the retained run or
+        # draft's generation base. The adapter must still CAS the live branch.
+        result = dict(merger({**run, "publication_base_sha": self.publication_base_sha(run)}))
         if not result.get("merged"):
             raise DesignServiceError(str(result.get("reason") or "design candidate merge was rejected"))
         if result.get("candidate_sha") and result["candidate_sha"] != run["candidate_sha"]:

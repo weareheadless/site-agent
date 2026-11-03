@@ -55,10 +55,14 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     assert "claims.principal.type === 'owner' ? claims.principal.ownerId : undefined" in preview
     assert "ownerId === undefined && !serviceAuthorized(request)" in preview
     assert 'expectedHash is required for a draft update' in content
-    assert 'expectedHash is required for a draft update' in global_route
+    assert 'expectedHash is required for an exact global revision' in global_route
     assert 'exact expectedHash are required' in media
     assert "operation === 'publish'" in content
-    assert "operation || '').trim().toLowerCase() !== 'update'" in global_route
+    # The global gateway supports exact draft updates and exact publication;
+    # both require the reviewed revision, and nothing else is accepted.
+    assert "operation !== 'update' && operation !== 'publish'" in global_route
+    assert "operation === 'publish'" in global_route
+    assert "Payload published a different global revision than the approved one" in global_route
     assert "operation || '').trim().toLowerCase() !== 'update'" in media
 
 
