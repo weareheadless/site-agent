@@ -1,9 +1,10 @@
 import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
+import { catalogProductFields, createProductAttributesCollection, createProductVariantsCollection, validateCatalogAttribute, validateCatalogProduct, validateMinorAmount } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.5.10'
-export const HELLOADA_SCHEMA_REVISION = 9
+export const HELLOADA_CORE_VERSION = '0.6.0'
+export const HELLOADA_SCHEMA_REVISION = 10
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -391,7 +392,7 @@ const supportedContentBlocks = new Set(contentBlockSlugs)
 export const HELLOADA_CAPABILITIES = {
   contract: HELLOADA_CONTENT_CONTRACT_VERSION,
   schemaRevision: HELLOADA_SCHEMA_REVISION,
-  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'appointmentTypes', 'calendarEvents', 'calendarSlotLocks', 'contacts', 'conversations', 'messages', 'messageOperations'],
+  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'productAttributes', 'productVariants', 'media', 'contactForms', 'appointmentTypes', 'calendarEvents', 'calendarSlotLocks', 'contacts', 'conversations', 'messages', 'messageOperations'],
   globals: ['siteSettings', 'navigation', 'messageMailbox', 'calendarSettings'],
   contentBlocks: contentBlockSlugs,
 } as const
@@ -400,7 +401,7 @@ export const HELLOADA_CAPABILITIES = {
  * and service-owned globals are intentionally excluded even when they are part
  * of the wider Payload schema. */
 export const HELLOADA_AUTHORING_CAPABILITIES = {
-  collections: ['pages', 'posts', 'products'],
+  collections: ['pages', 'posts', 'products', 'productAttributes', 'productVariants'],
   globals: ['siteSettings', 'navigation'],
 } as const
 
@@ -591,6 +592,7 @@ const validateFieldValue = (field: AuthoringField, value: unknown, path: string)
   if (type === 'number') {
     if (typeof value !== 'number' || !Number.isFinite(value)) return invalid('a finite number')
     const numberValue = value as number
+    if (['priceMinor', 'compareAtPriceMinor', 'stock'].includes(String(field.name)) && validateMinorAmount(value) !== true) invalid('a non-negative safe integer')
     if (field.min !== undefined && numberValue < field.min) invalid(`at least ${field.min}`)
     if (field.max !== undefined && numberValue > field.max) invalid(`at most ${field.max}`)
   }
@@ -936,7 +938,7 @@ export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig
   fields: [
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true, label: 'Page title' },
-    { name: 'slug', type: 'text', required: true, unique: true, label: 'Page address' },
+    { name: 'slug', type: 'text', required: true, unique: true, localized: true, label: 'Page address' },
     { name: 'summary', type: 'textarea', localized: true, label: 'Short introduction' },
     {
       name: 'sections', type: 'array', maxRows: 30, label: 'Page content',
@@ -985,6 +987,7 @@ export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig
     },
     { name: 'body', type: 'richText', localized: true, label: 'Main text' },
     { name: 'featuredImage', type: 'upload', relationTo: 'media', localized: true, label: 'Main image' },
+    { name: 'gallery', type: 'upload', relationTo: 'media', hasMany: true, localized: true },
     { name: 'canonicalUrl', type: 'text', label: 'Canonical URL override' },
     seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: true, label: 'Visible on the website' },
@@ -999,7 +1002,7 @@ export const createPostsCollection = (guard: NativeWriteGuard): CollectionConfig
   fields: [
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true, label: 'Article title' },
-    { name: 'slug', type: 'text', required: true, unique: true, label: 'Article address' },
+    { name: 'slug', type: 'text', required: true, unique: true, localized: true, label: 'Article address' },
     { name: 'summary', type: 'textarea', localized: true, label: 'Article excerpt' },
     {
       name: 'sections', type: 'array', maxRows: 30, label: 'Article sections',
@@ -1030,7 +1033,7 @@ export const createPostCategoriesCollection = (guard: NativeWriteGuard): Collect
   fields: [
     { name: 'sourceId', type: 'text', index: true, unique: true, admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true },
-    { name: 'slug', type: 'text', required: true, unique: true },
+    { name: 'slug', type: 'text', required: true, unique: true, localized: true },
     { name: 'sourceUrl', type: 'text' },
     { name: 'canonicalUrl', type: 'text' },
     { name: 'summary', type: 'textarea', localized: true },
@@ -1056,7 +1059,7 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
   fields: [
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true },
-    { name: 'slug', type: 'text', required: true, unique: true },
+    { name: 'slug', type: 'text', required: true, unique: true, localized: true },
     { name: 'summary', type: 'textarea', localized: true },
     {
       name: 'sections', type: 'array', maxRows: 30, label: 'Product content',
@@ -1068,7 +1071,8 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
     },
     { name: 'body', type: 'richText', localized: true },
     { name: 'featuredImage', type: 'upload', relationTo: 'media', localized: true },
-    { name: 'price', type: 'number' },
+    { name: 'price', type: 'number', admin: { description: 'Legacy major-unit amount. Import explicitly into priceMinor before retiring this field.' } },
+    ...catalogProductFields(),
     { name: 'currency', type: 'text' },
     { name: 'availability', type: 'text', localized: true },
     { name: 'gallery', type: 'upload', relationTo: 'media', hasMany: true, localized: true },
@@ -1077,7 +1081,17 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
     seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: false },
   ],
-  hooks: sectionCollectionHooks('products', guard),
+  hooks: {
+    ...sectionCollectionHooks('products', guard),
+    beforeValidate: [
+      ...sectionCollectionHooks('products', guard)!.beforeValidate!,
+      async ({ data, originalDoc }) => {
+        const validation = validateCatalogProduct({ ...originalDoc, ...data })
+        if (validation !== true) throw new Error(validation)
+        return data
+      },
+    ],
+  },
 })
 
 export const createProductCategoriesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
@@ -1087,7 +1101,7 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'sourceUrl', type: 'text' },
     { name: 'title', type: 'text', required: true, localized: true },
-    { name: 'slug', type: 'text', required: true, unique: true },
+    { name: 'slug', type: 'text', required: true, unique: true, localized: true },
     { name: 'description', type: 'textarea', localized: true },
     { name: 'featuredImage', type: 'upload', relationTo: 'media' },
     {
@@ -1294,6 +1308,8 @@ export const createHelloAdaSchema = (guard: NativeWriteGuard) => ({
     createPostCategoriesCollection(guard),
     createProductsCollection(guard),
     createProductCategoriesCollection(guard),
+    createProductAttributesCollection(protectCollection('productAttributes', guard)),
+    createProductVariantsCollection(protectCollection('productVariants', guard)),
     Media,
     createContactFormsCollection(),
     createAppointmentTypesCollection(),
@@ -1366,6 +1382,16 @@ export const validateHelloAdaAuthoringData = (
   if (kind === 'collection' && slug === 'products' && Object.hasOwn(row, 'sections')) {
     const result = validateHelloAdaPageSections(row.sections)
     if (result !== true) throw new Error(String(result))
+  }
+  if (kind === 'collection' && slug === 'products') {
+    const result = validateCatalogProduct(row)
+    if (result !== true) throw new Error(result)
+  }
+  // Partial updates are checked again against the merged document by Payload's
+  // beforeValidate hook. Only complete attribute values can be checked here.
+  if (kind === 'collection' && slug === 'productAttributes' && options.operation === 'create') {
+    const result = validateCatalogAttribute(row)
+    if (result !== true) throw new Error(result)
   }
   if (kind === 'global' && slug === 'navigation') {
     const result = validateHelloAdaNavigation({ ...row })

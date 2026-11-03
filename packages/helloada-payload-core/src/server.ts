@@ -1,4 +1,5 @@
 import type { Payload } from 'payload'
+import { validateVariantSelection } from './schema/catalog.ts'
 
 type ContentRecord = Record<string, unknown>
 
@@ -25,6 +26,34 @@ export const readHelloAdaProduct = async (payload: HelloAdaContentReader, slug: 
     where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
   })
   return result.docs[0] as unknown as ContentRecord | undefined
+}
+
+/** A single published product and its published typed facts/variants. Child
+ * rows have no independent public route. Never expose a draft via a relation. */
+export const readHelloAdaProductCatalog = async (payload: HelloAdaContentReader, slug: string, locale?: string) => {
+  const product = await readHelloAdaProduct(payload, slug, locale)
+  if (!product) return undefined
+  const readChildren = async (collection: 'productAttributes' | 'productVariants') => {
+    const documents: ContentRecord[] = []
+    let page = 1
+    while (true) {
+      const result = await payload.find({
+        collection, draft: false, depth: 1, limit: 100, page, pagination: true,
+        overrideAccess: true, locale: locale as never,
+        where: { and: [{ product: { equals: product.id } }, { published: { equals: true } }] },
+        sort: collection === 'productVariants' ? 'position' : 'key',
+      })
+      documents.push(...result.docs as unknown as ContentRecord[])
+      if (!result.hasNextPage) return documents
+      page += 1
+    }
+  }
+  const [attributes, variants] = await Promise.all([readChildren('productAttributes'), readChildren('productVariants')])
+  for (const variant of variants) {
+    const validation = validateVariantSelection(product.options, variant.options)
+    if (validation !== true) throw new Error(`Published variant ${String(variant.id)} does not match the published product options: ${validation}`)
+  }
+  return { product, attributes, variants }
 }
 
 export const readHelloAdaPost = async (payload: HelloAdaContentReader, slug: string, locale?: string) => {

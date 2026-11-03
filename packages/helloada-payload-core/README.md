@@ -8,4 +8,9 @@ Every customer uses its own Payload database and media bucket. The schema is sha
 
 Every customer consumes this contract but retains its own data and visual composition. A schema or field-meaning change is a versioned platform migration, not an Ada website edit.
 
+Revision 10 catalog work is staged in source, not yet released. See
+`docs/business-catalog-contract-status.md` in the central repository for the
+gateway, data migration, cart and exact-release gates. Do not upgrade a tenant
+from the source version alone.
+
 Release exact immutable package versions through the `site-agent` package-release workflow. A package release requires selected customer dependency-pin updates and a controlled schema/data migration where needed. A new package version by itself does not update customer sites or databases.
