@@ -65,3 +65,31 @@ def test_design_approval_passes_explicit_publication_base_to_existing_merger():
     service.approve_review_draft(6, merge)
     assert observed[0]["base_sha"] == "a" * 40
     assert "publication_base_sha" not in runs["child"]
+
+
+def test_a_failed_publication_can_retry_the_same_exact_approval():
+    runs = lineage()
+    draft = {"id": 6, "kind": "design", "status": "publish_failed", "meta": {
+        "run_id": "child", "candidate_sha": "c" * 40, "base_sha": "a" * 40}}
+    memory = SimpleNamespace(get_design_run=runs.get, list_drafts=lambda **_: [draft],
+                             update_draft_status=lambda *_: None, add_design_run_event=lambda *_: None)
+    service = DesignService(memory)
+    service.get_run = lambda run_id: runs[run_id]
+    merged = []
+    result = service.approve_review_draft(6, lambda run: merged.append(run["candidate_sha"]) or {
+        "merged": True, "candidate_sha": run["candidate_sha"]})
+    assert merged == ["c" * 40]
+    assert result["published"]["merged"] is True
+
+
+def test_an_already_merged_retry_still_fails_closed():
+    runs = lineage()
+    draft = {"id": 6, "kind": "design", "status": "publish_failed", "meta": {
+        "run_id": "child", "candidate_sha": "c" * 40, "base_sha": "a" * 40}}
+    memory = SimpleNamespace(get_design_run=runs.get, list_drafts=lambda **_: [draft],
+                             update_draft_status=lambda *_: None, add_design_run_event=lambda *_: None)
+    service = DesignService(memory)
+    service.get_run = lambda run_id: runs[run_id]
+    with pytest.raises(DesignServiceError, match="production branch advanced"):
+        service.approve_review_draft(6, lambda run: {
+            "merged": False, "reason": "production branch advanced since this candidate was built"})
