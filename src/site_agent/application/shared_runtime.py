@@ -273,6 +273,20 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
         else:
             merged_vars[key] = value
     config["vars"] = merged_vars
+    # Presentation mode is deployment configuration, so it must survive the
+    # canonical overlay rather than living only in the tenant's own file. The
+    # template keeps its Payload asset handling; only an explicit static tenant
+    # routes every public request through the Worker so runtime SEO bindings
+    # can be injected.
+    profile = merged_vars.get("HELLOADA_PRESENTATION_PROFILE") or "payload"
+    if profile not in {"payload", "static"}:
+        raise SharedRuntimeError("tenant presentation profile is not supported")
+    if profile == "static":
+        assets = config.get("assets")
+        if not isinstance(assets, dict):
+            raise SharedRuntimeError("canonical Worker assets declaration is invalid")
+        assets["run_worker_first"] = True
+        assets["html_handling"] = "none"
 
     template_d1 = config.get("d1_databases")
     if not isinstance(template_d1, list) or len(template_d1) != 2:

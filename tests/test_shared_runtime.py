@@ -281,3 +281,43 @@ def test_overlay_rejects_malformed_expected_fingerprint_before_writes(tmp_path: 
         apply_shared_runtime_overlay(ROOT, checkout, CUSTOMER,
             shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"}, expected_fingerprint="not-a-hash")
     assert {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()} == before
+
+
+def test_overlay_preserves_a_payload_site_asset_handling(tmp_path: Path):
+    checkout = _tenant_checkout(tmp_path)
+    apply_shared_runtime_overlay(
+        ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+        shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
+    )
+    assets = json.loads((checkout / "wrangler.jsonc").read_text())["assets"]
+    assert "run_worker_first" not in assets and "html_handling" not in assets
+
+
+def test_overlay_routes_an_explicit_static_site_through_the_worker(tmp_path: Path):
+    checkout = _tenant_checkout(tmp_path)
+    config_path = checkout / "wrangler.jsonc"
+    config = json.loads(config_path.read_text())
+    config["vars"]["HELLOADA_PRESENTATION_PROFILE"] = "static"
+    config["vars"]["HELLOADA_STATIC_MANIFEST"] = '{"kind":"static"}'
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    apply_shared_runtime_overlay(
+        ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+        shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
+    )
+    merged = json.loads(config_path.read_text())
+    assert merged["assets"]["run_worker_first"] is True
+    assert merged["assets"]["html_handling"] == "none"
+    assert merged["vars"]["HELLOADA_STATIC_MANIFEST"] == '{"kind":"static"}'
+
+
+def test_overlay_rejects_an_unsupported_presentation_profile(tmp_path: Path):
+    checkout = _tenant_checkout(tmp_path)
+    config_path = checkout / "wrangler.jsonc"
+    config = json.loads(config_path.read_text())
+    config["vars"]["HELLOADA_PRESENTATION_PROFILE"] = "guessed"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    with pytest.raises(SharedRuntimeError, match="presentation profile"):
+        apply_shared_runtime_overlay(
+            ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+            shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
+        )
