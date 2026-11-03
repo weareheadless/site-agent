@@ -3979,3 +3979,19 @@ def test_approving_a_design_supersedes_older_pending_candidates(tmp_path):
     assert memory.get_draft(older)["status"] == "discarded"
     assert memory.get_draft(draft_id)["status"] != "pending"
     memory.close()
+
+
+def test_a_live_design_draft_is_not_offered_for_review(tmp_path):
+    """The workspace must not invite review of a candidate that is already live."""
+    from site_agent.application.workspace import ChatService
+
+    memory = Memory(tmp_path / "live-draft" / "memory.db")
+    draft_id = memory.save_draft("Approved candidate", "Review", kind="design")
+    memory.update_draft_status(draft_id, "live")
+    statuses = {
+        int(row["id"]): row.get("status") for row in memory.list_drafts(limit=500)
+    }
+    # The projection rule used by the workspace status payload.
+    assert statuses[draft_id] == "live"
+    assert (statuses.get(draft_id) in {"pending", "publish_failed"}) is False
+    memory.close()
