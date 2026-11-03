@@ -8,7 +8,6 @@ import fcntl
 import json
 import os
 import re
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,12 +17,12 @@ from typing import Any
 from uuid import uuid4
 from urllib.parse import urlsplit
 
-from ..credentials import cloudflare_api_token, cloudflare_dns_api_token, cloudflare_email_api_token, cloudflare_env_names, credential_environment, resend_api_key
+from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment, resend_api_key
 from ..hands.cloudflare_email import CloudflareEmailClient
-from ..hands.cloudflare_worker import CloudflareWorkerSecretsClient
 from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
 from .mailbox_identity import PLATFORM_EMAIL_DOMAIN
+from .runtime_binding_delivery import RuntimeBindingError, deliver_runtime_bindings
 from .tenant_registration import tenant_token_env
 
 
@@ -44,81 +43,27 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 def _tenant_env_path(tenant_config_path: str | Path, tenant_id: str) -> Path:
-    raw_config_path = Path(str(tenant_config_path or "")).expanduser()
-    raw_tenant_dir = raw_config_path.parent
-    if raw_config_path.is_symlink() or raw_tenant_dir.is_symlink():
-        raise EmailProvisioningError("The registered tenant secret path cannot contain symbolic links")
-    config_path = raw_config_path.resolve(strict=True)
-    tenant_dir = config_path.parent
-    if config_path.name != "config.yaml" or tenant_dir.name != tenant_id or tenant_dir == Path(tenant_dir.anchor):
-        raise EmailProvisioningError("The registered tenant secret path is not canonical")
-    path = tenant_dir / "tenant.env"
-    if path.is_symlink() or not path.is_file() or tenant_dir.is_symlink():
-        raise EmailProvisioningError("The registered tenant secret file is unavailable")
-    return path
+    from .tenant_environment import tenant_environment_path, TenantEnvironmentError
+    try:
+        return tenant_environment_path(tenant_config_path, tenant_id)
+    except TenantEnvironmentError as exc:
+        raise EmailProvisioningError(str(exc)) from exc
 
 
 def _tenant_secret_values(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
+    from .tenant_environment import read_tenant_environment, TenantEnvironmentError
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            if "=" not in line:
-                raise EmailProvisioningError("The registered tenant secret file is malformed")
-            name, value = line.split("=", 1)
-            name = name.strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name in values:
-                raise EmailProvisioningError("The registered tenant secret names are invalid")
-            values[name] = value.strip()
-    except (OSError, UnicodeError) as exc:
-        raise EmailProvisioningError("The registered tenant secret file could not be read") from exc
-    return values
-
-
-def _mailflare_runtime_settings_match(path: Path, state: Mapping[str, Any], address: str) -> bool:
-    expected = {
-        "MAILFLARE_ADDRESS": address.strip().lower(),
-        "MAILFLARE_ZONE_ID": str(state.get("cloudflareZoneId") or "").strip(),
-        "MAILFLARE_ROUTING_STATUS": str(state.get("routingStatus") or "").strip(),
-    }
-    if any(not value for value in expected.values()):
-        return False
-    persisted = _tenant_secret_values(path)
-    return all(persisted.get(name) == value for name, value in expected.items())
+        return read_tenant_environment(path)
+    except TenantEnvironmentError as exc:
+        raise EmailProvisioningError(str(exc)) from exc
 
 
 def _write_tenant_secrets(path: Path, values: Mapping[str, str]) -> None:
-    for name, value in values.items():
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)) or any(char in str(value) for char in "\r\n\0"):
-            raise EmailProvisioningError("The tenant secret update contains an invalid name or value")
-    lock_fd = os.open(path.with_name(".tenant-env.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-    temporary: Path | None = None
+    from .tenant_environment import write_tenant_environment, TenantEnvironmentError
     try:
-        os.fchmod(lock_fd, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        current = _tenant_secret_values(path)
-        for name, value in current.items():
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or any(char in value for char in "\r\n\0"):
-                raise EmailProvisioningError("The registered tenant secret file contains an invalid name or value")
-        current.update({name: str(value) for name, value in values.items()})
-        descriptor, filename = tempfile.mkstemp(prefix=".tenant-env-", suffix=".tmp", dir=path.parent)
-        temporary = Path(filename)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                for name, value in sorted(current.items()):
-                    stream.write(f"{name}={value}\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, path)
-            temporary = None
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
+        write_tenant_environment(path, values)
+    except TenantEnvironmentError as exc:
+        raise EmailProvisioningError(str(exc)) from exc
 
 
 def _ensure_tenant_resend_key(
@@ -171,8 +116,9 @@ def _ensure_tenant_resend_key(
 
         if api_key and key_id and key_domain_id == domain_id:
             if installed_id != key_id:
-                _worker_secret_client(config, env, worker).put_secret("RESEND_API_KEY", api_key)
-                _write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": key_id})
+                # Persisted is not installed. Keep every prior sender key until
+                # the canonical promoted version proves the new key binding.
+                return key_id
             for old_id in dict.fromkeys(previous_ids):
                 if old_id and old_id != key_id:
                     resend.delete_api_key(old_id)
@@ -191,24 +137,10 @@ def _ensure_tenant_resend_key(
             "RESEND_API_KEY_PREVIOUS_IDS": ",".join(old_ids),
             "RESEND_API_KEY_PENDING_NAME": "",
         })
-        _worker_secret_client(config, env, worker).put_secret("RESEND_API_KEY", new_key)
-        _write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": new_id})
-        for old_id in old_ids:
-            if old_id and old_id != new_id:
-                resend.delete_api_key(old_id)
-        if old_ids:
-            _write_tenant_secrets(path, {"RESEND_API_KEY_PREVIOUS_IDS": ""})
         return new_id
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-
-
-def _worker_secret_client(config: Mapping[str, Any], env: Mapping[str, str], worker: str) -> CloudflareWorkerSecretsClient:
-    token = cloudflare_api_token(config, env)
-    _token_name, account_name = cloudflare_env_names(config)
-    account = str(env.get(account_name) or "").strip()
-    return CloudflareWorkerSecretsClient(token, account, worker)
 
 
 def _registered_site_origin(config: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -539,7 +471,7 @@ def auto_provision_email(
     configured_worker = str(_mapping(site.get("source_deployment")).get("worker_name") or "").strip().lower()
     existing_mailbox_state_matches = (
         not expected_snapshot_sha256
-        and state.get("state") == "active"
+        and (state.get("state") == "active" or (state.get("state") == "awaiting_runtime_release" and state.get("mailflareMailboxState") == "active"))
         and state.get("siteDomain") == raw_domain
         and state.get("emailDomainSetting") == requested_email_domain
         and state.get("outboundProvider") == "resend"
@@ -548,9 +480,21 @@ def auto_provision_email(
     )
     if existing_mailbox_state_matches:
         try:
-            tenant_env_path = _tenant_env_path(tenant_config_path, tenant_id)
-            runtime_settings_match = _mailflare_runtime_settings_match(tenant_env_path, state, address)
-        except EmailProvisioningError as exc:
+            _tenant_env_path(tenant_config_path, tenant_id)
+            # The mailbox already exists at the provider. Reconcile only the
+            # runtime binding; never repeat provider mutations for settings
+            # that a canonical release simply has not delivered yet.
+            desired = {"MAILFLARE_ADDRESS": address, "MAILFLARE_ZONE_ID": str(state["cloudflareZoneId"]),
+                       "MAILFLARE_ROUTING_STATUS": str(state["routingStatus"])}
+            if all(desired.values()):
+                delivery = deliver_runtime_bindings(config, resolved_env, memory, tenant_config_path, desired)
+                result = {**state, "runtime_delivery": delivery,
+                          "state": "active" if delivery["state"] == "delivered" else "awaiting_runtime_release",
+                          "mailflareMailboxState": "active"}
+                if memory is not None:
+                    memory.kv_set("email_provisioning_state", result)
+                return result, resolved_env
+        except (EmailProvisioningError, RuntimeBindingError) as exc:
             result = {
                 **state,
                 "state": "failed",
@@ -561,8 +505,6 @@ def auto_provision_email(
             if memory is not None:
                 memory.kv_set("email_provisioning_state", result)
             return result, resolved_env
-        if runtime_settings_match:
-            return state, resolved_env
     policy: dict[str, Any] = {
         **dict(email),
         **dict(provisioning),
@@ -631,10 +573,25 @@ def auto_provision_email(
             "MAILFLARE_ZONE_ID": str(provider["zoneId"]),
             "MAILFLARE_ROUTING_STATUS": str(provider["routingStatus"]),
         }
-        _write_tenant_secrets(secret_path, mailbox_secrets)
-        worker_secrets = _worker_secret_client(config, resolved_env, worker)
-        for secret_name, secret_value in mailbox_secrets.items():
-            worker_secrets.put_secret(secret_name, secret_value)
+        # The restricted sender key is staged in the same protected file, so
+        # its delivery is proven with the mailbox bindings instead of assumed.
+        sender_key = (
+            str(_tenant_secret_values(secret_path).get("RESEND_API_KEY") or "").strip()
+            if secret_path.is_file() else ""
+        )
+        if sender_key:
+            mailbox_secrets["RESEND_API_KEY"] = sender_key
+        delivery = deliver_runtime_bindings(config, resolved_env, memory, tenant_config_path, mailbox_secrets)
+        attempt["runtime_delivery"] = delivery
+        if delivery["state"] != "delivered":
+            attempt["state"] = "awaiting_runtime_release"
+            if memory is not None:
+                memory.kv_set("email_provisioning_state", attempt)
+            return attempt, resolved_env
+        _write_tenant_secrets(secret_path, {"RESEND_API_KEY_INSTALLED_ID": send_key_id})
+        # This second pass may retire old sender keys only after exact delivery.
+        _ensure_tenant_resend_key(path=secret_path, tenant_id=tenant_id, domain_id=str(resend_domain["id"]),
+                                worker=worker, config=config, env=resolved_env, resend=resend)
         if memory is not None:
             memory.kv_set("email_provisioning_state", attempt)
         mailbox = _configure_mailflare_mailbox(
@@ -664,6 +621,7 @@ def auto_provision_email(
             "resendDomainStatus": resend_domain["status"],
             "resendSendingKeyProvisioned": True,
             "mailflareMailboxState": mailbox["state"],
+            "runtime_delivery": delivery,
             "preflightSha256": preflight["snapshotSha256"],
             "completedAt": _now(),
         }

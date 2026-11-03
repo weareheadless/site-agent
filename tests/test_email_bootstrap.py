@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 import site_agent.application.email_bootstrap as bootstrap
 
@@ -34,6 +35,12 @@ def _tenant_config_path(tmp_path: Path, tenant_id: str) -> Path:
     return tmp_path / "websites" / tenant_id / "config.yaml"
 
 
+def _verified_delivery(config, env, memory, config_path, values):
+    path = bootstrap._tenant_env_path(config_path, Path(config_path).parent.name)
+    bootstrap._write_tenant_secrets(path, values)
+    return {"state": "delivered", "release_id": "verified-runtime-release"}
+
+
 def test_tenant_env_path_uses_registered_config_parent_not_data_dir(tmp_path):
     tenant_id = "atelier-harmonie"
     tenant_dir = tmp_path / "websites" / tenant_id
@@ -50,6 +57,7 @@ def test_tenant_env_path_uses_registered_config_parent_not_data_dir(tmp_path):
 
 
 def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkeypatch, tmp_path):
+    """A missing binding is staged for release, never repaired with provider calls."""
     tenant_id = "oceanicvibes"
     tenant_config_path = _tenant_config_path(tmp_path, tenant_id)
     tenant_config_path.parent.mkdir(parents=True)
@@ -74,6 +82,13 @@ def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkey
         raise bootstrap.EmailProvisioningError("mailbox preflight reached")
 
     monkeypatch.setattr(bootstrap, "prepare_email_plan", require_preflight)
+    delivered = []
+
+    def queue_bindings(config, env, memory, config_path, values):
+        delivered.append(values)
+        return {"state": "awaiting_release", "release_id": "runtime-bindings-test"}
+
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", queue_bindings)
 
     state, _ = bootstrap.auto_provision_email(
         _config(tmp_path),
@@ -83,9 +98,14 @@ def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkey
         env={},
     )
 
-    assert preflight_calls == [True]
-    assert state["state"] == "failed"
-    assert state["error"] == "mailbox preflight reached"
+    assert preflight_calls == []
+    assert delivered == [{
+        "MAILFLARE_ADDRESS": "contact@oceanicvibes.com",
+        "MAILFLARE_ZONE_ID": "zone-id",
+        "MAILFLARE_ROUTING_STATUS": "active",
+    }]
+    assert state["state"] == "awaiting_runtime_release"
+    assert state["runtime_delivery"]["release_id"] == "runtime-bindings-test"
 
 
 def test_active_email_state_skips_provider_work_only_when_mailflare_settings_match(monkeypatch, tmp_path):
@@ -111,6 +131,7 @@ def test_active_email_state_skips_provider_work_only_when_mailflare_settings_mat
     }
     memory = FakeMemory({"email_provisioning_state": active_state})
     monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", _verified_delivery)
     monkeypatch.setattr(
         bootstrap,
         "prepare_email_plan",
@@ -125,8 +146,9 @@ def test_active_email_state_skips_provider_work_only_when_mailflare_settings_mat
         env={},
     )
 
-    assert state == active_state
-    assert memory.state["email_provisioning_state"] == active_state
+    assert state["state"] == "active"
+    assert state["runtime_delivery"]["state"] == "delivered"
+    assert memory.state["email_provisioning_state"] == state
 
 
 def _mock_resend_management(monkeypatch):
@@ -547,7 +569,7 @@ def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monke
 
     monkeypatch.setattr(bootstrap, "CloudflareEmailClient", Client)
     monkeypatch.setattr(bootstrap, "EmailProvisioningService", Service)
-    monkeypatch.setattr(bootstrap, "_worker_secret_client", lambda *_args, **_kwargs: type("Secrets", (), {"put_secret": lambda *_args: None})())
+    monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", lambda *args: {"state": "delivered", "release_id": "verified-runtime-release"})
     monkeypatch.setattr(bootstrap, "_configure_mailflare_mailbox", lambda *args, **kwargs: (_ for _ in ()).throw(bootstrap.EmailProvisioningError("Mailflare timeout")))
 
     state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})

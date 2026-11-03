@@ -952,7 +952,7 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
     memory.snapshot_metrics("gsc", summary)
 
 
-def _seo_provisioning(context: dict[str, Any]) -> None:
+def _seo_provisioning(context: dict[str, Any]) -> dict[str, str]:
     """Retry the automatic tenant bootstrap and attach a newly issued client."""
     from ..application.seo_bootstrap import auto_provision_seo
 
@@ -962,6 +962,7 @@ def _seo_provisioning(context: dict[str, Any]) -> None:
         tenant_id=tenant_id,
         memory=context["memory"],
         env=context.get("env"),
+        tenant_config_path=context.get("tenant_config_path"),
     )
     runtime = context.get("runtime")
     if runtime is not None and state.get("state") == "ready":
@@ -970,6 +971,9 @@ def _seo_provisioning(context: dict[str, Any]) -> None:
         context["crawlseo_client"] = runtime.crawlseo_client
         context["crawlseo_service"] = service
     context["seo_provisioning_state"] = state
+    if state.get("state") == "error":
+        raise RuntimeError(str(state.get("error") or "SEO provisioning failed")[:300])
+    return {"status": "ok" if state.get("state") == "ready" else "pending"}
 
 
 def _email_provisioning_enabled(config: Mapping[str, Any]) -> bool:
@@ -1000,7 +1004,7 @@ def _email_provisioning(context: dict[str, Any]) -> dict[str, str]:
     context["env"] = env
     if state.get("state") == "failed":
         raise RuntimeError(str(state.get("error") or "email provisioning failed")[:300])
-    return {"status": "pending" if state.get("state") in {"domain_required", "waiting_for_worker_release"} else "ok"}
+    return {"status": "pending" if state.get("state") in {"domain_required", "waiting_for_worker_release", "awaiting_runtime_release"} else "ok"}
 
 
 def register_email_provisioning_job(

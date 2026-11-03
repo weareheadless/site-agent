@@ -296,3 +296,48 @@ def test_release_request_rejects_noncanonical_or_unversioned_customer():
         queue.request("demo", SHA, {**CUSTOMER, "repository": "https://github.com/other/demo.git"})
     with pytest.raises(GitHubReleaseQueueError, match="approval"):
         queue.request("demo", SHA, CUSTOMER, approval_id=0)
+
+
+def _queue_with(monkeypatch, releases, *, terminal):
+    queue = GitHubReleaseQueue("token")
+    documents = {
+        "payload-customers.json": {"schema": 1, "releaseRoot": "/SOCIAL/payload-releases",
+                                   "customers": {"demo": CUSTOMER}},
+        "desired-releases.json": {"schema": 1, "releases": releases},
+    }
+    def request(method, path, *, payload=None):
+        if method == "GET" and path.endswith("git/ref/heads/main"):
+            return 200, {"object": {"sha": "1" * 40}}
+        if method == "GET" and path.endswith("git/commits/" + "1" * 40):
+            return 200, {"tree": {"sha": "2" * 40}}
+        if method == "GET" and "/contents/deploy/" in path:
+            name = path.split("/contents/deploy/", 1)[1].split("?", 1)[0]
+            return 200, {"encoding": "base64",
+                         "content": base64.b64encode(json.dumps(documents[name]).encode()).decode()}
+        if method == "POST" and path.endswith("/git/blobs"):
+            return 201, {"sha": "3" * 40}
+        if method == "POST" and path.endswith("/git/trees"):
+            return 201, {"sha": "4" * 40}
+        if method == "POST" and path.endswith("/git/commits"):
+            return 201, {"sha": "5" * 40}
+        if method == "PATCH" and path.endswith("/git/refs/heads/main"):
+            return 200, {"object": {"sha": "5" * 40}}
+        raise AssertionError((method, path))
+    monkeypatch.setattr(queue, "_request", request)
+    return queue, terminal
+
+
+def test_a_pending_release_request_is_never_overwritten(monkeypatch):
+    queue, terminal = _queue_with(
+        monkeypatch, {"demo": {"id": "rel-running", "sha": "b" * 40}}, terminal=frozenset(),
+    )
+    with pytest.raises(GitHubReleaseQueueError, match="pending or unknown"):
+        queue.request("demo", SHA, None, release_id="rel-20261103120000-abcdef01", terminal_release_ids=terminal)
+    queue, terminal = _queue_with(
+        monkeypatch, {"demo": {"id": "rel-unknown", "sha": "b" * 40}},
+        terminal=frozenset({"rel-unknown"}),
+    )
+    # A terminal identity may be replaced.
+    result = queue.request("demo", SHA, None, release_id="rel-20261103120000-abcdef01",
+                           terminal_release_ids=terminal)
+    assert result["release_id"] == "rel-20261103120000-abcdef01"

@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..credentials import cloudflare_env_names, credential_environment, credential_profile
+from ..credentials import credential_environment, credential_profile
 from ..hands.crawlseo import CrawlSEOClient
 from ..hands.crawlseo_connector_credentials import load_connector_environment, load_connector_runtime_environment
-from ..hands.cloudflare_worker import CloudflareWorkerError, CloudflareWorkerSecretsClient
+from ..hands.cloudflare_worker import CloudflareWorkerError
 from ..hands.crawlseo_provisioning import CrawlSEOProvisioningError
 from .site_origin import SiteOriginError, normalize_site_origin, origins_equal
 from .seo_provisioning import (
@@ -31,6 +31,22 @@ from .seo_provisioning import (
     write_connector_runtime_token,
     write_token_env,
 )
+from .runtime_binding_delivery import deliver_runtime_bindings, RuntimeBindingError
+
+
+def _persist_credentials(config, receipt, resolved_env):
+    """Keep one-time credentials before crossing any external delivery boundary."""
+    token = str(receipt.get("credential_token") or "").strip()
+    if token:
+        name = str(receipt.get("token_env") or "").strip()
+        if not name:
+            raise SeoProvisioningError("CrawlSEO returned a token without an environment name")
+        write_token_env(_credential_directory(config), name, token)
+        resolved_env[name] = token
+    connector = str(receipt.get("connector_credential_token") or "").strip()
+    if connector:
+        write_connector_runtime_token(_credential_directory(config), connector)
+        resolved_env["CRAWLSEO_CONNECTOR_TOKEN"] = connector
 
 
 def _now() -> str:
@@ -75,35 +91,6 @@ def _safe_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     value.pop("credential_token", None)
     value.pop("connector_credential_token", None)
     return value
-
-
-def _worker_identity(config: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, str]:
-    profile = credential_profile(config, "cloudflare")
-    _, account_name = cloudflare_env_names(config)
-    site = _mapping(config.get("site"))
-    deployment = _mapping(site.get("source_deployment"))
-    worker_name = str(
-        deployment.get("worker_name")
-        or _mapping(site.get("cloudflare")).get("worker_name")
-        or ""
-    ).strip()
-    # Older tenant configs did not persist the Worker name. Recover it only
-    # from the platform preview origin; custom domains never determine the
-    # deployment target.
-    if not worker_name:
-        preview_host = str(urlsplit(str(site.get("preview_url") or "")).hostname or "").lower()
-        if preview_host.endswith(".workers.dev"):
-            worker_name = preview_host.split(".", 1)[0]
-    account = str(env.get(str(profile.get("account_id_env") or account_name)) or env.get(account_name) or "")
-    return account, worker_name
-
-
-def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> CloudflareWorkerSecretsClient:
-    profile = credential_profile(config, "cloudflare")
-    token_name, _ = cloudflare_env_names(config)
-    token = str(env.get(str(profile.get("api_token_env") or token_name)) or env.get(token_name) or "")
-    account, worker_name = _worker_identity(config, env)
-    return CloudflareWorkerSecretsClient(token, account, worker_name)
 
 
 def _credential_directory(config: Mapping[str, Any]) -> Path:
@@ -296,6 +283,7 @@ def auto_provision_seo(
     tenant_id: str,
     memory: Any,
     env: Mapping[str, str] | None = None,
+    tenant_config_path: str | Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Converge one tenant to GA4 + verified GSC + CrawlSEO.
 
@@ -401,9 +389,11 @@ def auto_provision_seo(
             idempotency_key=idempotency_key,
             recover_service_credential=recover_service_credential,
         )
+        _persist_credentials(config, receipt, resolved_env)
         # Persist the receipt before any external follow-up. Google property
         # creation is not safely repeatable if the process dies while the
-        # Worker secret or the one-time CrawlSEO credential is being written.
+        # one-time CrawlSEO credential is written or a runtime release is
+        # queued.
         attempt.update(_safe_receipt(receipt))
         attempt["crawlseo"] = _safe_receipt(receipt.get("crawlseo") or {})
         attempt["site_url"] = site_url
@@ -412,28 +402,22 @@ def auto_provision_seo(
         if memory is not None:
             memory.kv_set("seo_provisioning_state", attempt)
 
-        gsc_secret_fingerprint = str(state.get("gsc_secret_fingerprint") or "")
+        desired = {}
+        if receipt.get("ga4_measurement_id"):
+            desired["GA_MEASUREMENT_ID"] = str(receipt["ga4_measurement_id"])
         if receipt.get("gsc_pending"):
             tag = _meta_content(str(receipt.get("gsc_meta_tag") or ""))
             if not tag:
                 raise SeoProvisioningError("Google did not return a meta verification token")
-            if memory is None:
-                raise SeoProvisioningError("Durable state is required before writing the GSC verification secret")
-            account_id, worker_name = _worker_identity(config, resolved_env)
-            candidate_fingerprint = hashlib.sha256(
-                f"{account_id}\0{worker_name}\0{gsc_property}\0{tag}".encode("utf-8")
-            ).hexdigest()
-            if candidate_fingerprint != state.get("gsc_secret_fingerprint"):
-                worker = _worker_client(config, resolved_env)
-                attempt["gsc_secret_pending_fingerprint"] = candidate_fingerprint
+            desired["GOOGLE_SITE_VERIFICATION"] = tag
+        if desired:
+            delivery = deliver_runtime_bindings(config, resolved_env, memory, tenant_config_path, desired)
+            attempt["runtime_delivery"] = delivery
+            if delivery["state"] != "delivered":
+                attempt["state"] = "awaiting_runtime_release"
                 memory.kv_set("seo_provisioning_state", attempt)
-                worker.put_secret("GOOGLE_SITE_VERIFICATION", tag)
-                attempt.pop("gsc_secret_pending_fingerprint", None)
-                attempt["gsc_secret_fingerprint"] = candidate_fingerprint
-                gsc_secret_fingerprint = candidate_fingerprint
-                memory.kv_set("seo_provisioning_state", attempt)
-            else:
-                gsc_secret_fingerprint = candidate_fingerprint
+                return attempt, resolved_env
+        if receipt.get("gsc_pending"):
             # The Worker serves the tag at runtime. Re-enter the same
             # idempotent chain so GSC is verified before CrawlSEO queues jobs.
             receipt = service.provision(
@@ -451,6 +435,7 @@ def auto_provision_seo(
                 idempotency_key=idempotency_key,
                 recover_service_credential=recover_service_credential,
             )
+            _persist_credentials(config, receipt, resolved_env)
             attempt.update(_safe_receipt(receipt))
             attempt["crawlseo"] = _safe_receipt(receipt.get("crawlseo") or {})
             attempt["site_url"] = site_url
@@ -460,42 +445,26 @@ def auto_provision_seo(
                 memory.kv_set("seo_provisioning_state", attempt)
 
         measurement_id = str(receipt.get("ga4_measurement_id") or "").strip()
-        previously_synced_measurement_id = str(state.get("ga4_secret_measurement_id") or "").strip()
-        if not previously_synced_measurement_id and state.get("state") == "ready":
-            # A ready receipt was only recorded after the Worker secret write
-            # succeeded. Adopt this marker for tenants provisioned before the
-            # explicit sync marker existed.
-            previously_synced_measurement_id = str(state.get("ga4_measurement_id") or "").strip()
-        if measurement_id and measurement_id != previously_synced_measurement_id:
-            _worker_client(config, resolved_env).put_secret("GA_MEASUREMENT_ID", measurement_id)
-            attempt["ga4_secret_measurement_id"] = measurement_id
-            if memory is not None:
-                # Record immediately after the external write: a later
-                # CrawlSEO/file error must not repeat a Worker deployment.
+        if measurement_id and measurement_id != desired.get("GA_MEASUREMENT_ID"):
+            delivery = deliver_runtime_bindings(config, resolved_env, memory, tenant_config_path, {"GA_MEASUREMENT_ID": measurement_id})
+            attempt["runtime_delivery"] = delivery
+            if delivery["state"] != "delivered":
+                attempt["state"] = "awaiting_runtime_release"
                 memory.kv_set("seo_provisioning_state", attempt)
-        elif measurement_id:
+                return attempt, resolved_env
+        if measurement_id:
             attempt["ga4_secret_measurement_id"] = measurement_id
-
-        token = str(receipt.get("credential_token") or "").strip()
-        if token:
-            token_env = str(receipt.get("token_env") or "").strip()
-            if not token_env:
-                raise SeoProvisioningError("CrawlSEO returned a token without an environment name")
-            write_token_env(_credential_directory(config), token_env, token)
-            resolved_env[token_env] = token
 
         connector_token = str(receipt.get("connector_credential_token") or "").strip()
         if connector_token:
             try:
-                write_connector_runtime_token(_credential_directory(config), connector_token)
-                resolved_env["CRAWLSEO_CONNECTOR_TOKEN"] = connector_token
                 attempt["research_profile"] = sync_research_profile(config, resolved_env, receipt, tenant_id)
             except (SeoProvisioningError, OSError) as exc:
                 attempt["research_profile"] = {"state": "error", "error": str(exc)[:300]}
 
         sanitized = _safe_receipt(receipt)
-        if gsc_secret_fingerprint:
-            sanitized["gsc_secret_fingerprint"] = gsc_secret_fingerprint
+        if attempt.get("runtime_delivery"):
+            sanitized["runtime_delivery"] = attempt["runtime_delivery"]
         if measurement_id:
             sanitized["ga4_secret_measurement_id"] = measurement_id
         if attempt.get("research_profile"):
@@ -511,7 +480,7 @@ def auto_provision_seo(
         if memory is not None:
             memory.kv_set("seo_provisioning_state", sanitized)
         return sanitized, resolved_env
-    except (SeoProvisioningError, CrawlSEOProvisioningError, CloudflareWorkerError, OSError) as exc:
+    except (SeoProvisioningError, CrawlSEOProvisioningError, CloudflareWorkerError, RuntimeBindingError, OSError) as exc:
         attempt.update({"state": "error", "error": str(exc)[:500], "last_attempt_at": _now()})
         if memory is not None:
             memory.kv_set("seo_provisioning_state", attempt)
