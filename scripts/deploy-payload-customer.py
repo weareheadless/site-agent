@@ -1073,10 +1073,17 @@ def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
         website_present = customer.get("websitePresent")
         if not isinstance(website_present, bool):
             raise RuntimeError("release manifest must explicitly declare websitePresent")
+        profile = customer.get("presentationProfile", "payload")
+        if profile == "static":
+            from site_agent.application.github_site_import import validate_static_declaration
+            validate_static_declaration(checkout, worker_config)
+        elif profile != "payload" or worker_config.get("vars", {}).get("HELLOADA_PRESENTATION_PROFILE") == "static":
+            raise RuntimeError("registered presentation profile differs from Worker source")
         verifier_env = {
             **base, **env,
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
             "HELLOADA_WEBSITE_PRESENT": "true" if website_present else "false",
+            "HELLOADA_PRESENTATION_PROFILE": profile,
         }
         return run(["npm", "run", "verify:payload"], checkout, verifier_env, timeout_seconds=600)
     finally:

@@ -523,12 +523,20 @@ class TenantRegistrationService:
         *,
         display_name: str = "",
         env: Mapping[str, str] | None = None,
+        github_repository: str | None = None,
     ) -> dict[str, Any]:
+        if github_repository is not None:
+            from .github_site_import import normalize_repository, GitHubSiteImportError
+            try:
+                github_repository = normalize_repository(github_repository) if github_repository else ""
+            except GitHubSiteImportError as exc:
+                raise TenantRegistrationError(str(exc)) from exc
         with self._lock:
             descriptor = self._registry_lock()
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
-                return self._register(tenant_id, display_name=display_name, env=env)
+                return self._register(tenant_id, display_name=display_name, env=env,
+                                      github_repository=github_repository)
             finally:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
                 os.close(descriptor)
@@ -539,11 +547,28 @@ class TenantRegistrationService:
         *,
         display_name: str = "",
         env: Mapping[str, str] | None = None,
+        github_repository: str | None = None,
     ) -> dict[str, Any]:
         self._validate_index()
         normalized = str(tenant_id or "").strip().lower()
         if not _SAFE_ID.fullmatch(normalized):
             raise TenantRegistrationError("website id must be a lowercase slug")
+        config_path = self.root / normalized / "config.yaml"
+        if config_path.is_file() and github_repository is not None:
+            saved = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            source = saved.get("provisioning_source") or {}
+            if str(source.get("repository") or "") != github_repository:
+                raise TenantRegistrationError("website provisioning repository cannot change after registration")
+        # One repository cannot silently become two independently managed tenants.
+        if github_repository:
+            index = self.root / _TENANTS_FILE
+            for other, entry in (json.loads(index.read_text()) if index.is_file() else {}).items():
+                if other == normalized:
+                    continue
+                other_config = yaml.safe_load(Path(entry["config_path"]).read_text()) or {}
+                source = other_config.get("provisioning_source") or {}
+                if source.get("repository") == github_repository or (other_config.get("site") or {}).get("repository") == github_repository:
+                    raise TenantRegistrationError("GitHub repository is already registered to another website")
         existing = self.registry.for_tenant_id(normalized)
         if existing is not None:
             indexed_config_path = self._indexed_config_path(normalized)
@@ -599,10 +624,16 @@ class TenantRegistrationService:
         config_path = tenant_dir / "config.yaml"
         data_dir = tenant_dir / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
-        created = self._write_config(
-            config_path,
-            _new_site_config(normalized, data_dir, display_name, tenant_dir / "site"),
-        )
+        new_config = _new_site_config(normalized, data_dir, display_name, tenant_dir / "site")
+        new_config["provisioning_source"] = {
+            "kind": "github_static" if github_repository else "intake",
+            "repository": github_repository or "",
+            "branch": "main",
+        }
+        if github_repository:
+            new_config["intake"]["enabled"] = False
+            new_config["design_engine"]["enabled"] = False
+        created = self._write_config(config_path, new_config)
         memory = Memory(data_dir / "memory.db")
         try:
             schema_version = memory.get_schema_version()
@@ -684,6 +715,12 @@ class TenantRegistrationService:
         schema_version: int | None = None,
         created: bool = True,
     ) -> dict[str, Any]:
+        source = {}
+        if config_path:
+            persisted = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+            declared = persisted.get("provisioning_source") or {}
+            if declared:
+                source = {key: declared.get(key) for key in ("kind", "repository", "branch")}
         return {
             "tenant_id": tenant_id,
             "config_path": str(config_path) if config_path else "",
@@ -692,6 +729,7 @@ class TenantRegistrationService:
             "schema_version": int(schema_version or SCHEMA_VERSION),
             "status": "registered",
             "created": bool(created),
+            "provisioning_source": source,
         }
 
 

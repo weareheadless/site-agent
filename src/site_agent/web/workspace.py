@@ -1163,11 +1163,14 @@ def register_workspace_routes(
                 body = {}
             if not isinstance(body, dict):
                 raise HTTPException(status_code=400, detail="request body must be an object")
+            if "github_repository" in body and not isinstance(body["github_repository"], str):
+                raise HTTPException(status_code=400, detail="github_repository must be a string")
             try:
                 receipt = registration.register(
                     website_id,
                     display_name=str(body.get("display_name") or "").strip(),
                     env=env,
+                    **({"github_repository": body["github_repository"]} if "github_repository" in body else {}),
                 )
                 # Paths and token environment names are host-only details. The
                 # control-plane caller only needs the durable tenant identity
@@ -1177,6 +1180,7 @@ def register_workspace_routes(
                     "schema_version": receipt.get("schema_version"),
                     "status": receipt.get("status"),
                     "created": receipt.get("created"),
+                    "provisioning_source": receipt.get("provisioning_source"),
                 }
             except TenantRegistrationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1230,10 +1234,13 @@ def register_workspace_routes(
                 body = {}
             if not isinstance(body, dict):
                 raise HTTPException(status_code=400, detail="request body must be an object")
+            if "github_repository" in body and not isinstance(body["github_repository"], str):
+                raise HTTPException(status_code=400, detail="github_repository must be a string")
             try:
                 result = bootstrap.start(
                     website_id,
                     display_name=str(body.get("display_name") or "").strip(),
+                    **({"github_repository": body["github_repository"]} if "github_repository" in body else {}),
                 )
             except (BootstrapError, TenantRegistrationError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc

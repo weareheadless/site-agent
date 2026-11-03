@@ -6,6 +6,14 @@ and public content readers. A tenant config may select locales and platform
 modules; it must not replace the shared schema with customer-local copies.
 Customer frontend composition, styles and content remain tenant-owned.
 
+Explicit GitHub static-site provisioning is the one source-owned presentation
+mode defined in `docs/github-website-provisioning.md` in the central repository.
+In that mode the committed `public/` website is served as-is; it is not missing
+Payload content and must never be converted to CMS page sections automatically.
+Payload remains the authority for its collections/admin. Preserve the explicit
+presentation declaration and its exact source inventory when proposing edits;
+platform schema/auth/build files remain outside Ada's authoring scope.
+
 Content editing uses `@weareheadless/helloada-payload-core/bindings`. Bindings
 resolve by collection/document/stable section/block/item IDs, never array index
 or visible text. Owner saves must remain draft-only, target one exact document
