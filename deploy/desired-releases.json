@@ -31,10 +31,7 @@
       "sharedRuntimeFingerprint": "34d666eb44d2d25ba3ab55ee58c6d32a2089e5625e7c0f8dce982d7aad740d6d"
     },
     "site-ff8e9af06f56201f": {
-      "id": "rel-20261103204831-7ad118fe",
-      "initializeSchema": {
-        "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
-      },
+      "id": "rel-20261103213942-d2b77cb9",
       "sha": "03bb50ac36cd7b9ac2020da24d598eba2f2133cf"
     }
   },
