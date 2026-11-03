@@ -60,7 +60,7 @@ const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
     if ((request.method === "GET" || request.method === "HEAD") && (pathname === "/admin/login" || pathname === "/admin/login/")) {
       return Promise.resolve(helloAdaAdminEntry(env.HELLOADA_HANDOFF_ISSUER, env.HELLOADA_TENANT_ID))
     }
-    const staticResponse = await staticWebsiteResponse(request, env)
+    const staticResponse = await staticWebsiteResponse(request, env, helloAdaSite.routes.preview)
     if (staticResponse) return staticResponse
     const handler = openNextWorker as unknown as {
       fetch: (request: Request, env: TenantEnv, context: WorkerContext) => Promise<Response>

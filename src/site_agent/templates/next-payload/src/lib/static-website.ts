@@ -1,4 +1,6 @@
 /** Explicit source-controlled presentation. Never a fallback for missing CMS content. */
+import { workspacePreviewPath } from './workspace-preview-path.ts'
+
 export type StaticWebsiteEnv = {
   HELLOADA_PRESENTATION_PROFILE?: string
   HELLOADA_STATIC_MANIFEST?: string
@@ -13,7 +15,7 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => (
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[character]!)
 
-export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv): Promise<Response | null> {
+export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv, previewMount?: string): Promise<Response | null> {
   if (!env.HELLOADA_PRESENTATION_PROFILE || env.HELLOADA_PRESENTATION_PROFILE === 'payload') return null
   if (env.HELLOADA_PRESENTATION_PROFILE !== 'static') throw new Error('Unsupported presentation profile')
   const manifest = JSON.parse(env.HELLOADA_STATIC_MANIFEST || '') as StaticManifest
@@ -22,6 +24,11 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   }
   const url = new URL(request.url)
   if (request.method !== 'GET' && request.method !== 'HEAD') return null
+  // This handler precedes Next middleware. Resolve the existing Workspace
+  // display alias here too, through the same public renderer and inventory.
+  const previewPath = previewMount ? workspacePreviewPath(url.pathname, previewMount) : undefined
+  const isPreview = previewPath !== undefined
+  if (isPreview) url.pathname = previewPath
   const measurement = env.GA_MEASUREMENT_ID || ''
   if (measurement && !/^G-[A-Z0-9]+$/.test(measurement)) throw new Error('Invalid GA4 measurement identifier')
   if (url.pathname === '/_helloada/analytics.js') {
@@ -32,11 +39,13 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   }
   // Platform paths always retain their canonical authentication/route handling.
   if (url.pathname === '/helloada-release.json') return null
-  if (/^\/(admin|api|mail|_next|blog|_helloada)(\/|$)/.test(url.pathname)) return null
+  if (/^\/(admin|api|mail|_next|blog|_helloada|helloada-preview)(\/|$)/.test(url.pathname)) return null
   const canonicalPath = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/'
   if (!url.pathname.endsWith('/') && Object.hasOwn(manifest.routes, canonicalPath)) {
-    url.pathname = canonicalPath
-    return Response.redirect(url.toString(), 308)
+    url.pathname = isPreview ? previewMount + canonicalPath : canonicalPath
+    return new Response(null, { status: 308, headers: {
+      location: url.toString(), ...(isPreview ? { 'x-robots-tag': 'noindex, nofollow' } : {}),
+    } })
   }
   const file = manifest.routes[url.pathname] || manifest.routes[canonicalPath]
     || (Object.hasOwn(manifest.files, url.pathname) ? url.pathname : null)
@@ -64,6 +73,7 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   headers.delete('etag')
   headers.set('content-type', 'text/html; charset=utf-8')
   headers.set('cache-control', 'no-store')
+  if (isPreview) headers.set('x-robots-tag', 'noindex, nofollow')
   headers.set('x-frame-options', 'SAMEORIGIN')
   let csp = headers.get('content-security-policy') || "default-src 'self'; object-src 'none'; base-uri 'self'"
   csp = csp.replace(/(?:^|;)\s*frame-ancestors\s+[^;]*/g, '') + "; frame-ancestors 'self'"

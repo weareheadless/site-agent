@@ -204,6 +204,9 @@ def _worker_readiness(
     worker = str(deployment.get("worker_name") or "").strip().lower()
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
         return "", "The registered Cloudflare Worker identity is unavailable."
+    contract = _mapping(_mapping(site.get("payload")).get("contract")).get("contract")
+    if not isinstance(contract, str) or not contract.strip():
+        return "", "The registered Payload content contract is unavailable."
     try:
         origin = _registered_site_origin(config, env)
     except EmailProvisioningError as exc:
@@ -221,7 +224,7 @@ def _worker_readiness(
         not isinstance(body, Mapping)
         or body.get("ok") is not True
         or body.get("tenant") != tenant_id
-        or body.get("contentContract") != "helloada-content-v3"
+        or body.get("contentContract") != contract
         or body.get("mailflareProvisioningVersion") != 1
     ):
         return "", "The tenant Worker has not confirmed the canonical Mailflare release."

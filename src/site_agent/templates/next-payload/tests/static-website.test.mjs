@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { staticWebsiteResponse } from '../src/lib/static-website.ts'
 
@@ -14,9 +15,43 @@ const env = (overrides = {}) => ({
 })
 const request = (path = '/', method = 'GET') => new Request('https://tenant.workers.dev' + path, { method })
 
+test('the tenant Worker passes the configured admin preview mount into static routing', () => {
+  const worker = readFileSync(new URL('../worker.ts', import.meta.url), 'utf8')
+  assert.match(worker, /staticWebsiteResponse\(request, env, helloAdaSite\.routes\.preview\)/)
+})
+
+test('the configured Workspace preview mount serves the same static HTML in both locales', async () => {
+  const mount = '/tenant-preview'
+  for (const path of [mount, `${mount}/`, `${mount}/en/`]) {
+    const fetched = []
+    const settings = env({ ASSETS: { fetch: async (request) => {
+      fetched.push(new URL(request.url).pathname)
+      return new Response('<html><head></head><body>Original website</body></html>', {
+        headers: { 'content-security-policy': "frame-ancestors 'none'", 'x-frame-options': 'DENY' },
+      })
+    } } })
+    const response = await staticWebsiteResponse(request(path), settings, mount)
+    assert.equal(response.status, 200)
+    assert.match(await response.text(), /Original website/)
+    assert.deepEqual(fetched, [path.endsWith('/en/') ? '/en/index.html' : '/index.html'])
+    assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN')
+    assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/)
+    assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')
+  }
+})
+
+test('preview alias redirects preserve its mount and cannot alias platform APIs', async () => {
+  const mount = '/tenant-preview'
+  const response = await staticWebsiteResponse(request(`${mount}/en?revision=one`), env(), mount)
+  assert.equal(response.status, 308)
+  assert.equal(response.headers.get('location'), `https://tenant.workers.dev${mount}/en/?revision=one`)
+  assert.equal((await staticWebsiteResponse(request(`${mount}/api/health`), env(), mount)).status, 404)
+  assert.equal((await staticWebsiteResponse(request('/wrong-preview/'), env(), mount)).status, 404)
+})
+
 test('Payload presentation and reserved platform routes stay with the platform', async () => {
   assert.equal(await staticWebsiteResponse(request(), {}), null)
-  for (const path of ['/admin', '/admin/login', '/api/health', '/mail/inbox', '/blog/article', '/_next/chunk.js', '/helloada-release.json']) {
+  for (const path of ['/admin', '/admin/login', '/api/health', '/mail/inbox', '/blog/article', '/_next/chunk.js', '/helloada-release.json', '/helloada-preview/signed-token']) {
     assert.equal(await staticWebsiteResponse(request(path), env()), null)
   }
 })
