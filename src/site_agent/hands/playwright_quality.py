@@ -955,6 +955,24 @@ def _observable_delta(
     }
 
 
+def _temporal_animation_observations(
+    metrics: Mapping[str, Any], motion: Mapping[str, Any],
+    interaction: Mapping[str, Any], scroll_signatures: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Carry the existing browser probes into the canonical temporal receipt."""
+    return [
+        *list(metrics.get("signature_behaviors") or []),
+        *list((motion.get("observable_delta") or {}).get("signature_behaviors") or []),
+        *list((motion.get("scroll_observable_delta") or {}).get("signature_behaviors") or []),
+        *[
+            {**dict(item), "observed_via": "progressive_scroll"}
+            for item in (motion.get("scroll_observable_delta") or {}).get("changed_nodes") or []
+        ],
+        *list(interaction.get("animation_observations") or []),
+        *list(scroll_signatures),
+    ]
+
+
 def _hidden_resting_text(page: Any) -> list[dict[str, Any]]:
     """Return meaningful page text that is still invisible after settling.
 
@@ -1608,22 +1626,10 @@ class PlaywrightQualityAdapter:
                                     "layout_shifts": list(metrics.get("layout_shifts") or []),
                                     "console_errors": list(console_errors),
                                     "network_errors": list(failed_requests),
-                                     "animation_observations": [
-                                          *list(metrics.get("signature_behaviors") or []),
-                                           *list(
-                                               (motion_results.get("no-preference") or {})
-                                               .get("observable_delta", {})
-                                               .get("signature_behaviors", [])
-                                           ),
-                                           *[
-                                               {**dict(item), "observed_via": "progressive_scroll"}
-                                               for item in (motion_results.get("no-preference") or {})
-                                               .get("scroll_observable_delta", {})
-                                               .get("changed_nodes", [])
-                                           ],
-                                           *list(interaction_state.get("animation_observations") or []),
-                                          *list(scroll_signature_observations),
-                                      ],
+                                     "animation_observations": _temporal_animation_observations(
+                                         metrics, motion_results.get("no-preference") or {},
+                                         interaction_state, scroll_signature_observations,
+                                     ),
                                      "keyboard_path_observations": [
                                          str(item.get("role") or "")
                                          for item in (metrics.get("composition_elements") or ())

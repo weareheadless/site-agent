@@ -14,6 +14,7 @@ from site_agent.hands.playwright_quality import (
     _observable_snapshot,
     _observed_signature_behaviors,
     _signature_scroll_positions,
+    _temporal_animation_observations,
 )
 
 
@@ -333,6 +334,26 @@ def test_scroll_signature_does_not_observe_offscreen_only_changes():
     assert not _observable_delta(samples, ignore_scroll_position=True)["signature_behaviors"]
     samples[0]["signature_behaviors"][0]["visible"] = True
     assert not _observable_delta(samples, ignore_scroll_position=True)["signature_behaviors"]
+
+
+def test_temporal_receipt_preserves_observed_scroll_signatures():
+    signature = {"id": "signature", "state": "observed", "observed_via": "rendered_delta"}
+    motion = {"scroll_observable_delta": {"signature_behaviors": [signature], "changed_nodes": []}}
+    assert _temporal_animation_observations({}, motion, {}, []) == [signature]
+    assert _temporal_animation_observations({}, {"scroll_observable_delta": {"observed": True}}, {}, []) == []
+
+
+def test_temporal_receipt_keeps_other_existing_probe_evidence():
+    initial = {"id": "initial", "state": "unobserved"}
+    load = {"id": "load", "state": "observed"}
+    control = {"id": "control", "state": "observed"}
+    scroll = {"id": "scroll", "state": "observed"}
+    assert _temporal_animation_observations(
+        {"signature_behaviors": [initial]},
+        {"observable_delta": {"signature_behaviors": [load]},
+         "scroll_observable_delta": {"changed_nodes": [{"key": "image"}]}},
+        {"animation_observations": [control]}, [scroll],
+    ) == [initial, load, {"key": "image", "observed_via": "progressive_scroll"}, control, scroll]
 
 
 def test_observable_delta_observes_signature_descendant_render_change():
