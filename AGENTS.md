@@ -78,6 +78,11 @@ realization, autonomous repair, or end-to-end acceptance requirements.
 - A pending visual build is reviewed in the Design tab; do not add raw preview
   links as a substitute for the review flow.
 - Production is changed only by an explicit approval operation.
+- Provisioning never mutates Worker secrets. GA4, Search Console, sender and
+  mailbox bindings are staged in the registered tenant's protected `tenant.env`
+  and delivered only by the canonical release queue; delivery is proven from
+  the activated receipt's secret-free `runtimeBindings` hashes. See
+  `docs/seo-provisioning-and-domain-lifecycle.md`.
 - Chat jobs are durable. A job may disappear from the active-jobs list after it
   finishes, but it must remain inspectable by its ID and conversation.
 - Preview URLs must work under the deployment mount point, currently `/ada/`.

@@ -565,6 +565,7 @@ class TenantRegistry:
                             tenant_id=tenant_id,
                             memory=memory,
                             env=tenant_env,
+                            tenant_config_path=config_path,
                         )
                     except Exception as exc:  # noqa: BLE001 - bootstrap is retried by the scheduler
                         memory.kv_set(

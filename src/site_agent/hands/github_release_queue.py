@@ -147,6 +147,7 @@ class GitHubReleaseQueue:
         initialize_schema: bool = False,
         release_id: str | None = None,
         expected_identity: Mapping[str, str] | None = None,
+        terminal_release_ids: frozenset[str] | None = None,
     ) -> dict[str, str]:
         tenant = str(tenant or "").strip().lower()
         source_sha = str(source_sha or "").strip().lower()
@@ -249,6 +250,10 @@ class GitHubReleaseQueue:
                     "source_sha": source_sha,
                     "control_sha": parent_sha,
                 }
+
+            if (isinstance(current, Mapping) and terminal_release_ids is not None
+                    and current.get("id") not in terminal_release_ids):
+                raise GitHubReleaseQueueError("the previous release request is pending or unknown; refusing to overwrite it")
 
             release_id = requested_release_id or datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
             request: dict[str, Any] = {"id": release_id, "sha": source_sha}

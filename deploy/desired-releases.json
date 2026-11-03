@@ -6,19 +6,16 @@
       "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261103041638-4d24e7be",
-      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
-      "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
+      "id": "rel-20261103185536-ce3d082b",
+      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261103041638-409ca334",
-      "sha": "b8d4614b07336aadfe312925d1c4f5705522accd",
-      "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
+      "id": "rel-20261103185546-e12cf723",
+      "sha": "b8d4614b07336aadfe312925d1c4f5705522accd"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261103041638-45f04c67",
-      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
-      "sharedRuntimeFingerprint": "0a81d0073a8745452660b7c57b38c9f404f205eafa732dedf8a5497a51e66d44"
+      "id": "rel-20261103185555-dda0ad22",
+      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4"
     },
     "oceanicvibes": {
       "id": "runtime-20261103040942-9ba5a7fa",

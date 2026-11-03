@@ -2641,3 +2641,74 @@ def test_contract_generator_refreshes_stale_manifest_versions_from_locked_packag
     assert "manifest.payloadAdmin !== adminPackage.version" not in source
     assert "sitePackage.dependencies['@weareheadless/helloada-payload-admin']" in source
     assert "sitePackage.dependencies['@weareheadless/helloada-payload-core']" in source
+
+
+def _registered_tenant(tmp_path, tenant="atelier-harmonie"):
+    tenant_token_name = "PROVISIONED_ATELIER_HARMONIE_TOKEN"
+    provisioned_root = tmp_path / "websites"
+    tenant_dir = provisioned_root / tenant
+    tenant_dir.mkdir(parents=True)
+    data_dir = tmp_path / "registered-data" / tenant / "data"
+    data_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(
+        f"instance_name: {tenant}\n"
+        f"data_dir: {data_dir}\n"
+        "seo:\n"
+        "  enabled: true\n"
+        "  provisioning:\n"
+        "    auto: true\n"
+    )
+    (tenant_dir / "tenant.env").write_text(
+        "PAYLOAD_SECRET=payload-secret-for-test\n"
+        f"{tenant_token_name}=site-agent-token-for-test\n"
+    )
+    (provisioned_root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": tenant_token_name},
+    }))
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+    manifest = {
+        "connectionGate": {"config": str(host_config)},
+        "customers": {tenant: {}},
+    }
+    return manifest, tenant, data_dir, tenant_dir
+
+
+def test_google_identifiers_are_released_only_from_the_registered_tenant_environment(tmp_path):
+    manifest, tenant, _data_dir, tenant_dir = _registered_tenant(tmp_path)
+    assert "GA_MEASUREMENT_ID" not in release.tenant_runtime_secrets(manifest, tenant)
+    with (tenant_dir / "tenant.env").open("a") as stream:
+        stream.write("GA_MEASUREMENT_ID=G-TEST123\nGOOGLE_SITE_VERIFICATION=verification-token\n")
+    secrets = release.tenant_runtime_secrets(manifest, tenant)
+    assert secrets["GA_MEASUREMENT_ID"] == "G-TEST123"
+    assert secrets["GOOGLE_SITE_VERIFICATION"] == "verification-token"
+    # Receipt evidence is secret-free.
+    proof = __import__("site_agent.application.runtime_binding_delivery", fromlist=["binding_hashes"]).binding_hashes(secrets)
+    assert "G-TEST123" not in json.dumps(proof) and set(proof) == {"GA_MEASUREMENT_ID", "GOOGLE_SITE_VERIFICATION"}
+
+
+def test_seo_reconciliation_is_woken_only_after_a_completed_release(tmp_path):
+    from site_agent.core.memory import Memory
+    manifest, tenant, data_dir, tenant_dir = _registered_tenant(tmp_path)
+    Memory(data_dir / "memory.db").close()
+    assert release.trigger_seo_provisioning_after_worker_release(manifest, tenant) == {"state": "scheduled"}
+    memory = Memory(data_dir / "memory.db")
+    try:
+        assert isinstance(memory.kv_get("next_run:seo_provisioning"), (int, float))
+    finally:
+        memory.close()
+    (tenant_dir / "config.yaml").write_text(
+        f"instance_name: {tenant}\ndata_dir: {data_dir}\nseo:\n  enabled: false\n"
+    )
+    assert release.trigger_seo_provisioning_after_worker_release(manifest, tenant) == {"state": "manual"}
+
+
+def test_provisioning_modules_cannot_mutate_worker_secrets_directly():
+    root = ROOT / "src/site_agent/application"
+    offenders = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "CloudflareWorkerSecretsClient" in text or "put_secret(" in text:
+            offenders.append(path.name)
+    assert offenders == [], offenders

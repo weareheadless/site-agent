@@ -229,6 +229,17 @@ def request_release(
         }
         customer = None
     try:
+        terminal_ids = set()
+        for path in (root / "runs" / tenant).glob("*/receipt.json"):
+            if path.is_symlink():
+                continue
+            try:
+                receipt = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue  # Unknown receipts cannot authorize replacement.
+            if (receipt.get("tenant") == tenant and receipt.get("releaseId") == path.parent.name
+                    and receipt.get("status") in {"deployed", "verified", "failed", "interrupted"}):
+                terminal_ids.add(path.parent.name)
         return GitHubReleaseQueue(token).request(
             tenant,
             source_sha,
@@ -236,6 +247,7 @@ def request_release(
             approval_id=approval_id,
             initialize_schema=initialize_schema,
             release_id=release_id,
+            terminal_release_ids=frozenset(terminal_ids),
             **({"expected_identity": expected_identity} if expected_identity is not None else {}),
         )
     except GitHubReleaseQueueError as exc:
