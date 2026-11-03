@@ -1383,7 +1383,7 @@ def _reviewed_effects():
     ]
 
 
-def _design_approval_app(tmp_path, *, gateway, order):
+def _design_approval_app(tmp_path, *, gateway, order, before=None):
     from site_agent.core.payload_receipts import payload_revision_manifest
 
     effects, revision_set_hash = payload_revision_manifest(_reviewed_effects())
@@ -1406,6 +1406,8 @@ def _design_approval_app(tmp_path, *, gateway, order):
             return {"status": "queued", "commit": request["commit"]}
 
     memory = Memory(tmp_path / "workspace-publish" / "memory.db")
+    if before is not None:
+        before(memory)
     draft_id = memory.save_draft("Design candidate", "Review", kind="design", meta={
         "run_id": "run-1", "candidate_sha": "candidate-sha", "base_sha": "generation-base",
         "payload_effects": effects, "payload_revision_set_hash": revision_set_hash,
@@ -3954,4 +3956,26 @@ def test_a_failed_publication_remains_the_current_owner_update(tmp_path):
     memory.update_draft_status(newer, "publish_failed")
     current = ChatService._current_pending_owner_update(memory)
     assert current["id"] == newer, (current, older)
+    memory.close()
+
+
+def test_approving_a_design_supersedes_older_pending_candidates(tmp_path):
+    order = []
+    gateway = _PublicationGateway(drafts={
+        ("pages", "en"): "sha256:" + "1" * 64, ("pages", "es"): "sha256:" + "2" * 64,
+        ("siteSettings", "en"): "sha256:" + "3" * 64, ("siteSettings", "es"): "sha256:" + "4" * 64,
+    }, order=order)
+    captured = {}
+
+    def before(memory):
+        captured["older"] = memory.save_draft("Older candidate", "Review", kind="design")
+
+    memory, draft_id, app = _design_approval_app(tmp_path, gateway=gateway, order=order, before=before)
+    older = captured["older"]
+    with TestClient(app) as client:
+        response = client.post(f"/v1/workspace/drafts/{draft_id}/approve",
+                               headers={"Authorization": "Bearer publish-token"})
+    assert response.status_code == 200, response.text
+    assert memory.get_draft(older)["status"] == "discarded"
+    assert memory.get_draft(draft_id)["status"] != "pending"
     memory.close()
