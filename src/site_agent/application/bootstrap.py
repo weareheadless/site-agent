@@ -1166,6 +1166,8 @@ class WebsiteBootstrapService:
         else:
             self._git(config_path.parent, "clone", "--single-branch", "--branch", "main", remote, str(staging))
         original_sha = self._git(staging, "rev-parse", "HEAD")
+        if (staging / "public/helloada-release.json").exists():
+            raise BootstrapError("source repository contains the reserved platform release marker")
         # Bound this flow to the convention we own, not arbitrary framework code.
         allowed = {".git", ".gitignore", "README.md", "package.json", "package-lock.json", "public", "scripts", "wrangler.jsonc"}
         if any(item.name not in allowed for item in staging.iterdir()):

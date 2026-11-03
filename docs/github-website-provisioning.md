@@ -42,6 +42,10 @@ not a claim that commerce/checkout is implemented.
 
 The existing bootstrap, protected main-account credential resolver, committed
 migration chain, owner handoff and exact-SHA VPS release queue remain mandatory.
+The release manifest retains the explicit presentation profile. Both bootstrap
+and ordinary releases verify the declared source inventory; after OpenNext
+builds, each declared file must still exist byte-for-byte in the actual assets
+artifact. The generated platform release marker is separate from presentation.
 The static path skips intake and design generation. It reuses the existing SEO
 provisioning lifecycle; issued GA4/GSC identifiers are rendered in actual public
 HTML using runtime bindings, not merely in admin HTML. Readiness must distinguish

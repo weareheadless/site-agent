@@ -2359,6 +2359,9 @@ def main() -> int:
             checkout, customer, args.ref, custom_worker_bundle,
             receipt["sharedRuntimeFingerprint"],
         )
+        if customer.get("presentationProfile") == "static":
+            from site_agent.application.github_site_import import validate_static_declaration, validate_static_artifact
+            validate_static_artifact(checkout, validate_static_declaration(checkout, wrangler))
         # Keep the dry-run bundle until the upload stage has re-hashed it. It
         # is discarded at the end of the run; deleting it here made every
         # post-upload artifact comparison fail with "no compiled custom

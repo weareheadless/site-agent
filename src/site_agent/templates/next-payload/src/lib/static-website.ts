@@ -27,10 +27,11 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   if (url.pathname === '/_helloada/analytics.js') {
     if (!measurement) return new Response(null, { status: 404 })
     const id = JSON.stringify(measurement)
-    return new Response(`window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config',${id});const s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id='+${id};document.head.appendChild(s);`,
+    return new Response(request.method === 'HEAD' ? null : `window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config',${id});const s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id='+${id};document.head.appendChild(s);`,
       { headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' } })
   }
   // Platform paths always retain their canonical authentication/route handling.
+  if (url.pathname === '/helloada-release.json') return null
   if (/^\/(admin|api|mail|_next|blog|_helloada)(\/|$)/.test(url.pathname)) return null
   const canonicalPath = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/'
   if (!url.pathname.endsWith('/') && Object.hasOwn(manifest.routes, canonicalPath)) {

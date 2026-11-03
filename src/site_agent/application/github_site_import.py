@@ -65,6 +65,10 @@ def inspect_static_site(root: Path) -> dict:
         if not path.is_file():
             continue
         relative = '/' + path.relative_to(public).as_posix()
+        # The canonical build writes its own provenance marker. It is not
+        # customer presentation and must not invalidate the frozen inventory.
+        if relative == '/helloada-release.json':
+            continue
         if relative.split('/')[1] in {'admin', 'api', '_next', 'mail', 'blog', '_helloada'}:
             raise GitHubSiteImportError(f'Static website uses a reserved platform path: {relative}')
         if path.stat().st_size > 25 * 1024 * 1024:
@@ -73,7 +77,10 @@ def inspect_static_site(root: Path) -> dict:
         references: list[str] = []
         if path.suffix == '.html':
             parser = _References()
-            parser.feed(path.read_text(encoding='utf-8'))
+            html = path.read_text(encoding='utf-8')
+            if not re.search(r'</head\s*>', html, re.IGNORECASE):
+                raise GitHubSiteImportError(f'An explicit HTML head boundary is required: {relative}')
+            parser.feed(html)
             if not re.fullmatch('[a-z]{2,3}', parser.locale):
                 raise GitHubSiteImportError(f'An explicit HTML language is required: {relative}')
             locales.add(parser.locale)
@@ -112,3 +119,12 @@ def validate_static_declaration(root: Path, worker: dict) -> dict:
     if assets.get('run_worker_first') is not True or assets.get('html_handling') != 'none':
         raise GitHubSiteImportError('Static HTML must pass through the tenant Worker for runtime SEO bindings.')
     return declared
+
+
+def validate_static_artifact(root: Path, declaration: dict) -> None:
+    """Prove OpenNext preserved every declared public file, not just source."""
+    assets = root / '.open-next/assets'
+    for relative, digest in declaration['files'].items():
+        artifact = assets / relative.lstrip('/')
+        if not artifact.is_file() or artifact.is_symlink() or hashlib.sha256(artifact.read_bytes()).hexdigest() != digest:
+            raise GitHubSiteImportError(f'Compiled static asset is missing or differs from the reviewed source: {relative}')

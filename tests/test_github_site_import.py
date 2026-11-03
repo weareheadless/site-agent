@@ -9,6 +9,7 @@ from site_agent.application.github_site_import import (
     GitHubSiteImportError,
     normalize_repository,
     inspect_static_site,
+    validate_static_artifact,
 )
 
 
@@ -40,6 +41,16 @@ def test_static_inventory_preserves_pages_and_requires_assets(tmp_path):
     assert result['defaultLocale'] == 'es'
     assert result['locales'] == ['es']
     assert result['files']['/assets/logo.webp']
+    (public / 'helloada-release.json').write_text('{"generated":"provenance"}')
+    assert inspect_static_site(tmp_path) == result
+    with pytest.raises(GitHubSiteImportError, match='Compiled static asset'):
+        validate_static_artifact(tmp_path, result)
+    import shutil
+    shutil.copytree(public, tmp_path / '.open-next/assets')
+    validate_static_artifact(tmp_path, result)
+    (tmp_path / '.open-next/assets/index.html').write_text('wrong artifact')
+    with pytest.raises(GitHubSiteImportError, match='differs'):
+        validate_static_artifact(tmp_path, result)
 
 
 def test_reserved_routes_and_symlinks_are_not_importable(tmp_path):

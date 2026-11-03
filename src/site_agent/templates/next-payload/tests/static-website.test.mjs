@@ -16,7 +16,7 @@ const request = (path = '/', method = 'GET') => new Request('https://tenant.work
 
 test('Payload presentation and reserved platform routes stay with the platform', async () => {
   assert.equal(await staticWebsiteResponse(request(), {}), null)
-  for (const path of ['/admin', '/admin/login', '/api/health', '/mail/inbox', '/blog/article', '/_next/chunk.js']) {
+  for (const path of ['/admin', '/admin/login', '/api/health', '/mail/inbox', '/blog/article', '/_next/chunk.js', '/helloada-release.json']) {
     assert.equal(await staticWebsiteResponse(request(path), env()), null)
   }
 })
