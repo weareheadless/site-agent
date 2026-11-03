@@ -59,22 +59,29 @@ export async function POST(request: Request) {
   } catch {
     return errorResponse('invalid json')
   }
-  if (String(body.operation || '').trim().toLowerCase() !== 'update') {
-    return errorResponse('only draft updates are available through the service gateway')
+  const operation = String(body.operation || '').trim().toLowerCase()
+  if (operation !== 'update' && operation !== 'publish') {
+    return errorResponse('only exact draft updates and publication are available through the service gateway')
   }
   if (typeof body.locale !== 'string' || !body.locale.trim()) {
     return errorResponse('an explicit Payload locale is required for every global write')
   }
   const slug = globalFor(body.global)
   if (!slug) return errorResponse('unsupported global')
+  const expectedHash = String(body.expectedHash || '').trim()
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) {
+    return errorResponse('expectedHash is required for an exact global revision', 400)
+  }
   const data = body.data && typeof body.data === 'object' && !Array.isArray(body.data)
     ? body.data
     : undefined
-  if (!data) return errorResponse('global data must be an object')
-  try {
-    validateHelloAdaAuthoringData('global', slug, data)
-  } catch (error) {
-    return errorResponse(error instanceof Error ? error.message : 'global data does not match the shared authoring schema')
+  if (operation === 'update') {
+    if (!data) return errorResponse('global data must be an object')
+    try {
+      validateHelloAdaAuthoringData('global', slug, data)
+    } catch (error) {
+      return errorResponse(error instanceof Error ? error.message : 'global data does not match the shared authoring schema')
+    }
   }
   let locale: HelloAdaPayloadLocale | undefined
   try {
@@ -82,8 +89,6 @@ export async function POST(request: Request) {
   } catch {
     return errorResponse('unsupported locale')
   }
-  const expectedHash = String(body.expectedHash || '').trim()
-  if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a draft update')
   const payload = await getPayload({ config })
   try {
     const options = {
@@ -93,19 +98,44 @@ export async function POST(request: Request) {
       overrideAccess: true,
     }
     const current = await payload.findGlobal(options) as unknown as Record<string, unknown>
-    if (await hashJson(withoutPayloadMetadata(current)) !== expectedHash) {
-      return errorResponse('The Payload global changed. Read it again before updating.', 409)
+    const currentHash = await hashJson(withoutPayloadMetadata(current))
+    if (currentHash !== expectedHash) {
+      return errorResponse(operation === 'publish'
+        ? 'The Payload draft changed after review. Review the current version before publishing.'
+        : 'The Payload global changed. Read it again before updating.', 409)
     }
-    const global = await payload.updateGlobal({
+    if (operation === 'update') {
+      const global = await payload.updateGlobal({
+        ...options,
+        data: data as never,
+        context: { helloAdaExpectedRevision: { kind: 'global', global: slug, hash: expectedHash, locale } },
+      }) as unknown as Record<string, unknown>
+      return NextResponse.json({
+        global,
+        globalHash: await hashJson(withoutPayloadMetadata(global)),
+      }, { headers: { 'Cache-Control': 'no-store' } })
+    }
+    // Publication writes the exact reviewed draft into the live global row.
+    // The read-back below is the only proof that the public revision matches.
+    await payload.updateGlobal({
       ...options,
-      data: data as never,
+      draft: false,
+      data: withoutPayloadMetadata(current) as never,
       context: { helloAdaExpectedRevision: { kind: 'global', global: slug, hash: expectedHash, locale } },
+    })
+    const published = await payload.findGlobal({
+      slug,
+      draft: false,
+      locale,
+      depth: 2,
+      overrideAccess: true,
     }) as unknown as Record<string, unknown>
-    return NextResponse.json({
-      global,
-      globalHash: await hashJson(withoutPayloadMetadata(global)),
-    }, { headers: { 'Cache-Control': 'no-store' } })
+    const globalHash = await hashJson(withoutPayloadMetadata(published))
+    if (globalHash !== expectedHash) {
+      return errorResponse('Payload published a different global revision than the approved one.', 409)
+    }
+    return NextResponse.json({ global: published, globalHash })
   } catch (error) {
-    return payloadFailure(error, 'Payload could not update the shared website settings. Read the current version before retrying.')
+    return payloadFailure(error, 'Payload could not complete the shared website settings operation. Read the current version before retrying.')
   }
 }

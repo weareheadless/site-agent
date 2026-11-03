@@ -1520,6 +1520,62 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
             raise BridgeError(str(exc)[:500]) from exc
 
+    def _publish_reviewed_payload_effects(
+        self,
+        memory: Any,
+        draft_id: int,
+        draft: Mapping[str, Any],
+        tenant: Tenant | None,
+    ) -> Mapping[str, Any]:
+        """Publish exactly the Payload revisions the owner reviewed.
+
+        A design approval carries the immutable effect set produced by its run.
+        Publication must consume those exact revisions and locales; it may not
+        fall back to the current draft, a newer revision, or a partial set.
+        """
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        raw_effects = meta.get("payload_effects") if isinstance(meta.get("payload_effects"), list) else []
+        if not raw_effects:
+            return {}
+        from ..core.payload_receipts import payload_revision_manifest
+        from .payload_publication import PayloadPublicationError, publish_reviewed_effects
+
+        try:
+            effects, revision_set_hash = payload_revision_manifest(raw_effects)
+        except ValueError as exc:
+            memory.update_draft_status(draft_id, "publish_failed")
+            memory.record_action("publish_failed", f"#{draft_id}: reviewed Payload revisions are invalid")
+            raise BridgeError(f"the reviewed Payload revision set is invalid: {str(exc)[:300]}") from exc
+        if revision_set_hash != str(meta.get("payload_revision_set_hash") or ""):
+            memory.update_draft_status(draft_id, "publish_failed")
+            memory.record_action("publish_failed", f"#{draft_id}: reviewed Payload revision set does not match its receipt")
+            raise BridgeError("the reviewed Payload revision set does not match its recorded receipt")
+        gateway = tenant.context.get("payload_gateway") if tenant is not None else None
+        if gateway is None:
+            memory.update_draft_status(draft_id, "publish_failed")
+            memory.record_action("publish_failed", f"#{draft_id}: Payload publication is unavailable")
+            raise BridgeError("the approved candidate needs Payload publication, but no canonical gateway is configured")
+        try:
+            receipt = publish_reviewed_effects(gateway, effects, revision_set_hash=revision_set_hash)
+        except PayloadPublicationError as exc:
+            memory.update_draft_status(draft_id, "publish_failed")
+            memory.record_action("publish_failed", f"#{draft_id}: {str(exc)[:400]}")
+            raise BridgeError(str(exc)[:500]) from exc
+        current_meta = dict(meta)
+        current_meta["payload_publication_receipt"] = receipt
+        memory.save_draft(
+            str(draft.get("title") or f"Design candidate {draft_id}"),
+            str(draft.get("body") or ""),
+            kind=str(draft.get("kind") or "design"),
+            meta=current_meta,
+            draft_id=draft_id,
+        )
+        memory.record_action(
+            "payload_published",
+            f"#{draft_id}: {receipt['published']} published, {receipt['satisfied']} already exact",
+        )
+        return receipt
+
     def _merge_adapter(self, tenant: Tenant | None, *, capability: str | None = None) -> Any:
         """Resolve the existing tenant-scoped Git-backed publish adapter."""
         capabilities = (capability,) if capability else ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
@@ -4763,6 +4819,10 @@ class ChatService:
 
             if not isinstance(adapter, DesignMergeAdapter):
                 raise BridgeError("tenant design approval adapter is unavailable")
+            # Publish the exact reviewed Payload revisions first. This is
+            # idempotent per revision, so a retry after a later step fails
+            # rewrites nothing that is already live.
+            self._publish_reviewed_payload_effects(memory, normalized_id, draft, tenant)
             service = tenant.context["design_service"]
             try:
                 result = service.approve_review_draft(

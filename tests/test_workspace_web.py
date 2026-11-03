@@ -1370,6 +1370,130 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path,
     memory.close()
 
 
+def _reviewed_effects():
+    return [
+        {"kind": "collection", "operation": "update", "target": "pages", "document_id": "1",
+         "locale": "en", "revision": "sha256:" + "1" * 64, "fields": ["title", "sections"]},
+        {"kind": "collection", "operation": "update", "target": "pages", "document_id": "1",
+         "locale": "es", "revision": "sha256:" + "2" * 64, "fields": ["title", "sections"]},
+        {"kind": "global", "operation": "update", "target": "siteSettings", "document_id": "siteSettings",
+         "locale": "en", "revision": "sha256:" + "3" * 64, "fields": ["siteName"]},
+        {"kind": "global", "operation": "update", "target": "siteSettings", "document_id": "siteSettings",
+         "locale": "es", "revision": "sha256:" + "4" * 64, "fields": ["siteName"]},
+    ]
+
+
+def _design_approval_app(tmp_path, *, gateway, order):
+    from site_agent.core.payload_receipts import payload_revision_manifest
+
+    effects, revision_set_hash = payload_revision_manifest(_reviewed_effects())
+
+    class DesignService:
+        def approve_review_draft(self, draft_id, publish):
+            order.append("merge")
+            published = publish({"candidate_sha": "candidate-sha", "base_sha": "generation-base",
+                                 "publication_base_sha": "base-sha", "run_id": "run-1"})
+            return {"published": published,
+                    "run": {"run_id": "run-1", "candidate_sha": "candidate-sha", "base_sha": "base-sha"}}
+
+    class Adapter:
+        def merge_design_candidate(self, config, candidate_sha, base_sha, message):
+            return {"committed": True, "commit_sha": "c" * 40, "parent_sha": base_sha, "path": "site"}
+
+    class Deployment:
+        def start(self, request, allow_production=False):
+            order.append("release")
+            return {"status": "queued", "commit": request["commit"]}
+
+    memory = Memory(tmp_path / "workspace-publish" / "memory.db")
+    draft_id = memory.save_draft("Design candidate", "Review", kind="design", meta={
+        "run_id": "run-1", "candidate_sha": "candidate-sha", "base_sha": "generation-base",
+        "payload_effects": effects, "payload_revision_set_hash": revision_set_hash,
+    })
+    tenant = Tenant(
+        tenant_id="workspace-publish",
+        config={"site": {"branch": "main"}},
+        memory=memory,
+        runtime=None,
+        context={"llm": object(), "design_service": DesignService(), "design_adapter": Adapter(),
+                 "payload_gateway": gateway, "source_deployment": Deployment()},
+        api_token="publish-token",
+    )
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry),
+                              registry=registry, prefix="/v1/workspace")
+    return memory, draft_id, app
+
+
+class _PublicationGateway:
+    def __init__(self, *, drafts=None, order=None):
+        self.drafts = dict(drafts or {})
+        self.order = order if order is not None else []
+        self.writes = 0
+
+    def read(self, collection, *, identifier, identifier_kind, draft, locale):
+        return {"_helloadaRevision": self.drafts.get((collection, locale), "")} if draft else {"_helloadaRevision": ""}
+
+    def read_global(self, slug, *, draft, locale):
+        if draft:
+            return {"_helloadaRevision": self.drafts.get((slug, locale), "")}
+        return {"_helloadaRevision": ""}
+
+    def publish(self, collection, document_id, *, locale, expected_hash, expected_fields):
+        self.writes += 1
+        self.order.append(f"publish:{collection}:{locale}")
+        return {"_helloadaRevision": expected_hash}
+
+    def publish_global(self, slug, *, locale, expected_hash):
+        self.writes += 1
+        self.order.append(f"publish:{slug}:{locale}")
+        return {"_helloadaRevision": expected_hash}
+
+
+def test_design_approval_publishes_exact_reviewed_revisions_before_merging(tmp_path):
+    order = []
+    gateway = _PublicationGateway(drafts={
+        ("pages", "en"): "sha256:" + "1" * 64, ("pages", "es"): "sha256:" + "2" * 64,
+        ("siteSettings", "en"): "sha256:" + "3" * 64, ("siteSettings", "es"): "sha256:" + "4" * 64,
+    }, order=order)
+    memory, draft_id, app = _design_approval_app(tmp_path, gateway=gateway, order=order)
+    with TestClient(app) as client:
+        response = client.post(f"/v1/workspace/drafts/{draft_id}/approve",
+                               headers={"Authorization": "Bearer publish-token"})
+    assert response.status_code == 200, response.text
+    # Every reviewed revision is published, in the exact set, before the source
+    # merge and before the production release is requested.
+    assert order[:4] == ["publish:pages:en", "publish:pages:es",
+                         "publish:siteSettings:en", "publish:siteSettings:es"]
+    assert order[4:] == ["merge", "release"]
+    draft = memory.get_draft(draft_id)
+    receipt = draft["meta"]["payload_publication_receipt"]
+    assert receipt["published"] == 4 and receipt["satisfied"] == 0
+    memory.close()
+
+
+def test_design_approval_blocks_when_a_reviewed_revision_changed(tmp_path):
+    order = []
+    gateway = _PublicationGateway(drafts={
+        ("pages", "en"): "sha256:" + "1" * 64,
+        ("pages", "es"): "sha256:" + "f" * 64,
+        ("siteSettings", "en"): "sha256:" + "3" * 64,
+        ("siteSettings", "es"): "sha256:" + "4" * 64,
+    }, order=order)
+    memory, draft_id, app = _design_approval_app(tmp_path, gateway=gateway, order=order)
+    with TestClient(app) as client:
+        response = client.post(f"/v1/workspace/drafts/{draft_id}/approve",
+                               headers={"Authorization": "Bearer publish-token"})
+    assert response.status_code == 409
+    assert "changed before publication" in response.text
+    assert gateway.writes == 0
+    assert "merge" not in order and "release" not in order
+    assert memory.get_draft(draft_id)["status"] == "publish_failed"
+    memory.close()
+
+
+
 def test_payload_growth_revision_hold_blocks_old_exact_approval_until_and_after_revision(tmp_path):
     from site_agent.application.approvals import ApprovalService
     from site_agent.application.workspace import BridgeError
