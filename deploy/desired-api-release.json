@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261104111413-api-workspace-publish-fix",
-    "sha": "3403f849f7f4ac8388fbecc0a47508111f28117d"
+    "id": "20261104160000-api-tenant-source-reads",
+    "sha": "e79395957e47c6fff9617a14326783cf8df4e01d"
   }
 }
