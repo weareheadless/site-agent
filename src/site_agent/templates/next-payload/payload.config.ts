@@ -8,7 +8,8 @@ import { buildConfig } from 'payload'
 import { createHelloAdaSchema } from '@weareheadless/helloada-payload-core/schema'
 
 import { getPayloadCloudflareContext } from './src/lib/cloudflare-context'
-import { assertNativeWriteAllowed } from './src/lib/growth-contract'
+import { assertNativeWriteAllowed, withWriteFailureSettlement } from './src/lib/growth-contract'
+import { withCollectionRevisionGuard, withGlobalRevisionGuard } from './src/lib/payload-revision'
 import { helloAdaSite } from './src/helloada.config'
 
 const filename = fileURLToPath(import.meta.url)
@@ -68,8 +69,13 @@ export default buildConfig({
       },
     },
   },
-  collections: schema.collections,
-  globals: schema.globals,
+  // A reviewed revision is compared against the revision Payload has loaded for
+  // this write, inside the same shared writer lease. Passing an expected hash in
+  // the request context is therefore a real compare-and-swap, not a pre-check.
+  // Settle failed native writes with the real error before the schema's own
+  // error hook runs, and enforce the reviewed revision inside the write lease.
+  collections: withWriteFailureSettlement(withCollectionRevisionGuard(schema.collections)),
+  globals: withWriteFailureSettlement(withGlobalRevisionGuard(schema.globals)),
   localization: {
     locales: [...helloAdaSite.locales],
     defaultLocale: helloAdaSite.defaultLocale,

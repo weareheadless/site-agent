@@ -1,5 +1,9 @@
 import { getPayloadCloudflareContext } from '@/lib/cloudflare-context'
 import { hashJson, stableJson } from '@/lib/payload-hash'
+import {
+  expectedRevisionOf, isRevisionHash, readCollectionRevision, readGlobalRevision, revisionHash,
+} from '@/lib/payload-revision'
+import { fieldValueMatches } from '@/lib/payload-field-match'
 import { runtimeValue } from '@/lib/runtime-env'
 
 export { hashJson, stableJson } from '@/lib/payload-hash'
@@ -159,8 +163,8 @@ export const operationContext = (req: { context?: Record<string, unknown> }, ope
   req.context = { ...(req.context || {}), helloAdaGrowthOperation: operationKey }
 }
 
-type WriteRequest = { context?: Record<string, unknown> }
-type WriteLease = { operationKey: string; depth: number; attempted: boolean; settled: boolean }
+type WriteRequest = { context?: Record<string, unknown>; locale?: unknown; payload?: any }
+type WriteLease = { operationKey: string; depth: number; attempted: boolean; settled: boolean; intent?: JsonObject }
 const writeLeaseKey = Symbol.for('helloada.payload.write-lease')
 const contentWriteKey = 'payload:content'
 const writeConflict = (message: string) => Object.assign(new Error(message), { status: 409, statusCode: 409 })
@@ -170,7 +174,29 @@ const writeContext = (req: WriteRequest | undefined) => {
   return req.context as Record<PropertyKey, unknown>
 }
 
-const acquireContentWrite = async (req: WriteRequest | undefined): Promise<WriteLease> => {
+/** The revision a caller reviewed, in the shape a lease intent stores. */
+const leaseIntent = (req: WriteRequest | undefined, collection?: string, id?: unknown): JsonObject | undefined => {
+  const expected = expectedRevisionOf(req)
+  if (expected) {
+    return expected.kind === 'collection'
+      ? { collection: expected.collection, id: expected.id, locale: expected.locale, expectedHash: expected.hash }
+      : { global: expected.global, locale: expected.locale, expectedHash: expected.hash }
+  }
+  if (!collection) return undefined
+  // Without a reviewed revision we can still record the target, but not a base
+  // hash, so a failed write cannot be proven harmless from it. A create has no
+  // document identity yet; the null id still attributes the lease to its write.
+  return {
+    collection,
+    id: id === undefined || id === null || id === '' ? null : String(id),
+    locale: typeof req?.locale === 'string' ? req.locale : undefined,
+  }
+}
+
+const acquireContentWrite = async (
+  req: WriteRequest | undefined,
+  intent?: JsonObject,
+): Promise<WriteLease> => {
   const context = writeContext(req)
   const nested = context[writeLeaseKey] as WriteLease | undefined
   if (nested && !nested.settled) {
@@ -185,24 +211,59 @@ const acquireContentWrite = async (req: WriteRequest | undefined): Promise<Write
   // All native operations, including bulk operations, use the same tenant-local
   // content key. A request-local depth only permits that operation's own hooks.
   const claimed = await claimOperation(operationKey, contentWriteKey, packageHash)
-  if (!claimed.inserted) throw writeConflict('Another website write is in progress. No edit was applied; reload after it completes.')
+  if (!claimed.inserted) {
+    // A lease left by a failed Local API write blocks every later edit. Release
+    // it only when the current revision proves that write had no effect.
+    const blocking = await activeOperation(contentWriteKey, operationKey)
+    const released = blocking && req?.payload
+      ? await recoverBlockingLease(req.payload, blocking).catch(() => false)
+      : false
+    const retried = released ? await claimOperation(operationKey, contentWriteKey, packageHash) : claimed
+    if (!retried.inserted) {
+      throw writeConflict('Another website write is in progress. No edit was applied; reload after it completes.')
+    }
+  }
   const unresolved = await activeOperation(contentWriteKey, operationKey)
   if (unresolved) {
     await completeOperation(operationKey, { state: 'blocked-before-write', blockedBy: String(unresolved.operation_key) })
     throw writeConflict('A prior website write has an unverified outcome. Reconcile that operation before writing again.')
   }
-  const lease: WriteLease = { operationKey, depth: 1, attempted: false, settled: false }
+  const lease: WriteLease = { operationKey, depth: 1, attempted: false, settled: false, intent }
   context[writeLeaseKey] = lease
+  // Persist the intent before any Payload mutation so a later attempt can prove
+  // what this write was about to change.
+  if (intent) await prepareOperation(operationKey, { state: 'write-intent', scope: contentWriteKey, ...intent })
   return lease
 }
 
-const settleContentWrite = async (req: WriteRequest | undefined, failed: boolean) => {
+/**
+ * Decide whether a failed write may release its lease.
+ *
+ * Payload's D1 adapter has no transactions, so a failure can leave partial
+ * effects. Only two outcomes are provable: the revision is still the one the
+ * write started from (no effect), or it already matches the data the write
+ * intended to persist (applied). A pre-persistence rejection (Payload validation
+ * or access error) is also provably harmless.
+ */
+const settleFailedWrite = async (req: WriteRequest, lease: WriteLease, error: unknown) => {
+  if (!lease.attempted) {
+    await completeOperation(lease.operationKey, { state: 'no-effect', scope: contentWriteKey, rejected: true })
+    return
+  }
+  const outcome = await settleStrandedWrite(req.payload, lease.intent, error, {
+    operation_key: lease.operationKey, state: 'writing',
+  }).catch(() => 'blocked' as const)
+  if (outcome === 'settled-no-effect' || outcome === 'settled-applied') return
+  await failOperation(lease.operationKey, { state: 'uncertain', scope: contentWriteKey })
+}
+
+const settleContentWrite = async (req: WriteRequest | undefined, failed: boolean, error?: unknown) => {
   if (!req?.context) return
   const context = req.context as Record<PropertyKey, unknown>
   const lease = context[writeLeaseKey] as WriteLease | undefined
   if (!lease || lease.settled) return
   if (!failed && lease.depth > 1) { lease.depth -= 1; return }
-  if (failed && lease.attempted) await failOperation(lease.operationKey, { state: 'uncertain', scope: contentWriteKey })
+  if (failed) await settleFailedWrite(req, lease, error)
   else await completeOperation(lease.operationKey, { state: 'completed', scope: contentWriteKey })
   lease.settled = true
   delete context[writeLeaseKey]
@@ -210,13 +271,13 @@ const settleContentWrite = async (req: WriteRequest | undefined, failed: boolean
 
 /** Hold the same native-writer boundary across an exact multi-document action. */
 export const withPayloadWriteGuard = async <T>(req: WriteRequest, action: () => Promise<T>): Promise<T> => {
-  await acquireContentWrite(req)
+  await acquireContentWrite(req, leaseIntent(req))
   try {
     const result = await action()
     await settleContentWrite(req, false)
     return result
   } catch (error) {
-    await settleContentWrite(req, true)
+    await settleContentWrite(req, true, error)
     throw error
   }
 }
@@ -224,11 +285,17 @@ export const withPayloadWriteGuard = async <T>(req: WriteRequest, action: () => 
 export const assertNativeWriteAllowed = async (
   collection: string, id: unknown, req: WriteRequest | undefined, operation = 'update', _data?: unknown,
 ) => {
-  if (operation === 'complete' || operation === 'failed') {
-    await settleContentWrite(req, operation === 'failed')
+  if (operation === 'complete') {
+    await settleContentWrite(req, false)
     return
   }
-  const lease = await acquireContentWrite(req)
+  if (operation === 'failed') {
+    // The HTTP error hook hands us the actual error; its status decides whether
+    // the write was rejected before persistence.
+    await settleContentWrite(req, true, _data)
+    return
+  }
+  const lease = await acquireContentWrite(req, leaseIntent(req, collection, id))
   try {
     const currentOperation = String(req?.context?.helloAdaGrowthOperation || '')
     const row = id
@@ -245,6 +312,188 @@ export const assertNativeWriteAllowed = async (
     throw error
   }
 }
+
+export type RecoveryOutcome = 'none' | 'settled-no-effect' | 'settled-applied' | 'blocked'
+
+type RevisionTarget =
+  | { kind?: 'collection'; collection: string; id: string; locale?: string; expectedHash: string; data?: JsonObject }
+  | { kind: 'global'; global: string; locale?: string; expectedHash: string; data?: JsonObject }
+
+/**
+ * Attribute a lease row to the write that is settling it. A row from another
+ * document must never be settled by this write's evidence.
+ */
+const intentMatches = (intent: JsonObject | undefined, target: JsonObject): boolean => {
+  if (!intent) return true
+  if (typeof intent.global === 'string' || target.kind === 'global') {
+    return String(intent.global || '') === String(target.global || '')
+  }
+  const intentId = intent.id === undefined || intent.id === null ? '' : String(intent.id)
+  const targetId = target.id === undefined || target.id === null ? '' : String(target.id)
+  return String(intent.collection || '') === String(target.collection || '') && intentId === targetId
+}
+
+const currentRevision = async (payload: any, target: RevisionTarget): Promise<JsonObject> =>
+  target.kind === 'global'
+    ? readGlobalRevision(payload, { global: target.global, locale: target.locale })
+    : readCollectionRevision(payload, { collection: target.collection, id: target.id, locale: target.locale })
+
+/**
+ * Settle a stranded content lease only with proof of what happened.
+ *
+ * The tenant has exactly one content writer at a time, so a lease left in
+ * `writing` blocks every later edit. Payload's Local API does not run the HTTP
+ * `afterError` hook, so a failed write can strand it. We settle it only when the
+ * current revision is still the one the interrupted write started from (no
+ * effect) or already matches the data that write intended to persist (applied).
+ * Anything else stays blocked for explicit reconciliation.
+ */
+export const recoverContentWrite = async (
+  payload: any,
+  target: RevisionTarget,
+  row?: JsonObject,
+): Promise<RecoveryOutcome> => {
+  const blocking = row ?? await activeOperation(contentWriteKey, '')
+  if (!blocking) return 'none'
+  if (blocking.state !== 'writing') return 'blocked'
+  if (!intentMatches(operationResult(blocking), target as unknown as JsonObject)) return 'blocked'
+  if (!isRevisionHash(target.expectedHash)) return 'blocked'
+  let current: JsonObject
+  try {
+    current = await currentRevision(payload, target)
+  } catch {
+    return 'blocked'
+  }
+  const hash = await revisionHash(current)
+  const noEffect = hash === target.expectedHash
+  const applied = !noEffect && target.data ? fieldValueMatches(current, target.data) : false
+  if (!noEffect && !applied) return 'blocked'
+  await completeOperation(String(blocking.operation_key), {
+    state: noEffect ? 'no-effect' : 'applied',
+    scope: contentWriteKey,
+    recovered: true,
+  })
+  return noEffect ? 'settled-no-effect' : 'settled-applied'
+}
+
+/**
+ * Settle the tenant content lease after a failed Local API write.
+ *
+ * Payload's Local API never runs the HTTP `afterError` hook, so every caller of
+ * `payload.create/update/updateGlobal/restoreVersion` must settle on failure.
+ * A known revision makes the outcome provable; otherwise a pre-persistence
+ * (4xx) rejection is still provably harmless. Anything else stays blocked.
+ */
+export const settleStrandedWrite = async (
+  payload: any,
+  target: JsonObject | undefined,
+  error: unknown,
+  row?: JsonObject,
+): Promise<RecoveryOutcome> => {
+  const blocking = row ?? await activeOperation(contentWriteKey, '')
+  if (!blocking) return 'none'
+  if (blocking.state !== 'writing') return 'blocked'
+  if (target && !intentMatches(operationResult(blocking), target)) return 'blocked'
+  const expectedHash = typeof target?.expectedHash === 'string' ? target.expectedHash : ''
+  const isGlobal = target?.kind === 'global' && typeof target.global === 'string'
+  const isCollection = typeof target?.collection === 'string' && target.id !== undefined && target.id !== null && String(target.id) !== ''
+  if (payload && isRevisionHash(expectedHash) && (isGlobal || isCollection)) {
+    const proof = await recoverContentWrite(payload, {
+      ...(isGlobal
+        ? { kind: 'global' as const, global: String(target!.global) }
+        : { collection: String(target!.collection), id: String(target!.id) }),
+      locale: typeof target!.locale === 'string' && target!.locale ? target!.locale : undefined,
+      expectedHash,
+      data: (target!.data && typeof target!.data === 'object' ? target!.data : undefined) as JsonObject | undefined,
+    }, blocking)
+    // A revision read proves the write landed even when the caller saw an error.
+    if (proof !== 'blocked') return proof
+  }
+  const status = Number((error as { status?: number; statusCode?: number } | undefined)?.status
+    ?? (error as { statusCode?: number } | undefined)?.statusCode)
+  if (Number.isFinite(status) && status >= 400 && status < 500) {
+    // Payload validates before it persists, so a client error is no effect.
+    await completeOperation(String(blocking.operation_key), { state: 'no-effect', scope: contentWriteKey, status })
+    return 'settled-no-effect'
+  }
+  return 'blocked'
+}
+
+/**
+ * Run one Local API write and leave the shared lease settled.
+ *
+ * Success is settled by the schema hook after Payload persists. On failure the
+ * recovery proof decides whether the write had no effect (safe to release) or
+ * actually landed; an unprovable outcome stays blocked and is reported.
+ */
+export const withRecoveredWrite = async <T>(
+  payload: any,
+  target: JsonObject | undefined,
+  action: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await action()
+  } catch (error) {
+    const outcome = await settleStrandedWrite(payload, target, error).catch(() => 'blocked' as const)
+    if (outcome === 'blocked') {
+      // The outcome is genuinely unknown. Record that, so the lease blocks the
+      // next writer as uncertain rather than looking like a live write.
+      const blocking = await activeOperation(contentWriteKey, '').catch(() => undefined)
+      if (blocking?.state === 'writing' && target
+        && intentMatches(operationResult(blocking), target)) {
+        await failOperation(String(blocking.operation_key), { state: 'uncertain', scope: contentWriteKey, reason: 'unverified-write' })
+          .catch(() => undefined)
+      }
+      console.error('helloada_payload_write_unverified', {
+        scope: typeof target?.global === 'string' ? target.global : target?.collection,
+        documentId: target?.id === undefined ? undefined : String(target.id),
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+      })
+    }
+    throw error
+  }
+}
+
+/** Release a blocking lease whose recorded intent proves the interrupted write had no effect. */
+export const recoverBlockingLease = async (payload: any, blocking: JsonObject): Promise<boolean> => {
+  const intent = operationResult(blocking)
+  if (!intent || intent.state !== 'write-intent' || !isRevisionHash(intent.expectedHash)) return false
+  const collection = typeof intent.collection === 'string' ? intent.collection : ''
+  const id = intent.id === undefined || intent.id === null ? '' : String(intent.id)
+  if (!collection || !id) return false
+  const outcome = await recoverContentWrite(payload, {
+    collection,
+    id,
+    locale: typeof intent.locale === 'string' && intent.locale ? intent.locale : undefined,
+    expectedHash: String(intent.expectedHash),
+  }, blocking).catch(() => 'blocked' as const)
+  return outcome === 'settled-no-effect' || outcome === 'settled-applied'
+}
+
+/**
+ * Settle the shared lease from Payload's HTTP `afterError` hook.
+ *
+ * Prepend this to a collection/global so it runs before the schema's own
+ * `afterError`: the lease is removed from the request context once settled, so
+ * the later hook becomes a no-op instead of marking a harmless validation
+ * failure as uncertain.
+ */
+export const writeFailureHook = (scope: string) => async ({
+  req, error,
+}: { req?: WriteRequest; error?: unknown }) => {
+  await assertNativeWriteAllowed(scope, undefined, req, 'failed', error)
+}
+
+/** Put the settling error hook first while preserving every existing hook. */
+export const withWriteFailureSettlement = <T extends { slug: string; hooks?: Record<string, unknown[]> }>(
+  items: T[],
+): T[] => items.map((item) => ({
+  ...item,
+  hooks: {
+    ...(item.hooks || {}),
+    afterError: [writeFailureHook(item.slug), ...((item.hooks?.afterError as unknown[]) || [])],
+  },
+}))
 
 export const contractCapabilities = [
   'conditionalDraft',

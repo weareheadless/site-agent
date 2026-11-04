@@ -99,7 +99,7 @@ test('a published document can be withdrawn without deleting its content', async
   const writes = []
   globalThis.__catalogPayload = {
     findByID: async ({ draft }) => {
-      if (!draft && stored._status !== 'published') throw new Error('not found')
+      if (!draft && stored._status !== 'published') throw Object.assign(new Error('not found'), { status: 404 })
       return stored
     },
     update: async ({ data, draft }) => {
@@ -118,4 +118,31 @@ test('a published document can be withdrawn without deleting its content', async
   assert.equal(writes[0].data._status, 'draft')
   assert.equal(writes[0].data.title, 'Withdrawn', 'content and history are preserved')
   assert.equal(stored._status, 'draft')
+})
+
+test('withdrawal requires an explicit locale before reading or writing', async (t) => {
+  const route = await harness(t)
+  globalThis.__catalogPayload = {
+    findByID: async () => { throw new Error('must not read') },
+    update: async () => { throw new Error('must not write') },
+  }
+  const response = await call(route, { operation: 'unpublish', collection: 'products', id: '12', expectedHash: 'sha256:' + 'a'.repeat(64) })
+  assert.equal(response.status, 400)
+})
+
+test('a failed live read is not proof of withdrawal', async (t) => {
+  const route = await harness(t)
+  const { hashJson, withoutPayloadMetadata } = await import('../src/lib/payload-hash.ts')
+  const stored = { id: 12, slug: 'withdrawn', title: 'Withdrawn', _status: 'published' }
+  let written = false
+  globalThis.__catalogPayload = {
+    findByID: async ({ draft }) => {
+      if (!draft) throw Object.assign(new Error('database unavailable'), { status: 503 })
+      return { ...stored, _status: written ? 'draft' : 'published' }
+    },
+    update: async () => { written = true },
+  }
+  const expectedHash = await hashJson(withoutPayloadMetadata(stored))
+  const response = await call(route, { operation: 'unpublish', collection: 'products', id: '12', locale: 'en', expectedHash })
+  assert.equal(response.status, 503)
 })

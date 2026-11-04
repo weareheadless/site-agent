@@ -4,7 +4,9 @@ import { getPayload } from 'payload'
 
 import config from '@payload-config'
 import { helloAdaSite } from '@/helloada.config'
+import { withRecoveredWrite } from '@/lib/growth-contract'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { REVISION_DEPTH, readCollectionRevision, revisionHash } from '@/lib/payload-revision'
 import { withPublicRoute } from '@/lib/public-content-route'
 import { fieldMismatchDiagnostic, fieldMismatchKeys, fieldValueMatches } from '@/lib/payload-field-match'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
@@ -123,10 +125,12 @@ export async function GET(request: Request) {
     }
   }
   const result = params.get('id')
-    ? await payload.findByID({ collection, id: identifier, draft, locale, overrideAccess: true })
-    : (await payload.find({ collection, where: { [params.has('sourceId') ? 'sourceId' : 'slug']: { equals: identifier } }, draft, locale, limit: 1, overrideAccess: true })).docs[0]
+    ? await readCollectionRevision(payload, { collection, id: identifier, draft, locale })
+    : (await payload.find({ collection, where: { [params.has('sourceId') ? 'sourceId' : 'slug']: { equals: identifier } }, draft, locale, limit: 1, depth: REVISION_DEPTH, overrideAccess: true })).docs[0]
   if (!result) return errorResponse('document not found', 404)
-  const documentHash = await hashJson(withoutPayloadMetadata(result as unknown as Record<string, unknown>))
+  // A revision hash is the identity of one localized document at depth 0. Every
+  // reader and writer must hash the same shape or the comparison is meaningless.
+  const documentHash = await revisionHash(result as unknown as Record<string, unknown>)
   let document: Record<string, unknown>
   try {
     document = draft
@@ -164,7 +168,7 @@ export async function POST(request: Request) {
       return errorResponse(error instanceof Error ? error.message : 'content does not match the shared authoring schema', 400)
     }
   }
-  if (['create', 'update', 'publish'].includes(operation) && (typeof body.locale !== 'string' || !body.locale.trim())) {
+  if (['create', 'update', 'publish', 'unpublish'].includes(operation) && (typeof body.locale !== 'string' || !body.locale.trim())) {
     return errorResponse('an explicit Payload locale is required for every content write', 400)
   }
   let locale: HelloAdaPayloadLocale | undefined
@@ -206,7 +210,9 @@ export async function POST(request: Request) {
       }
       let document: Record<string, unknown>
       try {
-        document = await payload.create({ collection, data: data as never, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+        document = await withRecoveredWrite(payload, { collection }, () => payload.create({
+          collection, data: data as never, draft: true, locale, overrideAccess: true,
+        })) as unknown as Record<string, unknown>
       } catch (error) {
         // The unique route is the destination's idempotency key. A concurrent
         // duplicate or lost create response is successful only when the exact
@@ -254,13 +260,13 @@ export async function POST(request: Request) {
     if (operation === 'update') {
       const expectedHash = String(body.expectedHash || '').trim()
       if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a draft update', 400)
-      const current = await payload.findByID({ collection, id, draft: true, locale, depth: 1, overrideAccess: true }) as unknown as Record<string, unknown>
-      if (await hashJson(withoutPayloadMetadata(current)) !== expectedHash) return errorResponse('The Payload draft changed. Read it again before updating.', 409)
+      const current = await readCollectionRevision(payload, { collection, id, draft: true, locale })
+      if (await revisionHash(current) !== expectedHash) return errorResponse('The Payload draft changed. Read it again before updating.', 409)
       const bookingFailure = await validateBookingBindings({ ...current, ...data }, false)
       if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
       let document: Record<string, unknown>
       try {
-        document = await payload.update({
+        document = await withRecoveredWrite(payload, { collection, id, locale, expectedHash, data }, () => payload.update({
           collection,
           id,
           data: data as never,
@@ -268,7 +274,7 @@ export async function POST(request: Request) {
           locale,
           overrideAccess: true,
           context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
-        }) as unknown as Record<string, unknown>
+        })) as unknown as Record<string, unknown>
       } catch (error) {
         const latest = await payload.findByID({ collection, id, draft: true, locale, depth: 1, overrideAccess: true }) as unknown as Record<string, unknown>
         if (!fieldValueMatches(latest, data)) {
@@ -295,8 +301,8 @@ export async function POST(request: Request) {
     if (operation === 'publish') {
       const expectedHash = String(body.expectedHash || '').trim()
       if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for publication', 400)
-      const current = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
-      const currentHash = await hashJson(withoutPayloadMetadata(current))
+      const current = await readCollectionRevision(payload, { collection, id, draft: true, locale })
+      const currentHash = await revisionHash(current)
       if (currentHash !== expectedHash) return errorResponse('The Payload draft changed after review. Review the current version before publishing.', 409)
       if (current._status === undefined) {
         // A collection without a draft lifecycle is live as soon as it is
@@ -305,18 +311,19 @@ export async function POST(request: Request) {
       }
       const bookingFailure = await validateBookingBindings(current, true)
       if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
-      await payload.update({
+      const publishData = { ...withoutPayloadMetadata(current), _status: 'published' }
+      await withRecoveredWrite(payload, { collection, id, locale, expectedHash, data: publishData }, () => payload.update({
         collection,
         id,
-        data: { ...withoutPayloadMetadata(current), _status: 'published' } as never,
+        data: publishData as never,
         draft: false,
         locale,
         overrideAccess: true,
         context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
-      })
-      const published = await payload.findByID({ collection, id, draft: false, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+      }))
+      const published = await payload.findByID({ collection, id, draft: false, locale, depth: REVISION_DEPTH, overrideAccess: true }) as unknown as Record<string, unknown>
       if (published._status !== 'published') return errorResponse('Payload did not publish the reviewed draft.', 409)
-      const documentHash = await hashJson(withoutPayloadMetadata(published))
+      const documentHash = await revisionHash(published)
       if (documentHash !== expectedHash) return errorResponse('Payload published a different document revision than the approved one.', 409)
       return NextResponse.json({ collection, document: published, documentHash })
     }
@@ -325,25 +332,34 @@ export async function POST(request: Request) {
       // its content and history and stops being served publicly.
       const expectedHash = String(body.expectedHash || '').trim()
       if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required to withdraw a published document', 400)
-      const current = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
-      const currentHash = await hashJson(withoutPayloadMetadata(current))
+      const current = await readCollectionRevision(payload, { collection, id, draft: true, locale })
+      const currentHash = await revisionHash(current)
       if (currentHash !== expectedHash) return errorResponse('The Payload document changed. Read it again before withdrawing it.', 409)
       if (current._status === undefined) return errorResponse('This collection has no published revision to withdraw.', 400)
-      await payload.update({
+      const withdrawData = { ...withoutPayloadMetadata(current), _status: 'draft' }
+      await withRecoveredWrite(payload, { collection, id, locale, expectedHash, data: withdrawData }, () => payload.update({
         collection,
         id,
-        data: { ...withoutPayloadMetadata(current), _status: 'draft' } as never,
+        data: withdrawData as never,
         draft: false,
         locale,
         overrideAccess: true,
         context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
-      })
-      const withdrawn = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
-      const live = await payload.findByID({ collection, id, draft: false, locale, overrideAccess: true }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+      }))
+      const withdrawn = await readCollectionRevision(payload, { collection, id, draft: true, locale })
+      let live: Record<string, unknown> | undefined
+      try {
+        live = await payload.findByID({ collection, id, draft: false, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+      } catch (error) {
+        // Only an explicit absence is evidence of withdrawal. A database or
+        // adapter failure leaves the outcome unverified, not successful.
+        const failure = error as { status?: number; statusCode?: number } | undefined
+        if (Number(failure?.status || failure?.statusCode) !== 404) throw error
+      }
       if (withdrawn._status !== 'draft' || live?._status === 'published') {
         return errorResponse('Payload did not withdraw the published revision.', 409)
       }
-      return NextResponse.json({ collection, document: withdrawn, documentHash: await hashJson(withoutPayloadMetadata(withdrawn)) })
+      return NextResponse.json({ collection, document: withdrawn, documentHash: await revisionHash(withdrawn) })
     }
     return errorResponse('operation must be create, update, publish, or unpublish', 400)
   } catch (error) {

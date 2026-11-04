@@ -8,7 +8,7 @@ test('Growth projections match the JSON wire shape without weakening exact value
   const hashSource = readFileSync(new URL('payload-hash.ts', root), 'utf8')
     .replace(/^export\s+/gm, '')
   const contractSource = readFileSync(new URL('growth-contract.ts', root), 'utf8')
-    .replace(/^import\s+.*$/gm, '')
+    .replace(/^import[\s\S]*?from ['"][^'"]+['"];?[ \t]*$/gm, '')
     .replace(/^export\s+\{[^\n]*\}\s+from\s+['"][^'"]+['"]\s*\n/gm, '')
     .replace(/^export\s+/gm, '')
   const adapters = "import assert from 'node:assert/strict'\nconst getPayloadCloudflareContext = async () => ({})\n"
