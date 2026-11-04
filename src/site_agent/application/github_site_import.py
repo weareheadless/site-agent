@@ -6,6 +6,7 @@ collections; these pages remain the operator's source-controlled presentation.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -42,6 +43,12 @@ class _References(HTMLParser):
         super().__init__()
         self.references: list[str] = []
         self.locale = ''
+        self.origins: dict[str, set[str]] = {}
+
+    def _origin(self, directive: str, value: str) -> None:
+        parsed = urlsplit(value)
+        if parsed.scheme in {'http', 'https'} and parsed.netloc:
+            self.origins.setdefault(directive, set()).add(f'{parsed.scheme}://{parsed.netloc}')
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
@@ -50,10 +57,55 @@ class _References(HTMLParser):
         for key in ('src', 'poster'):
             if attrs.get(key):
                 self.references.append(attrs[key])
+                if tag in {'video', 'audio', 'source'}:
+                    self._origin('media', attrs[key])
+                elif tag == 'iframe':
+                    self._origin('frame', attrs[key])
+                elif tag == 'script':
+                    self._origin('script', attrs[key])
+                else:
+                    self._origin('img', attrs[key])
         if tag == 'link' and attrs.get('rel') in {'stylesheet', 'icon', 'preload'} and attrs.get('href'):
             self.references.append(attrs['href'])
+            if attrs['rel'] == 'stylesheet' or attrs.get('as') == 'style':
+                self._origin('style', attrs['href'])
+            elif attrs.get('as') == 'font':
+                self._origin('font', attrs['href'])
+            elif attrs.get('as') == 'script':
+                self._origin('script', attrs['href'])
+            else:
+                self._origin('img', attrs['href'])
         if attrs.get('srcset'):
             self.references.extend(item.strip().split()[0] for item in attrs['srcset'].split(',') if item.strip())
+            for item in attrs['srcset'].split(','):
+                if item.strip():
+                    self._origin('img', item.strip().split()[0])
+
+
+_INLINE_SCRIPT = re.compile(r'<script\b([^>]*)>(.*?)</script\s*>', re.IGNORECASE | re.DOTALL)
+
+
+def page_security(html: str, origins: dict[str, set[str]]) -> dict:
+    """Declare exactly what this page needs: inline script hashes and external origins.
+
+    Inline script bodies are hashed verbatim, so the Worker can allow them by
+    hash instead of opening script-src to arbitrary inline code.
+    """
+    scripts = []
+    for attributes, body in _INLINE_SCRIPT.findall(html):
+        if 'src' in attributes.lower():
+            continue
+        if not body.strip():
+            continue
+        digest = base64.b64encode(hashlib.sha256(body.encode('utf-8')).digest()).decode('ascii')
+        scripts.append('sha256-' + digest)
+    declaration: dict = {}
+    if scripts:
+        declaration['scripts'] = sorted(set(scripts))
+    declared_origins = {name: sorted(values) for name, values in sorted(origins.items()) if values}
+    if declared_origins:
+        declaration['origins'] = declared_origins
+    return declaration
 
 
 def inspect_static_site(root: Path) -> dict:
@@ -62,6 +114,7 @@ def inspect_static_site(root: Path) -> dict:
         raise GitHubSiteImportError('The supported repository needs a committed public/index.html.')
     files: dict[str, str] = {}
     routes: dict[str, str] = {}
+    security: dict[str, dict] = {}
     locales: set[str] = set()
     default_locale = ''
     for path in sorted(public.rglob('*')):
@@ -93,6 +146,9 @@ def inspect_static_site(root: Path) -> dict:
                 default_locale = parser.locale
             if path.name == 'index.html':
                 routes[relative.removesuffix('index.html')] = relative
+            declaration = page_security(html, parser.origins)
+            if declaration:
+                security[relative] = declaration
             references = parser.references
         elif path.suffix == '.css':
             references = re.findall(r'url\(\s*[\'"]?([^\s\)\'";]+)', path.read_text(encoding='utf-8'))
@@ -106,7 +162,7 @@ def inspect_static_site(root: Path) -> dict:
                 raise GitHubSiteImportError(f'Static website asset is missing: {reference} in {relative}')
     return {'kind': 'static', 'defaultLocale': default_locale,
             'locales': [default_locale, *sorted(locales - {default_locale})],
-            'routes': routes, 'files': files}
+            'routes': routes, 'files': files, 'security': security}
 
 
 def static_manifest_path(root: Path) -> Path:

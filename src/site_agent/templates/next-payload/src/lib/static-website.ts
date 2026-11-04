@@ -8,7 +8,12 @@ export type StaticWebsiteEnv = {
   ASSETS?: { fetch: (request: Request) => Promise<Response> }
 }
 
-type StaticManifest = { kind: 'static'; routes: Record<string, string>; files: Record<string, string> }
+type StaticManifest = {
+  kind: 'static'
+  routes: Record<string, string>
+  files: Record<string, string>
+  security?: Record<string, { scripts?: string[]; origins?: Record<string, string[]> }>
+}
 
 /**
  * The committed inventory of the imported static site. It ships with the
@@ -62,6 +67,8 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
     return new Response(request.method === 'HEAD' ? null : `window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag('js',new Date());gtag('config',${id});const s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id='+${id};document.head.appendChild(s);`,
       { headers: { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' } })
   }
+  // The reviewed route inventory is platform state, not a public document.
+  if (url.pathname === STATIC_MANIFEST_PATH) return new Response('Page not found', { status: 404 })
   // Platform paths always retain their canonical authentication/route handling.
   if (url.pathname === '/helloada-release.json') return null
   if (/^\/(admin|api|mail|_next|blog|_helloada|helloada-preview)(\/|$)/.test(url.pathname)) return null
@@ -84,7 +91,11 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   if (!asset.ok) return new Response('Declared website asset is unavailable', { status: 503 })
   // Preserve the operator's error document, including valid optional-head HTML.
   // It is not a publishable page and receives no indexing/tracking injection.
-  if (file === '/404.html') return new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: asset.headers })
+  if (file === '/404.html') {
+    const errorHeaders = new Headers(asset.headers)
+    errorHeaders.set('content-security-policy', pagePolicy(manifest, file, measurement))
+    return new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: errorHeaders })
+  }
   if (!file.endsWith('.html')) return request.method === 'HEAD'
     ? new Response(null, { status: asset.status, headers: asset.headers }) : asset
   let html = await asset.text()
@@ -100,20 +111,44 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   headers.set('cache-control', 'no-store')
   if (isPreview) headers.set('x-robots-tag', 'noindex, nofollow')
   headers.set('x-frame-options', 'SAMEORIGIN')
-  let csp = headers.get('content-security-policy') || "default-src 'self'; object-src 'none'; base-uri 'self'"
-  csp = csp.replace(/(?:^|;)\s*frame-ancestors\s+[^;]*/g, '') + "; frame-ancestors 'self'"
-  if (measurement) {
-    const directives = new Map(csp.split(';').map((part) => part.trim().split(/\s+/)).filter(([key]) => key)
-      .map(([key, ...values]) => [key, values]))
-    for (const [key, origins] of [
-      ['script-src', ['https://www.googletagmanager.com']],
-      ['connect-src', ['https://*.google-analytics.com', 'https://*.analytics.google.com', 'https://www.googletagmanager.com']],
-      ['img-src', ['https://*.google-analytics.com', 'https://*.googletagmanager.com']],
-    ] as const) {
-      directives.set(key, [...(directives.get(key) || directives.get('default-src') || ["'self'"]), ...origins])
-    }
-    csp = [...directives].map(([key, values]) => [key, ...values].join(' ')).join('; ')
-  }
-  headers.set('content-security-policy', csp)
+  headers.set('content-security-policy', pagePolicy(manifest, file, measurement))
   return new Response(request.method === 'HEAD' ? null : html, { status: 200, headers })
+}
+
+type PageSecurity = { scripts?: string[]; origins?: Record<string, string[]> }
+
+/**
+ * Build the policy from the reviewed declaration for this exact page: its own
+ * inline script hashes and the origins its markup actually references. A page
+ * with no declaration keeps the strict default rather than an open policy.
+ */
+function pagePolicy(manifest: StaticManifest, file: string, measurement: string): string {
+  const declared: PageSecurity = (manifest.security || {})[file] || {}
+  const origins = declared.origins || {}
+  const scripts = declared.scripts || []
+  const merge = (...lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((list) => list || []))]
+  const directives: [string, string[]][] = [
+    ['default-src', ["'self'"]],
+    ['script-src', merge(["'self'"], scripts, origins.script,
+      measurement ? ['https://www.googletagmanager.com'] : [])],
+    // Imported marketing pages attach behaviour through inline event
+    // attributes, which cannot be hashed. Keep <script> strict and allow only
+    // attribute handlers here.
+    ['script-src-attr', ["'unsafe-inline'"]],
+    ['style-src', merge(["'self'", "'unsafe-inline'"], origins.style)],
+    ['img-src', merge(["'self'", 'data:'], origins.img,
+      measurement ? ['https://*.google-analytics.com', 'https://*.googletagmanager.com'] : [])],
+    ['font-src', merge(["'self'", 'data:'], origins.font)],
+    ['media-src', merge(["'self'"], origins.media)],
+    ['connect-src', merge(["'self'"], origins.script,
+      measurement ? ['https://*.google-analytics.com', 'https://*.analytics.google.com', 'https://www.googletagmanager.com'] : [])],
+    ['frame-src', merge(origins.frame)],
+    ['object-src', ["'none'"]],
+    ['base-uri', ["'self'"]],
+    ['frame-ancestors', ["'self'"]],
+  ]
+  return directives
+    .filter(([, values]) => values.length)
+    .map(([key, values]) => `${key} ${values.join(' ')}`)
+    .join('; ')
 }
