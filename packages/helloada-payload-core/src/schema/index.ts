@@ -1,6 +1,6 @@
 import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
-import { catalogProductFields, createProductAttributesCollection, createProductVariantsCollection, validateCatalogAttribute, validateCatalogProduct, validateCatalogCurrency, validateMinorAmount, validateVariantSelection } from './catalog.ts'
+import { catalogProductFields, createProductAttributesCollection, createProductVariantsCollection, validateCatalogAttribute, validateCatalogProduct, validateCatalogCurrency, validateCategoryCriteria, validateMinorAmount, validateVariantSelection } from './catalog.ts'
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
@@ -1132,6 +1132,20 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
       ],
     },
     { name: 'canonicalUrl', type: 'text' },
+    {
+      name: 'criteria',
+      type: 'group',
+      label: 'Collection criteria',
+      admin: { description: 'The saved search this collection renders. Membership is derived from these criteria, not curated by hand.' },
+      validate: validateCategoryCriteria,
+      fields: [
+        { name: 'city', type: 'text', label: 'City' },
+        { name: 'region', type: 'text', label: 'Region or neighbourhood' },
+        { name: 'availability', type: 'text', label: 'Delivery status (exact, case-insensitive)' },
+        { name: 'priceMinMinor', type: 'number', label: 'Price floor (minor units, inclusive)', validate: validateMinorAmount },
+        { name: 'priceMaxMinor', type: 'number', label: 'Price ceiling (minor units, exclusive)', validate: validateMinorAmount },
+      ],
+    },
     seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: true },
   ],
