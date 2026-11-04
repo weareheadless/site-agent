@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from site_agent.site_scaffold import payload_template_copy_ignore
 from site_agent.application.shared_runtime import (
     SharedRuntimeError,
     apply_shared_runtime_overlay,
@@ -35,11 +36,23 @@ CUSTOMER = {
     "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
     "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent",
 }
+# The overlay installs the canonical template identity. Derive the expected
+# version/revision values from that template so a legitimate shared package
+# release does not require editing this fixture, while a stale tenant pin or a
+# missing overlay copy still fails.
+CANONICAL = json.loads((TEMPLATE / "template-manifest.json").read_text())
+CANONICAL_CUSTOMER = {
+    **CUSTOMER,
+    "payloadAdmin": CANONICAL["payloadAdmin"],
+    "payloadCore": CANONICAL["payloadCore"],
+}
 
 
 def _tenant_checkout(root: Path) -> Path:
     checkout = root / "tenant"
-    shutil.copytree(TEMPLATE, checkout)
+    # A tenant checkout is tracked source. Installed dependencies and previous
+    # build output are not part of it and must never be copied into a fixture.
+    shutil.copytree(TEMPLATE, checkout, ignore=payload_template_copy_ignore)
     config_path = checkout / "wrangler.jsonc"
     config = json.loads(config_path.read_text())
     config["name"] = CUSTOMER["worker"]
@@ -92,7 +105,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     design_before = (checkout / "src/components/site/TenantSections.tsx").read_bytes()
     migration_before = (checkout / "src/migrations/tenant-migration.ts").read_bytes()
 
-    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"}
+    canonical_customer = CANONICAL_CUSTOMER
     result = apply_shared_runtime_overlay(
         ROOT,
         checkout,
@@ -167,10 +180,10 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     }
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
     assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.50"
-    assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.10"
-    assert manifest["migrationHead"] == "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac"
+    assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == CANONICAL_CUSTOMER["payloadCore"]
+    assert manifest["migrationHead"] == CANONICAL["migrationHead"]
     assert manifest["contentContract"] == "helloada-content-v4"
-    assert manifest["schemaRevision"] == 9
+    assert manifest["schemaRevision"] == CANONICAL["schemaRevision"]
     assert result["payloadAdmin"] == admin_version
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
@@ -286,7 +299,7 @@ def test_overlay_rejects_malformed_expected_fingerprint_before_writes(tmp_path: 
 def test_overlay_preserves_a_payload_site_asset_handling(tmp_path: Path):
     checkout = _tenant_checkout(tmp_path)
     apply_shared_runtime_overlay(
-        ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+        ROOT, checkout, CANONICAL_CUSTOMER,
         shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
     )
     assets = json.loads((checkout / "wrangler.jsonc").read_text())["assets"]
@@ -301,7 +314,7 @@ def test_overlay_routes_an_explicit_static_site_through_the_worker(tmp_path: Pat
     config["vars"]["HELLOADA_STATIC_MANIFEST"] = '{"kind":"static"}'
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     apply_shared_runtime_overlay(
-        ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+        ROOT, checkout, CANONICAL_CUSTOMER,
         shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
     )
     merged = json.loads(config_path.read_text())
@@ -318,6 +331,6 @@ def test_overlay_rejects_an_unsupported_presentation_profile(tmp_path: Path):
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     with pytest.raises(SharedRuntimeError, match="presentation profile"):
         apply_shared_runtime_overlay(
-            ROOT, checkout, {**CUSTOMER, "payloadAdmin": "0.10.50", "payloadCore": "0.5.10"},
+            ROOT, checkout, CANONICAL_CUSTOMER,
             shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
         )

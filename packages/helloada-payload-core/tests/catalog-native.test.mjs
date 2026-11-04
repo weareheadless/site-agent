@@ -55,6 +55,9 @@ test('real Payload on the migrated D1 schema creates, drafts, publishes and vali
       product: product.id, key: 'weight', label: 'Weight', valueType: 'number', valueNumber: 80, unit: 'g', published: true, _status: 'published',
     } })
     assert.equal(attribute.valueNumber, 80)
+    const attributeDraft = await payload.update({ collection: 'productAttributes', id: attribute.id, locale: 'en', draft: true, data: { valueNumber: 81 } })
+    assert.equal(attributeDraft.valueNumber, 81)
+    assert.equal((await payload.findByID({ collection: 'productAttributes', id: attribute.id, locale: 'en', draft: false })).valueNumber, 80)
     const variant = await payload.create({ collection: 'productVariants', locale: 'en', draft: false, overrideAccess: true, data: {
       product: product.id, sku: 'SHIRT-M', options: [{ option: 'size', value: 'm' }], priceMinor: 1250, stock: 0, published: true, _status: 'published',
     } })
