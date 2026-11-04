@@ -102,7 +102,7 @@
       "repository": "https://github.com/weareheadless/casamigo-web.git",
       "schemaIdentity": "da6a1f56c7973fefbaf220990871c05a42cef9cc9ed9d79c420348402cadcc98",
       "schemaRevision": 10,
-      "sharedRuntimeUpdate": "canary",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": true,
       "worker": "helloada-casamigo"
     },
