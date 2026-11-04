@@ -457,7 +457,11 @@ def reconcile_unresolved_lifecycle_receipts(
                     evidence = reconcile_lifecycle_receipt(
                         release_root, tenant, receipt, customer, environment, pipeline_sha,
                     )
-                verified.append({"tenant": tenant, "releaseId": str(receipt["releaseId"])})
+                verified.append({
+                    "tenant": tenant,
+                    "releaseId": str(receipt["releaseId"]),
+                    "outcome": str(evidence.get("outcome") or "deployed"),
+                })
             except LifecycleReconciliationError as error:
                 unresolved.append({
                     "tenant": tenant,

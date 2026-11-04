@@ -399,7 +399,8 @@ def main() -> int:
         for item in reconciliation["verified"]:
             print(
                 f"[lifecycle-reconcile] {item['tenant']}/{item['releaseId']} "
-                "has exact live Durable Object evidence; a fresh canary release is still required",
+                f"has exact Cloudflare evidence ({item.get('outcome', 'deployed')}); "
+                "a fresh release with the same immutable source is still required",
                 flush=True,
             )
         for item in reconciliation["unresolved"]:
