@@ -1643,7 +1643,14 @@ def activate_tenant_runtime(
         with urllib.request.urlopen(request, timeout=25) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"tenant runtime activation returned HTTP {exc.code}") from None
+        detail = ""
+        try:
+            detail = str(exc.read().decode("utf-8", "replace")).strip()[:300]
+        except Exception:  # noqa: BLE001 - the status code is the primary signal
+            detail = ""
+        raise RuntimeError(
+            f"tenant runtime activation returned HTTP {exc.code}" + (f": {detail}" if detail else "")
+        ) from None
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError("tenant runtime activation did not return a valid response") from exc
     if (
