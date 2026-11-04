@@ -109,7 +109,11 @@ export async function GET(request: Request) {
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100)) : 100
     const result = await payload.find({ collection, draft, locale, limit, depth: 1, pagination: false, overrideAccess: true, sort: '-updatedAt' })
     try {
-      const documents = result.docs.map(document => contentDocument(collection, document as unknown as Record<string, unknown>))
+      // A draft is allowed to be incomplete: a locale can be authored before it
+      // has a route slug, so draft reads stay raw instead of failing the route.
+      const documents = draft
+        ? result.docs.map(document => document as unknown as Record<string, unknown>)
+        : result.docs.map(document => contentDocument(collection, document as unknown as Record<string, unknown>))
       return NextResponse.json({ collection, documents }, { headers: { 'Cache-Control': 'no-store' } })
     } catch (error) {
       return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
@@ -122,7 +126,9 @@ export async function GET(request: Request) {
   const documentHash = await hashJson(withoutPayloadMetadata(result as unknown as Record<string, unknown>))
   let document: Record<string, unknown>
   try {
-    document = contentDocument(collection, result as unknown as Record<string, unknown>)
+    document = draft
+      ? result as unknown as Record<string, unknown>
+      : contentDocument(collection, result as unknown as Record<string, unknown>)
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
   }
