@@ -3,7 +3,7 @@
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.50",
   "payloadCore": "0.6.3",
-  "schemaRevision": 10,
+  "schemaRevision": 11,
   "contentContract": "helloada-content-v4",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=22.0.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "da6a1f56c7973fefbaf220990871c05a42cef9cc9ed9d79c420348402cadcc98",
+  "schemaIdentity": "e1cb8147c89c267121ceb4e3399592e01294cb3d1242ff4d653a0a9cbcb3d11d",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -45,9 +45,14 @@
       "name": "20261104_010000_business_catalog",
       "fileSha256": "068f6413c7bb7976d350caa96fbcee2be7f322fd04df9931536376a89ae973cd",
       "snapshotSha256": "12fa0a38b875cec8064fe0e4ef47708eca6eea2460d4529a15b18020b294d7a7"
+    },
+    {
+      "name": "20261104_170000_category_criteria",
+      "fileSha256": "9ace4f4ab0271752f6a3935067b6e09bcf0bdfd05788be5fc8f231b01a413bce",
+      "snapshotSha256": "f68be1f7b04a876388c4374508aa4369c0be4bdf351c65d792f78049def8a47a"
     }
   ],
-  "migrationHead": "9e74f3cca7632d333d7b50e9248e5de32ade831d0ddaee63006f221470adaccb",
-  "migrationIndexSha256": "497182d65307ced7ea6ba56afa9153c3f58004f42b10fe7ec0bcc6a9c5ce58d3",
-  "configurationIdentity": "0b2e2fbc949c4601fa2229302f53cf389ffdb887f2f312911641de864d2f33b2"
+  "migrationHead": "0f8befae4fdc350682b6a9b9cf38ce3eba4aeebe5144d772ef5978ec969a05db",
+  "migrationIndexSha256": "591bec8652fd7994057c9d4a6f14434b1d4cde0ae259079ccd51b7c797ffc5b1",
+  "configurationIdentity": "1108d13ba1d3c8021a328fe29218a10f21b4d66854225a7bcad0e4dea9c3bcb6"
 }
