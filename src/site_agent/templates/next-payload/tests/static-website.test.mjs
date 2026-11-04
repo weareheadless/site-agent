@@ -158,6 +158,13 @@ test('a page that runs the site tag manager also allows its measurement endpoint
   assert.match(csp, /img-src[^;]*https:\/\/www\.google\.com/)
 })
 
+test('a page that loads the Google font loader may fetch its stylesheet and fonts', async () => {
+  const webfont = { ...manifest, security: { '/index.html': { origins: { script: ['https://ajax.googleapis.com'] } } } }
+  const csp = (await staticWebsiteResponse(request('/'), env({}, webfont))).headers.get('content-security-policy')
+  assert.match(csp, /style-src[^;]*https:\/\/fonts\.googleapis\.com/)
+  assert.match(csp, /font-src[^;]*https:\/\/fonts\.gstatic\.com/)
+})
+
 test('the reviewed route inventory is never a public document', async () => {
   const response = await staticWebsiteResponse(request('/_helloada/static-manifest.json'), env())
   assert.equal(response.status, 404)
