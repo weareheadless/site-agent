@@ -4,6 +4,7 @@ import { addSessionToUser, generatePayloadCookie } from 'payload/shared'
 import type { TypedUser } from 'payload'
 
 import config from '@payload-config'
+import { withRecoveredWrite } from '@/lib/growth-contract'
 import { decodeHandoffPublicKey, hashOwnerSubject, verifyOwnerHandoffToken } from '@/lib/helloada-handoff'
 import { runtimeValue } from '@/lib/runtime-env'
 
@@ -92,7 +93,7 @@ export async function POST(request: Request) {
   const payload = await getPayload({ config })
   const ownerSubjectHash = await hashOwnerSubject(claims.sub)
   try {
-    await payload.create({
+    await withRecoveredWrite(payload, { collection: 'owner-handoff-grants' }, () => payload.create({
       collection: 'owner-handoff-grants',
       data: {
         grantId: claims.jti,
@@ -101,7 +102,7 @@ export async function POST(request: Request) {
         consumedAt: new Date().toISOString(),
       },
       overrideAccess: true,
-    })
+    }))
   } catch {
     return response(409, 'owner_handoff_already_used')
   }
@@ -113,7 +114,7 @@ export async function POST(request: Request) {
     depth: 0,
     overrideAccess: true,
   })
-  const user = (existing.docs[0] || await payload.create({
+  const user = (existing.docs[0] || await withRecoveredWrite(payload, { collection: 'users' }, () => payload.create({
     collection: 'users',
     data: {
       email: `owner-${ownerSubjectHash}@identity.helloada.invalid`,
@@ -121,7 +122,7 @@ export async function POST(request: Request) {
       helloadaSubject: claims.sub,
     },
     overrideAccess: true,
-  })) as TypedUser & { email: string; collection?: string; _strategy?: string }
+  }))) as TypedUser & { email: string; collection?: string; _strategy?: string }
 
   user.collection = 'users'
   user._strategy = 'local-jwt'

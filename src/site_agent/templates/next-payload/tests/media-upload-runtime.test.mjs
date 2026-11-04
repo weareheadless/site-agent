@@ -28,6 +28,7 @@ function bridge(authenticated = true, service = false, existing = []) {
     serviceAuthorized: () => service,
     helloAdaRuntime: () => ({ configured: true, url: 'https://shared.example/v1', token: 'fixture-tenant-token' }),
     helloAdaSite: { tenantId: 'fixture' }, tenantId: () => 'fixture',
+    withRecoveredWrite: async (payload, target, action) => action(),
     fetch: async (url, options) => { calls.push({ url, options }); return Response.json({ ok: true }) },
   }
   vm.runInNewContext(javascript + '\nglobalThis.handlers = { GET, POST };', sandbox)

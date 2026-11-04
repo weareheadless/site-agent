@@ -3,7 +3,9 @@ import { getPayload } from 'payload'
 
 import config from '@payload-config'
 import { helloAdaSite } from '@/helloada.config'
-import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { withRecoveredWrite } from '@/lib/growth-contract'
+import { withoutPayloadMetadata } from '@/lib/payload-hash'
+import { readGlobalRevision, revisionHash } from '@/lib/payload-revision'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
 import { validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
@@ -38,16 +40,10 @@ export async function GET(request: Request) {
     return errorResponse('unsupported locale')
   }
   const payload = await getPayload({ config })
-  const global = await payload.findGlobal({
-    slug,
-    draft: params.get('draft') !== 'false',
-    locale,
-    depth: 2,
-    overrideAccess: true,
-  }) as unknown as Record<string, unknown>
+  const global = await readGlobalRevision(payload, { global: slug, locale, draft: params.get('draft') !== 'false' })
   return NextResponse.json({
     global,
-    globalHash: await hashJson(withoutPayloadMetadata(global)),
+    globalHash: await revisionHash(global),
   }, { headers: { 'Cache-Control': 'no-store' } })
 }
 
@@ -97,40 +93,35 @@ export async function POST(request: Request) {
       locale,
       overrideAccess: true,
     }
-    const current = await payload.findGlobal(options) as unknown as Record<string, unknown>
-    const currentHash = await hashJson(withoutPayloadMetadata(current))
+    const current = await readGlobalRevision(payload, { global: slug, locale, draft: true })
+    const currentHash = await revisionHash(current)
     if (currentHash !== expectedHash) {
       return errorResponse(operation === 'publish'
         ? 'The Payload draft changed after review. Review the current version before publishing.'
         : 'The Payload global changed. Read it again before updating.', 409)
     }
     if (operation === 'update') {
-      const global = await payload.updateGlobal({
+      const global = await withRecoveredWrite(payload, { kind: 'global', global: slug, locale, expectedHash, data }, () => payload.updateGlobal({
         ...options,
         data: data as never,
         context: { helloAdaExpectedRevision: { kind: 'global', global: slug, hash: expectedHash, locale } },
-      }) as unknown as Record<string, unknown>
+      })) as unknown as Record<string, unknown>
       return NextResponse.json({
         global,
-        globalHash: await hashJson(withoutPayloadMetadata(global)),
+        globalHash: await revisionHash(global),
       }, { headers: { 'Cache-Control': 'no-store' } })
     }
     // Publication writes the exact reviewed draft into the live global row.
     // The read-back below is the only proof that the public revision matches.
-    await payload.updateGlobal({
+    const publishData = withoutPayloadMetadata(current)
+    await withRecoveredWrite(payload, { kind: 'global', global: slug, locale, expectedHash, data: publishData }, () => payload.updateGlobal({
       ...options,
       draft: false,
-      data: withoutPayloadMetadata(current) as never,
+      data: publishData as never,
       context: { helloAdaExpectedRevision: { kind: 'global', global: slug, hash: expectedHash, locale } },
-    })
-    const published = await payload.findGlobal({
-      slug,
-      draft: false,
-      locale,
-      depth: 2,
-      overrideAccess: true,
-    }) as unknown as Record<string, unknown>
-    const globalHash = await hashJson(withoutPayloadMetadata(published))
+    }))
+    const published = await readGlobalRevision(payload, { global: slug, locale, draft: false })
+    const globalHash = await revisionHash(published)
     if (globalHash !== expectedHash) {
       return errorResponse('Payload published a different global revision than the approved one.', 409)
     }

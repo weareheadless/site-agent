@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
 
 import config from '@payload-config'
-import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { withRecoveredWrite } from '@/lib/growth-contract'
+import { readCollectionRevision, revisionHash } from '@/lib/payload-revision'
 import { serviceAuthorized } from '@/lib/service-auth'
 
 const errorResponse = (message: string, status = 400) =>
@@ -25,7 +26,7 @@ export async function GET(request: Request) {
       const document = media as unknown as Record<string, unknown>
       return NextResponse.json({
         media: document,
-        documentHash: await hashJson(withoutPayloadMetadata(document)),
+        documentHash: await revisionHash(document),
       }, { headers: { 'Cache-Control': 'no-store' } })
     } catch (error) {
       return errorResponse(error instanceof Error ? error.message : 'media read failed', 404)
@@ -57,16 +58,18 @@ export async function POST(request: Request) {
   }
   const payload = await getPayload({ config })
   try {
-    const current = await payload.findByID({ collection: 'media', id, depth: 1, overrideAccess: true }) as unknown as Record<string, unknown>
-    if (await hashJson(withoutPayloadMetadata(current)) !== expectedHash) {
+    const current = await readCollectionRevision(payload, { collection: 'media', id })
+    if (await revisionHash(current) !== expectedHash) {
       return errorResponse('The media document changed. Read it again before updating.', 409)
     }
-    const media = await payload.update({
-      collection: 'media', id, data: (body.data || {}) as never, overrideAccess: true, depth: 1,
-    }) as unknown as Record<string, unknown>
+    const data = (body.data || {}) as Record<string, unknown>
+    const media = await withRecoveredWrite(payload, { collection: 'media', id, expectedHash, data }, () => payload.update({
+      collection: 'media', id, data: data as never, overrideAccess: true, depth: 1,
+      context: { helloAdaExpectedRevision: { kind: 'collection', collection: 'media', id, hash: expectedHash } },
+    })) as unknown as Record<string, unknown>
     return NextResponse.json({
       media,
-      documentHash: await hashJson(withoutPayloadMetadata(media)),
+      documentHash: await revisionHash(media),
     }, { headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : 'media update failed', 400)

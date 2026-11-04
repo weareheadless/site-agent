@@ -30,6 +30,7 @@ import {
   reconcileOperation,
   tenantId,
   withPayloadWriteGuard,
+  withRecoveredWrite,
 } from '@/lib/growth-contract'
 
 export const dynamic = 'force-dynamic'
@@ -483,7 +484,14 @@ export async function POST(request: Request, { params }: RouteProps) {
     try {
       await prepareOperation(operationKey, intent)
       operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
-      await auth.payload.update({ collection: collection as CollectionSlug, data: data as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
+      const reqContext = auth.req as { context?: Record<string, unknown>; locale?: string }
+      reqContext.context = {
+        ...(reqContext.context || {}),
+        helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: baseHash, locale: reqContext.locale },
+      }
+      await withRecoveredWrite(auth.payload, { collection, id, locale: reqContext.locale, expectedHash: baseHash, data }, () => auth.payload.update({
+        collection: collection as CollectionSlug, data: data as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user,
+      }))
       const latest = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
       const draftHash = await hashJson(withoutPayloadMetadata(latest))
       if (draftHash !== targetHash) throw new Error('Payload saved a different draft than the exact content edit')
@@ -502,14 +510,15 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!(value instanceof File)) return errorResponse('file_required', 400)
     if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
     if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
-    const document = await auth.payload.create({
+    const bytes = Buffer.from(await value.arrayBuffer())
+    const document = await withRecoveredWrite(auth.payload, { collection: 'media' }, () => auth.payload.create({
       collection: 'media',
       data: { alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image' },
       draft: true,
       req: auth.req,
       user: auth.user,
-      file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
-    })
+      file: { data: bytes, mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
+    }))
     scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
     return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
   }
@@ -587,8 +596,18 @@ export async function POST(request: Request, { params }: RouteProps) {
     const collection = documentCollection(body)
     const id = text(body.documentId || body.document_id)
     if (!id) return errorResponse('discard document id is required')
-    const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 1, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-    const document = await auth.payload.update({ collection: collection as CollectionSlug, data: withoutPayloadMetadata(published) as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
+    const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+    const currentDraft = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+    const baseHash = await hashJson(withoutPayloadMetadata(currentDraft))
+    const discardData = withoutPayloadMetadata(published)
+    const reqContext = auth.req as { context?: Record<string, unknown>; locale?: string }
+    reqContext.context = {
+      ...(reqContext.context || {}),
+      helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: baseHash, locale: reqContext.locale },
+    }
+    const document = await withRecoveredWrite(auth.payload, { collection, id, locale: reqContext.locale, expectedHash: baseHash, data: discardData }, () => auth.payload.update({
+      collection: collection as CollectionSlug, data: discardData as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user,
+    }))
     return NextResponse.json({ ok: true, collection, documentId: id, document })
   }
   if (path === '/content/history') {

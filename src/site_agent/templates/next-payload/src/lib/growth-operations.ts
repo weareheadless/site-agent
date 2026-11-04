@@ -23,6 +23,7 @@ import {
   retireObsoleteOperation,
   saveCandidate,
   tenantId,
+  withRecoveredWrite,
 } from '@/lib/growth-contract'
 import type { HelloAdaAuth } from '@/lib/helloada-auth'
 
@@ -471,12 +472,12 @@ export async function growthPost(request: Request, path: string, principal: Grow
       if (currentDraftHash !== text(packageData.candidateHash)) {
         const req = await requestForWrite(request, payload, principal)
         operationContext(req as { context?: Record<string, unknown> }, operationKey)
-        await payload.update({
+        await withRecoveredWrite(payload, { collection: verified.collection, id: documentId, locale: helloAdaSite.defaultLocale, expectedHash: currentDraftHash, data: verified.changes as Record<string, unknown> }, () => payload.update({
           collection: verified.collection as CollectionSlug, data: verified.changes as never,
           draft: true, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale,
           ...(principal.kind === 'owner' ? { overrideAccess: false, user: principal.auth.user } : { overrideAccess: true }),
           req,
-        })
+        }))
       }
       const access = accessFor(principal)
       const afterWrite = await payload.findByID({ collection: verified.collection as CollectionSlug, draft: true, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
@@ -528,12 +529,12 @@ export async function growthPost(request: Request, path: string, principal: Grow
       const verified = await verifyPackage(payload, principal, packageData, packageHash)
       const req = await requestForWrite(request, payload, principal)
       operationContext(req as { context?: Record<string, unknown> }, operationKey)
-      await payload.update({
+      await withRecoveredWrite(payload, { collection: verified.collection, id: documentId, locale: helloAdaSite.defaultLocale }, () => payload.update({
         collection: verified.collection as CollectionSlug, data: withoutPayloadMetadata(verified.after) as never,
         draft: false, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale,
         ...(principal.kind === 'owner' ? { overrideAccess: false, user: principal.auth.user } : { overrideAccess: true }),
         req,
-      })
+      }))
       const access = accessFor(principal)
       const published = await payload.findByID({ collection: verified.collection as CollectionSlug, draft: false, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
       if (await hashJson(projectDocument(published, verified.fields)) !== text(packageData.candidateHash)) throw new Error('The public Payload document does not match the approved candidate')

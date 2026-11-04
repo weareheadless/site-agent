@@ -69,6 +69,9 @@ const harness = async (t) => {
     export const prepareOperation = async (key, intent) => (globalThis.__contract).prepare(key, intent)
     export const reconcileOperation = async (key, result) => (globalThis.__contract).reconcile(key, result)
     export const tenantId = () => 'tenant-a'
+    export default {}
+    export const serviceAuthorized = () => false
+    export const withRecoveredWrite = async (payload, target, action) => action()
     export const withPayloadWriteGuard = async (req, action) => {
             await (globalThis.__guard).acquire(req)
       try { const value = await action(); await (globalThis.__guard).settle(req, false); return value }
@@ -78,7 +81,7 @@ const harness = async (t) => {
   await writeFile(stub, stubs)
   const bundled = await build({
     entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node',
-    alias: Object.fromEntries(['@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@weareheadless/helloada-payload-admin/server','@/helloada.config'].map(specifier => [specifier, stub])),
+    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@weareheadless/helloada-payload-admin/server','@/helloada.config'].map(specifier => [specifier, stub])),
   })
   const bundlePath = path.join(temp, 'route.mjs')
   await writeFile(bundlePath, bundled.outputFiles[0].text)

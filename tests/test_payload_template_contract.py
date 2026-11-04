@@ -43,7 +43,10 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     for source in (content, global_route, media):
         assert "serviceAuthorized(request)" in source
         assert "Cache-Control" in source
-        assert "hashJson" in source
+        # Every service gateway hashes one exact depth-0 revision and settles the
+        # shared write lease after a failed Local API write.
+        assert "revisionHash" in source
+        assert "withRecoveredWrite" in source
     assert "serviceAuthorized(request)" in growth
     assert "growthGet(request" in growth and "growthPost(request" in growth
     assert "path === '/growth/contract'" in operations

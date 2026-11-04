@@ -143,6 +143,8 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     locked_core = template_lock['packages']['node_modules/@weareheadless/helloada-payload-core']
     assert locked_core['version'] == core_version
     assert locked_core['resolved'] == core_asset
+    # The lock must pin the exact bytes of the released 0.6.3 artifact; this
+    # value was stale from 0.6.2 after the release commit.
     assert locked_core['integrity'] == (
         'sha512-g7T2qjC/ofrBDItTf/cjhKIQLlIqETLWZgc6NYTvLipcCvQ8Bp87p/I6GydZCHGPz+BKFAP6SfE0JCf+eUej0g=='
     )
