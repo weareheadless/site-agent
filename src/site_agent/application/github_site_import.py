@@ -6,7 +6,6 @@ collections; these pages remain the operator's source-controlled presentation.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import re
@@ -82,30 +81,15 @@ class _References(HTMLParser):
                     self._origin('img', item.strip().split()[0])
 
 
-_INLINE_SCRIPT = re.compile(r'<script\b([^>]*)>(.*?)</script\s*>', re.IGNORECASE | re.DOTALL)
+def page_security(origins: dict[str, set[str]]) -> dict:
+    """Declare the external origins this exact page references.
 
-
-def page_security(html: str, origins: dict[str, set[str]]) -> dict:
-    """Declare exactly what this page needs: inline script hashes and external origins.
-
-    Inline script bodies are hashed verbatim, so the Worker can allow them by
-    hash instead of opening script-src to arbitrary inline code.
+    The export also runs generated inline code at runtime (Webflow re-queues
+    its own scripts and injects per-page configuration), so inline execution is
+    unavoidable; the reviewed allowlist governs external script sources.
     """
-    scripts = []
-    for attributes, body in _INLINE_SCRIPT.findall(html):
-        if 'src' in attributes.lower():
-            continue
-        if not body.strip():
-            continue
-        digest = base64.b64encode(hashlib.sha256(body.encode('utf-8')).digest()).decode('ascii')
-        scripts.append('sha256-' + digest)
-    declaration: dict = {}
-    if scripts:
-        declaration['scripts'] = sorted(set(scripts))
-    declared_origins = {name: sorted(values) for name, values in sorted(origins.items()) if values}
-    if declared_origins:
-        declaration['origins'] = declared_origins
-    return declaration
+    declared = {name: sorted(values) for name, values in sorted(origins.items()) if values}
+    return {'origins': declared} if declared else {}
 
 
 def inspect_static_site(root: Path) -> dict:
@@ -146,7 +130,7 @@ def inspect_static_site(root: Path) -> dict:
                 default_locale = parser.locale
             if path.name == 'index.html':
                 routes[relative.removesuffix('index.html')] = relative
-            declaration = page_security(html, parser.origins)
+            declaration = page_security(parser.origins)
             if declaration:
                 security[relative] = declaration
             references = parser.references

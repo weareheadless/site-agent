@@ -4,7 +4,6 @@ import test from 'node:test'
 import { staticWebsiteResponse } from '../src/lib/static-website.ts'
 
 const security = {
-  scripts: ['sha256-Lnmh9rvXXZUKZJp5XXpqMM71Cq704LWf1uob/Tlotoo='],
   origins: { script: ['https://cdn.example.com'], img: ['https://img.example.com'], frame: ['https://meet.example.com'] },
 }
 const manifest = { kind: 'static', routes: { '/': '/index.html', '/en/': '/en/index.html' }, files: { '/index.html': 'hash', '/en/index.html': 'hash', '/assets/site.js': 'hash' }, security: { '/index.html': security } }
@@ -132,12 +131,12 @@ test('the original error document is used only for unknown paths, with a real 40
   assert.equal(broken.status, 503)
 })
 
-test('the page policy allows only its own inline script hashes and declared origins', async () => {
+test('the page policy allows only the origins that page declares', async () => {
   const response = await staticWebsiteResponse(request('/'), env())
   const csp = response.headers.get('content-security-policy')
-  assert.match(csp, /script-src 'self' sha256-Lnmh9rvXXZUKZJp5XXpqMM71Cq704LWf1uob\/Tlotoo= https:\/\/cdn\.example\.com/)
-  assert.doesNotMatch(csp, /script-src(?!-attr)[^;]*unsafe-inline/)
+  assert.match(csp, /script-src 'self' 'unsafe-inline' https:\/\/cdn\.example\.com/)
   assert.match(csp, /script-src-attr 'unsafe-inline'/)
+  assert.match(csp, /worker-src 'self' blob:/)
   assert.match(csp, /style-src 'self' 'unsafe-inline'/)
   assert.match(csp, /img-src 'self' data: https:\/\/img\.example\.com/)
   assert.match(csp, /frame-src https:\/\/meet\.example\.com/)
@@ -147,8 +146,16 @@ test('the page policy allows only its own inline script hashes and declared orig
 
 test('a page with no declaration keeps the strict default policy', async () => {
   const csp = (await staticWebsiteResponse(request('/en/'), env())).headers.get('content-security-policy')
-  assert.match(csp, /(?:^|; )script-src 'self'(?:;|$)/)
-  assert.doesNotMatch(csp, /sha256-/)
+  assert.match(csp, /(?:^|; )script-src 'self' 'unsafe-inline'(?:;|$)/)
+  assert.doesNotMatch(csp, /https:\/\/cdn\.example\.com|googletagmanager/)
+})
+
+test('a page that runs the site tag manager also allows its measurement endpoints', async () => {
+  const tagManager = { ...manifest, security: { '/index.html': { origins: { script: ['https://www.googletagmanager.com'] } } } }
+  const csp = (await staticWebsiteResponse(request('/'), env({}, tagManager))).headers.get('content-security-policy')
+  assert.match(csp, /script-src[^;]*https:\/\/www\.googletagmanager\.com/)
+  assert.match(csp, /connect-src[^;]*https:\/\/analytics\.google\.com/)
+  assert.match(csp, /img-src[^;]*https:\/\/www\.google\.com/)
 })
 
 test('the reviewed route inventory is never a public document', async () => {

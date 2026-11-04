@@ -12,7 +12,7 @@ type StaticManifest = {
   kind: 'static'
   routes: Record<string, string>
   files: Record<string, string>
-  security?: Record<string, { scripts?: string[]; origins?: Record<string, string[]> }>
+  security?: Record<string, { origins?: Record<string, string[]> }>
 }
 
 /**
@@ -115,33 +115,48 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   return new Response(request.method === 'HEAD' ? null : html, { status: 200, headers })
 }
 
-type PageSecurity = { scripts?: string[]; origins?: Record<string, string[]> }
+type PageSecurity = { origins?: Record<string, string[]> }
+
+/** Google measurement endpoints the site's own tag manager calls. */
+const MEASUREMENT_SCRIPT = ['https://www.googletagmanager.com']
+const MEASUREMENT_CONNECT = [
+  'https://www.google-analytics.com',
+  'https://analytics.google.com',
+  'https://*.analytics.google.com',
+  'https://www.googletagmanager.com',
+  'https://stats.g.doubleclick.net',
+  'https://www.google.com',
+]
+const MEASUREMENT_IMG = [
+  'https://www.google-analytics.com',
+  'https://www.googletagmanager.com',
+  'https://www.google.com',
+  'https://*.google.com',
+  'https://*.google.com.mx',
+]
 
 /**
- * Build the policy from the reviewed declaration for this exact page: its own
- * inline script hashes and the origins its markup actually references. A page
- * with no declaration keeps the strict default rather than an open policy.
+ * Build the policy from the reviewed declaration for this exact page: the
+ * external origins its markup references. Inline execution stays allowed
+ * because the export generates inline code at runtime; external script
+ * sources are limited to the declaration.
  */
 function pagePolicy(manifest: StaticManifest, file: string, measurement: string): string {
   const declared: PageSecurity = (manifest.security || {})[file] || {}
   const origins = declared.origins || {}
-  const scripts = declared.scripts || []
   const merge = (...lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((list) => list || []))]
+  const ownMeasurement = (origins.script || []).some((origin) => origin === 'https://www.googletagmanager.com')
+  const analytics = measurement || ownMeasurement
   const directives: [string, string[]][] = [
     ['default-src', ["'self'"]],
-    ['script-src', merge(["'self'"], scripts, origins.script,
-      measurement ? ['https://www.googletagmanager.com'] : [])],
-    // Imported marketing pages attach behaviour through inline event
-    // attributes, which cannot be hashed. Keep <script> strict and allow only
-    // attribute handlers here.
+    ['script-src', merge(["'self'", "'unsafe-inline'"], origins.script, analytics ? MEASUREMENT_SCRIPT : [])],
     ['script-src-attr', ["'unsafe-inline'"]],
+    ['worker-src', ["'self'", 'blob:']],
     ['style-src', merge(["'self'", "'unsafe-inline'"], origins.style)],
-    ['img-src', merge(["'self'", 'data:'], origins.img,
-      measurement ? ['https://*.google-analytics.com', 'https://*.googletagmanager.com'] : [])],
+    ['img-src', merge(["'self'", 'data:'], origins.img, analytics ? MEASUREMENT_IMG : [])],
     ['font-src', merge(["'self'", 'data:'], origins.font)],
     ['media-src', merge(["'self'"], origins.media)],
-    ['connect-src', merge(["'self'"], origins.script,
-      measurement ? ['https://*.google-analytics.com', 'https://*.analytics.google.com', 'https://www.googletagmanager.com'] : [])],
+    ['connect-src', merge(["'self'"], origins.script, analytics ? MEASUREMENT_CONNECT : [])],
     ['frame-src', merge(origins.frame)],
     ['object-src', ["'none'"]],
     ['base-uri', ["'self'"]],
