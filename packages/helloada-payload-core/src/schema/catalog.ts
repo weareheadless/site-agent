@@ -187,3 +187,70 @@ export const createProductVariantsCollection = (hooks: CollectionConfig['hooks']
     return { ...data, selectionKey, sourceId: originalDoc?.sourceId || data?.sourceId || `variant:${globalThis.crypto.randomUUID()}` }
   }] },
 })
+
+/**
+ * A Casamigo collection is a saved search, not a curated list: the source
+ * stores filter criteria and the page renders the matching products. These
+ * criteria reproduce all twelve rendered grids exactly (verified against the
+ * live pages): published only, city/region/availability equality, an inclusive
+ * price floor and an exclusive price ceiling. Property type is not a filter.
+ */
+export type CatalogCategoryCriteria = {
+  city?: string
+  region?: string
+  availability?: string
+  priceMinMinor?: number
+  priceMaxMinor?: number
+}
+
+const criterionText = (value: unknown) => typeof value === 'string' ? value.trim() : ''
+
+export const validateCategoryCriteria = (value: unknown): true | string => {
+  const criteria = row(value)
+  for (const field of ['city', 'region', 'availability']) {
+    if (present(criteria[field]) && typeof criteria[field] !== 'string') return `Category ${field} must be text.`
+    if (typeof criteria[field] === 'string' && criteria[field].length > 120) return `Category ${field} is too long.`
+  }
+  for (const field of ['priceMinMinor', 'priceMaxMinor']) {
+    const amount = validateMinorAmount(criteria[field])
+    if (amount !== true) return `Category ${field}: ${amount}`
+  }
+  const floor = criteria.priceMinMinor
+  const ceiling = criteria.priceMaxMinor
+  if (typeof floor === 'number' && typeof ceiling === 'number' && floor >= ceiling) {
+    return 'The category price ceiling must be above its floor (the ceiling is exclusive).'
+  }
+  return true
+}
+
+type CatalogProductFacts = {
+  published?: unknown
+  _status?: unknown
+  priceMinor?: unknown
+  availability?: unknown
+  location?: unknown
+}
+
+const minorAmount = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+
+/** The canonical membership predicate shared by readers and the workspace. */
+export const matchesCategoryCriteria = (product: CatalogProductFacts, criteria: CatalogCategoryCriteria): boolean => {
+  if (product.published === false || (present(product._status) && product._status !== 'published')) return false
+  const location = row(product.location)
+  const city = criterionText(criteria.city)
+  if (city && String(location.city ?? '').trim() !== city) return false
+  const region = criterionText(criteria.region)
+  if (region && String(location.region ?? '').trim() !== region) return false
+  const availability = criterionText(criteria.availability)
+  if (availability && String(product.availability ?? '').trim().toLowerCase() !== availability.toLowerCase()) return false
+  const price = minorAmount(product.priceMinor)
+  const floor = minorAmount(criteria.priceMinMinor) ?? 0
+  const ceiling = minorAmount(criteria.priceMaxMinor) ?? 0
+  if (floor || ceiling) {
+    if (price === undefined) return false
+    if (floor && price < floor) return false
+    if (ceiling && price >= ceiling) return false
+  }
+  return true
+}
