@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261104212000-api-tenant-runtime-liveness-retry",
-    "sha": "ebc122116b3a6c79e9230bc33ae6c5ac1e4a3c09"
+    "id": "20261104235500-api-crawlseo-degrade",
+    "sha": "b29376d93faa39a03aaca6f62b67e83049313e34"
   }
 }
