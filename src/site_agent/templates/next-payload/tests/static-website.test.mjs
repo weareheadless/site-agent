@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { staticWebsiteResponse } from '../src/lib/static-website.ts'
 
-const manifest = { kind: 'static', routes: { '/': '/index.html', '/en/': '/en/index.html' }, files: { '/index.html': 'hash', '/en/index.html': 'hash', '/assets/site.js': 'hash' } }
+const security = {
+  scripts: ['sha256-Lnmh9rvXXZUKZJp5XXpqMM71Cq704LWf1uob/Tlotoo='],
+  origins: { script: ['https://cdn.example.com'], img: ['https://img.example.com'], frame: ['https://meet.example.com'] },
+}
+const manifest = { kind: 'static', routes: { '/': '/index.html', '/en/': '/en/index.html' }, files: { '/index.html': 'hash', '/en/index.html': 'hash', '/assets/site.js': 'hash' }, security: { '/index.html': security } }
 const page = () => new Response('<html><head><title>Astrid</title></head><body>Original website</body></html>', {
   headers: { 'content-security-policy': "default-src 'self'; script-src 'self'; frame-ancestors 'none'", 'x-frame-options': 'DENY' },
 })
@@ -88,7 +92,7 @@ test('serves the declared original HTML with real runtime SEO bindings in both l
     assert.match(html, /google-site-verification/)
     assert.match(html, /verification&lt;&quot;/)
     assert.match(html, /src="\/_helloada\/analytics.js"/)
-    assert.match(response.headers.get('content-security-policy'), /script-src 'self' https:\/\/www.googletagmanager.com/)
+    assert.match(response.headers.get('content-security-policy'), /script-src[^;]*https:\/\/www\.googletagmanager\.com/)
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/)
     assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN')
   }
@@ -126,6 +130,30 @@ test('the original error document is used only for unknown paths, with a real 40
   assert.doesNotMatch(await response.text(), /not-for-error-pages/)
   const broken = await staticWebsiteResponse(request(), { ...settings, ASSETS: assets(errorManifest, () => new Response('missing', { status: 404 })) })
   assert.equal(broken.status, 503)
+})
+
+test('the page policy allows only its own inline script hashes and declared origins', async () => {
+  const response = await staticWebsiteResponse(request('/'), env())
+  const csp = response.headers.get('content-security-policy')
+  assert.match(csp, /script-src 'self' sha256-Lnmh9rvXXZUKZJp5XXpqMM71Cq704LWf1uob\/Tlotoo= https:\/\/cdn\.example\.com/)
+  assert.doesNotMatch(csp, /script-src(?!-attr)[^;]*unsafe-inline/)
+  assert.match(csp, /script-src-attr 'unsafe-inline'/)
+  assert.match(csp, /style-src 'self' 'unsafe-inline'/)
+  assert.match(csp, /img-src 'self' data: https:\/\/img\.example\.com/)
+  assert.match(csp, /frame-src https:\/\/meet\.example\.com/)
+  assert.match(csp, /frame-ancestors 'self'/)
+  assert.match(csp, /object-src 'none'/)
+})
+
+test('a page with no declaration keeps the strict default policy', async () => {
+  const csp = (await staticWebsiteResponse(request('/en/'), env())).headers.get('content-security-policy')
+  assert.match(csp, /(?:^|; )script-src 'self'(?:;|$)/)
+  assert.doesNotMatch(csp, /sha256-/)
+})
+
+test('the reviewed route inventory is never a public document', async () => {
+  const response = await staticWebsiteResponse(request('/_helloada/static-manifest.json'), env())
+  assert.equal(response.status, 404)
 })
 
 test('HEAD returns the same headers without HTML and asset bytes are unchanged', async () => {
