@@ -136,6 +136,51 @@ def test_reconcile_records_exact_live_state_without_mutating_terminal_receipt(tm
     assert reconciliation.read_lifecycle_reconciliation(tmp_path, TENANT, receipt) == evidence
 
 
+def _mock_cloudflare_absent(monkeypatch: pytest.MonkeyPatch, *, script_present: bool = False) -> None:
+    def api_result(url: str, environment):
+        if url.endswith("/deployments"):
+            return {"deployments": []}
+        if url.endswith("/scripts/" + TENANT):
+            if script_present:
+                return {"id": TENANT}
+            raise reconciliation.LifecycleReconciliationError("Cloudflare API returned HTTP 404")
+        raise AssertionError(f"unexpected Cloudflare API URL: {url}")
+
+    monkeypatch.setattr(reconciliation, "_api_result", api_result)
+    monkeypatch.setattr(reconciliation, "_health_json", lambda url: _health())
+
+
+def test_reconcile_records_a_proven_no_deployment_outcome(tmp_path, monkeypatch):
+    receipt_path, receipt, original_bytes = _prepare(tmp_path)
+    _mock_cloudflare_absent(monkeypatch)
+
+    evidence = reconciliation.reconcile_lifecycle_receipt(
+        tmp_path, TENANT, receipt, {"health": "https://oceanicvibes.com/api/health"},
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "secret"},
+        PIPELINE_SHA,
+    )
+
+    assert evidence["status"] == "verified"
+    assert evidence["outcome"] == "no-deployment"
+    assert evidence["proof"]["script"] == "absent"
+    assert evidence["proof"]["deployments"] == 0
+    assert evidence["proof"]["previousDeployment"] == "old-deployment"
+    assert receipt_path.read_bytes() == original_bytes
+    assert reconciliation.read_lifecycle_reconciliation(tmp_path, TENANT, receipt) == evidence
+
+
+def test_no_deployment_reconciliation_fails_closed_when_a_script_exists(tmp_path, monkeypatch):
+    _, receipt, _ = _prepare(tmp_path)
+    _mock_cloudflare_absent(monkeypatch, script_present=True)
+
+    with pytest.raises(reconciliation.LifecycleReconciliationError, match="script but no deployment"):
+        reconciliation.reconcile_lifecycle_receipt(
+            tmp_path, TENANT, receipt, {"health": "https://oceanicvibes.com/api/health"},
+            {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "secret"},
+            PIPELINE_SHA,
+        )
+
+
 def test_reconcile_fails_closed_when_previous_deployment_is_still_active(tmp_path, monkeypatch):
     _, receipt, _ = _prepare(tmp_path)
     _mock_cloudflare(monkeypatch, current_deployment="old-deployment")
