@@ -143,8 +143,19 @@ class Runtime:
 
     def start(self) -> None:
         """Start optional long-lived provider runtimes for this process."""
-        if self.crawlseo_client is not None:
+        if self.crawlseo_client is None:
+            return
+        try:
             self.crawlseo_client.start()
+        except Exception as exc:  # noqa: BLE001 — an external provider outage must not stop the tenant
+            # CrawlSEO is an external service. The hourly seo_provisioning job
+            # refreshes it through refresh_crawlseo, so a transient outage
+            # degrades research instead of taking the tenant, its chat worker,
+            # or the shared API offline.
+            try:
+                self.memory.record_action("crawlseo_start_error", str(exc)[:300])
+            except Exception:  # noqa: BLE001 — diagnostics are best effort
+                pass
 
     def close(self) -> None:
         """Stop optional provider runtimes deterministically."""

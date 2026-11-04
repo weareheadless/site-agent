@@ -199,3 +199,26 @@ def test_rejects_tree_object_and_malformed_binding(repository, tmp_path):
         with materialize_runtime_control(malformed, repo, scratch):
             pytest.fail("must not yield")
     assert list(scratch.iterdir()) == []
+
+
+def test_tenant_runtime_starts_without_a_crawlseo_session():
+    """A provider outage must degrade research, not stop the tenant runtime."""
+    from types import SimpleNamespace
+
+    from site_agent.runtime import Runtime
+
+    actions = []
+
+    class Client:
+        def start(self):
+            raise RuntimeError("CrawlSEO MCP session is unavailable")
+
+    runtime = SimpleNamespace(
+        crawlseo_client=Client(),
+        memory=SimpleNamespace(record_action=lambda kind, detail: actions.append((kind, detail))),
+    )
+
+    Runtime.start(runtime)
+
+    assert actions and actions[0][0] == "crawlseo_start_error"
+    assert "CrawlSEO" in actions[0][1]
