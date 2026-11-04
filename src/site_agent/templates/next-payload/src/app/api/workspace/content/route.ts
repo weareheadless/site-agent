@@ -298,6 +298,11 @@ export async function POST(request: Request) {
       const current = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
       const currentHash = await hashJson(withoutPayloadMetadata(current))
       if (currentHash !== expectedHash) return errorResponse('The Payload draft changed after review. Review the current version before publishing.', 409)
+      if (current._status === undefined) {
+        // A collection without a draft lifecycle is live as soon as it is
+        // written; there is no second revision to publish.
+        return NextResponse.json({ collection, document: current, documentHash: currentHash, alreadyLive: true })
+      }
       const bookingFailure = await validateBookingBindings(current, true)
       if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
       await payload.update({
