@@ -2,7 +2,7 @@
   "templateSchema": 8,
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.50",
-  "payloadCore": "0.6.0",
+  "payloadCore": "0.6.1",
   "schemaRevision": 10,
   "contentContract": "helloada-content-v4",
   "defaultLocale": "en",

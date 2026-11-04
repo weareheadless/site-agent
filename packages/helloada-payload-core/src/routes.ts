@@ -1,6 +1,8 @@
 export type HelloAdaPublicContentRoutes = {
   postsIndex: string
   postDetail: string
+  /** Base path for product detail pages; the site root when omitted. */
+  productDetail?: string
 }
 
 export type HelloAdaEditableCollection = 'pages' | 'posts' | 'products'
@@ -32,6 +34,9 @@ const encodeSlug = (slug: string) => normalizeSlug(slug).map(encodeURIComponent)
 export const createHelloAdaPublicRouteResolver = (routes: HelloAdaPublicContentRoutes) => {
   const postsIndex = normalizeBasePath(routes.postsIndex, 'The articles index route')
   const postDetail = normalizeBasePath(routes.postDetail, 'The article detail route')
+  const productDetail = routes.productDetail
+    ? normalizeBasePath(routes.productDetail, 'The product detail route')
+    : ''
 
   const pathForPost = (slug: string) => `${postDetail}/${encodeSlug(slug)}`
 
@@ -42,6 +47,7 @@ export const createHelloAdaPublicRouteResolver = (routes: HelloAdaPublicContentR
     }
     const normalized = normalizeSlug(slug)
     if (collection === 'pages' && normalized.length === 1 && (normalized[0] === 'home' || normalized[0] === 'index')) return '/'
+    if (collection === 'products' && productDetail) return `${productDetail}/${normalized.map(encodeURIComponent).join('/')}`
     return `/${normalized.map(encodeURIComponent).join('/')}`
   }
 

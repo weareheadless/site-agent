@@ -136,9 +136,9 @@ test('bootstrap capability manifest is generated from the exact Payload collecti
 
 test('Ada authoring capabilities expose website content only and derive nested fields from Payload', async () => {
   const contract = createHelloAdaAuthoringContract()
-  assert.deepEqual(Object.keys(contract.collections), ['pages', 'posts', 'products', 'productAttributes', 'productVariants'])
+  assert.deepEqual(Object.keys(contract.collections), ['pages', 'posts', 'products', 'productCategories', 'productAttributes', 'productVariants'])
   assert.deepEqual(Object.keys(contract.globals), ['siteSettings', 'navigation'])
-  assert.deepEqual(HELLOADA_AUTHORING_CAPABILITIES.collections, ['pages', 'posts', 'products', 'productAttributes', 'productVariants'])
+  assert.deepEqual(HELLOADA_AUTHORING_CAPABILITIES.collections, ['pages', 'posts', 'products', 'productCategories', 'productAttributes', 'productVariants'])
   const pageSections = contract.collections.pages.find((field) => field.name === 'sections')
   assert.deepEqual(pageSections.fields.slice(0, 4).map((field) => field.name), ['key', 'label', 'layout', 'direction'])
   const directionFields = pageSections.fields.find((field) => field.name === 'direction').fields.map((field) => field.name)

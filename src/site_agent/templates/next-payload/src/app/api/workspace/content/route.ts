@@ -19,11 +19,14 @@ const collectionFor = (value: unknown) => collections.find(item => item === valu
 const collectionEnabled = (collection: (typeof collections)[number]) =>
   collection === 'pages'
   || (collection === 'posts' && Boolean(helloAdaSite.features?.posts))
-  || ((collection === 'products' || isCatalogChildCollection(collection)) && Boolean(helloAdaSite.features?.commerce))
+  || ((collection === 'products' || collection === 'productCategories' || isCatalogChildCollection(collection))
+    && Boolean(helloAdaSite.features?.commerce))
 
-// Catalog facts and variants are children, not independently routable pages.
+// Catalog facts, variants and category taxonomy are not routable documents.
 const contentDocument = (collection: (typeof collections)[number], document: Record<string, unknown>) =>
-  isCatalogChildCollection(collection) ? document : withPublicRoute(collection, document)
+  isCatalogChildCollection(collection) || collection === 'productCategories'
+    ? document
+    : withPublicRoute(collection, document)
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json({ error: 'workspace_gateway_error', message }, { status })
