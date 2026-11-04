@@ -55,9 +55,14 @@
       "name": "20261104_190000_category_drafts",
       "fileSha256": "d0c6058665aeb0203301712848a261b8899c405503d1132fa99f2d25c14cc60f",
       "snapshotSha256": "0003a548b6dd7307c36904bc9c25250e650c5e54209b5d4f376d8b55d9eea9cf"
+    },
+    {
+      "name": "20261104_220000_category_version_backfill",
+      "fileSha256": "37b9c55b90d27df4a9c70c0dd934ed32fd99cbadc6d43a559f898e276221e1c6",
+      "snapshotSha256": "84acf8ea89d150651436154091acd7bc1717fc9b78f068a803f7842e2f40b27f"
     }
   ],
-  "migrationHead": "4d24d7467ef2b6ff8d4bf83c9d19bc64c52e48b01d2cbb562442902d90ad35ca",
-  "migrationIndexSha256": "ff3246e405ebb157692925870b48509c79ad496b4abbe3c54cae4da96484a764",
+  "migrationHead": "f26119518aa784ec898735a4a4e43e1864a4867e187f8f46c7d51606002d336b",
+  "migrationIndexSha256": "d4e41287637beaaa7bf361d8f124589babb1b1b29d354ec046afb936ea163cab",
   "configurationIdentity": "1d4f79f03bb935cdb71fd96877b666ac895f1cb2ccd8fa6215067d2591803993"
 }

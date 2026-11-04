@@ -93,7 +93,7 @@
       "mailflareInboundQueueName": "helloada-casamigo-mail-inbound",
       "mailflareOutboundQueueName": "helloada-casamigo-mail-outbound",
       "mailflareR2BucketName": "helloada-casamigo-mail-files",
-      "migrationHead": "4d24d7467ef2b6ff8d4bf83c9d19bc64c52e48b01d2cbb562442902d90ad35ca",
+      "migrationHead": "f26119518aa784ec898735a4a4e43e1864a4867e187f8f46c7d51606002d336b",
       "payloadAdmin": "0.10.50",
       "payloadCore": "0.6.4",
       "presentationProfile": "static",
