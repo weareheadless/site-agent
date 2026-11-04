@@ -9,17 +9,21 @@ import { withPublicRoute } from '@/lib/public-content-route'
 import { fieldMismatchDiagnostic, fieldMismatchKeys, fieldValueMatches } from '@/lib/payload-field-match'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
-import { validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
+import { HELLOADA_AUTHORING_CAPABILITIES, helloAdaContentCreateKey, isCatalogChildCollection, validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
 import type { BookingD1 } from '../../../../../mailflare-booking-service'
 import { readBookingSettings, readBookingTypeById, resolveTenantBookingOwner } from '../../../../../mailflare-booking-service'
 
-const collections = ['pages', 'posts', 'products'] as const
+const collections = HELLOADA_AUTHORING_CAPABILITIES.collections
 const collectionFor = (value: unknown) => collections.find(item => item === value)
 
 const collectionEnabled = (collection: (typeof collections)[number]) =>
   collection === 'pages'
   || (collection === 'posts' && Boolean(helloAdaSite.features?.posts))
-  || (collection === 'products' && Boolean(helloAdaSite.features?.commerce))
+  || ((collection === 'products' || isCatalogChildCollection(collection)) && Boolean(helloAdaSite.features?.commerce))
+
+// Catalog facts and variants are children, not independently routable pages.
+const contentDocument = (collection: (typeof collections)[number], document: Record<string, unknown>) =>
+  isCatalogChildCollection(collection) ? document : withPublicRoute(collection, document)
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json({ error: 'workspace_gateway_error', message }, { status })
@@ -98,13 +102,14 @@ export async function GET(request: Request) {
   }
   const payload = await getPayload({ config })
   const draft = params.get('draft') === 'true'
+  if (isCatalogChildCollection(collection) && params.has('slug')) return errorResponse('catalog children use id or sourceId, not a route slug', 400)
   const identifier = params.get('id') || params.get('sourceId') || params.get('slug')
   if (!identifier) {
     const requestedLimit = Number(params.get('limit') || '100')
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100)) : 100
     const result = await payload.find({ collection, draft, locale, limit, depth: 1, pagination: false, overrideAccess: true, sort: '-updatedAt' })
     try {
-      const documents = result.docs.map(document => withPublicRoute(collection, document as unknown as Record<string, unknown>))
+      const documents = result.docs.map(document => contentDocument(collection, document as unknown as Record<string, unknown>))
       return NextResponse.json({ collection, documents }, { headers: { 'Cache-Control': 'no-store' } })
     } catch (error) {
       return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
@@ -117,7 +122,7 @@ export async function GET(request: Request) {
   const documentHash = await hashJson(withoutPayloadMetadata(result as unknown as Record<string, unknown>))
   let document: Record<string, unknown>
   try {
-    document = withPublicRoute(collection, result as unknown as Record<string, unknown>)
+    document = contentDocument(collection, result as unknown as Record<string, unknown>)
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
   }
@@ -164,11 +169,13 @@ export async function POST(request: Request) {
     if (operation === 'create') {
       const bookingFailure = await validateBookingBindings(data, false)
       if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
-      const slug = String(data.slug || '').trim()
-      if (!slug) return errorResponse('a stable route slug is required for an idempotent Payload draft create', 400)
+      let identity: ReturnType<typeof helloAdaContentCreateKey>
+      try { identity = helloAdaContentCreateKey(collection, data) } catch (error) {
+        return errorResponse(error instanceof Error ? error.message : 'a stable content identity is required', 400)
+      }
       const existing = await payload.find({
         collection,
-        where: { slug: { equals: slug } },
+        where: identity.where,
         draft: true,
         locale,
         depth: 1,
@@ -185,7 +192,7 @@ export async function POST(request: Request) {
           document,
           documentHash: await hashJson(withoutPayloadMetadata(document)),
           idempotent: true,
-          effectKey: `${collection}:${slug}`,
+          effectKey: identity.effectKey,
         }, { headers: { 'Cache-Control': 'no-store' } })
       }
       let document: Record<string, unknown>
@@ -199,7 +206,7 @@ export async function POST(request: Request) {
         try {
           raced = await payload.find({
             collection,
-            where: { slug: { equals: slug } },
+            where: identity.where,
             draft: true,
             locale,
             depth: 1,
@@ -217,7 +224,7 @@ export async function POST(request: Request) {
             document: saved,
             documentHash: await hashJson(withoutPayloadMetadata(saved)),
             idempotent: true,
-            effectKey: `${collection}:${slug}`,
+            effectKey: identity.effectKey,
           }, { headers: { 'Cache-Control': 'no-store' } })
         }
         if (raced.docs.length > 0) return errorResponse('A Payload document already occupies this route with different content.', 409)
@@ -230,7 +237,7 @@ export async function POST(request: Request) {
         document,
         documentHash: await hashJson(withoutPayloadMetadata(document)),
         idempotent: false,
-        effectKey: `${collection}:${slug}`,
+        effectKey: identity.effectKey,
       }, { status: 201 })
     }
     const id = String(body.id || '').trim()
@@ -287,13 +294,14 @@ export async function POST(request: Request) {
       await payload.update({
         collection,
         id,
-        data: withoutPayloadMetadata(current) as never,
+        data: { ...withoutPayloadMetadata(current), _status: 'published' } as never,
         draft: false,
         locale,
         overrideAccess: true,
         context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
       })
       const published = await payload.findByID({ collection, id, draft: false, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+      if (published._status !== 'published') return errorResponse('Payload did not publish the reviewed draft.', 409)
       const documentHash = await hashJson(withoutPayloadMetadata(published))
       if (documentHash !== expectedHash) return errorResponse('Payload published a different document revision than the approved one.', 409)
       return NextResponse.json({ collection, document: published, documentHash })

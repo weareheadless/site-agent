@@ -1,8 +1,8 @@
 {
   "contract": "helloada-content-v4",
   "corePackage": "@weareheadless/helloada-payload-core",
-  "coreVersion": "0.5.10",
-  "schemaRevision": 9,
+  "coreVersion": "0.6.0",
+  "schemaRevision": 10,
   "collections": {
     "pages": [
       "sourceId",
@@ -12,6 +12,7 @@
       "sections",
       "body",
       "featuredImage",
+      "gallery",
       "canonicalUrl",
       "seo",
       "published"
@@ -54,6 +55,9 @@
       "body",
       "featuredImage",
       "price",
+      "priceMinor",
+      "options",
+      "location",
       "currency",
       "availability",
       "gallery",
@@ -72,6 +76,33 @@
       "sections",
       "canonicalUrl",
       "seo",
+      "published"
+    ],
+    "productAttributes": [
+      "sourceId",
+      "product",
+      "key",
+      "label",
+      "valueType",
+      "valueText",
+      "valueNumber",
+      "valueBoolean",
+      "unit",
+      "group",
+      "filterable",
+      "published"
+    ],
+    "productVariants": [
+      "sourceId",
+      "product",
+      "sku",
+      "options",
+      "selectionKey",
+      "priceMinor",
+      "compareAtPriceMinor",
+      "stock",
+      "image",
+      "position",
       "published"
     ],
     "media": [

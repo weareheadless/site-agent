@@ -8,4 +8,18 @@ Every customer uses its own Payload database and media bucket. The schema is sha
 
 Every customer consumes this contract but retains its own data and visual composition. A schema or field-meaning change is a versioned platform migration, not an Ada website edit.
 
+Revision 10 adds typed `productAttributes`, SKU-based `productVariants`, product
+options/location and integer `priceMinor` amounts. Slugs are localized and pages
+support galleries. Child records have draft/version support but no standalone
+public route; the service gateway uses product/key or SKU for idempotent creates.
+`readHelloAdaProductCatalog` reads only published product facts and variants.
+
+Money uses the currency's minor unit; `price` remains a legacy major-unit field
+until explicitly converted. A stock count is not an order/reservation ledger.
+The committed migration preserves localized content and historical revision
+slugs, and refuses unmapped legacy booking content before any DDL. Existing
+tenant upgrades require the explicit schema-migration release queue, a D1
+backup, and a coordinated forward-only Worker cutover. A new package version
+is not permission to migrate or publish an existing customer's website.
+
 Release exact immutable package versions through the `site-agent` package-release workflow. A package release requires selected customer dependency-pin updates and a controlled schema/data migration where needed. A new package version by itself does not update customer sites or databases.

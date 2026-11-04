@@ -2,8 +2,8 @@
   "templateSchema": 8,
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.50",
-  "payloadCore": "0.5.10",
-  "schemaRevision": 9,
+  "payloadCore": "0.6.0",
+  "schemaRevision": 10,
   "contentContract": "helloada-content-v4",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=22.0.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
+  "schemaIdentity": "da6a1f56c7973fefbaf220990871c05a42cef9cc9ed9d79c420348402cadcc98",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -40,9 +40,14 @@
       "name": "20261031_090000_helloada_section_layout",
       "fileSha256": "fc59f0b8931dd9ebb81ef3f94778b98a1e83956228569bb5335f9f712b68fb34",
       "snapshotSha256": "73685046f88cd97ca65014a4bdc61aa856e7f6f8f54f74019b24944acce3ffe6"
+    },
+    {
+      "name": "20261104_010000_business_catalog",
+      "fileSha256": "068f6413c7bb7976d350caa96fbcee2be7f322fd04df9931536376a89ae973cd",
+      "snapshotSha256": "12fa0a38b875cec8064fe0e4ef47708eca6eea2460d4529a15b18020b294d7a7"
     }
   ],
-  "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac",
-  "migrationIndexSha256": "bc575500f40758e3ade370d4e640682a5046c8b1b3b6de09e9625e0a5937b10b",
-  "configurationIdentity": "1135edf0e538ac5f5b923a3c3ffc4cab139b297c1e104c0131cfdb5f620ef738"
+  "migrationHead": "9e74f3cca7632d333d7b50e9248e5de32ade831d0ddaee63006f221470adaccb",
+  "migrationIndexSha256": "497182d65307ced7ea6ba56afa9153c3f58004f42b10fe7ec0bcc6a9c5ce58d3",
+  "configurationIdentity": "0b2e2fbc949c4601fa2229302f53cf389ffdb887f2f312911641de864d2f33b2"
 }

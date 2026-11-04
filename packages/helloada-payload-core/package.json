@@ -1,6 +1,6 @@
 {
   "name": "@weareheadless/helloada-payload-core",
-  "version": "0.5.10",
+  "version": "0.6.0",
   "description": "Shared tenant-isolated Payload schema and content readers for HelloAda sites.",
   "type": "module",
   "license": "UNLICENSED",
@@ -20,6 +20,8 @@
     "payload": "^3.88.0"
   },
   "devDependencies": {
+    "@payloadcms/db-d1-sqlite": "3.88.0",
+    "@payloadcms/richtext-lexical": "3.88.0",
     "payload": "3.88.0",
     "typescript": "5.7.3"
   },

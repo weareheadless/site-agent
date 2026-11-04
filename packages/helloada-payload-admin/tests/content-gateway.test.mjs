@@ -15,6 +15,16 @@ const fieldMatchCompiled = ts.transpileModule(fieldMatchSource, {
 const fieldMatchModule = { exports: {} }
 vm.runInNewContext(fieldMatchCompiled, fieldMatchModule)
 
+// Test double for the shared schema module. It mirrors only the names the
+// gateway imports; the real catalog identity and validation are exercised
+// against the actual package in the core suite.
+const schemaModule = {
+  HELLOADA_AUTHORING_CAPABILITIES: { collections: ['pages', 'posts', 'products', 'productAttributes', 'productVariants'] },
+  isCatalogChildCollection: value => value === 'productAttributes' || value === 'productVariants',
+  helloAdaContentCreateKey: (collection, data) => ({ where: { slug: { equals: String(data.slug || '') } }, effectKey: `${collection}:${String(data.slug || '')}` }),
+  validateHelloAdaAuthoringData: () => true,
+}
+
 test('the default content gateway bounds requested lists and requires service authentication', async () => {
   let authorized = true
   const queries = []
@@ -28,6 +38,7 @@ test('the default content gateway bounds requested lists and requires service au
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
     '@/lib/payload-field-match': fieldMatchModule.exports,
     '@/lib/public-content-route': { withPublicRoute: (_collection, document) => ({ ...document, route: '/fixture' }) },
+    '@weareheadless/helloada-payload-core/schema': schemaModule,
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
   vm.runInNewContext(compiled, sandbox)
@@ -61,7 +72,7 @@ test('draft updates require the exact current Payload revision', async () => {
     '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
     '@/lib/payload-field-match': fieldMatchModule.exports,
-    '@weareheadless/helloada-payload-core/schema': { validateHelloAdaAuthoringData: () => true },
+    '@weareheadless/helloada-payload-core/schema': schemaModule,
     '@/lib/payload-hash': {
       hashJson: async () => revision,
       withoutPayloadMetadata: ({ id, title }) => ({ id, title }),

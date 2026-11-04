@@ -375,10 +375,19 @@ def _validate_website_change_plan(
                 raise ValueError(f"content_effects[{index}] targets a collection that is not enabled")
             schema_fields = (authoring.get("collections") or {}).get(collection)
             target = collection
-            if operation == "create" and (collection not in {"pages", "posts", "products"} or identifier_kind != "slug"):
-                raise ValueError("collection creates must target a page, post, or product route slug")
+            create_kind = {"pages": "slug", "posts": "slug", "products": "slug", "productVariants": "sku", "productAttributes": "productKey"}.get(collection)
+            if operation == "create" and (not create_kind or identifier_kind != create_kind):
+                raise ValueError("collection creates must use their canonical route slug, SKU, or product/key identity")
             if operation == "create" and not identifier:
-                raise ValueError("collection creates need their intended route slug as the exact identity")
+                raise ValueError("collection creates need their intended canonical identity")
+            if operation == "create" and collection == "productAttributes":
+                try:
+                    product_key = json.loads(identifier)
+                except (ValueError, TypeError):
+                    product_key = None
+                if not isinstance(product_key, list) or len(product_key) != 2 or not all(isinstance(value, str) and value.strip() for value in product_key):
+                    raise ValueError("attribute identity must be a JSON pair of product ID and attribute key strings")
+                identifier = json.dumps(product_key, ensure_ascii=False, separators=(",", ":"))
         else:
             if global_name not in (enabled.get("globals") or []) or collection or operation != "update":
                 raise ValueError(f"content_effects[{index}] targets an unsupported shared global operation")
@@ -404,9 +413,11 @@ def _validate_website_change_plan(
             raise ValueError(f"content_effects[{index}] updates need an exact document identity")
         if kind == "global" and (identifier_kind != "global" or identifier != global_name):
             raise ValueError(f"content_effects[{index}] must identify the exact global by name")
-        if kind == "collection" and operation == "create" and "slug" not in fields:
-            raise ValueError("idempotent content creation must include the route slug")
-        identity = (kind, target, identifier if operation == "update" else "create")
+        if kind == "collection" and operation == "create":
+            identity_fields = {"productVariants": {"sku"}, "productAttributes": {"product", "key"}}.get(collection, {"slug"})
+            if not identity_fields.issubset(fields):
+                raise ValueError("idempotent content creation must include its canonical identity fields")
+        identity = (kind, target, identifier)
         if identity in identities:
             raise ValueError("the plan contains duplicate content targets")
         identities.add(identity)
@@ -557,8 +568,15 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
     if name == "create_payload_draft":
         collection = str(args.get("collection") or "")
         operation = "create"
-        identifier = str(data.get("slug") or "")
-        identifier_kind = "slug"
+        if collection == "productAttributes":
+            identifier = json.dumps([str(data.get("product") or ""), str(data.get("key") or "")], ensure_ascii=False, separators=(",", ":"))
+            identifier_kind = "productKey"
+        elif collection == "productVariants":
+            identifier = str(data.get("sku") or "")
+            identifier_kind = "sku"
+        else:
+            identifier = str(data.get("slug") or "")
+            identifier_kind = "slug"
         kind = "collection"
     elif name == "update_payload_draft":
         collection = str(args.get("collection") or "")
@@ -742,7 +760,7 @@ def _tools_spec(
             fields = authoring.get("collections", {}).get(name, [])
             names = [str(field.get("name")) for field in fields if isinstance(field, dict) and field.get("name")]
             for operation in ("create", "update"):
-                identifier_kinds = ["slug"] if operation == "create" else ["id", "sourceId", "slug"]
+                identifier_kinds = [{"productAttributes": "productKey", "productVariants": "sku"}.get(name, "slug")] if operation == "create" else (["id", "sourceId"] if name in {"productAttributes", "productVariants"} else ["id", "sourceId", "slug"])
                 effect_variants.append({
                     "type": "object",
                     "properties": {

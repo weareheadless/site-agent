@@ -11,6 +11,7 @@ from site_agent.application.runtime_control_source import (
     RuntimeControlSourceError, materialize_runtime_control,
 )
 from site_agent.application.shared_runtime import shared_runtime_fingerprint
+from site_agent.site_scaffold import payload_template_copy_ignore
 
 
 @pytest.fixture
@@ -29,7 +30,9 @@ def repository(tmp_path):
         target = repo / path
         if source.is_dir():
             import shutil
-            shutil.copytree(source, target)
+            # The fixture represents tracked source, not installed dependencies,
+            # credentials or previous builds in a developer's template checkout.
+            shutil.copytree(source, target, ignore=payload_template_copy_ignore)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(source.read_bytes())
