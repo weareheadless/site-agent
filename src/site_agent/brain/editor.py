@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-from ..hands.base import SiteAdapter
+from ..hands.base import AdapterError, SiteAdapter
 from ..core.design_contracts import DesignRequest
 from ..core.contracts import safe_provider_message
 from .owner_copy import owner_safe_reply as _owner_safe_reply
@@ -1037,7 +1037,13 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 return (f"[You already read {path} this turn; the content is in context. "
                         "Use read_file with 'contains' to probe a specific region, or act on what you have.]")
             return cache[key]
-        blob = _cached_file(context, adapter, path)
+        try:
+            blob = _cached_file(context, adapter, path)
+        except AdapterError as exc:
+            # A host wiring fault must never look like a missing path: that
+            # sends the model hunting for filenames that were never the problem.
+            return (f"TOOL ERROR: source reads are unavailable for this site ({str(exc)[:200]}). "
+                    "The host cannot read the repository; this is not a missing file.")
         if blob is None:
             out = "File does not exist."
         else:
@@ -1069,6 +1075,9 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             except TypeError:
                 files = adapter.list_files()
             return "\n".join(files[:150])
+        except AdapterError as exc:
+            return (f"TOOL ERROR: source listing is unavailable for this site ({str(exc)[:200]}). "
+                    "The host cannot read the repository; this is not an empty site.")
         except AttributeError:
             return "Listing not supported on this adapter."
     if name == "get_metrics":

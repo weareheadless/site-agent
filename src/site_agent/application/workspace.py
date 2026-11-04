@@ -410,6 +410,36 @@ class Tenant:
     scheduler_stop: threading.Event | None = None
 
 
+def _source_read_adapter(
+    config: Mapping[str, Any],
+    env: Mapping[str, str] | None,
+    *,
+    source_deployment: Any = None,
+    source_editor: Any = None,
+) -> Any:
+    """Resolve the repository reader owner-chat source tools must use.
+
+    The Payload site adapter reads content from the gateway and delegates every
+    file read to a repository reader. Handing it another Payload adapter leaves
+    it with no reader at all, so reads silently look like missing paths.
+    """
+    from ..hands.payload_gateway import PayloadGatewaySiteAdapter
+
+    for owner in (source_editor, source_deployment):
+        adapter = getattr(owner, "adapter", None)
+        if adapter is not None and not isinstance(adapter, PayloadGatewaySiteAdapter):
+            return adapter
+    site = config.get("site") or {}
+    if not (
+        isinstance(site, Mapping)
+        and (str(site.get("repository") or "").strip() or str(site.get("clone_path") or "").strip())
+    ):
+        return None
+    from ..hands.github_static import GithubStatic
+
+    return GithubStatic(dict(config), dict(env or {}))
+
+
 class TenantRegistry:
     """Load and own all tenants served by one shared API process."""
 
@@ -649,6 +679,16 @@ class TenantRegistry:
                         design_service=context.get("design_service"),
                     )
                 )
+                # Payload owns content, but source files live in the tenant's
+                # Git repository. Owner chat reads through the Payload adapter,
+                # which delegates file access to this reader; without it every
+                # read_file/list_files call reports a missing path.
+                context["source_read_adapter"] = _source_read_adapter(
+                    tenant_config,
+                    env,
+                    source_deployment=context["source_deployment"],
+                    source_editor=context["source_editor"],
+                )
                 if payload_client is not None:
                     from ..hands.payload_gateway import PayloadMediaService
 
@@ -835,9 +875,7 @@ class TenantRegistry:
                 PayloadGatewaySiteAdapter(
                     tenant.config,
                     payload_client=tenant.context.get("payload_gateway"),
-                    read_adapter=getattr(
-                        tenant.context.get("source_editor"), "adapter", None
-                    ),
+                    read_adapter=tenant.context.get("source_read_adapter"),
                 )
                 if tenant.context.get("payload_gateway") is not None
                 else self._site_adapter(tenant)

@@ -1224,7 +1224,12 @@ class PayloadGatewaySiteAdapter(SiteAdapter):
     def get_file(self, path: str, branch: str | None = None) -> tuple[str | None, bytes | None]:
         requested = str(path or "").lstrip("/")
         if self.read_adapter is None:
-            return None, None
+            # Returning (None, None) here reads as "this path does not exist"
+            # to every caller, which hides a host wiring fault behind a false
+            # claim about the site's files.
+            raise AdapterError(
+                "Payload site adapter has no repository reader; source files cannot be read"
+            )
         try:
             return self.read_adapter.get_file(requested, branch=branch)
         except TypeError:
@@ -1232,7 +1237,9 @@ class PayloadGatewaySiteAdapter(SiteAdapter):
 
     def list_files(self, branch: str | None = None) -> list[str]:
         if self.read_adapter is None:
-            raise AttributeError("repository listing is unavailable")
+            raise AdapterError(
+                "Payload site adapter has no repository reader; the repository cannot be listed"
+            )
         try:
             return list(self.read_adapter.list_files(branch=branch))
         except TypeError:

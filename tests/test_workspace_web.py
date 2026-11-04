@@ -211,6 +211,13 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path, stat
             assert isinstance(adapter, PayloadGatewaySiteAdapter)
             assert adapter.payload_client is tenant.context["payload_gateway"]
         assert tenant.context["payload_gateway"].token == "tenant-private-token"
+        # Owner-chat source reads need a repository reader; the Payload adapter
+        # only owns content. Reusing it as its own reader made every read_file
+        # and list_files call look like a missing path.
+        from site_agent.hands.github_static import GithubStatic
+        reader = tenant.context["source_read_adapter"]
+        assert isinstance(reader, GithubStatic)
+        assert not isinstance(reader, PayloadGatewaySiteAdapter)
     finally:
         registry.close()
 
@@ -746,6 +753,19 @@ def test_payload_gateway_site_adapter_reads_source_without_granting_write_access
     assert adapter.list_files(branch="preview") == ["src/app/(frontend)/styles.css"]
     with pytest.raises(AdapterError, match="file commits are disabled"):
         adapter.commit_file("src/app/(frontend)/styles.css", b"new", "no write")
+
+
+def test_payload_gateway_site_adapter_without_a_reader_fails_loudly():
+    """A missing repository reader must not look like a missing file."""
+    adapter = PayloadGatewaySiteAdapter(
+        {"site": {"payload": {"enabled": True}}},
+        payload_client=object(),
+    )
+
+    with pytest.raises(AdapterError, match="no repository reader"):
+        adapter.get_file("src/app/(frontend)/page.tsx")
+    with pytest.raises(AdapterError, match="no repository reader"):
+        adapter.list_files()
 
 
 def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
