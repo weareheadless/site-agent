@@ -1,8 +1,11 @@
 # Business catalog contract — revision 10 release candidate
 
-Status: implementation complete; final release validation in progress. Core
-0.6.0, scaffold pins, committed migration and contract identities are staged
-together. No existing tenant database, release queue or live site has changed.
+Status: release ready. Core 0.6.0 / revision 10 is published as the immutable
+`helloada-payload-core-v0.6.0` artifact and the scaffold pins, committed
+migration and contract identities agree with it. All required CI jobs pass on
+the reviewed commit. No existing tenant database, release queue or live site
+has changed; existing-tenant migration remains a separate, explicitly queued
+release.
 
 ## Source changes
 
@@ -65,13 +68,22 @@ stock reservations, and Stripe are not supplied by this schema release.
 
 ## Verification
 
-Core suite: 44 passing, including the previous three compatibility gates; core
-TypeScript passes. The template suite passed 123 tests and the scaffold passed
-typecheck/lint (warnings only) and an OpenNext build. The final clean build/full
-Python rerun remains pending after the shared `/tmp` volume filled. The cause was
-a test fixture copying installed template dependencies/build output; it now uses
-the canonical source-only ignore function. Task-only temporary output was removed,
-and subsequent builds/tests use disk-backed temporary storage.
+Required CI jobs pass on the reviewed commit: full Python suite, both shared
+packages, the canonical starter compile/build plus catalog gateway test, and
+the Mailflare integration. Core suite: 44 tests including the previous three
+compatibility gates; core TypeScript passes; template suite 123 tests; scaffold
+typecheck, lint (warnings only) and OpenNext build pass.
+
+The published artifact's downloaded bytes were re-verified against the
+committed lockfile: SHA-256 `f84a914066ad061787f2917bd85b1693546e4994d442d66425d7941cd9a01ef2`,
+integrity `sha512-oKmMbRiIa38bghin5lQ/mXOpRcy9k+z2RBq0G2zqIUee7FY7pWpLzzapZmpnDCvvJJInTe5J2yayObSxpWyhVw==`.
+
+Two local-only test-fixture defects were fixed rather than worked around: the
+fixtures copied installed template dependencies and previous build output into
+temporary checkouts, which exhausted shared `/tmp` and the storage volume.
+They now use the canonical source-only ignore function, so a developer checkout
+with `node_modules` behaves like CI. Only this task's temporary output was
+removed.
 
 The SQLite test builds the actual Payload 3.88.0 D1 schema without credentials
 and verifies localized slug uniqueness, product/key uniqueness, SKU and variant
