@@ -57,7 +57,9 @@ test('all standard tenant schemas come from one contract and share the native mu
   assert.ok(collections.posts.fields.some((field) => field.name === 'category' && field.type === 'relationship' && field.relationTo === 'postCategories'))
   assert.ok(collections.postCategories.fields.some((field) => field.name === 'sourceUrl'))
   assert.ok(collections.productCategories.fields.some((field) => field.name === 'sourceUrl'))
-  assert.ok(collections.productCategories.fields.some((field) => field.name === 'sections' && field.type === 'array'))
+  // A category renders its criteria-derived products; it has no composed sections.
+  assert.ok(!collections.productCategories.fields.some((field) => field.name === 'sections'))
+  assert.deepEqual(collections.productCategories.versions, { drafts: true, maxPerDoc: 10 })
   assert.ok(collections.products.fields.some((field) => field.name === 'currency' && field.type === 'text' && !field.localized))
   assert.ok(collections.products.fields.some((field) => field.name === 'gallery' && field.type === 'upload'))
   for (const field of ['sourceId', 'sourceUrl', 'originalUrl', 'dominantColors', 'suggestedUses', 'qualityNotes', 'ocrText', 'proposedKnowledge', 'analysis']) {
