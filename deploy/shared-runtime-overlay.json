@@ -23,6 +23,7 @@
     "src/app/api/workspace/growth/[...path]/route.ts",
     "src/app/api/workspace/content/route.ts",
     "src/app/api/workspace/global/route.ts",
+    "src/app/api/workspace/media/route.ts",
     "src/app/api/workspace/authoring-contract/route.ts",
     "src/lib/cloudflare-context.ts",
     "src/lib/content-routes.ts",
@@ -39,6 +40,7 @@
     "src/lib/mailflare-provisioning-api.ts",
     "src/lib/payload-hash.ts",
     "src/lib/payload-field-match.ts",
+    "src/lib/payload-revision.ts",
     "src/lib/payload-locale.ts",
     "src/lib/service-auth.ts",
     "src/lib/runtime-env.ts"
