@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261104191000-api-tenant-source-reads-2",
-    "sha": "10e63c5bf192be5e5ab17b5ed11f0a26fd699f2f"
+    "id": "20261104214500-api-tenant-runtime-liveness",
+    "sha": "ebc122116b3a6c79e9230bc33ae6c5ac1e4a3c09"
   }
 }
