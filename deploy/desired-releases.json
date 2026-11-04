@@ -5,11 +5,9 @@
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
     "casamigo": {
-      "id": "rel-20261104033652-257c2e1b",
-      "initializeSchema": {
-        "migrationHead": "9e74f3cca7632d333d7b50e9248e5de32ade831d0ddaee63006f221470adaccb"
-      },
-      "sha": "560ba343e4373607a808680eb1ba33c15b3fe76a"
+      "id": "runtime-20261104034524-a5ee2af9",
+      "sha": "560ba343e4373607a808680eb1ba33c15b3fe76a",
+      "sharedRuntimeFingerprint": "ce4f1a7a66e8552cd6266d6281bf777857790bee2553a0b1ac31402835022371"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
