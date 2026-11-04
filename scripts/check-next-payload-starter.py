@@ -61,7 +61,8 @@ def main() -> int:
         prepare_release_dependencies(source, token, npm, root, run)
         run([npm, 'ci', '--ignore-scripts', '--no-audit', '--no-fund', '--prefer-offline'], source)
         run(['node', '--import', 'tsx', '--test', 'tests/section-library.test.mjs',
-             'tests/section-library-render.test.mjs', 'tests/source-inventory.test.mjs'], source)
+             'tests/section-library-render.test.mjs', 'tests/source-inventory.test.mjs',
+             'tests/catalog-content-gateway.test.mjs'], source)
         run([npm, 'run', 'typecheck'], source)
         run([npm, 'run', 'build'], source)
         if not (source / '.next/BUILD_ID').is_file():
