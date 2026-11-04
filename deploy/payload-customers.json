@@ -77,7 +77,7 @@
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": true,
       "worker": "atelier-harmonie"
     },
@@ -102,7 +102,7 @@
       "repository": "https://github.com/weareheadless/casamigo-web.git",
       "schemaIdentity": "da6a1f56c7973fefbaf220990871c05a42cef9cc9ed9d79c420348402cadcc98",
       "schemaRevision": 10,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": true,
       "worker": "helloada-casamigo"
     },
@@ -126,7 +126,7 @@
       "repository": "https://github.com/weareheadless/helloada-helloada-handoff-validation-20261021-39b6663e141ff33c.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-helloada-handoff-validat-d07f7a53aec1452bb162"
     },
@@ -150,7 +150,7 @@
       "repository": "https://github.com/weareheadless/helloada-inmersion-freediving-bb2a4e404a7fcea4.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-inmersion-freediving-bb2a4e404a7fcea4"
     },
@@ -208,7 +208,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
     },
@@ -249,7 +249,7 @@
       "repository": "https://github.com/weareheadless/oceanicvibes.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "sharedRuntimeUpdate": "canary",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": true,
       "worker": "oceanicvibes"
     },
@@ -273,7 +273,7 @@
       "repository": "https://github.com/weareheadless/helloada-site-5fe73d3d38ff6f77.git",
       "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
       "schemaRevision": 9,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-site-5fe73d3d38ff6f77"
     },
@@ -298,7 +298,7 @@
       "repository": "https://github.com/weareheadless/astrid-rincon-website.git",
       "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
       "schemaRevision": 9,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": true,
       "worker": "helloada-site-ff8e9af06f56201f"
     }

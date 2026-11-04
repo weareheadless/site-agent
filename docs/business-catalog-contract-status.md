@@ -60,6 +60,15 @@ prior/target ledger migration, D1 backup and coordinated forward-only cutover:
 the old Worker cannot read retired global slug columns. Ordinary runtime fan-out
 must not apply this schema change.
 
+The release registry now encodes that boundary instead of relying on a gate to
+catch it after a build: every legacy tenant is `sharedRuntimeUpdate: manual`
+until its own reviewed ledger cutover is queued, and `casamigo` is the canary
+for the new scaffold lineage. Without that split the automatic fan-out kept
+re-queuing a revision-10 runtime against databases that still hold the retired
+schema, so the canary failed closed and every queued release stayed held. A
+legacy tenant that is released explicitly still runs the full verifier and
+still fails closed while its D1 is behind the candidate contract.
+
 Atelier's cart/presentation has not changed. Legacy `price` remains available,
 so it is not silently converted to cents. Adopting its new variant catalog in
 the storefront is separate work: cart lines must use variant ID with product ID
