@@ -4,8 +4,8 @@ import { catalogProductFields, createProductAttributesCollection, createProductV
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.6.3'
-export const HELLOADA_SCHEMA_REVISION = 11
+export const HELLOADA_CORE_VERSION = '0.6.4'
+export const HELLOADA_SCHEMA_REVISION = 12
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -1116,6 +1116,9 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
 export const createProductCategoriesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
   slug: 'productCategories',
   admin: { useAsTitle: 'title' },
+  // A category is a saved search the owner edits. Without a draft lifecycle an
+  // edit is live immediately, so there is no revision to review or approve.
+  versions: { drafts: true, maxPerDoc: 10 },
   fields: [
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'sourceUrl', type: 'text' },
@@ -1123,14 +1126,9 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
     { name: 'slug', type: 'text', required: true, unique: true, localized: true },
     { name: 'description', type: 'textarea', localized: true },
     { name: 'featuredImage', type: 'upload', relationTo: 'media' },
-    {
-      name: 'sections', type: 'array', maxRows: 30, label: 'Category content',
-      fields: [
-        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
-        { name: 'label', type: 'text', required: true, localized: true },
-        { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks },
-      ],
-    },
+    // A category renders its criteria-derived products; it has no composed
+    // sections. The block tables also pushed the versioned table names past
+    // SQLite's 63-character identifier limit once drafts were enabled.
     { name: 'canonicalUrl', type: 'text' },
     {
       name: 'criteria',
