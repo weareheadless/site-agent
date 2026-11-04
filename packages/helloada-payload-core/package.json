@@ -14,7 +14,8 @@
     "./routes": "./src/routes.ts",
     "./schema": "./src/schema/index.ts",
     "./server": "./src/server.ts",
-    "./contract": "./src/contract.ts"
+    "./contract": "./src/contract.ts",
+    "./catalog": "./src/catalog/reader.ts"
   },
   "peerDependencies": {
     "payload": "^3.88.0"
