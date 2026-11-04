@@ -5,12 +5,12 @@
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
     "casamigo": {
-      "id": "rel-20261104175604-ca3ae25d",
+      "id": "rel-20261104180605-43a5e43d",
       "schemaMigration": {
         "fromLedgerIdentity": "9e74f3cca7632d333d7b50e9248e5de32ade831d0ddaee63006f221470adaccb",
         "targetMigrationHead": "0f8befae4fdc350682b6a9b9cf38ce3eba4aeebe5144d772ef5978ec969a05db"
       },
-      "sha": "a9f98bd93c0e87a3acfa0684751649ba0371d551"
+      "sha": "4f9a944886d7c318abcc295696f63af94590fa1d"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
