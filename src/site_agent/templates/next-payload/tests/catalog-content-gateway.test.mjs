@@ -92,3 +92,30 @@ test('variants are created by SKU; malformed prices and child slug selectors are
   const read = await route.GET(new Request('https://tenant.test/api/workspace/content?collection=productVariants&slug=shirt&locale=en', { headers: { authorization: 'Bearer service-token' } }))
   assert.equal(read.status, 400)
 })
+
+test('a published document can be withdrawn without deleting its content', async (t) => {
+  const route = await harness(t)
+  let stored = { id: 12, slug: 'withdrawn', title: 'Withdrawn', priceMinor: 100, currency: 'USD', published: true, _status: 'published', updatedAt: '2026-11-04T00:00:00.000Z' }
+  const writes = []
+  globalThis.__catalogPayload = {
+    findByID: async ({ draft }) => {
+      if (!draft && stored._status !== 'published') throw new Error('not found')
+      return stored
+    },
+    update: async ({ data, draft }) => {
+      writes.push({ data, draft })
+      stored = { ...stored, ...data }
+      return stored
+    },
+  }
+  const { hashJson, withoutPayloadMetadata } = await import('../src/lib/payload-hash.ts')
+  const expectedHash = await hashJson(withoutPayloadMetadata(stored))
+  assert.equal((await call(route, { operation: 'unpublish', collection: 'products', id: '12', locale: 'en', expectedHash: 'sha256:' + 'b'.repeat(64) })).status, 409)
+  assert.equal(writes.length, 0, 'a stale hash never withdraws anything')
+  const response = await call(route, { operation: 'unpublish', collection: 'products', id: '12', locale: 'en', expectedHash })
+  assert.equal(response.status, 200)
+  assert.equal(writes[0].draft, false, 'the live revision is withdrawn, not a draft copy')
+  assert.equal(writes[0].data._status, 'draft')
+  assert.equal(writes[0].data.title, 'Withdrawn', 'content and history are preserved')
+  assert.equal(stored._status, 'draft')
+})

@@ -320,7 +320,32 @@ export async function POST(request: Request) {
       if (documentHash !== expectedHash) return errorResponse('Payload published a different document revision than the approved one.', 409)
       return NextResponse.json({ collection, document: published, documentHash })
     }
-    return errorResponse('operation must be create, update, or publish', 400)
+    if (operation === 'unpublish') {
+      // Withdraw a published revision without deleting it: the document keeps
+      // its content and history and stops being served publicly.
+      const expectedHash = String(body.expectedHash || '').trim()
+      if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required to withdraw a published document', 400)
+      const current = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+      const currentHash = await hashJson(withoutPayloadMetadata(current))
+      if (currentHash !== expectedHash) return errorResponse('The Payload document changed. Read it again before withdrawing it.', 409)
+      if (current._status === undefined) return errorResponse('This collection has no published revision to withdraw.', 400)
+      await payload.update({
+        collection,
+        id,
+        data: { ...withoutPayloadMetadata(current), _status: 'draft' } as never,
+        draft: false,
+        locale,
+        overrideAccess: true,
+        context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
+      })
+      const withdrawn = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
+      const live = await payload.findByID({ collection, id, draft: false, locale, overrideAccess: true }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+      if (withdrawn._status !== 'draft' || live?._status === 'published') {
+        return errorResponse('Payload did not withdraw the published revision.', 409)
+      }
+      return NextResponse.json({ collection, document: withdrawn, documentHash: await hashJson(withoutPayloadMetadata(withdrawn)) })
+    }
+    return errorResponse('operation must be create, update, publish, or unpublish', 400)
   } catch (error) {
     return payloadFailure(error, 'Payload could not complete the content operation. Read the current document before retrying.')
   }
