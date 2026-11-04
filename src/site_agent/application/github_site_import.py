@@ -18,6 +18,11 @@ class GitHubSiteImportError(ValueError):
     pass
 
 
+# Cloudflare caps a text binding at 5.1 kB, so the per-page route inventory
+# ships as an asset next to the pages it describes.
+STATIC_MANIFEST_ASSET = '/_helloada/static-manifest.json'
+
+
 def normalize_repository(value: str) -> str:
     value = str(value or '').strip()
     if value.startswith('https://github.com/'):
@@ -104,6 +109,19 @@ def inspect_static_site(root: Path) -> dict:
             'routes': routes, 'files': files}
 
 
+def static_manifest_path(root: Path) -> Path:
+    """The committed inventory travels with the Worker assets, not a text binding."""
+    return root / '.open-next' / 'assets' / STATIC_MANIFEST_ASSET.lstrip('/')
+
+
+def write_static_manifest(root: Path, declaration: dict) -> Path:
+    """Materialize the reviewed inventory into the built asset tree."""
+    path = static_manifest_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(declaration, separators=(',', ':')) + '\n', encoding='utf-8')
+    return path
+
+
 def validate_static_declaration(root: Path, worker: dict) -> dict:
     """Bind source files, routing and actual Worker variables before any release."""
     declared = json.loads((root / 'helloada-frontend.json').read_text())
@@ -113,8 +131,10 @@ def validate_static_declaration(root: Path, worker: dict) -> dict:
     if not re.fullmatch('[0-9a-f]{40}', str(declared.get('sourceSha') or '')):
         raise GitHubSiteImportError('Static presentation has no imported source identity.')
     variables = worker.get('vars') or {}
-    if variables.get('HELLOADA_PRESENTATION_PROFILE') != 'static' or json.loads(variables.get('HELLOADA_STATIC_MANIFEST') or '{}') != declared:
+    if variables.get('HELLOADA_PRESENTATION_PROFILE') != 'static':
         raise GitHubSiteImportError('Worker static presentation differs from the committed declaration.')
+    if 'HELLOADA_STATIC_MANIFEST' in variables:
+        raise GitHubSiteImportError('Static presentation inventory must ship with the Worker assets, not a text binding.')
     assets = worker.get('assets') or {}
     if assets.get('run_worker_first') is not True or assets.get('html_handling') != 'none':
         raise GitHubSiteImportError('Static HTML must pass through the tenant Worker for runtime SEO bindings.')
@@ -128,3 +148,12 @@ def validate_static_artifact(root: Path, declaration: dict) -> None:
         artifact = assets / relative.lstrip('/')
         if not artifact.is_file() or artifact.is_symlink() or hashlib.sha256(artifact.read_bytes()).hexdigest() != digest:
             raise GitHubSiteImportError(f'Compiled static asset is missing or differs from the reviewed source: {relative}')
+    manifest = static_manifest_path(root)
+    if not manifest.is_file() or manifest.is_symlink():
+        raise GitHubSiteImportError('Compiled static asset tree has no reviewed route inventory.')
+    try:
+        shipped = json.loads(manifest.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise GitHubSiteImportError('Compiled static route inventory is not valid JSON.') from error
+    if shipped != declaration:
+        raise GitHubSiteImportError('Compiled static route inventory differs from the reviewed declaration.')
