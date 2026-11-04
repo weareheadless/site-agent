@@ -26,8 +26,12 @@
       "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
     },
     "oceanicvibes": {
-      "id": "rel-20261104225000-oceanic-preview-replay",
-      "sha": "5ca58e0405bf4202b4f7da69489d08c3e5e98296"
+      "id": "rel-20261104233000-oceanic-schema-r12",
+      "sha": "84a92cbb44661e69089bf749ee57db49408b488c",
+      "schemaMigration": {
+        "fromLedgerIdentity": "bec0df3261899dccf7f7f22c5603649200fd11e09dd20ecb42d5264d4e3cbe8c",
+        "targetMigrationHead": "90606eafce013b7bd529b862622ab6bb8dad1db2a2f13d0cd65e1791716ce3ca"
+      }
     },
     "site-5fe73d3d38ff6f77": {
       "id": "rel-20261103222325-4d1982f6",
