@@ -309,6 +309,10 @@ def select_worker_rollout_mode(tenant_runs: Path,
                 )
             if evidence["migrationIdentity"] != migration_identity:
                 raise RuntimeError(f"Durable Object reconciliation identity changed: {path.parent.name}")
+            if evidence.get("outcome") == "no-deployment":
+                # Reconciled to an exact "nothing was deployed" state: the
+                # migration is still unapplied, so the next release is atomic.
+                continue
             proven_release = prior["releaseId"]
             continue
         if state == "planned":

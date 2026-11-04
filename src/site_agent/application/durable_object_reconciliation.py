@@ -149,6 +149,16 @@ def read_lifecycle_reconciliation(
     proof = evidence.get("proof")
     if not isinstance(proof, dict):
         raise LifecycleReconciliationError("lifecycle evidence has no live deployment proof")
+    if evidence.get("outcome") == "no-deployment":
+        previous = receipt.get("previousDeployment")
+        previous_id = previous.get("id") if isinstance(previous, Mapping) else None
+        if (proof.get("worker") != receipt.get("worker") or proof.get("script") != "absent"
+                or proof.get("deployments") != 0 or proof.get("previousDeployment") != previous_id):
+            raise LifecycleReconciliationError(
+                "lifecycle evidence does not prove that no Worker version was deployed"
+            )
+        _utc(proof.get("checkedAt"), "no-deployment check")
+        return evidence
     deployment = proof.get("deployment")
     version = proof.get("version")
     namespace = proof.get("namespace")
@@ -242,8 +252,47 @@ def reconcile_lifecycle_receipt(
     )
     deployments = _api_result(deployments_url, environment)
     deployment_items = deployments.get("deployments") if isinstance(deployments, dict) else None
-    if not isinstance(deployment_items, list) or not deployment_items:
-        raise LifecycleReconciliationError("Worker has no deployment record to reconcile")
+    if not isinstance(deployment_items, list):
+        raise LifecycleReconciliationError("Cloudflare deployment list is invalid")
+    if not deployment_items:
+        # The atomic deploy can fail before Cloudflare creates any version, for
+        # example when the API rejects the candidate itself. That is a provable
+        # "nothing was deployed" outcome only when the script is absent too.
+        script_url = (
+            f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
+            f"/workers/scripts/{urllib.parse.quote(worker, safe='')}"
+        )
+        try:
+            _api_result(script_url, environment)
+        except LifecycleReconciliationError as error:
+            if "HTTP 404" not in str(error):
+                raise
+        else:
+            raise LifecycleReconciliationError("Worker has a script but no deployment record to reconcile")
+        evidence = {
+            "schema": 1,
+            "tenant": tenant,
+            "releaseId": immutable_receipt["releaseId"],
+            "receiptSha256": hashlib.sha256(raw_receipt).hexdigest(),
+            "sourceSha": source_sha,
+            "sharedRuntimeFingerprint": immutable_receipt.get("sharedRuntimeFingerprint"),
+            "migrationIdentity": lifecycle["identity"],
+            "pipelineSha": pipeline_sha,
+            "status": "verified",
+            "outcome": "no-deployment",
+            "verifiedAt": datetime.now(timezone.utc).isoformat(),
+            "proof": {
+                "worker": worker,
+                "script": "absent",
+                "deployments": 0,
+                "previousDeployment": previous_id,
+                "checkedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        _write_lifecycle_reconciliation(
+            reconciliation_path(release_root, tenant, immutable_receipt["releaseId"]), evidence,
+        )
+        return evidence
     deployment = max(deployment_items, key=lambda item: str(item.get("created_on") or ""))
     created = _utc(deployment.get("created_on"), "Worker deployment")
     started = _utc(immutable_receipt.get("startedAt"), "release start")
