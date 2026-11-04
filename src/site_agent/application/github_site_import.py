@@ -144,9 +144,22 @@ def inspect_static_site(root: Path) -> dict:
             target = (public / resolved.lstrip('/')).resolve()
             if not target.is_relative_to(public.resolve()) or not target.is_file():
                 raise GitHubSiteImportError(f'Static website asset is missing: {reference} in {relative}')
-    return {'kind': 'static', 'defaultLocale': default_locale,
-            'locales': [default_locale, *sorted(locales - {default_locale})],
-            'routes': routes, 'files': files, 'security': security}
+    declaration = {'kind': 'static', 'defaultLocale': default_locale,
+                   'locales': [default_locale, *sorted(locales - {default_locale})],
+                   'routes': routes, 'files': files, 'security': security}
+    # A site-wide origin declaration is an operator statement about requests the
+    # exported markup cannot reveal (runtime images, map tiles). It is not
+    # derived from the files, so it is carried forward verbatim.
+    inventory = root / 'helloada-frontend.json'
+    if inventory.is_file():
+        try:
+            existing = json.loads(inventory.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            existing = {}
+        origins = existing.get('origins') if isinstance(existing, dict) else None
+        if origins:
+            declaration['origins'] = origins
+    return declaration
 
 
 def static_manifest_path(root: Path) -> Path:

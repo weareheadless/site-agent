@@ -176,3 +176,24 @@ test('HEAD returns the same headers without HTML and asset bytes are unchanged',
   const asset = await staticWebsiteResponse(request('/assets/site.js'), env())
   assert.equal(await asset.text(), 'original-script')
 })
+
+test('a site-level origin declaration covers requests the markup cannot reveal', async () => {
+  const runtime = { ...manifest, origins: {
+    img: ['https://images.example.com'],
+    connect: ['https://api.example.com'],
+  } }
+  const csp = (await staticWebsiteResponse(request('/en/'), env({}, runtime))).headers.get('content-security-policy')
+  assert.match(csp, /img-src[^;]*https:\/\/images\.example\.com/)
+  assert.match(csp, /connect-src[^;]*https:\/\/api\.example\.com/)
+  assert.doesNotMatch(csp, /script-src[^;]*https:\/\/images\.example\.com/,
+    'A site-level image origin must not widen script execution')
+  assert.match(csp, /(?:^|; )script-src 'self' 'unsafe-inline'(?:;|$)/)
+})
+
+test('site-level origins merge with the page declaration instead of replacing it', async () => {
+  const combined = { ...manifest, origins: { img: ['https://images.example.com'] } }
+  const csp = (await staticWebsiteResponse(request('/'), env({}, combined))).headers.get('content-security-policy')
+  assert.match(csp, /img-src[^;]*https:\/\/images\.example\.com/)
+  assert.match(csp, /img-src[^;]*https:\/\/img\.example\.com/)
+  assert.match(csp, /script-src[^;]*https:\/\/cdn\.example\.com/)
+})

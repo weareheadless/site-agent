@@ -2,11 +2,18 @@ type PayloadDocument = Record<string, unknown>
 
 const payloadMetadata = ['createdAt', 'updatedAt', '_status']
 
-function normalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(normalize)
+function normalize(value: unknown, requested?: unknown): unknown {
+  if (Array.isArray(value)) return value.map((child, index) =>
+    normalize(child, Array.isArray(requested) ? requested[index] : undefined))
   if (!value || typeof value !== 'object') return value
 
   const row = value as Record<string, unknown>
+  // Collection relationships may be populated without any media/collection
+  // marker. Only project them to an ID when the request expects an identity;
+  // groups and array rows must still have their requested fields compared.
+  if (Object.hasOwn(row, 'id') && (typeof requested === 'string' || typeof requested === 'number')) {
+    return row.id
+  }
   if (Object.hasOwn(row, 'id') && (Object.hasOwn(row, 'url') || Object.hasOwn(row, 'filename') || Object.hasOwn(row, 'collection'))) {
     return row.id
   }
@@ -16,7 +23,8 @@ function normalize(value: unknown): unknown {
   return Object.fromEntries(Object.entries(row)
     .filter(([key]) => !['id', ...payloadMetadata].includes(key))
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, child]) => [key, normalize(child)]))
+    .map(([key, child]) => [key, normalize(child,
+      requested && typeof requested === 'object' ? (requested as PayloadDocument)[key] : undefined)]))
 }
 
 function requestedValueMatches(actual: unknown, requested: unknown): boolean {
@@ -34,7 +42,10 @@ function requestedValueMatches(actual: unknown, requested: unknown): boolean {
 
 export function fieldMismatchKeys(document: PayloadDocument, input: PayloadDocument): string[] {
   return Object.entries(input)
-    .filter(([key, value]) => !requestedValueMatches(normalize(document[key]), normalize(value)))
+    .filter(([key, value]) => {
+      const requested = normalize(value)
+      return !requestedValueMatches(normalize(document[key], requested), requested)
+    })
     .map(([key]) => key)
 }
 

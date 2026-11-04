@@ -117,6 +117,9 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
 
 type PageSecurity = { origins?: Record<string, string[]> }
 
+/** Origins the presentation declares for every page of the site. */
+type SiteOrigins = Record<string, string[]>
+
 /** Google measurement endpoints the site's own tag manager calls. */
 const MEASUREMENT_SCRIPT = ['https://www.googletagmanager.com']
 const MEASUREMENT_CONNECT = [
@@ -146,8 +149,14 @@ const MEASUREMENT_IMG = [
  */
 function pagePolicy(manifest: StaticManifest, file: string, measurement: string): string {
   const declared: PageSecurity = (manifest.security || {})[file] || {}
-  const origins = declared.origins || {}
+  // The inventory can declare origins the exported markup cannot reveal, such
+  // as images or map tiles fetched at runtime by the site's own scripts.
+  const siteOrigins: SiteOrigins = (manifest as StaticManifest & { origins?: SiteOrigins }).origins || {}
   const merge = (...lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((list) => list || []))]
+  const origins: Record<string, string[]> = {}
+  for (const directive of new Set([...Object.keys(siteOrigins), ...Object.keys(declared.origins || {})])) {
+    origins[directive] = merge(siteOrigins[directive], (declared.origins || {})[directive])
+  }
   const ownMeasurement = (origins.script || []).some((origin) => origin === 'https://www.googletagmanager.com')
   const analytics = measurement || ownMeasurement
   const webfont = (origins.script || []).some((origin) => origin === 'https://ajax.googleapis.com')
@@ -160,7 +169,7 @@ function pagePolicy(manifest: StaticManifest, file: string, measurement: string)
     ['img-src', merge(["'self'", 'data:'], origins.img, analytics ? MEASUREMENT_IMG : [])],
     ['font-src', merge(["'self'", 'data:'], origins.font, webfont ? WEBFONT_FONT : [])],
     ['media-src', merge(["'self'"], origins.media)],
-    ['connect-src', merge(["'self'"], origins.script, analytics ? MEASUREMENT_CONNECT : [])],
+    ['connect-src', merge(["'self'"], origins.script, origins.connect, analytics ? MEASUREMENT_CONNECT : [])],
     ['frame-src', merge(origins.frame)],
     ['object-src', ["'none'"]],
     ['base-uri', ["'self'"]],

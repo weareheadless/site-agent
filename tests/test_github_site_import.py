@@ -124,3 +124,22 @@ def test_import_scaffolds_platform_but_preserves_exact_public_source_and_history
         assert len(pushes) == 1
     finally:
         service.close()
+
+
+def test_site_wide_origin_declaration_survives_inventory_refresh(tmp_path):
+    public = tmp_path / 'public'
+    (public / 'assets').mkdir(parents=True)
+    (public / 'index.html').write_text('<html lang="en"><head><title>Site</title></head><body></body></html>')
+    (public / 'assets/logo.webp').write_bytes(b'image')
+    assert 'origins' not in inspect_static_site(tmp_path)
+    origins = {'img': ['https://images.example.com'], 'connect': ['https://api.example.com']}
+    (tmp_path / 'helloada-frontend.json').write_text(json.dumps({'origins': origins}))
+    assert inspect_static_site(tmp_path)['origins'] == origins
+
+
+def test_unreadable_inventory_does_not_invent_origins(tmp_path):
+    public = tmp_path / 'public'
+    public.mkdir()
+    (public / 'index.html').write_text('<html lang="en"><head><title>Site</title></head><body></body></html>')
+    (tmp_path / 'helloada-frontend.json').write_text('{not json')
+    assert 'origins' not in inspect_static_site(tmp_path)

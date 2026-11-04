@@ -58,3 +58,20 @@ assert.equal(fieldValueMatches({ content: [{ text: 'First' }, { text: 'Unexpecte
   { content: [{ text: 'First' }] }), false, 'Arrays remain exact in length and order')
 assert.equal(fieldValueMatches({ content: [{ text: 'Second' }, { text: 'First' }] },
   { content: [{ text: 'First' }, { text: 'Second' }] }), false)
+
+const category = { id: 8, title: 'Region 15', slug: 'region-15', description: 'Category copy' }
+assert.equal(fieldValueMatches({ category }, { category: 8 }), true,
+  'Populated collection relationships round-trip against the requested ID')
+assert.equal(fieldValueMatches({ category }, { category: { id: 8 } }), true)
+assert.equal(fieldValueMatches({ category }, { category: 9 }), false)
+assert.equal(fieldValueMatches({ category }, { category: '8' }), false,
+  'Relationship identity comparison must not coerce types')
+assert.equal(fieldValueMatches({ category: null }, { category: 8 }), false)
+assert.equal(fieldValueMatches({ category }, { category: null }), false)
+assert.equal(fieldValueMatches({ categories: [category, { ...category, id: 9 }] },
+  { categories: [8, 9] }), true, 'Many-to-many relationship arrays preserve identity')
+assert.equal(fieldValueMatches({ categories: [category, { ...category, id: 9 }] },
+  { categories: [9, 8] }), false, 'Relationship order remains exact')
+assert.equal(fieldValueMatches({ settings: { category } }, { settings: { category: 8 } }), true)
+assert.equal(fieldValueMatches({ content: [{ id: 'row-1', text: 'Stored' }] },
+  { content: [{ text: 'Requested' }] }), false, 'Array row IDs must not hide changed fields')
