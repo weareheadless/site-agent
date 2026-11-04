@@ -7713,6 +7713,26 @@ class Memory:
         self.conn.execute('UPDATE chat_jobs SET result = ? WHERE id = ?', (json.dumps(result), job_id))
 
     @_locked
+    def _wait_linked_owner_actions(self, job_id: int, failed_ts: str) -> None:
+        """Move this job's active linked actions to waiting inside the caller's transaction."""
+        actions = self.conn.execute(
+            "SELECT id, state FROM owner_actions WHERE job_id = ? AND state IN (?, ?)",
+            (job_id, ActionState.OPEN.value, ActionState.STARTED.value),
+        ).fetchall()
+        for action in actions:
+            current = ActionState(action["state"])
+            validate_action_transition(current, ActionState.WAITING)
+            self.conn.execute(
+                "UPDATE owner_actions SET state = ?, snoozed_until = NULL, updated_ts = ? "
+                "WHERE id = ? AND state = ?",
+                (
+                    ActionState.WAITING.value,
+                    failed_ts,
+                    action["id"],
+                    current.value,
+                ),
+            )
+
     def fail_chat_job(self, job_id: int, worker: str, error: str) -> bool:
         failed_ts = _now()
         with self.conn:
@@ -7724,23 +7744,7 @@ class Memory:
             if updated == 1:
                 self._record_chat_failure_message(job_id, failed_ts)
                 # Failed jobs move active linked actions to waiting atomically.
-                actions = self.conn.execute(
-                    "SELECT id, state FROM owner_actions WHERE job_id = ? AND state IN (?, ?)",
-                    (job_id, ActionState.OPEN.value, ActionState.STARTED.value),
-                ).fetchall()
-                for action in actions:
-                    current = ActionState(action["state"])
-                    validate_action_transition(current, ActionState.WAITING)
-                    self.conn.execute(
-                        "UPDATE owner_actions SET state = ?, snoozed_until = NULL, updated_ts = ? "
-                        "WHERE id = ? AND state = ?",
-                        (
-                            ActionState.WAITING.value,
-                            failed_ts,
-                            action["id"],
-                            current.value,
-                        ),
-                    )
+                self._wait_linked_owner_actions(job_id, failed_ts)
         return updated == 1
 
     @_locked
@@ -7871,6 +7875,7 @@ class Memory:
                     (f"chat job was not completed within {int(max_seconds)} seconds (reason=stale)", _now(), row["id"]),
                 )
                 self._record_chat_failure_message(int(row['id']), _now())
+                self._wait_linked_owner_actions(int(row['id']), _now())
                 stale_ids.append(int(row["id"]))
         return stale_ids
 

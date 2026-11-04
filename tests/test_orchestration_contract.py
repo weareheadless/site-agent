@@ -122,6 +122,40 @@ def test_failure_outcome_is_durable_and_not_duplicated(tmp_path, failure):
         assert job['result']['failure']['job_id'] == job_id
 
 
+def test_stale_job_moves_its_linked_owner_action_to_waiting(tmp_path):
+    """The watchdog must close linked actions itself; the old helper is gone."""
+    from site_agent.core.contracts import (
+        ActionPriority,
+        ActionRequirement,
+        ActionState,
+        OwnerAction,
+    )
+    from site_agent.core.memory import Memory
+
+    with closing(Memory(tmp_path / 'memory.db')) as memory:
+        conversation = memory.create_conversation()
+        job_id = memory.enqueue_chat_job(conversation, 'Review the requested changes')
+        memory.claim_chat_job('test-worker')
+        action = memory.create_owner_action(OwnerAction(
+            capability_id='review.site_change',
+            provider_id='site-agent',
+            title='Review the requested changes',
+            summary='A pending change is waiting for review.',
+            action_label='Review',
+            priority=ActionPriority.NORMAL,
+            requirement=ActionRequirement.OWNER_DECISION,
+            source_ref=f'chat-job:{job_id}',
+            dedupe_key=f'chat-job:{job_id}',
+            state=ActionState.STARTED,
+        ))
+        memory.link_owner_action(action.id, conversation_id=conversation, job_id=job_id)
+
+        assert memory.fail_stale_chat_jobs(cut=10**12) == [job_id]
+
+        assert memory.get_chat_job(job_id)['status'] == 'error'
+        assert memory.get_owner_action(action.id).state is ActionState.WAITING
+
+
 @pytest.mark.parametrize(
     ("payload_effects", "expected_reply"),
     [

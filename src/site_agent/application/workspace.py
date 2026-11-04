@@ -1025,18 +1025,30 @@ class TenantRegistry:
             try:
                 self._start_tenant(replacement)
             except Exception:
-                # Keep the newly constructed tenant and its open Memory handle
-                # registered. A caller may safely retry a durable operation
-                # after fixing a transient runtime-start failure.
+                # A registered but unstarted tenant answers HTTP and never
+                # claims work, and a later mount sees a matching config and
+                # reports success. Unregister it so the caller retries the
+                # whole mount instead of masking a dead runtime.
                 try:
                     self._stop_tenant(replacement, close_memory=False)
                 except Exception:
                     # Keep open Memory and worker references until a later
                     # quiescence retry can stop them safely.
                     pass
-                self.tenants[normalized] = replacement
+                if self.tenants.get(normalized) is replacement:
+                    del self.tenants[normalized]
                 raise
         return replacement
+
+    def tenant_workers_running(self, tenant_id: str) -> bool:
+        """True when the tenant's chat worker is alive (or the registry is not started)."""
+        if not self._started:
+            return True
+        tenant = self.tenants.get(str(tenant_id or "").strip().lower())
+        if tenant is None:
+            return False
+        is_running = getattr(tenant.executor, "is_running", None)
+        return bool(callable(is_running) and is_running())
 
     def update_site_origin(
         self,

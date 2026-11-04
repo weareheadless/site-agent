@@ -222,6 +222,61 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path, stat
         registry.close()
 
 
+def test_reload_tenant_unregisters_a_tenant_that_cannot_start(tmp_path, monkeypatch):
+    """A tenant that fails to start must not stay registered and answer HTTP."""
+    memory = Memory(tmp_path / "memory.db")
+    previous = Tenant("demo", {}, memory, None, {"llm": object()}, "demo-token")
+    replacement_memory = Memory(tmp_path / "replacement.db")
+    replacement = Tenant("demo", {}, replacement_memory, None, {"llm": object()}, "demo-token")
+
+    class TemporaryRegistry:
+        tenants = {"demo": replacement}
+
+        def close(self):
+            replacement_memory.close()
+
+    monkeypatch.setattr(
+        TenantRegistry, "from_config",
+        staticmethod(lambda *args, **kwargs: TemporaryRegistry()),
+    )
+    registry = TenantRegistry({"demo": previous}, env={})
+    registry._started = True
+    monkeypatch.setattr(registry, "_stop_tenant", lambda tenant, **kwargs: None)
+
+    def fail_to_start(tenant):
+        raise RuntimeError("tenant scheduler lock is held")
+
+    monkeypatch.setattr(registry, "_start_tenant", fail_to_start)
+    try:
+        with pytest.raises(RuntimeError, match="scheduler lock is held"):
+            registry.reload_tenant("demo", str(tmp_path / "config.yaml"), api_token="demo-token")
+        assert "demo" not in registry.tenants
+    finally:
+        memory.close()
+
+
+def test_registry_reports_whether_a_tenant_chat_worker_is_running(tmp_path):
+    class Executor:
+        def __init__(self, alive):
+            self._alive = alive
+
+        def is_running(self):
+            return self._alive
+
+    memory = Memory(tmp_path / "memory.db")
+    tenant = Tenant("demo", {}, memory, None, {"llm": object()}, "demo-token")
+    tenant.executor = Executor(True)
+    registry = TenantRegistry({"demo": tenant}, env={})
+    registry._started = True
+    try:
+        assert registry.tenant_workers_running("demo") is True
+        tenant.executor = Executor(False)
+        assert registry.tenant_workers_running("demo") is False
+        assert registry.tenant_workers_running("missing") is False
+    finally:
+        memory.close()
+
+
 def test_shared_registry_rejects_payload_token_name_drift(tmp_path):
     tenant_config = tmp_path / "tenant.yaml"
     tenant_config.write_text(

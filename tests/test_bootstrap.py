@@ -655,6 +655,32 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     assert len(mounted) == 1
 
 
+def test_mount_rejects_a_tenant_without_a_running_chat_worker(tmp_path, monkeypatch):
+    """Activation must fail loudly instead of reporting a mounted but dead runtime."""
+    from types import SimpleNamespace
+
+    from site_agent.application.bootstrap import BootstrapError
+
+    class Registry:
+        def for_tenant_id(self, tenant_id):
+            return SimpleNamespace(config={}, context={})
+
+        def tenant_workers_running(self, tenant_id):
+            return False
+
+    registration = SimpleNamespace(root=tmp_path)
+    service = WebsiteBootstrapService({}, {}, registration=registration, registry=Registry())
+    monkeypatch.setattr(
+        WebsiteBootstrapService, "_read_env",
+        staticmethod(lambda path: {"PROVISIONED_NEW_SITE_TOKEN": "token"}),
+    )
+    try:
+        with pytest.raises(BootstrapError, match="no active chat worker"):
+            service._mount_runtime("new-site", {"config_path": str(tmp_path / "config.yaml")})
+    finally:
+        service.close()
+
+
 @pytest.mark.parametrize("change", ["receipt-partial", "health-partial", "health-only", "receipt-only", "mismatch", "valid"])
 def test_activation_requires_one_exact_locale_tuple_on_receipt_and_health(tmp_path, change):
     from site_agent.application.bootstrap import BootstrapError

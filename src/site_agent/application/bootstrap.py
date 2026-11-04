@@ -1035,6 +1035,9 @@ class WebsiteBootstrapService:
                 raise BootstrapError(f"tenant runtime could not be activated: {str(exc)[:400]}") from exc
         if not mounted_contract_matches(self.registry.for_tenant_id(tenant_id)):
             raise BootstrapError("mounted tenant runtime does not match the verified Worker contract")
+        workers_running = getattr(self.registry, "tenant_workers_running", None)
+        if callable(workers_running) and not workers_running(tenant_id):
+            raise BootstrapError("mounted tenant runtime has no active chat worker")
         try:
             self.registration.mark_runtime_mounted(tenant_id)
         except TenantRegistrationError as exc:

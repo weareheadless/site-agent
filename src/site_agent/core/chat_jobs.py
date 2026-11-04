@@ -374,6 +374,10 @@ class ChatJobExecutor:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
 
+    def is_running(self) -> bool:
+        """True while the claim loop is alive, so a mounted tenant can be proven live."""
+        return bool(self._thread and self._thread.is_alive())
+
     def stop(self) -> None:
         self._stop.set()
 
@@ -429,8 +433,6 @@ class ChatJobExecutor:
                 )
             except Exception:  # noqa: BLE001
                 pass
-            for job_id in stale_ids:
-                _reconcile_owner_action(self.context, int(job_id), succeeded=False)
 
     def _run_claimed(self, job: dict[str, Any]) -> None:
         try:
