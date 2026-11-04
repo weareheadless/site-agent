@@ -21,7 +21,7 @@ export const helloAdaContentCreateKey = (collection: string, data: Row): { where
     if (typeof data.sku !== 'string' || !data.sku.trim() || data.sku !== data.sku.trim()) throw new Error('A variant create requires an exact non-empty SKU.')
     return { where: { sku: { equals: data.sku } }, effectKey: JSON.stringify([collection, data.sku]) }
   }
-  if (!['pages', 'posts', 'products'].includes(collection)) throw new Error('Unsupported content collection.')
+  if (!['pages', 'posts', 'products', 'productCategories'].includes(collection)) throw new Error('Unsupported content collection.')
   const slug = String(data.slug || '').trim()
   if (!slug) throw new Error('A stable route slug is required for an idempotent Payload draft create.')
   return { where: { slug: { equals: slug } }, effectKey: `${collection}:${slug}` }

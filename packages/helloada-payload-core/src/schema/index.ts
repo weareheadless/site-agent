@@ -4,7 +4,7 @@ import { catalogProductFields, createProductAttributesCollection, createProductV
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.6.1'
+export const HELLOADA_CORE_VERSION = '0.6.2'
 export const HELLOADA_SCHEMA_REVISION = 10
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
