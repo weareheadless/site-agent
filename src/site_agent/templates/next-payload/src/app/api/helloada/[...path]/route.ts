@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
+import config from '@payload-config'
 import { getPayload } from 'payload'
 import type { CollectionSlug, PayloadRequest, TypedLocale } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
+import { serviceAuthorized } from '@/lib/service-auth'
 import { internalMailflareRoute } from '@/lib/mailflare-provisioning-api'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
 import { growthGet, growthPost } from '@/lib/growth-operations'
@@ -351,8 +353,11 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!growthAuth) return errorResponse('authentication_required', 401)
     return growthPost(request, path, { kind: 'owner', auth: growthAuth })
   }
-  const auth = await authenticateHelloAdaRequest(request)
-  if (!auth) return errorResponse('authentication_required', 401)
+  // The service token may drive the canonical media upload so imports reuse the
+  // same validation, storage and analysis path as an owner upload.
+  const serviceUpload = path === '/media/upload' && serviceAuthorized(request)
+  const auth = serviceUpload ? undefined : await authenticateHelloAdaRequest(request)
+  if (!auth && !serviceUpload) return errorResponse('authentication_required', 401)
   if (path === '/language') {
     const body = await request.json().catch(() => ({})) as { language?: string }
     const language = ['en', 'es', 'fr'].includes(String(body.language || '')) ? String(body.language) : 'en'
@@ -466,12 +471,24 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!(value instanceof File)) return errorResponse('file_required', 400)
     if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
     if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
-    const document = await auth.payload.create({
+    const requestedSourceId = serviceUpload ? text(form?.get('sourceId')).trim() : ''
+    const alt = text(form?.get('alt')).trim()
+      || value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image'
+    const payload = auth ? auth.payload : await getPayload({ config })
+    if (requestedSourceId) {
+      const existing = await payload.find({
+        collection: 'media', depth: 0, limit: 1, overrideAccess: true,
+        where: { sourceId: { equals: requestedSourceId } },
+      })
+      if (existing.docs[0]) {
+        return NextResponse.json({ attachment: attachmentFrom(existing.docs[0] as unknown as Record<string, unknown>) }, { status: 200 })
+      }
+    }
+    const document = await payload.create({
       collection: 'media',
-      data: { alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image' },
+      data: { alt, ...(requestedSourceId ? { sourceId: requestedSourceId } : {}) },
       draft: true,
-      req: auth.req,
-      user: auth.user,
+      ...(auth ? { req: auth.req, user: auth.user } : { overrideAccess: true }),
       file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
     })
     scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)

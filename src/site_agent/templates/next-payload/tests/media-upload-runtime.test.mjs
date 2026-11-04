@@ -9,13 +9,13 @@ const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts'
   .replace(/export /g, '')
 const javascript = stripTypeScriptTypes(source, { mode: 'transform' })
 
-function bridge(authenticated = true) {
+function bridge(authenticated = true, service = false, existing = []) {
   const pending = [], calls = []
   const media = { id: 41, filename: 'logo.png', url: '/api/media/file/logo.png', mimeType: 'image/png',
     analysisStatus: 'ready', tags: [{ value: 'logo' }], description: 'Owner logo' }
   const payload = {
     create: async (options) => { calls.push({ create: options }); return media },
-    find: async () => ({ docs: [media] }),
+    find: async (options) => ({ docs: options?.where?.sourceId ? existing : [media] }),
   }
   const sandbox = {
     URL, URLSearchParams, Request, Response, Headers, File, FormData, Buffer, console,
@@ -23,6 +23,9 @@ function bridge(authenticated = true) {
     NextResponse: { json: (body, options) => Response.json(body, options) },
     getCloudflareContext: () => ({ ctx: { waitUntil: (promise) => pending.push(promise) } }),
     authenticateHelloAdaRequest: async () => authenticated ? { payload, req: {}, user: { id: 7 } } : undefined,
+    getPayload: async () => payload,
+    config: { collections: [] },
+    serviceAuthorized: () => service,
     helloAdaRuntime: () => ({ configured: true, url: 'https://shared.example/v1', token: 'fixture-tenant-token' }),
     helloAdaSite: { tenantId: 'fixture' }, tenantId: () => 'fixture',
     fetch: async (url, options) => { calls.push({ url, options }); return Response.json({ ok: true }) },
@@ -67,4 +70,42 @@ test('unauthenticated uploads cannot store files or trigger analysis', async () 
   assert.equal(result.status, 401)
   assert.equal(route.calls.length, 0)
   assert.equal(route.pending.length, 0)
+})
+
+test('the service token may drive the same canonical upload path', async () => {
+  const route = bridge(false, true)
+  const form = new FormData()
+  form.append('file', new File(['fixture'], 'photo.png', { type: 'image/png' }))
+  form.append('sourceId', 'article:example:1')
+  form.append('alt', 'Article photo')
+  const result = await route.POST(new Request('https://tenant.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 201)
+  const create = route.calls.find((call) => call.create).create
+  assert.equal(create.collection, 'media')
+  assert.equal(create.overrideAccess, true, 'A service caller has no owner user to satisfy media create access')
+  assert.equal(create.data.sourceId, 'article:example:1')
+  assert.equal(create.data.alt, 'Article photo')
+})
+
+test('a service re-upload of the same sourceId returns the existing media', async () => {
+  const existing = { id: 99, filename: 'photo.png', url: '/api/media/file/photo.png', mimeType: 'image/png' }
+  const route = bridge(false, true, [existing])
+  const form = new FormData()
+  form.append('file', new File(['fixture'], 'photo.png', { type: 'image/png' }))
+  form.append('sourceId', 'article:example:1')
+  const result = await route.POST(new Request('https://tenant.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 200)
+  assert.equal(route.calls.filter((call) => call.create).length, 0)
+})
+
+test('a service token cannot use other owner routes', async () => {
+  const route = bridge(false, true)
+  const result = await route.POST(new Request('https://tenant.example/api/helloada/publish', {
+    method: 'POST', body: '{}',
+  }), { params: Promise.resolve({ path: ['publish'] }) })
+  assert.equal(result.status, 401)
 })
