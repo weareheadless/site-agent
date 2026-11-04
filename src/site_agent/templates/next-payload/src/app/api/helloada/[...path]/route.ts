@@ -345,6 +345,37 @@ export async function GET(request: Request, { params }: RouteProps) {
   return upstream || errorResponse('HelloAda service is unavailable', 503)
 }
 
+
+async function serviceMediaUpload(request: Request) {
+  const form = await request.formData().catch(() => undefined)
+  const value = form?.get('file')
+  if (!(value instanceof File)) return errorResponse('file_required', 400)
+  if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
+  if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
+  const payload = await getPayload({ config })
+  const sourceId = text(form?.get('sourceId')).trim()
+  const alt = text(form?.get('alt')).trim()
+    || value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image'
+  if (sourceId) {
+    const existing = await payload.find({
+      collection: 'media', depth: 0, limit: 1, overrideAccess: true,
+      where: { sourceId: { equals: sourceId } },
+    })
+    if (existing.docs[0]) {
+      return NextResponse.json({ attachment: attachmentFrom(existing.docs[0] as unknown as Record<string, unknown>) }, { status: 200 })
+    }
+  }
+  const document = await payload.create({
+    collection: 'media',
+    data: { alt, ...(sourceId ? { sourceId } : {}) },
+    draft: true,
+    overrideAccess: true,
+    file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
+  })
+  scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
+  return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
+}
+
 export async function POST(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
   if (path.startsWith('/internal/mailflare/')) return internalMailflareRoute(request, path)
@@ -353,11 +384,11 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!growthAuth) return errorResponse('authentication_required', 401)
     return growthPost(request, path, { kind: 'owner', auth: growthAuth })
   }
-  // The service token may drive the canonical media upload so imports reuse the
-  // same validation, storage and analysis path as an owner upload.
-  const serviceUpload = path === '/media/upload' && serviceAuthorized(request)
-  const auth = serviceUpload ? undefined : await authenticateHelloAdaRequest(request)
-  if (!auth && !serviceUpload) return errorResponse('authentication_required', 401)
+  // The service token may drive the same canonical upload path so imports reuse
+  // its validation, storage and analysis scheduling instead of a second route.
+  if (path === '/media/upload' && serviceAuthorized(request)) return serviceMediaUpload(request)
+  const auth = await authenticateHelloAdaRequest(request)
+  if (!auth) return errorResponse('authentication_required', 401)
   if (path === '/language') {
     const body = await request.json().catch(() => ({})) as { language?: string }
     const language = ['en', 'es', 'fr'].includes(String(body.language || '')) ? String(body.language) : 'en'
@@ -471,24 +502,12 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!(value instanceof File)) return errorResponse('file_required', 400)
     if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
     if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
-    const requestedSourceId = serviceUpload ? text(form?.get('sourceId')).trim() : ''
-    const alt = text(form?.get('alt')).trim()
-      || value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image'
-    const payload = auth ? auth.payload : await getPayload({ config })
-    if (requestedSourceId) {
-      const existing = await payload.find({
-        collection: 'media', depth: 0, limit: 1, overrideAccess: true,
-        where: { sourceId: { equals: requestedSourceId } },
-      })
-      if (existing.docs[0]) {
-        return NextResponse.json({ attachment: attachmentFrom(existing.docs[0] as unknown as Record<string, unknown>) }, { status: 200 })
-      }
-    }
-    const document = await payload.create({
+    const document = await auth.payload.create({
       collection: 'media',
-      data: { alt, ...(requestedSourceId ? { sourceId: requestedSourceId } : {}) },
+      data: { alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image' },
       draft: true,
-      ...(auth ? { req: auth.req, user: auth.user } : { overrideAccess: true }),
+      req: auth.req,
+      user: auth.user,
       file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
     })
     scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
