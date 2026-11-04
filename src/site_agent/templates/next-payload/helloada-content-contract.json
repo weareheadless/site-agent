@@ -1,8 +1,8 @@
 {
   "contract": "helloada-content-v4",
   "corePackage": "@weareheadless/helloada-payload-core",
-  "coreVersion": "0.6.3",
-  "schemaRevision": 11,
+  "coreVersion": "0.6.4",
+  "schemaRevision": 12,
   "collections": {
     "pages": [
       "sourceId",
@@ -73,7 +73,6 @@
       "slug",
       "description",
       "featuredImage",
-      "sections",
       "canonicalUrl",
       "criteria",
       "seo",
