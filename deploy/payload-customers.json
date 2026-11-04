@@ -241,7 +241,7 @@
       "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
       "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
       "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
-      "migrationHead": "159d9869dc5e898cf7aa6f03d6aa50b681859d6b9a5989600cc2a51c62bf8012",
+      "migrationHead": "a385f456ae1d69cf38463f9d1d0d5cd8ea5edc0ec83d6713061f6d563f2e2938",
       "payloadAdmin": "0.10.50",
       "payloadCore": "0.6.3",
       "privateEmailR2BucketName": "helloada-oceanicvibes-email",
