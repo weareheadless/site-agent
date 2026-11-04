@@ -127,6 +127,9 @@ const MEASUREMENT_CONNECT = [
   'https://stats.g.doubleclick.net',
   'https://www.google.com',
 ]
+/** Google WebFont Loader injects its stylesheet and font files at runtime. */
+const WEBFONT_STYLE = ['https://fonts.googleapis.com']
+const WEBFONT_FONT = ['https://fonts.gstatic.com']
 const MEASUREMENT_IMG = [
   'https://www.google-analytics.com',
   'https://www.googletagmanager.com',
@@ -147,14 +150,15 @@ function pagePolicy(manifest: StaticManifest, file: string, measurement: string)
   const merge = (...lists: (string[] | undefined)[]) => [...new Set(lists.flatMap((list) => list || []))]
   const ownMeasurement = (origins.script || []).some((origin) => origin === 'https://www.googletagmanager.com')
   const analytics = measurement || ownMeasurement
+  const webfont = (origins.script || []).some((origin) => origin === 'https://ajax.googleapis.com')
   const directives: [string, string[]][] = [
     ['default-src', ["'self'"]],
     ['script-src', merge(["'self'", "'unsafe-inline'"], origins.script, analytics ? MEASUREMENT_SCRIPT : [])],
     ['script-src-attr', ["'unsafe-inline'"]],
     ['worker-src', ["'self'", 'blob:']],
-    ['style-src', merge(["'self'", "'unsafe-inline'"], origins.style)],
+    ['style-src', merge(["'self'", "'unsafe-inline'"], origins.style, webfont ? WEBFONT_STYLE : [])],
     ['img-src', merge(["'self'", 'data:'], origins.img, analytics ? MEASUREMENT_IMG : [])],
-    ['font-src', merge(["'self'", 'data:'], origins.font)],
+    ['font-src', merge(["'self'", 'data:'], origins.font, webfont ? WEBFONT_FONT : [])],
     ['media-src', merge(["'self'"], origins.media)],
     ['connect-src', merge(["'self'"], origins.script, analytics ? MEASUREMENT_CONNECT : [])],
     ['frame-src', merge(origins.frame)],
