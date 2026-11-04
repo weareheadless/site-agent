@@ -5,8 +5,12 @@
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
     "casamigo": {
-      "id": "rel-20261104184806-e2fbe5e1",
-      "sha": "4f9a944886d7c318abcc295696f63af94590fa1d"
+      "id": "rel-20261104221216-8834a4cb",
+      "schemaMigration": {
+        "fromLedgerIdentity": "e75b0cd1a1a937c5be2b257f3e9fd0fa151e9990d29d08dea394c0a1d66b2617",
+        "targetMigrationHead": "4d24d7467ef2b6ff8d4bf83c9d19bc64c52e48b01d2cbb562442902d90ad35ca"
+      },
+      "sha": "52cbdfbce0632a71345740b4c98719f018ce2d59"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
@@ -23,11 +27,11 @@
     },
     "oceanicvibes": {
       "id": "rel-20261104213000-oceanic-schema-r11-retry",
-      "sha": "be1a3637d8b8480492924da7cfd5836b39f1d97c",
       "schemaMigration": {
         "fromLedgerIdentity": "1cea5ee19460fe17a64693409baa3430e5b088439d1ed8c998bcb546133382b7",
         "targetMigrationHead": "159d9869dc5e898cf7aa6f03d6aa50b681859d6b9a5989600cc2a51c62bf8012"
-      }
+      },
+      "sha": "be1a3637d8b8480492924da7cfd5836b39f1d97c"
     },
     "site-5fe73d3d38ff6f77": {
       "id": "rel-20261103222325-4d1982f6",
