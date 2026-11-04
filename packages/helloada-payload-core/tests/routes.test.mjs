@@ -15,6 +15,13 @@ test('tenant route declarations generate stable article index, details and docum
   assert.equal(routes.postSlugForPath('/other'), undefined)
 })
 
+test('a declared product detail base path keeps catalog routes off the site root', () => {
+  const routes = createHelloAdaPublicRouteResolver({ postsIndex: '/journal', postDetail: '/journal', productDetail: '/property/' })
+  assert.equal(routes.pathForDocument('products', 'aak-g01-tulum'), '/property/aak-g01-tulum')
+  assert.equal(routes.pathForDocument('pages', 'about/team'), '/about/team')
+  assert.throws(() => createHelloAdaPublicRouteResolver({ postsIndex: '/journal', postDetail: '/journal', productDetail: '/' }), /non-root path/)
+})
+
 test('public routes reject ambiguous base paths, unsupported collections and unsafe slugs', () => {
   assert.throws(() => createHelloAdaPublicRouteResolver({ postsIndex: '/', postDetail: '/journal' }), /non-root path/)
   assert.throws(() => createHelloAdaPublicRouteResolver({ postsIndex: '//journal', postDetail: '/journal' }), /absolute site path/)

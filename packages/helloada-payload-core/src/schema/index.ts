@@ -4,7 +4,7 @@ import { catalogProductFields, createProductAttributesCollection, createProductV
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.6.0'
+export const HELLOADA_CORE_VERSION = '0.6.1'
 export const HELLOADA_SCHEMA_REVISION = 10
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
@@ -402,7 +402,7 @@ export const HELLOADA_CAPABILITIES = {
  * and service-owned globals are intentionally excluded even when they are part
  * of the wider Payload schema. */
 export const HELLOADA_AUTHORING_CAPABILITIES = {
-  collections: ['pages', 'posts', 'products', 'productAttributes', 'productVariants'],
+  collections: ['pages', 'posts', 'products', 'productCategories', 'productAttributes', 'productVariants'],
   globals: ['siteSettings', 'navigation'],
 } as const
 
