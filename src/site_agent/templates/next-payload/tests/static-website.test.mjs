@@ -4,13 +4,21 @@ import test from 'node:test'
 import { staticWebsiteResponse } from '../src/lib/static-website.ts'
 
 const manifest = { kind: 'static', routes: { '/': '/index.html', '/en/': '/en/index.html' }, files: { '/index.html': 'hash', '/en/index.html': 'hash', '/assets/site.js': 'hash' } }
-const env = (overrides = {}) => ({
+const page = () => new Response('<html><head><title>Astrid</title></head><body>Original website</body></html>', {
+  headers: { 'content-security-policy': "default-src 'self'; script-src 'self'; frame-ancestors 'none'", 'x-frame-options': 'DENY' },
+})
+const assets = (servedManifest = manifest, pageResponse = page) => ({
+  fetch: async (request) => {
+    const pathname = new URL(request.url).pathname
+    if (pathname === '/_helloada/static-manifest.json') {
+      return new Response(JSON.stringify(servedManifest), { headers: { 'content-type': 'application/json' } })
+    }
+    return pathname.endsWith('.html') ? pageResponse() : new Response('original-script')
+  },
+})
+const env = (overrides = {}, servedManifest = manifest) => ({
   HELLOADA_PRESENTATION_PROFILE: 'static',
-  HELLOADA_STATIC_MANIFEST: JSON.stringify(manifest),
-  ASSETS: { fetch: async (request) => new URL(request.url).pathname.endsWith('.html')
-    ? new Response('<html><head><title>Astrid</title></head><body>Original website</body></html>', {
-      headers: { 'content-security-policy': "default-src 'self'; script-src 'self'; frame-ancestors 'none'", 'x-frame-options': 'DENY' },
-    }) : new Response('original-script') },
+  ASSETS: assets(servedManifest),
   ...overrides,
 })
 const request = (path = '/', method = 'GET') => new Request('https://tenant.workers.dev' + path, { method })
@@ -20,12 +28,27 @@ test('the tenant Worker passes the configured admin preview mount into static ro
   assert.match(worker, /staticWebsiteResponse\(request, env, helloAdaSite\.routes\.preview\)/)
 })
 
+test('the committed route inventory ships as an asset, never as a text binding', async () => {
+  const fetched = []
+  const settings = env({ ASSETS: { fetch: async (request) => {
+    const pathname = new URL(request.url).pathname
+    fetched.push(pathname)
+    if (pathname === '/_helloada/static-manifest.json') return new Response(JSON.stringify(manifest))
+    return pathname.endsWith('.html') ? page() : new Response('original-script')
+  } } })
+  await staticWebsiteResponse(request('/'), settings)
+  await staticWebsiteResponse(request('/en/'), settings)
+  assert.deepEqual(fetched, ['/_helloada/static-manifest.json', '/index.html', '/en/index.html'])
+})
+
 test('the configured Workspace preview mount serves the same static HTML in both locales', async () => {
   const mount = '/tenant-preview'
   for (const path of [mount, `${mount}/`, `${mount}/en/`]) {
     const fetched = []
     const settings = env({ ASSETS: { fetch: async (request) => {
-      fetched.push(new URL(request.url).pathname)
+      const pathname = new URL(request.url).pathname
+      fetched.push(pathname)
+      if (pathname === '/_helloada/static-manifest.json') return new Response(JSON.stringify(manifest))
       return new Response('<html><head></head><body>Original website</body></html>', {
         headers: { 'content-security-policy': "frame-ancestors 'none'", 'x-frame-options': 'DENY' },
       })
@@ -33,7 +56,7 @@ test('the configured Workspace preview mount serves the same static HTML in both
     const response = await staticWebsiteResponse(request(path), settings, mount)
     assert.equal(response.status, 200)
     assert.match(await response.text(), /Original website/)
-    assert.deepEqual(fetched, [path.endsWith('/en/') ? '/en/index.html' : '/index.html'])
+    assert.deepEqual(fetched, ['/_helloada/static-manifest.json', path.endsWith('/en/') ? '/en/index.html' : '/index.html'])
     assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN')
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/)
     assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')
@@ -84,21 +107,24 @@ test('analytics runtime script has only the public measurement identity', async 
 })
 
 test('a missing declared page is an error, never a CMS or static fallback', async () => {
-  const response = await staticWebsiteResponse(request(), env({ ASSETS: { fetch: async () => new Response('missing', { status: 404 }) } }))
+  const response = await staticWebsiteResponse(request(), env({ ASSETS: assets(manifest, () => new Response('missing', { status: 404 })) }))
   assert.equal(response.status, 503)
   assert.equal((await staticWebsiteResponse(request('/missing'), env())).status, 404)
-  await assert.rejects(staticWebsiteResponse(request(), env({ HELLOADA_STATIC_MANIFEST: '' })))
+  await assert.rejects(staticWebsiteResponse(request(), env({ ASSETS: { fetch: async () => new Response('missing', { status: 404 }) } })))
+  await assert.rejects(staticWebsiteResponse(request(), env({}, { kind: 'static', routes: {}, files: {} })))
   await assert.rejects(staticWebsiteResponse(request(), env({ HELLOADA_PRESENTATION_PROFILE: 'other' })))
 })
 
 test('the original error document is used only for unknown paths, with a real 404 status', async () => {
   const errorManifest = { ...manifest, files: { ...manifest.files, '/404.html': 'hash' } }
-  const settings = env({ HELLOADA_STATIC_MANIFEST: JSON.stringify(errorManifest), GOOGLE_SITE_VERIFICATION: 'not-for-error-pages',
-    ASSETS: { fetch: async () => new Response('<html lang="es"><title>Not found</title><main>Not found</main></html>') } })
+  const settings = env({ GOOGLE_SITE_VERIFICATION: 'not-for-error-pages',
+    ASSETS: { fetch: async (request) => new URL(request.url).pathname === '/_helloada/static-manifest.json'
+      ? new Response(JSON.stringify(errorManifest))
+      : new Response('<html lang="es"><title>Not found</title><main>Not found</main></html>') } }, errorManifest)
   const response = await staticWebsiteResponse(request('/unknown'), settings)
   assert.equal(response.status, 404)
   assert.doesNotMatch(await response.text(), /not-for-error-pages/)
-  const broken = await staticWebsiteResponse(request(), { ...settings, ASSETS: { fetch: async () => new Response('missing', { status: 404 }) } })
+  const broken = await staticWebsiteResponse(request(), { ...settings, ASSETS: assets(errorManifest, () => new Response('missing', { status: 404 })) })
   assert.equal(broken.status, 503)
 })
 

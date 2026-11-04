@@ -10,6 +10,7 @@ from site_agent.application.github_site_import import (
     normalize_repository,
     inspect_static_site,
     validate_static_artifact,
+    write_static_manifest,
 )
 
 
@@ -48,6 +49,9 @@ def test_static_inventory_preserves_pages_and_requires_assets(tmp_path):
         validate_static_artifact(tmp_path, result)
     import shutil
     shutil.copytree(public, tmp_path / '.open-next/assets')
+    with pytest.raises(GitHubSiteImportError, match='route inventory'):
+        validate_static_artifact(tmp_path, result)
+    write_static_manifest(tmp_path, result)
     validate_static_artifact(tmp_path, result)
     (tmp_path / '.open-next/assets/index.html').write_text('wrong artifact')
     with pytest.raises(GitHubSiteImportError, match='differs'):

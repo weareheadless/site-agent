@@ -320,7 +320,9 @@ def test_overlay_routes_an_explicit_static_site_through_the_worker(tmp_path: Pat
     merged = json.loads(config_path.read_text())
     assert merged["assets"]["run_worker_first"] is True
     assert merged["assets"]["html_handling"] == "none"
-    assert merged["vars"]["HELLOADA_STATIC_MANIFEST"] == '{"kind":"static"}'
+    # The per-page inventory ships with the Worker assets; a text binding is
+    # capped at 5.1 kB and a real site has one route per page.
+    assert "HELLOADA_STATIC_MANIFEST" not in merged["vars"]
 
 
 def test_overlay_rejects_an_unsupported_presentation_profile(tmp_path: Path):

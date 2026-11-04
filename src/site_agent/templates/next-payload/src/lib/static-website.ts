@@ -3,13 +3,37 @@ import { workspacePreviewPath } from './workspace-preview-path.ts'
 
 export type StaticWebsiteEnv = {
   HELLOADA_PRESENTATION_PROFILE?: string
-  HELLOADA_STATIC_MANIFEST?: string
   GA_MEASUREMENT_ID?: string
   GOOGLE_SITE_VERIFICATION?: string
   ASSETS?: { fetch: (request: Request) => Promise<Response> }
 }
 
 type StaticManifest = { kind: 'static'; routes: Record<string, string>; files: Record<string, string> }
+
+/**
+ * The committed inventory of the imported static site. It ships with the
+ * Worker assets because Cloudflare caps a text binding at 5.1 kB and a real
+ * site has one route per page. The binding is loaded once per isolate.
+ */
+const STATIC_MANIFEST_PATH = '/_helloada/static-manifest.json'
+const manifestCache = new WeakMap<object, Promise<StaticManifest>>()
+
+function loadStaticManifest(assets: NonNullable<StaticWebsiteEnv['ASSETS']>): Promise<StaticManifest> {
+  const cached = manifestCache.get(assets)
+  if (cached) return cached
+  const pending = (async () => {
+    const response = await assets.fetch(new Request('https://static-manifest.internal' + STATIC_MANIFEST_PATH))
+    if (!response.ok) throw new Error('Static website declaration is unavailable')
+    const manifest = await response.json() as StaticManifest
+    if (manifest?.kind !== 'static' || !manifest.routes?.['/'] || !manifest.files) {
+      throw new Error('Static website declaration is invalid')
+    }
+    return manifest
+  })()
+  manifestCache.set(assets, pending)
+  pending.catch(() => manifestCache.delete(assets))
+  return pending
+}
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
@@ -18,8 +42,9 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => (
 export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv, previewMount?: string): Promise<Response | null> {
   if (!env.HELLOADA_PRESENTATION_PROFILE || env.HELLOADA_PRESENTATION_PROFILE === 'payload') return null
   if (env.HELLOADA_PRESENTATION_PROFILE !== 'static') throw new Error('Unsupported presentation profile')
-  const manifest = JSON.parse(env.HELLOADA_STATIC_MANIFEST || '') as StaticManifest
-  if (manifest.kind !== 'static' || !manifest.routes?.['/'] || !manifest.files || !env.ASSETS) {
+  if (!env.ASSETS) throw new Error('Static website declaration or asset binding is missing')
+  const manifest = await loadStaticManifest(env.ASSETS)
+  if (!manifest.routes?.['/'] || !manifest.files) {
     throw new Error('Static website declaration or asset binding is missing')
   }
   const url = new URL(request.url)

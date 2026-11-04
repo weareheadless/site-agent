@@ -1559,7 +1559,6 @@ class WebsiteBootstrapService:
             worker_config = site_dir / "wrangler.jsonc"
             worker = json.loads(worker_config.read_text())
             worker["vars"]["HELLOADA_PRESENTATION_PROFILE"] = "static"
-            worker["vars"]["HELLOADA_STATIC_MANIFEST"] = json.dumps(frontend, separators=(",", ":"))
             worker["assets"].update(run_worker_first=True, html_handling="none")
             worker_config.write_text(json.dumps(worker, indent=2) + "\n")
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
