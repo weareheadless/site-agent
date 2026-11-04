@@ -4,6 +4,13 @@
       "id": "rel-20261103222247-2ef7ad10",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
+    "casamigo": {
+      "id": "rel-20261104023607-b6aaa775",
+      "initializeSchema": {
+        "migrationHead": "9e74f3cca7632d333d7b50e9248e5de32ade831d0ddaee63006f221470adaccb"
+      },
+      "sha": "560ba343e4373607a808680eb1ba33c15b3fe76a"
+    },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
