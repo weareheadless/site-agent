@@ -198,6 +198,7 @@ def _updated_config(
         active_identity,
         f"tenant {tenant_id} active Worker health",
     )
+    contract_raw = {key: value for key, value in contract_raw.items() if key not in {"adminVersion"}}
     allowed = {
         "contract", "coreVersion", "schemaRevision", "schemaIdentity",
         "migrationHead", "media_fields", "locales", "defaultLocale", "collections", "globals",

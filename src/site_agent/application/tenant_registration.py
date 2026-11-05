@@ -41,6 +41,9 @@ _TENANTS_FILE = "tenants.json"
 _RUNTIME_ACTIVATION_UNSET = object()
 
 
+_RETIRED_CONTRACT_KEYS = frozenset({"adminVersion"})
+
+
 class TenantRegistrationError(ValueError):
     """A website workspace cannot be provisioned safely."""
 
@@ -447,6 +450,12 @@ class TenantRegistrationService:
                 contract = payload.get("contract")
                 if not isinstance(contract, Mapping):
                     raise TenantRegistrationError("tenant Payload contract is missing")
+                # Retired identity keys are dropped on the next activation instead
+                # of blocking a site that was registered before the change.
+                contract = {
+                    key: value for key, value in contract.items()
+                    if key not in _RETIRED_CONTRACT_KEYS
+                }
                 allowed_keys = expected_keys | {
                     "media_fields", "locales", "defaultLocale", "configurationIdentity", "collections", "globals",
                 }

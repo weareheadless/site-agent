@@ -250,7 +250,7 @@ def test_runtime_activation_is_payload_sibling_and_clear_is_explicit(tmp_path):
         tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
         tenant_config["site"]["payload"].update(
             enabled=True, token_env="PROVISIONED_NEW_SITE_TOKEN",
-            contract={"contract": "helloada-content-v3",
+            contract={"adminVersion": "0.10.1", "contract": "helloada-content-v3",
                       "coreVersion": "0.5.2", "schemaRevision": 5,
                       "schemaIdentity": "c" * 64, "migrationHead": "d" * 64,
                       "media_fields": ["alt"], "locales": ["en"], "defaultLocale": "en"},
@@ -266,6 +266,7 @@ def test_runtime_activation_is_payload_sibling_and_clear_is_explicit(tmp_path):
         service.sync_payload_runtime("new-site", identity, website_present=True, runtime_activation=activation)
         updated = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
         assert updated["site"]["payload"]["runtime_activation"] == binding
+        assert "adminVersion" not in updated["site"]["payload"]["contract"]
         assert updated["site"]["payload"]["contract"]["media_fields"] == ["alt"]
         assert updated["site"]["payload"]["contract"]["locales"] == ["en"]
         second_binding = RuntimeActivation.from_mapping({**binding, "release_id": "rel-2",
