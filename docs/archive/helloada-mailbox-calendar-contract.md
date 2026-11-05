@@ -1,6 +1,6 @@
 # HelloAda Mailbox and Booking Calendar Contract
 
-> Superseded by [docs/mailflare-single-worker-contract.md](./mailflare-single-worker-contract.md).
+> Superseded by [docs/mailflare-single-worker-contract.md](../mailflare-single-worker-contract.md).
 > This historical document is retained for context only; do not use its data
 > ownership or Resend architecture where it conflicts with the canonical contract.
 

@@ -10,11 +10,11 @@ preview, and the Intake Lab to provisioned-site transition.
 **Authority:** This document is authoritative for the owner-facing Intake Lab
 UI and its preview behavior. It does not replace the design-pipeline safety
 rules in `AGENTS.md`, the native design-pipeline architecture in
-`docs/simplify-design-pipeline-implementation-plan.md`, or the production
-approval rules in `docs/owner-experience-implementation-plan.md`.
+`docs/archive/simplify-design-pipeline-implementation-plan.md`, or the production
+approval rules in `docs/archive/owner-experience-implementation-plan.md`.
 
 The owner-facing neural-network/cognition UI described in
-`docs/intake-ada-cognition-dashboard-implementation-plan.md` is superseded by
+`docs/archive/intake-ada-cognition-dashboard-implementation-plan.md` is superseded by
 this plan. Its durable research, deduction, and knowledge-storage work may be
 reused; its canvas, neural animation, mind toggle, and decorative animation are
 not part of the target experience.

@@ -5,8 +5,8 @@
 **Date:** 2026-09-03
 
 **Authority:** This plan extends
-`docs/ada-incubation-research-and-provisioning-implementation-plan.md` and
-`docs/conversational-design-intake-implementation-plan.md`. It replaces their
+`docs/archive/ada-incubation-research-and-provisioning-implementation-plan.md` and
+`docs/archive/conversational-design-intake-implementation-plan.md`. It replaces their
 owner-facing Intake Lab presentation, background activity, research-trigger,
 design-skill-sharing, and post-intake transition requirements where they
 conflict.

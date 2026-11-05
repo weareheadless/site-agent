@@ -5,13 +5,13 @@
 **Date:** 2026-09-01
 
 **Superseded intake entry:** The conversational intake contract in
-`docs/conversational-design-intake-implementation-plan.md` is now authoritative
+`docs/archive/conversational-design-intake-implementation-plan.md` is now authoritative
 for how an Intake Lab session starts. The Lab begins with an empty draft; a
 completed intake file is an explicit fixture/migration seed only.
 
 **Authority:** This plan defines the local Intake Lab adapter. The candidate
 generation and review lifecycle remains governed by
-`docs/opencode-first-design-pipeline-implementation-plan.md`.
+`docs/archive/opencode-first-design-pipeline-implementation-plan.md`.
 
 **Default local URL:** `http://127.0.0.1:3012`
 

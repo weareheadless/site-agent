@@ -54,9 +54,9 @@ This plan is authoritative for:
 It complements, and does not weaken:
 
 - `AGENTS.md`;
-- `docs/helloada-multi-site-control-plane-implementation-plan.md`;
-- `docs/next-react-payload-correction-plan.md`;
-- `docs/brand-composition-and-behavior-system-implementation-plan.md`;
+- `docs/archive/helloada-multi-site-control-plane-implementation-plan.md`;
+- `docs/archive/next-react-payload-correction-plan.md`;
+- `docs/archive/brand-composition-and-behavior-system-implementation-plan.md`;
 - the immutable candidate, deterministic validation, owner review, and explicit publication-approval rules.
 
 Where older documents describe `src/site_agent/web/static/admin.html`, the

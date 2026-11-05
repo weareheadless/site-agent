@@ -17,7 +17,7 @@ The governing editorial rule is:
 > understanding of it. Search demand never receives editorial authority.
 
 This document supersedes the article-generation and paid-research portions of
-`docs/ada-seo-research-strategy-implementation-plan.md`. The existing CrawlSEO
+`docs/archive/ada-seo-research-strategy-implementation-plan.md`. The existing CrawlSEO
 connectivity plan remains applicable for authentication, tenant isolation,
 Google credentials, durable jobs, and MCP transport.
 

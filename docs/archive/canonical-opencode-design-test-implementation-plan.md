@@ -2,7 +2,7 @@
 
 > **Superseded on 2026-08-31.** Do not implement further phases from this
 > document. The authoritative corrective plan is
-> `docs/opencode-first-design-pipeline-implementation-plan.md`. It retains every
+> `docs/archive/opencode-first-design-pipeline-implementation-plan.md`. It retains every
 > safe candidate before validation, removes hidden same-session repair loops,
 > and tests the complete DeepSeek implementation plus Qwen visual-refinement
 > workflow.
@@ -15,7 +15,7 @@
 
 **Supersedes for design-test execution:**
 
-- `docs/react-design-creation-system-implementation-plan.md`
+- `docs/archive/react-design-creation-system-implementation-plan.md`
 - the local `ReactDesignSpec -> AstroReactCompiler -> frontend_scaffold` test path
 - the current multi-model comparison scripts and comparison UI
 

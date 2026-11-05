@@ -14,7 +14,7 @@ This plan replaces accumulated design-pipeline mechanics with one small path. It
 is not another architecture to run beside the existing ones.
 
 Until its end-to-end acceptance gate passes, `AGENTS.md` and
-`docs/brand-composition-and-behavior-system-implementation-plan.md` remain
+`docs/archive/brand-composition-and-behavior-system-implementation-plan.md` remain
 authoritative for product outcomes: Ada creates the candidate, the defining
 journey is visible, the real owner surface is tested, repairs remain Ada-authored,
 and production changes only after explicit approval.

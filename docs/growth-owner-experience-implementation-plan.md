@@ -9,7 +9,7 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ### October 23 owner-directed clarity and clean-slate update
 
-Follow `docs/growth-clarity-and-clean-slate-plan.md` for the current cleanup and
+Follow `docs/archive/growth-clarity-and-clean-slate-plan.md` for the current cleanup and
 redesign sequence. The owner rejected the text-heavy dashboard and requested a
 current content audit, controlled archival of obsolete unpublished work, and a
 readable decision-first experience. That plan supersedes earlier prominent
@@ -269,7 +269,7 @@ An investigation finding is not automatically an owner task. A proposed article 
 Read these documents completely before changing code:
 
 - The canonical repository's `AGENTS.md` and `deploy/README.md` on the VPS at `/SOCIAL/site-agent`.
-- `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md` and applicable implementation-status documents.
+- `docs/archive/ada-growth-seo-aeo-pipeline-implementation-plan.md` and applicable implementation-status documents.
 - The shared Payload content and exact owner-review contracts.
 - `GROWTH-DECISION-WORKSPACE-IMPLEMENTATION-PLAN.md` in this workspace and any canonical repository copy of it.
 

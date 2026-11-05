@@ -1,6 +1,8 @@
 # HelloAda project selector to Payload intake contract
 
-**Status:** Active architecture contract  
+**Status:** Active architecture contract (topology only; its intake-and-design
+journey steps 4–5 are superseded by
+`docs/manual-intake-and-ada-as-management-interface.md`)
 **Decision:** 2026-10-06
 
 ## Product boundary

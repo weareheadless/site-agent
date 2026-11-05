@@ -8,7 +8,7 @@
 
 **Authority:** This plan corrects and supersedes the lossy customer-handoff and
 runtime-context portions of
-`docs/ada-incubation-research-and-provisioning-implementation-plan.md`. It does
+`docs/archive/ada-incubation-research-and-provisioning-implementation-plan.md`. It does
 not supersede that plan's isolation, privacy, owner-approval, retention, or
 cross-customer-memory rules. The repository invariants in `AGENTS.md` remain
 authoritative.
@@ -1071,7 +1071,7 @@ Update these documents as implementation lands:
   activation.
 - `docs/debugging.md`: acceptance manifest, bundle, import, context, repository,
   and runtime verification chain.
-- `docs/ada-incubation-research-and-provisioning-implementation-plan.md`: mark
+- `docs/archive/ada-incubation-research-and-provisioning-implementation-plan.md`: mark
   superseded handoff sections and link to this plan.
 - `README.md`: describe incubation as preparation of a normal managed
   `site-agent` instance.

@@ -1,7 +1,7 @@
 # HelloAda shared content and owner review — implementation status
 
 This is the maintained architecture/status companion for
-`docs/site-agent-payload-platform-consolidation-implementation-plan.md` (20
+`docs/archive/site-agent-payload-platform-consolidation-implementation-plan.md` (20
 sections). Source changes are reported separately from release proof. Atelier
 Harmonie and OceanicVibes are validation tenants with no production/customer
 data; they must be deployed and migrated to validate the shared system. Final

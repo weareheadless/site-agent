@@ -1,15 +1,19 @@
 # site-agent
 
-Portable AI website content manager. One installable package, one instance directory per site.
+One reusable platform package for every HelloAda website: Payload as the owner's
+admin interface and optional CMS, a standard Next frontend so tenants behave the
+same way, and one release path. A site repository carries only design and
+content.
 
-- Plan: [PLAN.md](PLAN.md)
+- Architecture: [docs/architecture.md](docs/architecture.md) — platform vs site, presentation modes, release, Ada's role
+- Rules and invariants: [AGENTS.md](AGENTS.md)
+- Who does what: [docs/manual-intake-and-ada-as-management-interface.md](docs/manual-intake-and-ada-as-management-interface.md) — manual intake, Ada manages, the owner authors
+- Documentation index: [docs/README.md](docs/README.md) — current contracts, and `docs/archive/` for history
 - Positioning: [POSITIONING.md](POSITIONING.md)
-- Production customer releases: [deploy/README.md](deploy/README.md) — canonical GitHub queue and VPS pipeline
+- Production releases: [deploy/README.md](deploy/README.md) — canonical GitHub queue and VPS pipeline
 - Platform release boundaries: [docs/platform-release-runbook.md](docs/platform-release-runbook.md) — shared API, admin package and customer Workers
 - Defining a new site's persona: [docs/persona.md](docs/persona.md) — the Ada personality contract for onboarding LLMs
-- Architecture: [docs/architecture.md](docs/architecture.md) — runtime boundaries and approval flow
-- Historical owner-experience plan: [docs/owner-experience-implementation-plan.md](docs/owner-experience-implementation-plan.md) — retained for context; its retired static-preview assumptions are not active architecture
-- Debugging: [docs/debugging.md](docs/debugging.md) — job, draft, and Design preview runbook
+- Debugging: [docs/debugging.md](docs/debugging.md) — job, draft, and preview runbooks
 - Extensions: [docs/extensions.md](docs/extensions.md) — adapter, builder, provider, and MCP rules
 - Ready-made instance config: [examples/oceanicvibes.config.yaml](examples/oceanicvibes.config.yaml)
 - Environment template: [.env.example](.env.example) — placeholders only, never production credentials

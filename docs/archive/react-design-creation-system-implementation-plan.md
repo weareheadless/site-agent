@@ -1,11 +1,11 @@
 # React Design Creation System Implementation Plan
 
 **Status:** Superseded on 2026-08-31. Do not implement this scaffold/compiler
-plan. Follow `docs/canonical-opencode-design-test-implementation-plan.md`.
+plan. Follow `docs/archive/canonical-opencode-design-test-implementation-plan.md`.
 
 **Date:** 2026-08-30
 
-**Superseded by:** `docs/canonical-opencode-design-test-implementation-plan.md`
+**Superseded by:** `docs/archive/canonical-opencode-design-test-implementation-plan.md`
 
 ## Purpose
 

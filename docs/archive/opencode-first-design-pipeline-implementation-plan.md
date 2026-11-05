@@ -3,14 +3,14 @@
 **Status:** Authoritative corrective implementation contract
 
 **Creative-execution authority:**
-`docs/brand-composition-and-behavior-system-implementation-plan.md` is
+`docs/archive/brand-composition-and-behavior-system-implementation-plan.md` is
 authoritative for experience planning, integrated implementation ownership,
 motion/fidelity specialist behavior, and the evidence required to call a design
 complete. This document remains authoritative for durable execution, candidate
 retention, Git/provider isolation, host build ownership, and approval safety.
 
 **Owner-approved generation-boundary replacement:**
-`docs/fast-faithful-design-replacement-architecture.md` now supersedes this
+`docs/archive/fast-faithful-design-replacement-architecture.md` now supersedes this
 document's multi-session creative direction/realization split, mandatory
 section-template composition, and any instruction that constrains Ada to a
 host-selected presentation structure. It does not supersede durable candidate
@@ -30,7 +30,7 @@ review loops to the product's new-run path.
 
 **Supersedes:**
 
-- `docs/canonical-opencode-design-test-implementation-plan.md`
+- `docs/archive/canonical-opencode-design-test-implementation-plan.md`
 - the same-session quality-repair loop in `hands/opencode_runner.py`
 - the `ReactDesignSpec -> AstroReactCompiler -> frontend_scaffold` path as a
   canonical website-design workflow

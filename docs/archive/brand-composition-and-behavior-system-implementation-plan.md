@@ -3,9 +3,9 @@
 ## Status
 
 Authoritative corrective implementation contract for autonomous creative
-realization. This plan extends `docs/opencode-first-design-pipeline-implementation-plan.md`.
+realization. This plan extends `docs/archive/opencode-first-design-pipeline-implementation-plan.md`.
 The owner-approved replacement architecture is documented in
-`docs/fast-faithful-design-replacement-architecture.md` and supersedes this
+`docs/archive/fast-faithful-design-replacement-architecture.md` and supersedes this
 document wherever it requires a separate expansive direction pass, mandatory
 section-template composition, forbids Ada from authoring presentation structure,
 or makes the approximately twenty-minute objective a reason to trade away
@@ -207,7 +207,7 @@ substitute a generic site pattern for a run-specific decision.
 
 The detailed plan below records the previous section-template architecture. For
 new builds, it is superseded by the single-session, free-presentation-authoring
-contract in `docs/fast-faithful-design-replacement-architecture.md`. Retain typed
+contract in `docs/archive/fast-faithful-design-replacement-architecture.md`. Retain typed
 experience requirements and asset evidence; do not require the realization turn
 to implement a host-selected visual layout or prohibit it from creating
 candidate-specific presentation markup. Templates are optional starting points,

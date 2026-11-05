@@ -10,8 +10,8 @@ This plan addresses one observed creative regression in the simplified Ada
 pipeline. It implements, and does not replace, the requirements in:
 
 - `AGENTS.md`;
-- `docs/brand-composition-and-behavior-system-implementation-plan.md`;
-- `docs/simple-owner-surface-gsap-pipeline-implementation-plan.md`.
+- `docs/archive/brand-composition-and-behavior-system-implementation-plan.md`;
+- `docs/archive/simple-owner-surface-gsap-pipeline-implementation-plan.md`.
 
 The brand-composition plan remains authoritative for asset-grounded composition,
 an executable experience journey, integrated realization, bounded autonomous

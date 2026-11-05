@@ -55,7 +55,7 @@ The source audit found the following concrete issues:
 - `growth.py` exposes article metadata rather than a full review document. Its chat projection is bounded and abbreviated; inspect targeted task retrieval before assuming Ada can explain every displayed candidate.
 - `growth_candidates.py` already prepares exact Payload candidates, checks concurrent drafts, creates linked owner actions/artifacts/approvals and records package hashes. Reuse it; do not introduce a second publisher.
 
-The existing `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md` describes a much richer service than the current generic UI reveals. This plan replaces its competing Growth overview layout guidance with one inbox and typed review surfaces. Its evidence, permission, scheduling and exact-approval rules remain applicable. Historical implementation-status documents are not proof of current runtime behavior.
+The existing `docs/archive/ada-growth-seo-aeo-pipeline-implementation-plan.md` describes a much richer service than the current generic UI reveals. This plan replaces its competing Growth overview layout guidance with one inbox and typed review surfaces. Its evidence, permission, scheduling and exact-approval rules remain applicable. Historical implementation-status documents are not proof of current runtime behavior.
 
 The earlier plan was written before the live record audit. The evidence above supersedes that limitation. Provider access, every backlog item, real scheduling and an entire approval/publication journey remain unverified and must be proved in the implementation.
 

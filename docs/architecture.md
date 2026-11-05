@@ -1,151 +1,108 @@
 # Architecture
 
-This document describes the current supported shape of site-agent. `PLAN.md`
-is a historical development log and is not the operational contract.
+The current supported shape of site-agent. `AGENTS.md` holds the working rules;
+this document explains how the pieces fit. Historical plans are in
+`docs/archive/` and are not operational guidance.
 
-## Runtime
+## What the product is
 
-`main._build_runtime()` is the composition root. It loads configuration,
-creates `Memory`, the LLM client, and the scheduler, then registers built-in
-jobs. `serve` adds the FastAPI application, a durable chat-job executor, and a
-single-worker typed design-job executor.
-
-The current compatibility boundary still passes a dictionary containing
-`config`, `memory`, `llm`, and `persona_prompt`. New code should keep that
-boundary stable while introducing typed objects at individual seams; do not
-add a dependency-injection framework.
-
-## Request And Approval Flow
+One reusable platform package, consumed by every website, with a per-site
+repository for design and content. Payload is the owner's admin interface and,
+for sites that need one, the CMS.
 
 ```text
-owner request
-  -> POST /api/chat or a purpose-built setup endpoint
-  -> chat_jobs row (queued)
-  -> single executor (running)
-  -> builder/editor
-  -> pending draft
-  -> Design iframe review
-  -> explicit approve or decline
-  -> adapter mutation and publish ledger
+owner
+  -> helloada.app            authenticated multi-project selector, owner handoff
+  -> site-agent API          provisioning, management, measurement, releases
+  -> tenant Worker           Next app + Payload admin + Mailflare, one per site
+  -> Cloudflare              D1, R2, queues, Worker version at 100% traffic
 ```
 
-Jobs and drafts are different records and IDs. A completed job must be traced
-through its result to the draft ID. The active-job endpoint is not a history
-endpoint.
+## The two halves
 
-## Owner Workflow Contracts
+**Platform (shared, versioned, never forked).** `src/site_agent/templates/next-payload`
+plus the files declared in `deploy/shared-runtime-overlay.json`, plus the pinned
+packages `@weareheadless/helloada-payload-core`, `helloada-payload-admin` and
+`helloada-mailflare`. The overlay owns the Worker, API routes, auth, handoff,
+preview, forms, SEO metadata, GA4 wiring and Payload plumbing. A runtime change
+is one central change fanned out by fingerprint, not N tenant edits.
 
-Owner-facing work is represented by provider-neutral contracts in
-`core/contracts.py`. `OwnerAction` records required owner input or a suggestion;
-`Artifact` records immutable prepared work; `ApprovalRequest` binds explicit
-permission to an artifact hash; and `ProviderReceipt` records a safe external
-result. `Capability` describes one explicit operation and its effect class.
+**Site (per tenant).** Design and content: `site.css`/design tokens,
+`helloada.config.ts`, the presentation itself, assets, and either CMS documents
+or committed content. Two tenants should differ only here.
 
-Owner actions move through `open -> started|waiting|snoozed|completed|dismissed|stale`;
-started and waiting work may complete or become stale, and terminal states cannot
-be reopened. Approval requests move from `pending` to `approved`, `declined`,
-`expired`, or `failed`; an approved request may only become failed. State changes
-are guarded in `Memory` and exposed to callers through application services.
+Anything a second site would copy verbatim belongs in the platform half. The
+overlay currently does not yet cover `layout.tsx`, `SiteChrome.tsx` and
+`request-locale.ts`, which is why those files are duplicated across tenants;
+moving them is the remaining consolidation work.
 
-## Application Workflow Layer
+## Presentation
 
-`application/` owns workflows that may be called by HTTP, scheduled jobs, or
-future MCP adapters. `HomeService` composes the owner-facing read model,
-`OwnerActionService` owns action deduplication and lifecycle transitions,
-`ApprovalService` owns artifact-hash-bound decisions and provider receipts, and
-`ConversationService` owns archive, restore, and deletion rules. These services
-call `Memory` methods only; the server remains a session and transport adapter.
+Two supported modes, same Worker, same build, same release path:
 
-The existing website-draft approval endpoints remain a compatibility path behind
-the narrow `SiteDraftApprovalAdapter`. New artifact approval flows should use
-`ApprovalService` directly and must not route through FastAPI handlers.
+- **Committed source (import profile).** `public/` is imported byte-for-byte and
+  served by `HELLOADA_PRESENTATION_PROFILE=static`. Used to adopt an existing
+  site without rewriting it, and for designs authored as static markup plus
+  assets. See `docs/github-website-provisioning.md`.
+- **Next components on the platform.** Page routes render from committed
+  components. This is the default for a new authored design.
 
-## Preview Boundary
+A tenant declares `managedPaths` in `src/helloada.config.ts` for the route bases
+that Payload should serve. Everything outside those bases comes from the
+tenant's own presentation. There is no per-tenant Payload page schema.
 
-`web/preview.py` owns two concerns:
+## Payload
 
-- building a staged Git ref into an isolated temporary output directory;
-- rewriting site-owned HTML URLs relative to the rendered page.
+Always: owner authentication, admin UI, media, and the workspace API.
 
-Relative preview URLs are required because the admin application is deployed
-under `/ada/` behind a proxy. The preview service must not hardcode a host or
-assume that `/api/` belongs to site-agent.
+When the site needs a CMS: articles and blog posts, products, listings and their
+relations, read through the canonical gateway (`/api/workspace`) by the managed
+routes. Presentation pages are not Payload documents, and presentation copy is
+not mirrored into Payload.
 
-The Design iframe is the review surface. A public production URL is never a
-substitute for it because production intentionally remains unchanged while a
-draft is pending.
+Schema, migrations, admin and package pins are platform-owned. A tenant never
+edits them, and no tenant carries a local copy of a shared collection
+definition.
 
-The iframe runs site JavaScript with `sandbox="allow-scripts"` but never
-`allow-same-origin`, so site code cannot reach the admin document or its
-cookies. The admin issues a short-lived token scoped to the published preview
-or one draft; HTML/CSS asset URLs and the preview runtime use that capability
-to load same-site files and data without restoring admin credentials.
+## Release
 
-## Typed Design Runs
+One path: commit to the tenant repository, then queue the exact full SHA in
+`deploy/desired-releases.json`. The VPS runner clones that SHA, overlays the
+pinned runtime, builds with the pinned Node/npm, uploads one Worker version,
+promotes it to 100% traffic, runs the live and authenticated gates, and writes a
+secret-free receipt. No direct `wrangler deploy`, no hand restart, no manual
+Cloudflare edit. See `deploy/README.md` and `docs/platform-release-runbook.md`.
 
-Typed design runs persist the intake, assessment, planning decision, immutable
-base SHA, candidate SHA, design-manifest identity, and quality-report identity.
-The background design worker rehydrates a validated `PageBuildRequest` and
-`BuildTarget` from the run record, executes the isolated build, then runs host
-quality gates. Only a passing run can create the existing owner-review draft;
-local experiments are explicitly non-publishable and use `push_mode: none`.
+Production changes only by explicit owner approval.
 
-The `design-experiment` CLI creates a dedicated public-repository clone and
-database, strips production adapter credentials from the child environment,
-and records whether remote refs changed. It is intended for reproducible local
-experiments, not production deployment.
+## Ada
 
-## Dependency Direction
+Ada is the management interface: provisioning, measurement (GA4, Search
+Console, CrawlSEO), domain email, releases, research, monitoring and reporting.
+She does not author the site's design. See
+`docs/manual-intake-and-ada-as-management-interface.md`.
 
-The intended direction is:
+## Internal code shape
 
-```text
-web transport -> application workflow -> core contracts -> hands/senses
-brain policy  -> application workflow -> core contracts -> hands/senses
-```
+- `main._build_runtime()` is the composition root: config, `Memory`, LLM client,
+  scheduler, then the FastAPI app.
+- Dependency direction: `web` transport -> `application` workflow ->
+  `core` contracts -> `hands`/`senses`. `brain` policy follows the same path.
+  Core modules never import a concrete adapter to resolve a secret.
+- `application/` owns workflows callable from HTTP, schedulers or adapters.
+  Route handlers translate HTTP and sessions only.
+- `core/contracts.py` holds provider-neutral owner actions, artifacts,
+  approval requests and receipts. Approvals bind to an artifact hash.
+- `web/preview.py` owns staged builds and preview URL rewriting; previews live
+  under the deployment mount point (`/ada/`).
+- Extension direction: `HTTP/MCP adapter -> application service -> typed
+  contract -> adapter/provider`. No universal plugin base class.
 
-Core modules must not import a concrete external adapter to resolve a secret
-or perform a provider operation. Generic configuration helpers live in
-`config.py`; concrete adapters remain under `hands/`.
+## Reading order
 
-## Existing Extension Seams
-
-- `hands.base.SiteAdapter` is the publish-target seam.
-- `hands.builder` is the compatibility builder seam and delegates to the
-  native OpenCode implementation.
-- `senses/` contains feed and metrics integrations.
-- `brain.editor` owns the current repository tool loop and draft policy.
-
-## Inner Life Boundary
-
-Ada's private identity and a customer's work persona are separate prompt inputs.
-`brain.prompts.inner_identity_prompt()` contains stable factual self-knowledge and
-the persisted `inner_self` account; it never imports a site's subject, audience, or
-work directions. `work_persona_prompt()` adds those customer-specific instructions
-for website work.
-
-`brain.self_model` periodically asks Ada whether recorded inner-life evidence changed
-her self-understanding. The evidence is limited to her own inner-voice notes and
-awakening decisions, with the existing self-model providing continuity; a raw dream
-counts only after she decides it mattered. A no-change result is valid, and a
-change is persisted with evidence IDs. This path is autonomous, customer-isolated,
-and cannot create a draft or bypass an approval boundary.
-
-Dream prompts do not prescribe human or machine imagery. They preserve Ada's factual
-knowledge that she is an AI while leaving dream content to emerge from her retained
-experience. External site reading is optional residue, not private identity.
-
-These seams are intentionally small and partly legacy. When extending them,
-add a narrow capability or protocol first, preserve compatibility wrappers,
-and add a conformance test. Do not create a universal plugin abstraction.
-
-## Future MCP/API Integrations
-
-An MCP or API integration should call an application service rather than a
-FastAPI route. Read-only providers may return normalized snapshots. Mutating
-providers must return validated repository operations or go through the draft
-service. Remote tool metadata is not trusted to classify side effects.
-
-The first external integration should prove one narrow provider contract,
-timeouts, error translation, and diagnostics before general tool discovery is
-introduced.
+1. `AGENTS.md` — rules and invariants.
+2. `docs/manual-intake-and-ada-as-management-interface.md` — who does what.
+3. `docs/github-website-provisioning.md` — the import/adoption profile.
+4. `deploy/README.md` — the release queue and its gates.
+5. `docs/mailflare-single-worker-contract.md`, `docs/seo-provisioning-and-domain-lifecycle.md`
+   — mail and measurement lifecycles.

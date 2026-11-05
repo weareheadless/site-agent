@@ -24,7 +24,7 @@ automatically retried.
 Cloudflare Email Routing delivers inbound mail to the same Worker, and the
 Cloudflare `EMAIL` binding sends transactional notices and booking confirmations.
 It is not a fallback sender for ordinary correspondence. Read
-`deploy/README.md` and `docs/helloada-mailbox-calendar-contract.md` for the
+`deploy/README.md` and `docs/archive/helloada-mailbox-calendar-contract.md` for the
 provider credential and tenant provisioning contract.
 
 Production releases use the central VPS pipeline. Register the tenant in

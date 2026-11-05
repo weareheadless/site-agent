@@ -1,6 +1,6 @@
 # HelloAda Messages, Contacts and Website Forms — Production Implementation Plan
 
-> Superseded by [docs/mailflare-single-worker-contract.md](./mailflare-single-worker-contract.md).
+> Superseded by [docs/mailflare-single-worker-contract.md](../mailflare-single-worker-contract.md).
 > Retained as historical implementation context only; its Payload/Resend data
 > ownership and mailbox architecture are no longer authoritative.
 

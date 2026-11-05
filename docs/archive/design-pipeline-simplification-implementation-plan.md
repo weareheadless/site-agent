@@ -3,7 +3,7 @@
 Status: proposed
 Audience: the coding agent implementing this work
 Authority: this plan implements the four required outcomes of
-`docs/brand-composition-and-behavior-system-implementation-plan.md` (integrated
+`docs/archive/brand-composition-and-behavior-system-implementation-plan.md` (integrated
 realization, experience journey, autonomous repair, end-to-end acceptance). It
 must not weaken those outcomes. Where this plan reduces roles or gates, it must
 still preserve the outcomes; if the reader believes a reduction does, stop and

@@ -15,19 +15,19 @@ homepage candidates.
 Where the following documents conflict with this plan, this plan takes
 precedence for the affected behavior:
 
-- `docs/intake-lab-test-ui-implementation-plan.md`: its Native OpenCode-only
+- `docs/archive/intake-lab-test-ui-implementation-plan.md`: its Native OpenCode-only
   generation decision, its Qwen/Entrim reference pairing, and its Astro/React
   non-goal are superseded.
-- `docs/react-design-creation-system-implementation-plan.md`: its reusable typed
+- `docs/archive/react-design-creation-system-implementation-plan.md`: its reusable typed
   planner, compiler, build-profile, and local-Git implementation is restored for
   initial incubation homepage builds only. Its old standalone command and
   customer-specific assumptions remain superseded.
-- `docs/opencode-first-design-pipeline-implementation-plan.md`: Native OpenCode
+- `docs/archive/opencode-first-design-pipeline-implementation-plan.md`: Native OpenCode
   remains the implementation path for explicit owner-requested visual
   refinements, but not for the first controlled homepage build.
 
 The isolation, explicit approval, and provisioning rules in
-`docs/ada-incubation-research-and-provisioning-implementation-plan.md` and
+`docs/archive/ada-incubation-research-and-provisioning-implementation-plan.md` and
 `AGENTS.md` remain authoritative everywhere.
 
 ## Instructions to the Coding AI

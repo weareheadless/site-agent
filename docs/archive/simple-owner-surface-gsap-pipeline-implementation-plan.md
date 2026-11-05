@@ -9,15 +9,15 @@ generated GSAP behavior reliable, observable, and fast enough for the product's
 approximately 20-minute promise.
 
 This document implements the mission and acceptance requirements in
-`docs/brand-composition-and-behavior-system-implementation-plan.md`. That
+`docs/archive/brand-composition-and-behavior-system-implementation-plan.md`. That
 document and `AGENTS.md` remain authoritative. If this plan appears to weaken
 integrated realization, observable experience fidelity, candidate isolation,
 owner review, or production approval safety, stop and follow the authoritative
 document.
 
 This plan consolidates the useful simplification work described in
-`docs/design-pipeline-simplification-implementation-plan.md` and
-`docs/simplify-design-pipeline-implementation-plan.md`. Those documents are
+`docs/archive/design-pipeline-simplification-implementation-plan.md` and
+`docs/archive/simplify-design-pipeline-implementation-plan.md`. Those documents are
 historical inputs, not additional phase lists to execute in parallel.
 
 ## 1. Problem statement

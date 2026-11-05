@@ -16,9 +16,9 @@ It does not replace:
 
 - `AGENTS.md` — repository invariants, credential handling, application-service
   boundaries, honest reporting.
-- `docs/simplify-design-pipeline-implementation-plan.md` — replace-first
+- `docs/archive/simplify-design-pipeline-implementation-plan.md` — replace-first
   removal of the specialist orchestration; the native design path.
-- `docs/next-react-payload-correction-plan.md` — canonical customer runtime
+- `docs/archive/next-react-payload-correction-plan.md` — canonical customer runtime
   (Next.js + React + Payload + D1 + R2).
 - The design-pipeline safety rules: immutable candidates, exact-SHA isolation,
   host-owned build evidence, no production mutation without owner action.
@@ -85,7 +85,7 @@ gated by an explicit confirmation. This is kept. The interaction missing is
 | `application/design_jobs.py` | Durable executor: claims runs, retains candidates before validation, records review state. |
 | `application/designs.py` (`DesignService`) | Run lifecycle `created -> assessing_intake -> planning -> building -> candidate_ready -> validating -> ready_for_review`; host build; browser evidence; one refinement child. |
 | `core/design_contracts.py` | `DesignRunStatus`, `DesignOperationKind` (`initial_build`, `technical_repair`, `visual_refinement`, `derived_page`). |
-| `docs/simplify-design-pipeline-implementation-plan.md` | The native path: STEP 1 read-only design direction, STEP 2 integrated build; removes the specialist phase machine. |
+| `docs/archive/simplify-design-pipeline-implementation-plan.md` | The native path: STEP 1 read-only design direction, STEP 2 integrated build; removes the specialist phase machine. |
 
 This pipeline is a chained autonomous flow. Inside one run, Ada selects the
 design direction, implements it, validates it, and only then shows the owner a

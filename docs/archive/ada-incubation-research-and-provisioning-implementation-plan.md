@@ -5,14 +5,14 @@
 **Date:** 2026-09-02
 
 **Authority:** This plan replaces the customer-configured Intake Lab runtime
-described in `docs/intake-lab-test-ui-implementation-plan.md` and extends the
+described in `docs/archive/intake-lab-test-ui-implementation-plan.md` and extends the
 conversation contract in
-`docs/conversational-design-intake-implementation-plan.md`. Where either older
+`docs/archive/conversational-design-intake-implementation-plan.md`. Where either older
 plan allows Intake Lab to load an existing customer config, repository, persona,
 intake fixture, or customer database by default, this plan takes precedence.
 
 The production design lifecycle and explicit approval requirements remain
-governed by `docs/opencode-first-design-pipeline-implementation-plan.md` and the
+governed by `docs/archive/opencode-first-design-pipeline-implementation-plan.md` and the
 repository invariants in `AGENTS.md`.
 
 ## Executive Decision

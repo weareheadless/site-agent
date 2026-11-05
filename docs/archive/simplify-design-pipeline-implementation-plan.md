@@ -5,7 +5,7 @@
 **Audience:** A coding AI implementing this plan in this repository.
 
 **Relationship to other documents:**
-`docs/brand-composition-and-behavior-system-implementation-plan.md` defines the
+`docs/archive/brand-composition-and-behavior-system-implementation-plan.md` defines the
 *product mission* for creative planning, integrated realization, and experience
 fidelity. This document keeps that mission and replaces the *host implementation*
 of it. Where the two conflict about **how** planning, orchestration, motion, or
@@ -310,11 +310,11 @@ Acceptance:
 
 ### Phase 4 — Rewrite the durable plan and instructions
 
-- [ ] Rewrite `docs/brand-composition-and-behavior-system-implementation-plan.md`
+- [ ] Rewrite `docs/archive/brand-composition-and-behavior-system-implementation-plan.md`
       so that the specialist architecture is described as **OpenCode-native
       (design direction -> integrated build)** with no host phase machine and no
       strict creative gate. Preserve the mission and invariants.
-- [ ] Update `docs/opencode-first-design-pipeline-implementation-plan.md` to
+- [ ] Update `docs/archive/opencode-first-design-pipeline-implementation-plan.md` to
       point at the two-step native path.
 - [ ] Update `AGENTS.md` where it describes specialist orchestration or the
       strict experience-plan gate, so it matches the shipped architecture. Keep

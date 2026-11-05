@@ -23,7 +23,7 @@ Calendar must appear inside the main Payload workspace, preserving the same navi
 
 ## 2. Authority and existing architecture
 
-Follow root AGENTS.md, deploy/README.md and docs/mailflare-single-worker-contract.md. This plan refines the product UX and appointment behavior in that canonical contract. The earlier docs/helloada-mailbox-calendar-contract.md is marked historical; do not revive its Payload mailbox storage model.
+Follow root AGENTS.md, deploy/README.md and docs/mailflare-single-worker-contract.md. This plan refines the product UX and appointment behavior in that canonical contract. The earlier docs/archive/helloada-mailbox-calendar-contract.md is marked historical; do not revive its Payload mailbox storage model.
 
 Current main contains:
 - packages/helloada-mailflare: a pinned, pristine upstream snapshot plus integration patches applied to a disposable build copy.

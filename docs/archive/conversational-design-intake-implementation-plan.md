@@ -5,15 +5,15 @@
 **Date:** 2026-09-02
 
 **Authority:** This plan extends the local Intake Lab defined in
-`docs/intake-lab-test-ui-implementation-plan.md`. It changes the Lab from a
+`docs/archive/intake-lab-test-ui-implementation-plan.md`. It changes the Lab from a
 JSON-first test harness into a conversational design-intake prototype while
 preserving the design lifecycle and production-safety invariants in
-`docs/opencode-first-design-pipeline-implementation-plan.md`.
+`docs/archive/opencode-first-design-pipeline-implementation-plan.md`.
 
 Where this plan conflicts with the Intake Lab plan on intake entry, visible run
 status, visual-review severity, or the first-feedback workflow, this plan takes
 precedence. The existing media implementation remains governed by
-`docs/media-library-and-visual-memory-implementation-plan.md`.
+`docs/archive/media-library-and-visual-memory-implementation-plan.md`.
 
 ## Executive Decision
 

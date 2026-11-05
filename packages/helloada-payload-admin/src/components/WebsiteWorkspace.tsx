@@ -930,7 +930,26 @@ function ReviewWorkspace() {
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
   }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, previewRevision, selectedRoute, site.routes.preview, sourceReview, websitePresent])
 
+  const syncRouteFromPreview = useCallback(() => {
+    // Browsing inside the preview and the page selector must agree: a nav link
+    // click changes the frame, so move the selector to the matching route.
+    let pathname = ''
+    try {
+      pathname = previewFrameRef.current?.contentWindow?.location?.pathname || ''
+    } catch {
+      return
+    }
+    if (!pathname) return
+    const routes = workspace?.routes || []
+    const match = routes
+      .filter((route) => route.path !== '/')
+      .find((route) => pathname === route.path || pathname.endsWith(route.path))
+    const next = match?.path || (pathname.endsWith('/') ? '/' : '')
+    if (next && next !== selectedRoute) setSelectedRoute(next)
+  }, [selectedRoute, workspace?.routes])
+
   const handlePreviewLoad = useCallback(() => {
+    syncRouteFromPreview()
     if (candidatePreviewReady) {
       try {
         const document = previewFrameRef.current?.contentDocument
@@ -947,7 +966,7 @@ function ReviewWorkspace() {
       return
     }
     setPreviewStatus('ready')
-  }, [candidatePreviewReady, candidatePreviewIdentity, previewPlan])
+  }, [candidatePreviewReady, candidatePreviewIdentity, previewPlan, syncRouteFromPreview])
 
   const previewStatusMessage = previewStatus === 'refreshing'
     ? t('workspace.previewRefreshing')

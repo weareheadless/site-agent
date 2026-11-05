@@ -2,7 +2,7 @@
 
 > **Superseded on 2026-08-31.** Do not implement further phases from this
 > document. The authoritative corrective plan is
-> `docs/canonical-opencode-design-test-implementation-plan.md`, which reuses the
+> `docs/archive/canonical-opencode-design-test-implementation-plan.md`, which reuses the
 > production `DesignService -> NativeOpenCodeBuilder -> OpenCode` path and
 > rejects the parallel visual-scaffold test.
 
