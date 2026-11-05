@@ -53,6 +53,14 @@ not re-litigated per change.
    rejects finished work (the pending-review guard); the path sandbox, schema
    ownership and secret handling stay.
 5. **Physically separating admin is deferred.** See "Deferred".
+6. **Ada has no Payload admin access.** The admin is the owner's interface. Ada
+   reads and writes content through the workspace API with receipts
+   (`/api/helloada/*`, `_completed_payload_effects`), never by driving
+   `/admin`, never with an owner session, and never with admin credentials.
+   Field layout and collection shape come from the shared schema package, not
+   from clicking through the CMS. This is a permission and instruction change,
+   not a code split: it belongs in the builder's permission set and in the
+   generated project map from Step 7.
 
 ## Target state
 
@@ -176,7 +184,73 @@ matching one promotes.
   keeping the core package procedure intact.
 - Remove the `payload-admin-v*` tag convention from release notes and tooling.
 
-### Step 7 — tests
+### Step 7 — give Ada a project map instead of a search problem
+
+Every build currently rediscovers the repository: where pages live, where the
+presentation components live, which files are tenant-owned and which are
+platform-owned, what must never be touched. That is the largest avoidable cost
+in a build, and it grows with the repository.
+
+Add `src/site_agent/templates/next-payload/AGENTS.md`, generated from the real
+tree and overlaid with the shared runtime, so OpenCode loads it automatically at
+session start:
+
+- the directory map: frontend routes, presentation components, styles, content
+  access, the shared schema package, the workspace API;
+- the ownership boundary from decision 4, stated as "what you may change" and
+  "what belongs to the platform";
+- the build and verification commands the host runs;
+- the explicit prohibition from decision 6: no `/admin`, no owner session, no
+  admin credentials, content through the workspace API only;
+- where to look first for a given request, so a build starts by reading three
+  files rather than grepping the tree.
+
+Two constraints. It must be **generated from a declarative path map** that fails
+if a mapped directory is missing, so it cannot silently drift from the code. And
+it carries contracts and structure only — no worked examples, sample copy, canned
+replies or worked conversations, per the standing prompt invariant.
+
+Acceptance: a build's transcript shows the map being read at the start and no
+full-tree exploration before the first edit.
+
+### Step 8 — bound the builder's context
+
+Ada has no reason to carry a large transcript. Today the builder declares
+`limit.context: 1048576` for every provider, which is wrong in both directions:
+for a model with a smaller real window, automatic compaction never fires before
+the provider rejects the request; for a larger one, it lets a build wander far
+past the point where quality drops.
+
+Set the model's real context window, then configure compaction as a backstop
+rather than a strategy:
+
+```jsonc
+{
+  "compaction": {
+    "auto": true,
+    "keep": { "tokens": 15000 },
+    "buffer": "15%"
+  },
+  "tool_output": { "max_lines": 600, "max_bytes": 20000 },
+  "experimental": { "background_compaction": true }
+}
+```
+
+- `auto` and `buffer` make compaction fire with room left to finish the turn.
+- `background_compaction` keeps summarisation from stalling the build.
+- `tool_output` caps keep one noisy command from consuming the window.
+- Sessions stay per job: a new owner request starts a new session, and a build
+  never resumes another request's transcript.
+
+Compaction is the backstop, not the fix. Summarising a long session loses detail
+mid-build and causes rework; the map from Step 7 and the output caps are what
+keep the session short. Measure it: tokens per build and time to first edit,
+before and after.
+
+Acceptance: builds stay inside the model's real window, compaction events appear
+only on long builds, and no build fails at the provider for context length.
+
+### Step 9 — tests
 
 - `tests/test_shared_runtime.py`: the overlay test asserts admin source is
   copied and that a changed admin file changes the fingerprint. The current
@@ -185,6 +259,10 @@ matching one promotes.
   mismatched `sharedRuntime` fails closed.
 - Preview tests: the preview overlay copies the admin tree.
 - Template test: no file imports the removed package.
+- Instruction test: the generated `AGENTS.md` maps only paths that exist, and it
+  contains no example dialogue or canned phrasing.
+- Builder config test: the declared context limit matches the model catalogue,
+  and compaction is enabled with a buffer.
 
 ## Verification gates
 
@@ -213,6 +291,8 @@ admin must be opened and used.
 | identity change weakens the live gate | fingerprint is stronger than a version; mismatch test | revert the commit; re-pin at the prior version |
 | 42-file import rewiring misses a reference | typecheck with the package removed | revert |
 | first release is a runtime fan-out | expected; fingerprint change forces it | none needed |
+| compaction drops a detail mid-build | map and output caps keep sessions short; the diff is the source of truth | raise `keep.tokens`; never disable compaction |
+| the project map drifts from the tree | generated from a validated path map; missing path fails the build | revert the generator change |
 
 No step touches tenant data, schema or migrations, so every rollback is a code
 revert plus a release.
