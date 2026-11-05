@@ -997,6 +997,19 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("gateway returned no media list")
         return [item for item in media if isinstance(item, dict)]
 
+    def list_media(self, *, limit: int = 100, draft: bool = False) -> list[dict[str, Any]]:
+        """List the bounded media library so a preview can copy referenced files."""
+        bounded = max(1, min(int(limit), 100))
+        response = self._request(
+            "GET",
+            self._gateway_path("media"),
+            query={"limit": str(bounded), "draft": str(bool(draft)).lower()},
+        )
+        documents = response.get("media")
+        if not isinstance(documents, list):
+            raise PayloadGatewayError("gateway returned no media list")
+        return [item for item in documents if isinstance(item, dict)]
+
     def read_media(self, identifier: str, *, identifier_kind: str = "id", draft: bool = True) -> dict[str, Any]:
         value = str(identifier or "").strip()
         if not value or identifier_kind not in {"id", "sourceId"}:

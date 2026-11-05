@@ -87,6 +87,16 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
 
     referenced_media(list(documents.values()))
     referenced_media(list(globals_.values()))
+    # Relations are returned as ids, so a document alone cannot tell which ids
+    # are media. Copy the bounded library so every media relation resolves
+    # inside the preview instead of pointing at a production row.
+    try:
+        for row in gateway.list_media(limit=100, draft=False):
+            identifier = str(row.get("id") or "").strip()
+            if identifier:
+                media_ids.add(identifier)
+    except Exception:  # noqa: BLE001 - referenced media still copies if listing is unavailable
+        pass
     service = PayloadMediaService(gateway)
     media = []
     for identifier in sorted(media_ids):

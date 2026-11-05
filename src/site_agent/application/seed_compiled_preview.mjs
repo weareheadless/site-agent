@@ -41,13 +41,31 @@ const relationId = (value, collection) => {
 
 const rewrite = (data, fields, collection) => {
   const result = { ...data }
+  // Media is copied only when the snapshot carries its bytes. A relation to a
+  // production media id that was not copied has no local row, so writing it
+  // would fail the foreign key; drop it instead of inventing an id.
+  const mediaValue = (value) => {
+    if (value == null) return undefined
+    if (typeof value === 'object') return mediaIds.get(String(value.id))
+    return mediaIds.get(String(value))
+  }
   const walk = (fieldsToWalk) => {
     for (const field of fieldsToWalk || []) {
       if (field.type === 'tabs') { walk(field.tabs.flatMap((tab) => tab.fields)); continue }
       if (!field.name) { if (field.fields) walk(field.fields); continue }
       const value = result[field.name]
       if (value == null) continue
-      if (field.type === 'upload' || field.type === 'relationship') {
+      if (field.type === 'upload') {
+        if (field.hasMany) {
+          const mapped = value.map(mediaValue).filter((entry) => entry !== undefined)
+          if (mapped.length) result[field.name] = mapped
+          else delete result[field.name]
+        } else {
+          const mapped = mediaValue(value)
+          if (mapped === undefined) delete result[field.name]
+          else result[field.name] = mapped
+        }
+      } else if (field.type === 'relationship') {
         const target = typeof field.relationTo === 'string' ? field.relationTo : collection
         result[field.name] = field.hasMany
           ? value.map((entry) => relationId(entry, target))
