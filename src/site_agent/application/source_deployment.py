@@ -125,6 +125,7 @@ class SourceDeploymentService:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="site-agent-source-build")
         self._futures: dict[str, Any] = {}
         self._runtimes: dict[str, tuple[subprocess.Popen[str], Path]] = {}
+        self._runtime_logs: dict[str, tuple[Any, Path]] = {}
         with self._lock:
             self._recover_production_jobs()
             self._persist()
@@ -775,7 +776,23 @@ class SourceDeploymentService:
             )
         return int(status) == 200
 
+    def _runtime_log_tail(self, job_id: str, limit: int = 1_500) -> str:
+        entry = self._runtime_logs.get(str(job_id))
+        if entry is None:
+            return ""
+        _stream, path = entry
+        try:
+            return path.read_text(errors="replace")[-limit:].strip()
+        except OSError:
+            return ""
+
     def _stop_runtime(self, job_id: str) -> None:
+        log_entry = self._runtime_logs.pop(str(job_id), None)
+        if log_entry is not None:
+            try:
+                log_entry[0].close()
+            except OSError:
+                pass
         runtime = self._runtimes.pop(str(job_id), None)
         if runtime is None:
             return
@@ -832,19 +849,26 @@ class SourceDeploymentService:
         ]
         # The sole preview invocation uses the exact locally locked executable;
         # missing dependencies are a failed build, never a registry download.
+        # Keep the runtime's own output: a Worker that never binds its port is
+        # invisible otherwise, and the boot error is the only useful evidence.
+        log_path = self._preview_home / "tmp" / f"runtime-{job['id']}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_stream = log_path.open("wb")
         try:
             process = subprocess.Popen(
                 command,
                 cwd=str(worktree),
                 env=self._preview_env(production=True, payload_secret=preview_secret),
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
                 text=True,
             )
         except (OSError, ValueError) as exc:
+            log_stream.close()
             raise SourceDeploymentError(f"compiled preview could not start: {str(exc)[:300]}") from exc
+        self._runtime_logs[str(job["id"])] = (log_stream, log_path)
 
         self._runtimes[str(job["id"])] = (process, worktree)
         timeout = max(30, int(self.settings.get("preview_start_timeout_seconds") or 180))
@@ -869,8 +893,11 @@ class SourceDeploymentService:
                 pass
             time.sleep(1)
         if not ready:
+            tail = self._runtime_log_tail(str(job["id"]))
             self._stop_runtime(str(job["id"]))
-            raise SourceDeploymentError("compiled preview did not become ready in time")
+            raise SourceDeploymentError(
+                "compiled preview did not become ready in time" + (f"\n{tail}" if tail else "")
+            )
         revision = self._verify_public_revision(
             f"http://127.0.0.1:{port}{base_path}",
             str(expected_commit or job.get("commit") or ""),
