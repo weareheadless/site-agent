@@ -326,9 +326,14 @@ def test_compiled_preview_navigation_stays_on_exact_mounted_candidate():
         assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(rewritten, content_type, job) == rewritten
     for href in ('https://instagram.com/example', '//example.com/', '#work', '?locale=en',
                  'mailto:owner@example.com', '/api/helloada/media/file', '/admin', '/mail/inbox', '/_next/script.js',
-                 '/', '/work?locale=en', mount + '/?locale=en'):
+                 '/robots.txt', mount + '/?locale=en'):
         body = f'<a href="{href}">Link</a>'.encode()
         assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job) == body
+    # Site links stay inside the preview instead of jumping to the live site.
+    for href, expected in (('/', f'{mount}/'), ('/work?locale=en', f'{mount}/work?locale=en'),
+                           ('/blog', f'{mount}/blog')):
+        body = f'<a href="{href}">Link</a>'.encode()
+        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job).decode() == f'<a href="{expected}">Link</a>'
     text = b'<p>The path /?locale=en is not a navigation attribute.</p>'
     assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(text, 'text/html', job) == text
     body = b"<a href='/work?locale=es#colour'>"

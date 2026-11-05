@@ -39,6 +39,7 @@ class SourceDeploymentError(RuntimeError):
 
 
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
+_PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/robots.txt", "/sitemap.xml")
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
 _PREVIEW_ENV_ALLOWLIST = frozenset({
@@ -761,10 +762,24 @@ class SourceDeploymentService:
             path = match["path"]
             parsed = urllib.parse.urlsplit(path)
             current = "/" + request_path.strip("/")
-            if parsed.path.rstrip("/") != current.rstrip("/") or not parsed.query:
+            if parsed.path.rstrip("/") == current.rstrip("/") and parsed.query:
+                # Same-page query links stay relative so Next does not prefix
+                # its basePath twice.
+                relative = "?" + parsed.query + ("#" + parsed.fragment if parsed.fragment else "")
+                return match["prefix"] + relative + match["suffix"]
+            prefix = base.rstrip("/")
+            if path == prefix or path.startswith(prefix + "/"):
                 return match[0]
-            relative = "?" + parsed.query + ("#" + parsed.fragment if parsed.fragment else "")
-            return match["prefix"] + relative + match["suffix"]
+            if any(path == exempt or path.startswith(exempt + "/")
+                   for exempt in _PREVIEW_PLATFORM_PATHS):
+                # Platform routes (admin, mail, APIs, Next assets) are not site
+                # pages and must keep their own address inside the preview.
+                return match[0]
+            # Every other in-site link must stay inside the preview. A plain
+            # anchor without Next's basePath otherwise jumps to the live site,
+            # so the owner would browse the published page instead of the
+            # candidate and see two versions of the same page.
+            return match["prefix"] + prefix + path + match["suffix"]
 
         return navigation.sub(mounted_link, text).encode("utf-8")
 
