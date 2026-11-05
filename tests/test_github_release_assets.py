@@ -20,7 +20,7 @@ def test_artifact_must_match_exact_locked_integrity():
 def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, monkeypatch):
     import json
 
-    names = ('@weareheadless/helloada-payload-admin', '@weareheadless/helloada-payload-core')
+    names = ('@weareheadless/helloada-payload-core',)
     packages = {}
     locked = {}
     release_assets = {}
@@ -56,11 +56,11 @@ def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, m
 
     assert [item['package'] for item in evidence] == list(names)
     assert all(item['integrity'].startswith('sha512-') for item in evidence)
-    assert len(evidence) == 2
+    assert len(evidence) == 1
     fetched_releases.clear()
-    core_only = module.verify_release_dependencies(tmp_path, 'test-token', package_names=(names[1],))
-    assert [item['package'] for item in core_only] == [names[1]]
-    assert fetched_releases == ['test-release-2']
+    core_only = module.verify_release_dependencies(tmp_path, 'test-token', package_names=(names[0],))
+    assert [item['package'] for item in core_only] == [names[0]]
+    assert fetched_releases == ['test-release-1']
     with pytest.raises(ValueError, match='Only declared private release packages'):
         module.verify_release_dependencies(tmp_path, 'test-token', package_names=('@other/package',))
 
@@ -82,7 +82,7 @@ def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, m
         tmp_path, 'test-token', 'npm', tmp_path, seed,
     )
     assert cached_evidence == evidence
-    assert cached_bytes == [artifact_bytes[str(index)] for index in (1, 2)]
+    assert cached_bytes == [artifact_bytes['1']]
     assert all(not path.exists() for path in staged_paths)
     assert (tmp_path / 'package.json').read_bytes() == original_package
     assert (tmp_path / 'package-lock.json').read_bytes() == original_lock

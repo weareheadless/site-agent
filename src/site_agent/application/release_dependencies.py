@@ -17,7 +17,6 @@ ASSET = re.compile(
     r"^https://github\.com/weareheadless/site-agent/releases/download/([^/]+)/([^/]+\.tgz)$"
 )
 PRIVATE_PACKAGES = (
-    "@weareheadless/helloada-payload-admin",
     "@weareheadless/helloada-payload-core",
 )
 RELEASE_ASSET_API = "/repos/weareheadless/site-agent/releases"
