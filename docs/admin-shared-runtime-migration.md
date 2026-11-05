@@ -293,6 +293,14 @@ Landed on `main`:
   together because the generator and preflight read the pin.
 - [ ] Step 6 — delete the packaging flow.
 - [ ] Step 7 — generated project map.
+
+Code checkpoints already exist: History lists published versions and a restore
+creates a revert commit on the preview branch plus an approval-gated rollback
+draft, so an older frontend is reviewed and promoted like any other change. The
+gap is the same post-hoc refusal this migration deletes for builds —
+`restore_version` refuses while any review is pending, even though the restore
+is a preview. Fix it the same way: revise the open review in place.
+
 - [ ] Step 8 — working context budget.
 
 ## Verification gates
