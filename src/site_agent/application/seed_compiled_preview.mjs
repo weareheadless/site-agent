@@ -13,6 +13,14 @@ if (!root || !snapshotPath || process.env.NODE_ENV !== 'development' || process.
   throw new Error('Preview import requires an isolated local Payload CLI environment.')
 }
 const require = createRequire(path.join(root, 'package.json'))
+// The shared runtime reads Worker bindings through OpenNext's dev context, so
+// initialize it before importing any application module outside Next. The async
+// accessor only resolves in a Node runtime, which this CLI process is.
+process.env.NEXT_RUNTIME ||= 'nodejs'
+const { initOpenNextCloudflareForDev, getCloudflareContext } = await import(
+  pathToFileURL(require.resolve('@opennextjs/cloudflare')).href)
+initOpenNextCloudflareForDev({ remoteBindings: false })
+await getCloudflareContext({ async: true })
 const { getPayload } = await import(pathToFileURL(require.resolve('payload')).href)
 const { default: config, cloudflare } = await import(pathToFileURL(path.join(root, 'payload.config.ts')).href)
 const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8'))
