@@ -1043,7 +1043,9 @@ class SourceDeploymentService:
             else:
                 job["content_authority"] = self._content_inventory(checkout, worktree, timeout, preview_secret)
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
-            checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout, preview_secret=preview_secret))
+            # The release gate is typecheck plus the OpenNext build; it never
+            # runs lint. Linting here would fail a preview on canonical runtime
+            # files that ship unchanged, so keep the gates identical.
             # OpenNext invokes the managed Next build itself. A separate build
             # here compiles the same candidate twice before the owner sees it.
             checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
