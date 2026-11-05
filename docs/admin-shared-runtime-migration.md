@@ -213,16 +213,16 @@ replies or worked conversations, per the standing prompt invariant.
 Acceptance: a build's transcript shows the map being read at the start and no
 full-tree exploration before the first edit.
 
-### Step 8 — bound the builder's context
+### Step 8 — give Ada a working budget, not a window
 
-Ada has no reason to carry a large transcript. Today the builder declares
-`limit.context: 1048576` for every provider, which is wrong in both directions:
-for a model with a smaller real window, automatic compaction never fires before
-the provider rejects the request; for a larger one, it lets a build wander far
-past the point where quality drops.
+The model advertises a one-million-token window. That is capability, not a
+budget: attention quality falls and cost rises as the working set grows, and a
+design task never needs more than a handful of files plus the owner's request.
+Long-term memory already covers the rest, and it is injected, so recall is
+cheap.
 
-Set the model's real context window, then configure compaction as a backstop
-rather than a strategy:
+So the builder declares a **working budget well below the model's window** and
+compacts against that budget:
 
 ```jsonc
 {
@@ -236,19 +236,26 @@ rather than a strategy:
 }
 ```
 
+- `limit.context` carries the working budget (start at 200k, measure, drop
+  toward 128k while quality holds), not the model's 1M capability. Declaring
+  less than the provider accepts only makes compaction earlier; it never fails a
+  request. Record the real window separately so the two numbers are not
+  confused.
 - `auto` and `buffer` make compaction fire with room left to finish the turn.
 - `background_compaction` keeps summarisation from stalling the build.
-- `tool_output` caps keep one noisy command from consuming the window.
+- `tool_output` caps keep one noisy command from consuming the budget.
 - Sessions stay per job: a new owner request starts a new session, and a build
   never resumes another request's transcript.
 
-Compaction is the backstop, not the fix. Summarising a long session loses detail
-mid-build and causes rework; the map from Step 7 and the output caps are what
-keep the session short. Measure it: tokens per build and time to first edit,
-before and after.
+Memory is the overflow, not the context. The injected memory context stays small
+(twenty observations), and the project map from Step 7 says what memory holds and
+when to rely on it instead of re-reading the repository. Compaction is the
+backstop; the map, the output caps and recall are what keep the session short.
 
-Acceptance: builds stay inside the model's real window, compaction events appear
-only on long builds, and no build fails at the provider for context length.
+Measure it: median input tokens per build and time to first edit, before and
+after. Acceptance: no build fails at the provider for context length, compaction
+events appear only on long builds, and median input tokens drop substantially
+without a rise in rework.
 
 ### Step 9 — tests
 
@@ -261,8 +268,8 @@ only on long builds, and no build fails at the provider for context length.
 - Template test: no file imports the removed package.
 - Instruction test: the generated `AGENTS.md` maps only paths that exist, and it
   contains no example dialogue or canned phrasing.
-- Builder config test: the declared context limit matches the model catalogue,
-  and compaction is enabled with a buffer.
+- Builder config test: the declared context budget is the working budget, not the
+  model's advertised window, and compaction is enabled with a buffer.
 
 ## Verification gates
 
