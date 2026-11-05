@@ -1,4 +1,4 @@
-import { helloAdaRuntime, helloAdaWorkspacePath } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaRuntime, helloAdaWorkspacePath } from '@/admin/server/runtime-env'
 
 const UPSTREAM_TIMEOUT_MS = 25_000
 

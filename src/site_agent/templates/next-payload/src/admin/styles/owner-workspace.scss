@@ -1,0 +1,366 @@
+/* Owner shell: the same warm, quiet product window as helloada.app.
+   Native Payload editors keep their layout; their entry point is Manage. */
+@use 'surfaces' as surfaces;
+@mixin styles {
+  .helloada-upload-status {
+    width: auto;
+    height: auto;
+    min-height: 46px;
+    max-width: 100%;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: default;
+    overflow: visible;
+
+    > span { width: auto; height: auto; font-size: 12px; }
+  }
+
+  .template-default .document-header h1,
+  .template-default .collection-list__header h1 {
+    font-size: 20px;
+    line-height: 1.3;
+    letter-spacing: -.025em;
+    margin-block: 0 12px;
+  }
+  .template-default .nav, .helloada-owner-workspace, .helloada-owner-workspace *,
+  .helloada-payload-nav, .helloada-payload-nav *, .helloada-manage-drawer,
+  .helloada-manage-drawer *, .helloada-publish-dialog, .helloada-publish-dialog * { box-sizing: border-box; }
+  html { color-scheme: light; }
+  body::before {
+    background: var(--helloada-bg);
+  }
+  .template-default { min-height: 100dvh; grid-template-rows: auto 1fr; }
+  .template-default .nav {
+    top: 14px; width: calc(100% - 48px); max-width: 1640px; height: 64px; min-height: 64px;
+    margin: 14px auto 0; overflow: visible; border: 1px solid var(--helloada-soft-line); border-radius: 20px;
+    background: var(--helloada-top); box-shadow: inset 0 1px rgba(255,244,223,.07), 0 8px 28px rgba(0,0,0,.12);
+    backdrop-filter: blur(18px);
+  }
+  .helloada-payload-nav {
+    width: 100%; height: 64px; min-width: 0; gap: 16px; padding: 0 20px;
+    overflow: visible; border: 0;
+  }
+  .helloada-payload-brand { gap: 9px; min-width: 0; }
+  .helloada-payload-brand strong { font-size: 17px; font-weight: 650; letter-spacing: -.045em; }
+  .helloada-mark { display: block; flex-shrink: 0; }
+  .helloada-nav-divider { width: 1px; height: 19px; background: var(--helloada-soft-line); }
+  .helloada-nav-site { max-width: 220px; overflow: hidden; font-size: 12px; color: var(--helloada-muted); text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-payload-links { gap: 4px; margin: 0 auto; }
+  .helloada-payload-links a {
+    min-height: 38px; display: inline-flex; align-items: center; padding: 0 17px; border-radius: 11px;
+    font-size: 12px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--helloada-muted);
+  }
+  .helloada-payload-links a:hover, .helloada-payload-links a.is-active {
+    background: var(--helloada-inset); color: var(--helloada-ink); transform: none;
+  }
+  .helloada-payload-actions { margin-left: auto; gap: 20px; }
+  .helloada-payload-status { font-size: 11px; gap: 7px; }
+  .helloada-payload-status i { width: 5px; height: 5px; background: var(--helloada-muted); box-shadow: none; }
+  .helloada-payload-status.is-connected i { background: #9fbe95; box-shadow: 0 0 9px rgba(159,190,149,.2); }
+  .helloada-payload-status.is-unavailable i { background: var(--helloada-violet); }
+  .helloada-payload-actions .helloada-manage-trigger {
+    display: inline-flex; width: auto; height: 38px; padding: 0 13px; gap: 8px; border-radius: 11px;
+    border: 1px solid var(--helloada-soft-line); background: transparent; color: var(--helloada-ink); font-size: 12px;
+  }
+  .helloada-payload-actions .helloada-manage-trigger:hover, .helloada-manage-trigger.is-active { background: var(--helloada-inset); transform: none; }
+  .helloada-icon-button {
+    display: inline-grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 50%; background: var(--helloada-inset); color: var(--helloada-muted); cursor: pointer;
+  }
+  .helloada-manage-drawer {
+    @include surfaces.paper;
+    position: fixed; inset: 12px 12px 12px auto; margin: 0; width: min(410px, calc(100vw - 24px)); height: calc(100dvh - 24px); max-height: none;
+    padding: 30px 26px 22px; border: 1px solid var(--helloada-soft-line); border-radius: 24px;
+    background: var(--helloada-panel); color: var(--helloada-ink); box-shadow: inset 0 1px rgba(255,244,223,.045);
+  }
+  .helloada-manage-drawer[open] { display: flex; flex-direction: column; animation: helloada-drawer-in 350ms var(--helloada-ease) both; }
+  .helloada-manage-drawer::backdrop, .helloada-publish-dialog::backdrop { background: rgba(8,7,6,.6); backdrop-filter: blur(5px); }
+  .helloada-manage-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .helloada-manage-header h2 { margin: 6px 0 0; font-size: 17px; line-height: 1.3; font-weight: 550; letter-spacing: -.025em; }
+  .helloada-manage-header .helloada-eyebrow { font-size: 10px; color: var(--helloada-muted); letter-spacing: .07em; }
+  .helloada-manage-intro { margin: 20px 0 26px; color: var(--helloada-muted); font-size: 13px; line-height: 1.7; }
+  .helloada-manage-scroll { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; }
+  .helloada-manage-section { display: grid; gap: 3px; margin-bottom: 26px; }
+  .helloada-manage-section h3 { margin: 0 0 9px; color: var(--helloada-muted); font-size: 10px; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; }
+  .helloada-manage-section a { display: flex; align-items: center; justify-content: space-between; min-height: 46px; padding: 0 12px; border-radius: 10px; color: var(--helloada-ink); text-decoration: none; font-size: 14px; transition: background 220ms var(--helloada-ease); }
+  .helloada-manage-section a svg { color: var(--helloada-dim); }
+  .helloada-manage-section a:hover, .helloada-manage-section a[aria-current='page'] { background: var(--helloada-inset); }
+  .helloada-manage-advanced { border-top: 1px solid var(--helloada-soft-line); padding-top: 12px; }
+  .helloada-manage-advanced > summary { display: flex; justify-content: space-between; align-items: center; min-height: 44px; list-style: none; cursor: pointer; color: var(--helloada-muted); font-size: 13px; }
+  .helloada-manage-advanced > summary::-webkit-details-marker { display: none; }
+  .helloada-manage-advanced[open] > summary svg { transform: rotate(180deg); }
+  .helloada-manage-language { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 24px 0; color: var(--helloada-muted); font-size: 12px; }
+  .helloada-manage-language select { max-width: 180px; min-height: 38px; padding: 0 10px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; background: var(--helloada-panel); color: var(--helloada-ink); font-size: 12px; }
+  .helloada-manage-footer { display: grid; gap: 18px; padding-top: 20px; border-top: 1px solid var(--helloada-soft-line); }
+  .helloada-manage-footer a { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--helloada-ink); text-decoration: none; font-size: 12px; }
+  .helloada-manage-footer small { max-width: 210px; overflow: hidden; text-overflow: ellipsis; color: var(--helloada-muted); }
+
+  .helloada-owner-workspace {
+    --helloada-review-height: max(360px, calc(100dvh - 92px));
+    min-height: auto; min-width: 0; padding: 12px 24px 14px; background: transparent; max-width: 1688px; margin: 0 auto;
+  }
+  .helloada-pane-switch { display: none; }
+  .helloada-owner-workspace .helloada-workspace-grid {
+    grid-template-columns: minmax(330px, .42fr) minmax(0, .88fr); align-items: stretch; gap: 0;
+    height: var(--helloada-review-height); max-width: none; padding: 5px;
+    border: 1px solid var(--helloada-line); border-radius: 24px; background: var(--helloada-panel-soft);
+    box-shadow: inset 0 1px rgba(255,255,255,.8), 0 10px 32px rgba(63,45,29,.065); animation: helloada-workspace-in 600ms var(--helloada-ease) both;
+  }
+  .helloada-owner-workspace .helloada-workspace-grid.is-chat-only { grid-template-columns: minmax(0, 700px); justify-content: center; max-width: 712px; margin: 0 auto; }
+  .helloada-owner-workspace .helloada-review-window, .helloada-owner-workspace .helloada-ada-panel {
+    min-width: 0; height: 100%; border: 0; border-radius: 0; background: var(--helloada-review); box-shadow: none;
+  }
+  .helloada-build-surface { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; overflow: hidden; padding: 0; border: 1px solid var(--helloada-soft-line); border-radius: 0 19px 19px 0; background: var(--helloada-panel); color: var(--helloada-ink); }
+  .helloada-build-strip { flex-shrink: 0; display: grid; gap: 9px; padding: 14px 18px 12px; border-bottom: 1px solid var(--helloada-soft-line); }
+  .helloada-build-strip-title, .helloada-build-strip-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; }
+  .helloada-build-strip-title strong { font-weight: 600; }
+  .helloada-build-strip-title .helloada-build-elapsed, .helloada-build-strip-meta { color: var(--helloada-muted); font-size: 10px; }
+  .helloada-build-strip progress { display: block; width: 100%; height: 3px; border: 0; border-radius: 2px; overflow: hidden; appearance: none; background: var(--helloada-inset); color: var(--helloada-cyan); accent-color: var(--helloada-cyan); }
+  .helloada-build-strip progress::-webkit-progress-bar { background: var(--helloada-inset); }
+  .helloada-build-strip progress::-webkit-progress-value { background: var(--helloada-cyan); }
+  .helloada-build-strip progress::-moz-progress-bar { background: var(--helloada-cyan); }
+  .helloada-build-details { position: relative; }
+  .helloada-build-details > summary { cursor: pointer; padding: 4px 0; text-underline-offset: 3px; }
+  .helloada-build-details > div { position: absolute; top: calc(100% + 8px); right: 0; z-index: 5; width: min(360px, calc(100vw - 76px)); max-height: 300px; overflow: auto; padding: 16px; border: 1px solid var(--helloada-soft-line); border-radius: 10px; background: var(--helloada-panel); box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+  .helloada-build-details .helloada-build-stages { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; margin: 14px 0; font-size: 11px; }
+  .helloada-build-details .helloada-build-update { margin: 0; padding: 0; border: 0; }
+  .helloada-build-canvas { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+  .helloada-owner-workspace .helloada-build-canvas .helloada-review-toolbar { display: flex; align-items: center; flex-shrink: 0; min-height: 46px; padding: 6px 14px; }
+  .helloada-build-canvas .helloada-window-title { min-width: 0; font-size: 10px; color: var(--helloada-muted); }
+  .helloada-build-canvas .helloada-segmented button { min-height: 30px; background: transparent; }
+  .helloada-build-canvas .helloada-preview-frame-shell { position: relative; }
+  .helloada-build-canvas .is-frame-pending iframe { visibility: hidden; }
+  .helloada-build-placeholder { display: grid; place-content: center; flex: 1; min-height: 0; padding: 24px; text-align: center; color: var(--helloada-muted); font-size: 13px; }
+  .helloada-build-next-action { flex-shrink: 0; padding: 8px 18px 12px; }
+  .helloada-build-surface h2 { margin: 8px 0; font-size: clamp(24px, 3vw, 38px); letter-spacing: -.04em; }
+  .helloada-build-stages { display: grid; gap: 12px; margin: 32px 0; padding: 0; list-style: none; }
+  .helloada-build-stages li { display: flex; gap: 12px; align-items: center; color: var(--helloada-muted); }
+  .helloada-build-stages li.is-done, .helloada-build-stages li.is-current { color: var(--helloada-ink); }
+  .helloada-build-stages li.is-current { font-weight: 650; }
+  .helloada-build-elapsed { font-variant-numeric: tabular-nums; }
+  .helloada-build-update { border-top: 1px solid var(--helloada-soft-line); padding-top: 18px; color: var(--helloada-ink); }
+  .helloada-build-age { margin-top: 4px; font-size: .85em; color: var(--helloada-muted); font-variant-numeric: tabular-nums; }
+  .helloada-build-feed { display: grid; gap: 6px; margin: 16px 0 0; padding: 0; list-style: none; font-size: .85em; color: var(--helloada-muted); }
+  .helloada-build-feed li { display: flex; gap: 10px; }
+  .helloada-build-feed li > span { min-width: 52px; font-variant-numeric: tabular-nums; opacity: .7; }
+  .helloada-build-feed li.is-current { color: var(--helloada-ink); }
+  .helloada-build-stall { display: grid; gap: 10px; justify-items: start; margin-top: 18px; padding: 14px 16px; border: 1px solid var(--helloada-soft-line); border-radius: 12px; background: color-mix(in srgb, var(--helloada-ink) 4%, transparent); }
+  .helloada-build-stall p { margin: 0; }
+  .helloada-build-surface button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--helloada-ink); color: var(--helloada-panel); }
+  .helloada-owner-workspace .helloada-review-window { grid-column: 2; grid-row: 1; border-radius: 0 19px 19px 0; }
+  .helloada-owner-workspace .helloada-ada-panel { @include surfaces.chrome; color: var(--helloada-ink); grid-column: 1; grid-row: 1; position: relative; top: auto; border-right: 1px solid var(--helloada-soft-line); border-radius: 19px 0 0 19px; background: var(--helloada-review); }
+  .helloada-owner-workspace .helloada-ada-panel::before { display: none; }
+  .helloada-owner-workspace .is-chat-only .helloada-ada-panel { border-right: 0; border-radius: 19px; }
+  .helloada-owner-workspace .helloada-panel-header { min-height: 66px; padding: 16px 22px; align-items: center; background: transparent; border-bottom: 1px solid var(--helloada-soft-line); }
+  .helloada-owner-workspace .helloada-panel-header > .helloada-assistant-identity { display: flex; align-items: center; gap: 10px; }
+  .helloada-assistant-identity > div { display: grid; gap: 3px; }
+  .helloada-owner-workspace .helloada-assistant-identity strong { font-size: 14px; font-weight: 600; letter-spacing: -.025em; }
+  .helloada-assistant-identity span { font-size: 10px; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-panel-header-actions { display: flex; margin: 0; }
+  .helloada-owner-workspace .helloada-new-chat { min-height: 32px; padding: 0 10px; border: 1px solid var(--helloada-soft-line); background: transparent; color: var(--helloada-muted); font-size: 11px; font-weight: 400; cursor: pointer; }
+  .helloada-owner-workspace .helloada-new-chat:hover { color: var(--helloada-ink); background: var(--helloada-inset); }
+  .helloada-owner-workspace .helloada-chat-context { min-height: 42px; padding: 0 22px; background: transparent; border: 0; font-size: 10px; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-chat-context strong { font-size: 11px; color: var(--helloada-muted); font-weight: 500; }
+  .helloada-context-button { margin-left: auto; padding: 5px 0; border: 0; background: transparent; color: var(--helloada-muted); font-size: 10px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+  .helloada-owner-workspace .helloada-phase-bar { flex-shrink: 0; padding: 12px 20px; background: rgba(255,200,87,.025); border-color: var(--helloada-soft-line); gap: 10px; }
+  .helloada-owner-workspace .helloada-phase-copy strong { font-size: 11px; }
+  .helloada-owner-workspace .helloada-phase-copy > span:not(.helloada-sr-only) { white-space: normal; font-size: 10px; line-height: 1.6; }
+  .helloada-owner-workspace .helloada-phase-action { font-size: 10px; min-height: 32px; color: var(--helloada-ink); }
+  .helloada-owner-workspace .helloada-brief-inspector { top: 110px; max-height: calc(100% - 125px); background: var(--helloada-panel); color: var(--helloada-ink); border-color: var(--helloada-line); }
+  .helloada-owner-workspace .helloada-chat-log { padding: 20px 22px; background: transparent; }
+  .helloada-owner-welcome { display: flex; flex-direction: column; align-items: flex-start; padding: clamp(20px, 5vh, 72px) 2px 22px; }
+  .helloada-owner-welcome > .helloada-mark { margin-bottom: 23px; }
+  .helloada-owner-welcome h2 { max-width: 280px; margin: 0 0 15px; font-size: 27px; line-height: 1.12; font-weight: 500; letter-spacing: -.05em; }
+  .helloada-owner-welcome p { max-width: 290px; margin: 0; color: var(--helloada-muted); font-size: 13px; line-height: 1.75; }
+  .helloada-owner-workspace .helloada-chat-message { margin-bottom: 24px; }
+  .helloada-owner-workspace .helloada-chat-message > span { color: var(--helloada-muted); font-size: 10px; letter-spacing: .02em; font-weight: 500; text-transform: none; }
+  .helloada-owner-workspace .helloada-chat-message-body { color: var(--helloada-ink); background: transparent; padding: 8px 0 0; font-size: 13px; line-height: 1.8; border: 0; border-radius: 0; }
+  .helloada-owner-workspace .helloada-chat-message.is-user { margin-left: 30px; }
+  .helloada-owner-workspace .helloada-chat-message.is-user .helloada-chat-message-body { padding: 12px 15px; margin-top: 7px; border: 1px solid var(--helloada-soft-line); border-radius: 14px 14px 3px 14px; background: var(--helloada-inset); color: #d9cfc0; }
+  .helloada-owner-workspace .helloada-chat-thinking { border: 0; padding: 10px 0; font-size: 12px; background: transparent; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-chat-progress { display: block; margin-top: 12px; }
+  .helloada-chat-progress summary { cursor: pointer; font-size: 11px; color: var(--helloada-muted); }
+  .helloada-chat-progress[open] > span { display: flex; margin-top: 9px; font-size: 11px; }
+  .helloada-owner-workspace .helloada-shortcuts { padding: 8px 22px 14px; gap: 7px; flex-wrap: wrap; overflow: visible; }
+  .helloada-owner-workspace .helloada-shortcuts button { min-width: 0; min-height: 31px; padding: 5px 9px; font-size: 10px; font-weight: 400; border-color: var(--helloada-soft-line); border-radius: 8px; background: transparent; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-shortcuts button:hover { color: var(--helloada-ink); transform: translateY(-1px); background: var(--helloada-inset); }
+  .helloada-owner-workspace .helloada-chat-form { padding: 0 18px 14px; gap: 0; border: 0; background: transparent; }
+  .helloada-owner-workspace .helloada-chat-form textarea { min-height: 116px; padding: 15px 16px 50px; font-size: 13px; line-height: 1.5; background: rgba(8,7,6,.6); border-color: var(--helloada-line); border-radius: 14px; }
+  .helloada-owner-workspace .helloada-chat-form textarea::placeholder { color: var(--helloada-dim); }
+  .helloada-owner-workspace .helloada-chat-form textarea:focus { outline: none; border-color: rgba(255,107,94,.45); box-shadow: 0 0 0 3px rgba(255,107,94,.045); }
+  .helloada-owner-workspace .helloada-attach-button { width: 34px; height: 34px; bottom: 10px; left: 10px; background: transparent; border: 0; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-send-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; right: 10px; bottom: 10px; border-radius: 9px; background: var(--helloada-cyan); color: var(--helloada-action-ink); }
+  .helloada-owner-workspace .helloada-send-button:hover:not(:disabled) { background: #ff8075; transform: translateY(-1px); }
+  .helloada-owner-workspace .helloada-send-button:disabled { opacity: .25; }
+  .helloada-composer-note { margin: 11px 0 0; color: var(--helloada-dim); font-size: 11px; line-height: 1.5; text-align: center; }
+
+  .helloada-owner-workspace .helloada-review-toolbar { min-height: 66px; padding: 12px 18px; gap: 12px; overflow: visible; background: transparent; border-color: var(--helloada-soft-line); box-shadow: none; }
+  .helloada-owner-workspace .helloada-window-dots span { width: 6px; height: 6px; background: var(--helloada-inset); }
+  .helloada-owner-workspace .helloada-window-dots span:first-child { background: var(--helloada-cyan); }
+  .helloada-owner-workspace .helloada-window-dots span:nth-child(2) { background: var(--helloada-violet); }
+  .helloada-owner-workspace .helloada-window-title span { color: var(--helloada-muted); font-size: 10px; letter-spacing: .02em; text-transform: none; }
+  .helloada-owner-workspace .helloada-segmented { margin-left: auto; border: 0; padding: 3px; gap: 1px; background: var(--helloada-inset); border-radius: 9px; }
+  .helloada-owner-workspace .helloada-segmented button { display: grid; place-items: center; width: 32px; height: 30px; padding: 0; border-radius: 7px; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-segmented button.is-selected { background: var(--helloada-inset); color: var(--helloada-ink); transform: none; }
+  .helloada-owner-workspace .helloada-segmented button:hover { background: var(--helloada-inset); color: var(--helloada-ink); transform: none; }
+  .helloada-owner-workspace .helloada-page-control { order: 0; padding: 0; }
+  .helloada-owner-workspace .helloada-page-control select { min-height: 32px; width: auto; min-width: 90px; max-width: 170px; padding: 0 25px 0 10px; border-color: var(--helloada-soft-line); border-radius: 8px; background: transparent; font-size: 11px; font-weight: 400; color: var(--helloada-ink); }
+  .helloada-preview-options { position: relative; flex-shrink: 0; }
+  .helloada-preview-options summary { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; list-style: none; cursor: pointer; color: var(--helloada-muted); }
+  .helloada-preview-options summary::-webkit-details-marker { display: none; }
+  .helloada-preview-options > div { position: absolute; z-index: 4; right: 0; top: calc(100% + 12px); width: 240px; padding: 10px; border: 1px solid var(--helloada-line); border-radius: 13px; background: var(--helloada-panel-soft); }
+  .helloada-preview-options button, .helloada-preview-options label { display: flex; gap: 9px; align-items: center; width: 100%; min-height: 40px; padding: 7px; border: 0; background: transparent; color: var(--helloada-ink); cursor: pointer; font-size: 11px; text-align: left; }
+  .helloada-preview-options input { accent-color: var(--helloada-cyan); }
+  .helloada-owner-workspace .helloada-preview-frame-shell { flex: 1; min-height: 0; margin: 14px 14px 0; padding: 0; border: 1px solid var(--helloada-soft-line); border-radius: 11px; overflow: hidden; background: var(--helloada-panel-raised); }
+  .helloada-owner-workspace .helloada-preview-frame { width: 100%; height: 100%; border: 0; border-radius: 0; }
+  .helloada-preview-footer { display: flex; justify-content: space-between; align-items: center; gap: 15px; min-height: 40px; padding: 8px 18px; font-size: 9px; color: var(--helloada-dim); }
+  .helloada-preview-footer > span:first-child { display: flex; align-items: center; gap: 6px; color: var(--helloada-muted); white-space: nowrap; }
+  .helloada-preview-footer i { width: 4px; height: 4px; border-radius: 50%; background: var(--helloada-dim); }
+  .helloada-preview-footer .is-draft i { background: var(--helloada-violet); }
+  .helloada-review-decision { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; margin-left: auto; padding: 0; border: 0; background: transparent; }
+  .helloada-owner-workspace .helloada-draft-action.is-publish { min-height: 34px; padding: 0 14px; background: var(--helloada-cyan); border: 0; border-radius: 999px; color: var(--helloada-action-ink); font-size: 11px; font-weight: 600; }
+  .helloada-owner-workspace .helloada-draft-actions { flex-wrap: wrap; font-size: 11px; }
+  .helloada-owner-workspace .helloada-draft-confirmation { padding: 0; font-size: 10px; color: var(--helloada-muted); }
+  .helloada-owner-workspace .helloada-preview-edit-overlay button { min-height: 30px; border-radius: 999px; box-shadow: 0 8px 26px rgba(3,5,9,.34), 0 0 0 3px rgba(7,16,20,.2); }
+  .helloada-chat-gallery { @include surfaces.paper; position: absolute; z-index: 6; right: 0; bottom: calc(100% + 10px); left: 0; display: grid; gap: 10px; max-height: min(430px, 58dvh); padding: 14px; overflow: auto; border: 1px solid var(--helloada-line); border-radius: 16px; background: var(--helloada-panel); box-shadow: 0 16px 48px rgba(29,20,14,.16), inset 0 1px rgba(255,255,255,.8); }
+  .helloada-chat-gallery-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .helloada-chat-gallery-header > div { display: grid; gap: 4px; }
+  .helloada-chat-gallery-header strong { color: var(--helloada-ink); font-size: 12px; }
+  .helloada-chat-gallery-header span { color: var(--helloada-muted); font-size: 10px; line-height: 1.45; }
+  .helloada-chat-gallery-header > button { width: 25px; height: 25px; padding: 0; border: 1px solid var(--helloada-soft-line); border-radius: 50%; color: var(--helloada-muted); background: transparent; cursor: pointer; font-size: 18px; line-height: 1; }
+  .helloada-chat-gallery-tools { display: flex; gap: 7px; }
+  .helloada-chat-gallery-tools input { flex: 1; min-width: 0; min-height: 34px; padding: 0 10px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-inset); font-size: 11px; }
+  .helloada-chat-gallery-tools button { min-height: 34px; padding: 0 10px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-inset); cursor: pointer; font-size: 10px; }
+  .helloada-chat-gallery-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+  .helloada-chat-gallery-grid button { display: grid; gap: 5px; min-width: 0; padding: 5px; border: 1px solid transparent; border-radius: 9px; color: var(--helloada-muted); background: var(--helloada-inset); cursor: pointer; text-align: left; }
+  .helloada-chat-gallery-grid button:hover, .helloada-chat-gallery-grid button.is-selected { border-color: var(--helloada-cyan); color: var(--helloada-ink); background: var(--helloada-cyan-soft); }
+  .helloada-chat-gallery-grid img, .helloada-chat-gallery-grid span { display: block; width: 100%; height: 58px; object-fit: cover; border-radius: 5px; }
+  .helloada-chat-gallery-grid span { display: grid; place-items: center; color: var(--helloada-dim); background: var(--helloada-panel-soft); font-size: 9px; }
+  .helloada-chat-gallery-grid small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+  .helloada-chat-upload-preview { display: grid; gap: 5px; min-width: 0; padding: 5px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-muted); background: var(--helloada-inset); }
+  .helloada-chat-upload-preview img { width: 100%; height: 58px; object-fit: cover; border-radius: 5px; }
+  .helloada-chat-upload-preview progress, .helloada-upload-status progress { width: 100%; height: 6px; accent-color: var(--helloada-cyan); }
+  .helloada-chat-gallery > p { margin: 0; color: var(--helloada-muted); font-size: 10px; }
+
+  .helloada-gallery { min-height: calc(100dvh - 90px); max-width: 1640px; margin: 0 auto; padding: 18px 24px 40px; color: var(--helloada-ink); }
+  .helloada-gallery-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+  .helloada-gallery-heading { display: flex; align-items: flex-start; gap: 14px; min-width: 0; }
+  .helloada-gallery-heading > div { min-width: 0; }
+  .helloada-gallery-heading h1 { margin: 4px 0 7px; font-size: clamp(22px, 3vw, 34px); font-weight: 500; letter-spacing: -.05em; }
+  .helloada-gallery-heading p:last-child { max-width: 520px; margin: 0; color: var(--helloada-muted); font-size: 12px; line-height: 1.6; }
+  .helloada-gallery-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+  .helloada-gallery-actions a, .helloada-gallery-actions button { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 12px; border-radius: 10px; font-size: 11px; text-decoration: none; cursor: pointer; }
+  .helloada-gallery-secondary { border: 1px solid var(--helloada-soft-line); color: var(--helloada-muted); background: transparent; }
+  .helloada-gallery-upload { border: 0; color: var(--helloada-action-ink); background: var(--helloada-cyan); font-weight: 650; }
+  .helloada-gallery-shell { padding: 14px; border: 1px solid var(--helloada-soft-line); border-radius: 22px; background: var(--helloada-panel); box-shadow: inset 0 1px rgba(255,255,255,.8); }
+  .helloada-gallery-toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; padding: 3px 3px 15px; }
+  .helloada-gallery-toolbar label { display: grid; gap: 6px; width: min(360px, 100%); color: var(--helloada-muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+  .helloada-gallery-toolbar input { min-height: 36px; padding: 0 11px; border: 1px solid var(--helloada-soft-line); border-radius: 10px; color: var(--helloada-ink); background: var(--helloada-inset); font-size: 12px; }
+  .helloada-gallery-count { color: var(--helloada-dim); font-size: 10px; }
+  .helloada-gallery-message { padding: 50px 15px; color: var(--helloada-muted); font-size: 12px; text-align: center; }
+  .helloada-gallery-message.is-error { color: var(--helloada-cyan); }
+  .helloada-gallery-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .helloada-gallery-card { min-width: 0; overflow: hidden; border: 1px solid var(--helloada-soft-line); border-radius: 14px; background: var(--helloada-panel-raised); transition: border-color 500ms var(--helloada-ease), transform 650ms var(--helloada-spring), background-color 500ms var(--helloada-ease); }
+  .helloada-gallery-card:hover { border-color: rgba(255,107,94,.4); background: var(--helloada-inset); transform: translateY(-2px); }
+  .helloada-gallery-card-image { aspect-ratio: 1.42; display: grid; place-items: center; overflow: hidden; background: var(--helloada-panel-soft); }
+  .helloada-gallery-card-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+  .helloada-gallery-card-image > span { color: var(--helloada-dim); font-size: 10px; }
+  .helloada-gallery-card-meta { display: grid; gap: 10px; padding: 11px; }
+  .helloada-gallery-card-meta > div { display: grid; gap: 3px; min-width: 0; }
+  .helloada-gallery-card-meta strong { overflow: hidden; color: var(--helloada-ink); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-gallery-card-meta small { overflow: hidden; color: var(--helloada-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-gallery-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .helloada-gallery-tags li { padding: 2px 6px; border: 1px solid var(--helloada-soft-line); border-radius: 999px; color: var(--helloada-muted); background: var(--helloada-inset); font-size: 9px; line-height: 1.4; }
+  .helloada-gallery-analysis { color: var(--helloada-dim); font-size: 9px; font-style: italic; }
+  .helloada-gallery-use { display: inline-flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 30px; padding: 0 9px; border: 1px solid var(--helloada-soft-line); border-radius: 8px; color: var(--helloada-muted); font-size: 10px; text-decoration: none; transition: color 500ms var(--helloada-ease), border-color 500ms var(--helloada-ease), background-color 500ms var(--helloada-ease); }
+  .helloada-gallery-use:hover { border-color: rgba(255,107,94,.5); color: var(--helloada-ink); background: var(--helloada-cyan-soft); }
+  .helloada-gallery-more { display: block; margin: 15px auto 2px; min-height: 34px; padding: 0 12px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-inset); cursor: pointer; font-size: 10px; }
+  .helloada-publish-dialog[open] { @include surfaces.paper; display: flex; flex-direction: column; width: min(430px, calc(100% - 32px)); max-height: calc(100vh - 48px); overflow: hidden; padding: 30px; border: 1px solid var(--helloada-line); border-radius: 23px; background: var(--helloada-panel); color: var(--helloada-ink); }
+  @supports (height: 100dvh) { .helloada-publish-dialog { max-height: calc(100dvh - 48px); } }
+  .helloada-publish-dialog-scroll { min-height: 0; overflow-y: auto; }
+  .helloada-publish-dialog h2 { font-size: 25px; line-height: 1.1; letter-spacing: -.04em; font-weight: 500; margin: 23px 0 16px; }
+  .helloada-publish-dialog p { font-size: 13px; line-height: 1.65; color: var(--helloada-muted); }
+  .helloada-publish-dialog > footer { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; margin-top: 26px; }
+  .helloada-publish-dialog button { display: inline-flex; gap: 9px; align-items: center; min-height: 42px; padding: 0 14px; border: 0; border-radius: 999px; color: var(--helloada-ink); background: var(--helloada-inset); font-size: 11px; cursor: pointer; }
+  .helloada-publish-dialog button.is-primary { background: var(--helloada-cyan); color: var(--helloada-action-ink); }
+  .helloada-owner-workspace .helloada-alert { padding: 12px 16px; font-size: 12px; border-radius: 12px; }
+  .helloada-history { max-width: 1640px; margin: 0 auto; padding: 14px 24px; background: transparent; }
+  .helloada-history-header { align-items: center; gap: 12px; padding-bottom: 14px; }
+  .helloada-history-header h2 { margin: 0; font-size: 16px; font-weight: 550; }
+  .helloada-history-section { background: var(--helloada-panel-soft); border-color: var(--helloada-soft-line); }
+  .helloada-history-header h1 { font-weight: 500; }
+  .collection-list, .collection-edit, .global-edit { font-size: 13px; }
+
+  @keyframes helloada-workspace-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes helloada-drawer-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+  @media (max-width: 1100px) {
+    .helloada-nav-site { max-width: 130px; }
+    .helloada-payload-actions { gap: 12px; }
+    .helloada-owner-workspace .helloada-workspace-grid { grid-template-columns: 330px minmax(0, 1fr); }
+    .helloada-owner-workspace .helloada-review-toolbar { padding: 12px; gap: 8px; }
+    .helloada-owner-workspace .helloada-window-title { display: none; }
+    .helloada-owner-workspace .helloada-page-control select { max-width: 120px; }
+  }
+  @media (max-width: 900px) {
+    .template-default .nav { width: calc(100% - 28px); }
+    .helloada-payload-nav { padding: 0 12px; gap: 10px; }
+    .helloada-payload-status { display: none; }
+    .helloada-nav-site { max-width: 180px; }
+    .helloada-owner-workspace { --helloada-review-height: max(360px, calc(100dvh - 152px)); padding: 12px 14px 12px; }
+    .helloada-pane-switch { display: flex; gap: 4px; width: max-content; padding: 3px; margin-bottom: 16px; border: 1px solid var(--helloada-soft-line); border-radius: 999px; }
+    .helloada-pane-switch button { display: inline-flex; align-items: center; gap: 8px; min-height: 35px; padding: 0 18px; border: 0; border-radius: 999px; color: var(--helloada-muted); background: transparent; font-size: 12px; cursor: pointer; }
+    .helloada-pane-switch [aria-pressed='true'] { color: var(--helloada-ink); background: var(--helloada-inset); }
+    .helloada-pane-switch i { width: 5px; height: 5px; border-radius: 50%; background: var(--helloada-violet); }
+    .helloada-owner-workspace .helloada-workspace-grid, .helloada-owner-workspace .helloada-workspace-grid.is-chat-only { grid-template-columns: minmax(0, 1fr); height: var(--helloada-review-height); }
+    .helloada-owner-workspace .helloada-workspace-grid.has-build-surface { grid-template-columns: minmax(0, 1fr); }
+    .helloada-owner-workspace .helloada-review-window, .helloada-owner-workspace .helloada-ada-panel, .helloada-owner-workspace .helloada-build-surface { grid-column: 1; grid-row: 1; position: relative; height: 100%; border: 0; border-radius: 19px; }
+    .helloada-owner-workspace.shows-ada .helloada-review-window, .helloada-owner-workspace.shows-ada .helloada-build-surface, .helloada-owner-workspace.shows-website .helloada-ada-panel { display: none; }
+    .helloada-owner-workspace .is-chat-only .helloada-ada-panel { display: flex; }
+    .helloada-owner-workspace .helloada-window-title { display: flex; }
+    .helloada-owner-workspace .helloada-page-control select { max-width: 170px; }
+    .helloada-owner-welcome { padding-top: 20px; }
+    .helloada-owner-welcome h2 { max-width: none; }
+    .helloada-owner-welcome p { max-width: 370px; }
+    .helloada-gallery-header { align-items: flex-start; flex-direction: column; }
+    .helloada-gallery-actions { justify-content: flex-start; }
+    .helloada-gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (max-width: 560px) {
+    .template-default .nav { top: 8px; margin-top: 8px; width: calc(100% - 20px); height: 60px; min-height: 60px; border-radius: 16px; }
+    .helloada-payload-nav { height: 60px; }
+    .helloada-payload-brand strong { font-size: 16px; }
+    .helloada-nav-divider, .helloada-nav-site { display: none; }
+    .helloada-payload-links { margin-left: auto; margin-right: 0; min-width: 0; flex: 1 1 auto; overflow-x: auto; scrollbar-width: none; }
+    .helloada-payload-links a { padding: 0 8px; font-size: 10px; flex: 0 0 auto; white-space: nowrap; }
+    .helloada-payload-actions { margin-left: 0; flex-shrink: 0; }
+    .helloada-payload-actions .helloada-manage-trigger { width: 34px; height: 34px; padding: 0; justify-content: center; }
+    .helloada-manage-trigger span { display: none; }
+    .helloada-owner-workspace { --helloada-review-height: max(320px, calc(100dvh - 136px)); padding: 10px; }
+    .helloada-owner-workspace .helloada-review-toolbar { gap: 7px; }
+    .helloada-owner-workspace .helloada-window-title { display: none; }
+    .helloada-owner-workspace .helloada-window-dots { gap: 4px; }
+    .helloada-owner-workspace .helloada-page-control select { max-width: 120px; min-width: 80px; }
+    .helloada-owner-workspace .helloada-preview-frame-shell { margin: 8px 8px 0; }
+    .helloada-preview-footer { padding-inline: 12px; }
+    .helloada-preview-footer > span:last-child { display: none; }
+    .helloada-owner-workspace .helloada-chat-log { padding: 18px; }
+    .helloada-owner-workspace .helloada-panel-header { padding: 14px 18px; }
+    .helloada-manage-drawer { padding: 26px 22px; }
+    .helloada-publish-dialog { padding: 25px; }
+    .helloada-publish-dialog > div { flex-wrap: wrap; }
+    .helloada-gallery { padding: 14px 10px 30px; }
+    .helloada-gallery-heading { gap: 10px; }
+    .helloada-gallery-heading > .helloada-mark { width: 34px; height: 34px; }
+    .helloada-gallery-heading h1 { font-size: 25px; }
+    .helloada-gallery-heading p:last-child { font-size: 11px; }
+    .helloada-gallery-shell { padding: 9px; border-radius: 17px; }
+    .helloada-gallery-toolbar { align-items: stretch; flex-direction: column; }
+    .helloada-gallery-toolbar label { width: 100%; }
+    .helloada-gallery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .helloada-chat-gallery-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .helloada-owner-workspace .helloada-workspace-grid, .helloada-manage-drawer[open] { animation: none; }
+  }
+}

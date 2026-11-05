@@ -1,7 +1,5 @@
-import {
-  HelloAdaSiteProvider,
-  WebsiteWorkspaceServer,
-} from '@weareheadless/helloada-payload-admin'
+import { HelloAdaSiteProvider } from '@/admin/config/provider'
+import { WebsiteWorkspace as WebsiteWorkspaceServer } from '@/admin/components/WebsiteWorkspaceServer'
 
 import { helloAdaSite } from '@/helloada.config'
 

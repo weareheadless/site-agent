@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaRuntime } from '@/admin/server/runtime-env'
 
 export function serviceAuthorized(request: Request) {
   const expected = helloAdaRuntime().token

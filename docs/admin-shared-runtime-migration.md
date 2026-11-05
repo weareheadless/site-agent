@@ -126,6 +126,13 @@ the package can be removed from `node_modules` without breaking typecheck.
 
 ### Step 3 — remove the dependency and the pin
 
+> Coupled to Step 5. The contract generator and the release preflight both read
+> `payloadAdmin` from the pinned package, so the pin cannot disappear before the
+> identity change lands. Until then the dependency stays declared and installed
+> but unused by the template: an admin change no longer needs a package release,
+> which is the cost this migration is removing. Steps 3 and 5 land together.
+
+
 - Remove the dependency from
   `src/site_agent/templates/next-payload/package.json` and `package-lock.json`.
 - Remove `payload.contract.adminVersion` from every entry in
@@ -270,6 +277,23 @@ without a rise in rework.
   contains no example dialogue or canned phrasing.
 - Builder config test: the declared context budget is the working budget, not the
   model's advertised window, and compaction is enabled with a buffer.
+
+## Progress
+
+Landed on `main`:
+
+- [x] Steps 1–2 — admin source lives at `src/admin` in the template, the
+  wrappers import it through `@/admin`, and typecheck plus a full Next build pass
+  with the package still installed.
+- [x] Step 4 — overlay schema 3 with `copyTrees` (`src/admin`,
+  `src/components/admin`) plus `src/app/(payload)/custom.scss`; the preview path,
+  the release path and the fingerprint all expand the trees, and a symlink or
+  special file inside a tree fails closed.
+- [ ] Steps 3 and 5 — pin removal and the `sharedRuntime` identity, landing
+  together because the generator and preflight read the pin.
+- [ ] Step 6 — delete the packaging flow.
+- [ ] Step 7 — generated project map.
+- [ ] Step 8 — working context budget.
 
 ## Verification gates
 

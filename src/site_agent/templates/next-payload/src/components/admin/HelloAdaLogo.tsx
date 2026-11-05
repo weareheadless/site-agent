@@ -1,1 +1,1 @@
-export { HelloAdaIcon, HelloAdaLogo } from '@weareheadless/helloada-payload-admin'
+export { HelloAdaIcon, HelloAdaLogo } from '@/admin/components/HelloAdaLogo'

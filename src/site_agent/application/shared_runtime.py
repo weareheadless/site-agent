@@ -101,26 +101,35 @@ def _validate_manifest(root: Path, path: Path) -> tuple[dict[str, Any], bytes]:
         raise SharedRuntimeError("shared-runtime overlay manifest is missing or invalid") from error
     if (
         not isinstance(manifest, dict)
-        or manifest.get("schema") != 2
-        or manifest.get("contract") != "helloada-shared-runtime-v2"
-        or set(manifest) != {"schema", "contract", "copy", "remove", "fingerprintTrees"}
+        or manifest.get("schema") != 3
+        or manifest.get("contract") != "helloada-shared-runtime-v3"
+        or set(manifest) != {"schema", "contract", "copy", "copyTrees", "remove", "fingerprintTrees"}
         or not isinstance(manifest.get("copy"), list)
+        or not isinstance(manifest.get("copyTrees"), list)
         or not isinstance(manifest.get("remove"), list)
         or not isinstance(manifest.get("fingerprintTrees"), list)
     ):
-        raise SharedRuntimeError("shared-runtime overlay manifest does not match schema 2")
+        raise SharedRuntimeError("shared-runtime overlay manifest does not match schema 3")
     copy_paths = [str(item) for item in manifest["copy"]]
+    copy_trees = [str(item) for item in manifest["copyTrees"]]
     remove_paths = [str(item) for item in manifest["remove"]]
     fingerprint_trees = [str(item) for item in manifest["fingerprintTrees"]]
     if len(fingerprint_trees) != len(set(fingerprint_trees)):
         raise SharedRuntimeError("shared-runtime fingerprint trees must be unique")
     if (
         len(copy_paths) != len(set(copy_paths))
+        or len(copy_trees) != len(set(copy_trees))
         or len(remove_paths) != len(set(remove_paths))
         or set(copy_paths) & set(remove_paths)
+        or set(copy_trees) & set(remove_paths)
+        or set(copy_trees) & set(copy_paths)
+        or any(
+            tree == copied or tree in Path(copied).parents
+            for tree in copy_trees for copied in copy_paths
+        )
     ):
         raise SharedRuntimeError("shared-runtime overlay paths must be unique and non-overlapping")
-    for raw_path in copy_paths + remove_paths + fingerprint_trees:
+    for raw_path in copy_paths + copy_trees + remove_paths + fingerprint_trees:
         relative = Path(raw_path)
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
             raise SharedRuntimeError("shared-runtime manifest contains an unsafe path")
@@ -128,7 +137,7 @@ def _validate_manifest(root: Path, path: Path) -> tuple[dict[str, Any], bytes]:
             relative == forbidden or forbidden in relative.parents for forbidden in _FORBIDDEN_PATHS
         ):
             raise SharedRuntimeError("shared runtime cannot fingerprint tenant Payload schema or presentation")
-        if raw_path in copy_paths + remove_paths and any(
+        if raw_path in copy_paths + copy_trees + remove_paths and any(
             relative == forbidden or forbidden in relative.parents for forbidden in _FORBIDDEN_PATHS
         ):
             raise SharedRuntimeError("shared runtime cannot replace tenant Payload schema or presentation")
@@ -148,7 +157,7 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         ("scripts/generate-payload-contract.mjs", (root / "scripts/generate-payload-contract.mjs").read_bytes()),
     ]
     template = root / _TEMPLATE_PATH
-    for relative in sorted(str(item) for item in manifest["copy"]):
+    for relative in sorted(str(item) for item in manifest["copy"]) + _tree_paths(template, manifest["copyTrees"]):
         source = _safe_path(template, relative)
         if not source.is_file() or source.is_symlink():
             raise SharedRuntimeError(f"central runtime source is missing or unsafe: {relative}")
@@ -369,6 +378,33 @@ def _update_shared_packages(tenant_root: Path, template_root: Path) -> None:
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
 
 
+def _tree_paths(template_root: Path, trees: list[str]) -> list[str]:
+    """Expand ``copyTrees`` into explicit, validated template-relative files.
+
+    A directory entry keeps the manifest honest: every file under it is copied
+    and fingerprinted, so a new component cannot be forgotten and silently leave
+    a stale tenant admin behind. Symlinks and special files fail closed.
+    """
+    files: list[str] = []
+    for raw_tree in trees:
+        directory = _safe_path(template_root, raw_tree)
+        if not directory.is_dir() or directory.is_symlink():
+            raise SharedRuntimeError(f"shared runtime tree is missing or unsafe: {raw_tree}")
+        expanded: list[str] = []
+        for source in sorted(directory.rglob("*")):
+            if source.is_symlink():
+                raise SharedRuntimeError(f"shared runtime tree contains a symlink: {raw_tree}")
+            if source.is_dir():
+                continue
+            if not source.is_file():
+                raise SharedRuntimeError(f"shared runtime tree contains a special file: {raw_tree}")
+            expanded.append(source.relative_to(template_root).as_posix())
+        if not expanded:
+            raise SharedRuntimeError(f"shared runtime tree is empty: {raw_tree}")
+        files.extend(expanded)
+    return files
+
+
 def apply_preview_runtime_overlay(
     worktree: Path,
     *,
@@ -389,7 +425,8 @@ def apply_preview_runtime_overlay(
     worktree = worktree.resolve()
     copied: list[str] = []
     removed: list[str] = []
-    for relative in manifest["copy"]:
+    tree_files = _tree_paths(template_root, manifest["copyTrees"])
+    for relative in list(manifest["copy"]) + tree_files:
         source = _safe_path(template_root, relative)
         if not source.is_file() or source.is_symlink():
             raise SharedRuntimeError(f"preview runtime source is missing or unsafe: {relative}")
@@ -440,7 +477,8 @@ def apply_shared_runtime_overlay(
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
                                shared_vars, version_match.group(1))
 
-    for raw_path in manifest["copy"]:
+    tree_files = _tree_paths(template_root, manifest["copyTrees"])
+    for raw_path in list(manifest["copy"]) + tree_files:
         source = _safe_path(template_root, raw_path)
         target = _safe_path(tenant_root, raw_path)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -463,9 +501,9 @@ def apply_shared_runtime_overlay(
         "contract": manifest["contract"],
         "fingerprint": runtime_fingerprint,
         "wranglerSha256": config_hash,
-        "copiedPaths": sorted(manifest["copy"]),
+        "copiedPaths": sorted(list(manifest["copy"]) + tree_files),
         "removedPaths": sorted(manifest["remove"]),
-        "changedPaths": sorted(set(manifest["copy"]) | set(manifest["remove"]) | {
+        "changedPaths": sorted(set(manifest["copy"]) | set(tree_files) | set(manifest["remove"]) | {
             "wrangler.jsonc", "package.json", "package-lock.json",
             "template-manifest.json", "helloada-content-contract.json",
         }),

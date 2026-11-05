@@ -1,4 +1,5 @@
-import { HelloAdaNav as SharedNav, HelloAdaSiteProvider } from '@weareheadless/helloada-payload-admin'
+import { HelloAdaNav as SharedNav } from '@/admin/components/HelloAdaNav'
+import { HelloAdaSiteProvider } from '@/admin/config/provider'
 import type { ComponentProps } from 'react'
 import { helloAdaSite } from '@/helloada.config'
 

@@ -3,7 +3,7 @@ import { createLocalReq, getPayload } from 'payload'
 import type { CollectionSlug, GlobalSlug, TypedLocale } from 'payload'
 
 import config from '@payload-config'
-import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaRuntime } from '@/admin/server/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
 import { createHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'

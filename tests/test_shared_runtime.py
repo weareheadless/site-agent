@@ -223,6 +223,10 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
         target = template / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("runtime")
+    for tree in overlay["copyTrees"]:
+        target = template / tree / "tree-source.tsx"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("admin")
     for tree in overlay["fingerprintTrees"]:
         target = control / tree / "fingerprint-source.ts"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -239,6 +243,11 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     assert shared_runtime_fingerprint(control) != original
 
     schema_source.write_text("schema")
+    admin_source = template / overlay["copyTrees"][0] / "tree-source.tsx"
+    admin_source.write_text("admin changed")
+    assert shared_runtime_fingerprint(control) != original
+
+    admin_source.write_text("admin")
     lockfile = template / "package-lock.json"
     lock = json.loads(lockfile.read_text())
     lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"]["resolved"] += "?changed"
@@ -352,11 +361,14 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
     template = package / "templates" / "next-payload"
     (template / "src/lib").mkdir(parents=True)
     (template / "src/lib/runtime.ts").write_text("export const runtime = 'canonical'\n")
+    (template / "src/admin/components").mkdir(parents=True)
+    (template / "src/admin/components/Workspace.tsx").write_text("export const Workspace = 'canonical'\n")
     (package / "templates").mkdir(parents=True, exist_ok=True)
     manifest = {
-        "schema": 2,
-        "contract": "helloada-shared-runtime-v2",
+        "schema": 3,
+        "contract": "helloada-shared-runtime-v3",
         "copy": ["src/lib/runtime.ts"],
+        "copyTrees": ["src/admin"],
         "remove": ["src/lib/retired.ts"],
         "fingerprintTrees": [],
     }
@@ -398,7 +410,8 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
 
     result = apply_preview_runtime_overlay(worktree, package_root=package)
 
-    assert result["copied"] == ["src/lib/runtime.ts"]
+    assert result["copied"] == ["src/lib/runtime.ts", "src/admin/components/Workspace.tsx"]
+    assert (worktree / "src/admin/components/Workspace.tsx").read_text() == "export const Workspace = 'canonical'\n"
     assert result["removed"] == ["src/lib/retired.ts"]
     assert (worktree / "src/lib/runtime.ts").read_text() == "export const runtime = 'canonical'\n"
     assert not (worktree / "src/lib/retired.ts").exists()
@@ -406,3 +419,32 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
     assert package_after["dependencies"]["@weareheadless/helloada-payload-core"] == core_url
     lock_after = json.loads((worktree / "package-lock.json").read_text())
     assert lock_after["packages"]["node_modules/@weareheadless/helloada-payload-core"]["version"] == "0.6.4"
+
+
+def test_preview_overlay_rejects_a_symlink_inside_a_copied_tree(tmp_path: Path):
+    from site_agent.application.shared_runtime import SharedRuntimeError, apply_preview_runtime_overlay
+
+    package = tmp_path / "package"
+    template = package / "templates" / "next-payload"
+    (template / "src/admin").mkdir(parents=True)
+    (template / "src/admin/real.tsx").write_text("export const real = true\n")
+    (template / "src/admin/link.tsx").symlink_to(template / "src/admin/real.tsx")
+    (package / "templates").mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema": 3,
+        "contract": "helloada-shared-runtime-v3",
+        "copy": [],
+        "copyTrees": ["src/admin"],
+        "remove": [],
+        "fingerprintTrees": [],
+    }
+    (package / "templates/shared-runtime-overlay.json").write_text(json.dumps(manifest))
+    (template / "package.json").write_text(json.dumps({"dependencies": {}}))
+    (template / "package-lock.json").write_text(json.dumps({"packages": {"": {"dependencies": {}}}}))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "package.json").write_text(json.dumps({"dependencies": {}}))
+    (worktree / "package-lock.json").write_text(json.dumps({"packages": {"": {"dependencies": {}}}}))
+
+    with pytest.raises(SharedRuntimeError, match="symlink"):
+        apply_preview_runtime_overlay(worktree, package_root=package)
