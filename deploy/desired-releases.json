@@ -5,8 +5,12 @@
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be"
     },
     "casamigo": {
-      "id": "rel-20261105014123-197654af",
-      "sha": "7a375b1d197b155ac7bacfd6b61b5cee62bd2d03"
+      "id": "rel-20261105020748-03cd6860",
+      "schemaMigration": {
+        "fromLedgerIdentity": "1d17665a0a8f9c8fdf87779ed2c1f165a9b6b1ce50cb0ebbe810c339f4310dd6",
+        "targetMigrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
+      },
+      "sha": "9698164482babc3069bc63eb4c6a306bc1d29af8"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
