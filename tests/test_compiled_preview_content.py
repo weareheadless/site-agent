@@ -30,7 +30,9 @@ def test_preview_import_uses_the_exact_candidate_revision():
     assert snapshot["documents"] == [{"collection": "pages", "id": "1",
                                       "locales": {"en": {"id": 1, "title": "Candidate",
                                                          "_helloadaRevision": "sha256:" + "a" * 64}}}]
-    assert snapshot["globals"] == []
+    # Rendered pages read the shared globals, so the preview always carries the
+    # published values even when the candidate does not touch them.
+    assert [item["slug"] for item in snapshot["globals"]] == ["navigation", "siteSettings"]
 
 
 def test_preview_rejects_a_changed_candidate_revision():

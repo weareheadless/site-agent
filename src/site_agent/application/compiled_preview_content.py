@@ -48,6 +48,13 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
                 if collection in {"pages", "posts", "products"} and document.get("_status") != "published":
                     continue
                 record(collection, locale, document)
+        # Every rendered page reads the shared globals, so the preview needs
+        # them even when the candidate does not touch them. A candidate draft
+        # below replaces the published value for that locale.
+        for slug in _WEBSITE_GLOBALS:
+            document = gateway.read_global(slug, draft=False, locale=locale)
+            if isinstance(document, Mapping) and document:
+                globals_.setdefault(slug, {"slug": slug, "locales": {}})["locales"][locale] = dict(document)
 
     for effect in effects:
         locale = effect["locale"]
