@@ -15,7 +15,6 @@ CUSTOMER = {
     "health": "https://demo.example/api/health",
     "adminPath": "/api/helloada",
     "websitePresent": False,
-    "payloadAdmin": "0.8.7",
     "payloadCore": "0.2.0",
     "contentContract": "helloada-content-v2",
     "schemaRevision": 2,

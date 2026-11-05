@@ -24,8 +24,17 @@ const { helloAdaSite } = await import(pathToFileURL(path.join(siteRoot, 'src/hel
 const corePackage = JSON.parse(readFileSync(path.join(root, 'packages/helloada-payload-core/package.json'), 'utf8'))
 const sitePackage = JSON.parse(readFileSync(path.join(siteRoot, 'package.json'), 'utf8'))
 const siteLock = JSON.parse(readFileSync(path.join(siteRoot, 'package-lock.json'), 'utf8'))
-const adminPin = siteLock.packages?.['node_modules/@weareheadless/helloada-payload-admin']
-const adminVersion = adminPin?.version
+// The admin is shared runtime source now, identified by the exact fingerprint
+// of the bytes the release runner overlaid. It is supplied from outside so the
+// generated Wrangler config cannot feed back into the fingerprint.
+const sharedRuntime = String(process.env.HELLOADA_SHARED_RUNTIME_FINGERPRINT || '').trim().toLowerCase()
+if (!/^[0-9a-f]{64}$/.test(sharedRuntime)) {
+  throw new Error('The shared runtime fingerprint must be supplied to the contract generator.')
+}
+if (sitePackage.dependencies['@weareheadless/helloada-payload-admin'] !== undefined
+  || siteLock.packages?.['node_modules/@weareheadless/helloada-payload-admin'] !== undefined) {
+  throw new Error('The retired Payload admin package is still pinned in the site scaffold.')
+}
 const migrationIndex = readFileSync(path.join(migrationsPath, 'index.ts'), 'utf8')
 const migrationNames = [...migrationIndex.matchAll(/import\s+\*\s+as\s+migration_(\w+)\s+from\s+'\.\/([^']+)'\s*;?/g)]
 if (!migrationNames.length) throw new Error('The canonical template must declare its Payload migrations.')
@@ -67,18 +76,13 @@ const migrationHead = createHash('sha256')
 if (contract.coreVersion !== corePackage.version) {
   throw new Error('Generated contract core version must match the shared package version.')
 }
-const adminReleaseAsset = `https://github.com/weareheadless/site-agent/releases/download/payload-admin-v${adminVersion}/weareheadless-helloada-payload-admin-${adminVersion}.tgz`
-if (!/^\d+\.\d+\.\d+$/.test(String(adminVersion || ''))
-  || sitePackage.dependencies['@weareheadless/helloada-payload-admin'] !== adminReleaseAsset
-  || adminPin?.resolved !== adminReleaseAsset
-  || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(adminPin?.integrity || ''))) {
-  throw new Error('Site admin dependency is not pinned to an exact immutable release artifact.')
-}
 if (!sitePackage.dependencies['@weareheadless/helloada-payload-core']?.includes(`helloada-payload-core-v${corePackage.version}/`)) {
   throw new Error('Site core artifact pin does not match the shared package version.')
 }
 
-manifest.payloadAdmin = adminVersion
+delete manifest.payloadAdmin
+delete manifest.sharedRuntime
+manifest.sharedRuntimeFingerprint = sharedRuntime
 manifest.payloadCore = corePackage.version
 manifest.schemaRevision = contract.schemaRevision
 manifest.contentContract = contract.contract
@@ -102,6 +106,11 @@ if (!schemaIdentitySlot.test(wrangler)) {
   throw new Error('Wrangler config has no generated schema-identity slot.')
 }
 wrangler = wrangler.replace(schemaIdentitySlot, `$1${manifest.schemaIdentity}$2`)
+const sharedRuntimeSlot = /(\"HELLOADA_SHARED_RUNTIME_FINGERPRINT\": \")(?:__HELLOADA_SHARED_RUNTIME_FINGERPRINT__|[0-9a-f]{64})(\")/
+if (!sharedRuntimeSlot.test(wrangler)) {
+  throw new Error('Wrangler config has no generated shared-runtime-fingerprint slot.')
+}
+wrangler = wrangler.replace(sharedRuntimeSlot, `$1${sharedRuntime}$2`)
 const migrationHeadSlot = /(\"HELLOADA_PAYLOAD_MIGRATION_HEAD\": \")(?:__HELLOADA_PAYLOAD_MIGRATION_HEAD__|[0-9a-f]{64})(\")/
 if (!migrationHeadSlot.test(wrangler)) {
   throw new Error('Wrangler config has no generated Payload-migration-head slot.')
@@ -112,7 +121,7 @@ writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`)
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 for (const [name, version] of Object.entries({
   HELLOADA_TEMPLATE_SCHEMA: String(manifest.templateSchema),
-  HELLOADA_PAYLOAD_ADMIN_VERSION: adminVersion,
+  HELLOADA_SHARED_RUNTIME_FINGERPRINT: sharedRuntime,
   HELLOADA_PAYLOAD_CORE_VERSION: corePackage.version,
   HELLOADA_PAYLOAD_SCHEMA_REVISION: String(contract.schemaRevision),
   HELLOADA_CONTENT_CONTRACT_VERSION: contract.contract,

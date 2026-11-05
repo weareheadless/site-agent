@@ -1,1 +1,0 @@
-export const HELLOADA_PAYLOAD_ADMIN_VERSION = '0.10.51'

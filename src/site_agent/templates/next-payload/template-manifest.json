@@ -1,7 +1,6 @@
 {
   "templateSchema": 8,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.10.51",
   "payloadCore": "0.6.5",
   "schemaRevision": 13,
   "contentContract": "helloada-content-v4",
@@ -69,5 +68,6 @@
   ],
   "migrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7",
   "migrationIndexSha256": "eebb149c93ad5468665254ea1ac569cb9f01984d241b784007bec330f301e58e",
-  "configurationIdentity": "1a9cf7f3858b4d577656f510e965851696d94df98f9c5c12bd8b588d5840446a"
+  "configurationIdentity": "1a9cf7f3858b4d577656f510e965851696d94df98f9c5c12bd8b588d5840446a",
+  "sharedRuntimeFingerprint": "c99a4f0da6c94e0b823f0a28c3c341e3aa9f7ec97646d9619692fd1cdde6d6ee"
 }

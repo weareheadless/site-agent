@@ -2,7 +2,6 @@ import { getPayload, type CollectionSlug } from 'payload'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { HELLOADA_CAPABILITIES, HELLOADA_CORE_VERSION, HELLOADA_CONTENT_CONTRACT_VERSION, HELLOADA_SCHEMA_REVISION } from '@weareheadless/helloada-payload-core/schema'
 import { createHelloAdaContractIdentity } from '@weareheadless/helloada-payload-core/contract'
-import { HELLOADA_PAYLOAD_ADMIN_VERSION } from '@/admin/version'
 import { helloAdaSite } from '@/helloada.config'
 import config from '@payload-config'
 import templateManifest from '../../../../template-manifest.json'
@@ -50,7 +49,7 @@ export async function GET() {
     payloadCore: HELLOADA_CORE_VERSION,
     contentContract: HELLOADA_CONTENT_CONTRACT_VERSION,
     schemaRevision: HELLOADA_SCHEMA_REVISION,
-    payloadAdmin: HELLOADA_PAYLOAD_ADMIN_VERSION,
+    sharedRuntimeFingerprint: templateManifest.sharedRuntimeFingerprint,
     schemaIdentity: identity.schemaIdentity,
     configurationIdentity: identity.configurationIdentity,
     locales: identity.locales,
@@ -62,7 +61,7 @@ export async function GET() {
     payloadCore: process.env.HELLOADA_PAYLOAD_CORE_VERSION || '',
     contentContract: process.env.HELLOADA_CONTENT_CONTRACT_VERSION || '',
     schemaRevision: Number(process.env.HELLOADA_PAYLOAD_SCHEMA_REVISION || 0),
-    payloadAdmin: process.env.HELLOADA_PAYLOAD_ADMIN_VERSION || '',
+    sharedRuntimeFingerprint: process.env.HELLOADA_SHARED_RUNTIME_FINGERPRINT || '',
     schemaIdentity: process.env.HELLOADA_SCHEMA_IDENTITY || '',
     configurationIdentity: identity.configurationIdentity,
     locales: identity.locales,

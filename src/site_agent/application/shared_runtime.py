@@ -17,14 +17,15 @@ from urllib.parse import urlsplit
 
 _MANIFEST_PATH = Path("deploy/shared-runtime-overlay.json")
 _TEMPLATE_PATH = Path("src/site_agent/templates/next-payload")
-_PACKAGE_NAMES = (
-    "@weareheadless/helloada-payload-admin",
-    "@weareheadless/helloada-payload-core",
-)
+_PACKAGE_NAMES = ("@weareheadless/helloada-payload-core",)
+# The admin used to ship as a versioned package. Its source is shared runtime
+# now, so a tenant that still declares the dependency loses it at overlay time
+# instead of pinning a second copy of the admin.
+_RETIRED_PACKAGE_NAMES = ("@weareheadless/helloada-payload-admin",)
 _CENTRAL_VAR_NAMES = {
     "HELLOADA_TEMPLATE_SCHEMA",
     "HELLOADA_WORKSPACE_API_VERSION",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION",
+    "HELLOADA_SHARED_RUNTIME_FINGERPRINT",
     "HELLOADA_PAYLOAD_CORE_VERSION",
     "HELLOADA_PAYLOAD_SCHEMA_REVISION",
     "HELLOADA_CONTENT_CONTRACT_VERSION",
@@ -162,7 +163,9 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         if not source.is_file() or source.is_symlink():
             raise SharedRuntimeError(f"central runtime source is missing or unsafe: {relative}")
         entries.append((f"template/{relative}", source.read_bytes()))
-    for relative in ("package.json", "package-lock.json", "wrangler.jsonc"):
+    # wrangler.jsonc carries the fingerprint itself, so it is generated output
+    # rather than an input; the overlay result records its hash separately.
+    for relative in ("package.json", "package-lock.json"):
         source = template / relative
         if not source.is_file() or source.is_symlink():
             raise SharedRuntimeError(f"central runtime package contract is missing: {relative}")
@@ -201,7 +204,8 @@ def _resource(items: Any, binding: str, identity_key: str, label: str) -> dict[s
 
 
 def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: Mapping[str, Any],
-                     tenant_id: str, shared_vars: Mapping[str, str], site_agent_version: str) -> dict[str, Any]:
+                     tenant_id: str, shared_vars: Mapping[str, str], site_agent_version: str,
+                     shared_runtime_fingerprint: str) -> dict[str, Any]:
     old_vars = tenant.get("vars")
     if not isinstance(old_vars, dict):
         raise SharedRuntimeError("tenant Wrangler vars must be an object")
@@ -258,7 +262,7 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
 
     central_values = {
         "HELLOADA_SITE_AGENT_VERSION": site_agent_version,
-        "HELLOADA_PAYLOAD_ADMIN_VERSION": str(customer["payloadAdmin"]),
+        "HELLOADA_SHARED_RUNTIME_FINGERPRINT": shared_runtime_fingerprint,
         "HELLOADA_PAYLOAD_CORE_VERSION": str(customer["payloadCore"]),
         "HELLOADA_PAYLOAD_SCHEMA_REVISION": str(customer["schemaRevision"]),
         "HELLOADA_CONTENT_CONTRACT_VERSION": str(customer["contentContract"]),
@@ -374,6 +378,10 @@ def _update_shared_packages(tenant_root: Path, template_root: Path) -> None:
         dependencies[name] = url
         lock_root["dependencies"][name] = url
         lock.setdefault("packages", {})[f"node_modules/{name}"] = copy.deepcopy(source_lock)
+    for name in _RETIRED_PACKAGE_NAMES:
+        dependencies.pop(name, None)
+        lock_root.get("dependencies", {}).pop(name, None)
+        lock.get("packages", {}).pop(f"node_modules/{name}", None)
     package_path.write_text(json.dumps(package, indent=2) + "\n", encoding="utf-8")
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
 
@@ -403,6 +411,32 @@ def _tree_paths(template_root: Path, trees: list[str]) -> list[str]:
             raise SharedRuntimeError(f"shared runtime tree is empty: {raw_tree}")
         files.extend(expanded)
     return files
+
+
+_SITE_CONFIG_PATH = Path("src/helloada.config.ts")
+_RETIRED_SITE_CONFIG_IMPORT = "from '@weareheadless/helloada-payload-admin/config'"
+_SITE_CONFIG_IMPORT = "from '@/admin/config/site'"
+
+
+def _migrate_tenant_site_config(tenant_root: Path) -> bool:
+    """Point the tenant's site configuration at the shared admin source.
+
+    ``src/helloada.config.ts`` is tenant-owned because it carries the tenant's
+    name, locales and features, so the overlay cannot replace it. The one
+    platform-owned line in it is the import of the site-config factory, which
+    used to come from the retired admin package. Rewrite that line only and
+    fail closed on a missing file or a contradictory import.
+    """
+    path = tenant_root / _SITE_CONFIG_PATH
+    if path.is_symlink() or not path.is_file():
+        raise SharedRuntimeError("tenant site configuration is missing or unsafe")
+    text = path.read_text(encoding="utf-8")
+    if _RETIRED_SITE_CONFIG_IMPORT not in text:
+        return False
+    if _SITE_CONFIG_IMPORT in text:
+        raise SharedRuntimeError("tenant site configuration mixes both site-config imports")
+    path.write_text(text.replace(_RETIRED_SITE_CONFIG_IMPORT, _SITE_CONFIG_IMPORT), encoding="utf-8")
+    return True
 
 
 def apply_preview_runtime_overlay(
@@ -440,7 +474,8 @@ def apply_preview_runtime_overlay(
             target.unlink()
             removed.append(str(relative))
     _update_shared_packages(worktree, template_root)
-    return {"copied": copied, "removed": removed, "manifest": manifest}
+    migrated = [str(_SITE_CONFIG_PATH)] if _migrate_tenant_site_config(worktree) else []
+    return {"copied": copied, "removed": removed, "migrated": migrated, "manifest": manifest}
 
 
 def apply_shared_runtime_overlay(
@@ -475,7 +510,7 @@ def apply_shared_runtime_overlay(
     if expected_fingerprint is not None and expected_fingerprint != runtime_fingerprint:
         raise SharedRuntimeError("expected shared runtime fingerprint does not match control bytes")
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
-                               shared_vars, version_match.group(1))
+                               shared_vars, version_match.group(1), runtime_fingerprint)
 
     tree_files = _tree_paths(template_root, manifest["copyTrees"])
     for raw_path in list(manifest["copy"]) + tree_files:
@@ -493,6 +528,7 @@ def apply_shared_runtime_overlay(
             raise SharedRuntimeError(f"retired tenant runtime path is not a regular file: {raw_path}")
 
     _update_shared_packages(tenant_root, template_root)
+    migrated = [str(_SITE_CONFIG_PATH)] if _migrate_tenant_site_config(tenant_root) else []
     tenant_config_path.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
     config_hash = hashlib.sha256(tenant_config_path.read_bytes()).hexdigest()
     package = json.loads((template_root / "package.json").read_text(encoding="utf-8"))
@@ -503,10 +539,11 @@ def apply_shared_runtime_overlay(
         "wranglerSha256": config_hash,
         "copiedPaths": sorted(list(manifest["copy"]) + tree_files),
         "removedPaths": sorted(manifest["remove"]),
-        "changedPaths": sorted(set(manifest["copy"]) | set(tree_files) | set(manifest["remove"]) | {
+        "migratedPaths": migrated,
+        "changedPaths": sorted(set(manifest["copy"]) | set(tree_files) | set(manifest["remove"]) | set(migrated) | {
             "wrangler.jsonc", "package.json", "package-lock.json",
             "template-manifest.json", "helloada-content-contract.json",
         }),
-        "payloadAdmin": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
-        "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[1]}"]["version"],
+        "sharedRuntimeFingerprint": runtime_fingerprint,
+        "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
     }

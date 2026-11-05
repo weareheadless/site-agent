@@ -154,7 +154,7 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         "health": public_url + "/api/health",
         "adminPath": "/api/helloada",
         "websitePresent": website_present,
-        "payloadAdmin": manifest.get("payloadAdmin"),
+        "sharedRuntimeFingerprint": manifest.get("sharedRuntimeFingerprint"),
         "payloadCore": manifest.get("payloadCore"),
         "contentContract": manifest.get("contentContract"),
         "schemaRevision": manifest.get("schemaRevision"),
@@ -185,9 +185,8 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         raise ReleaseQueueError("registered presentation profile differs from Worker source")
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
     payload_contract = payload.get("contract") if isinstance(payload.get("contract"), Mapping) else {}
-    for key in ("payloadAdmin", "payloadCore", "contentContract", "schemaRevision", "schemaIdentity", "migrationHead"):
+    for key in ("payloadCore", "contentContract", "schemaRevision", "schemaIdentity", "migrationHead"):
         if payload_contract.get({
-            "payloadAdmin": "adminVersion",
             "payloadCore": "coreVersion",
             "contentContract": "contract",
             "schemaRevision": "schemaRevision",

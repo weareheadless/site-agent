@@ -410,9 +410,8 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("invalid tenant or noncanonical workspace API")
     if not re.fullmatch(r"https://github\.com/weareheadless/[a-zA-Z0-9_.-]+\.git", customer["repository"]):
         raise ValueError("customer repository must be in the official weareheadless account")
-    for field in ("payloadAdmin", "payloadCore"):
-        if not re.fullmatch(r"\d+\.\d+\.\d+", str(customer.get(field) or "")):
-            raise ValueError(f"registered customer has no exact {field} version")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", str(customer.get("payloadCore") or "")):
+        raise ValueError("registered customer has no exact payloadCore version")
     if not re.fullmatch(r"helloada-content-v\d+", str(customer.get("contentContract") or "")):
         raise ValueError("registered customer has no exact content contract")
     if not isinstance(customer.get("schemaRevision"), int) or customer["schemaRevision"] < 1:
@@ -455,7 +454,7 @@ def synchronize_customer_payload_contract(
             "generated Payload migration chain differs from the registered tenant history; "
             "an exact schema-migration request is required"
         )
-    payload_admin = str(template_manifest.get("payloadAdmin") or "")
+    shared_runtime = str(template_manifest.get("sharedRuntimeFingerprint") or "")
     payload_core = str(template_manifest.get("payloadCore") or "")
     content_version = str(template_manifest.get("contentContract") or "")
     schema_revision = template_manifest.get("schemaRevision")
@@ -464,7 +463,7 @@ def synchronize_customer_payload_contract(
     locales = template_manifest.get("locales")
     default_locale = template_manifest.get("defaultLocale")
     if (
-        not re.fullmatch(r"\d+\.\d+\.\d+", payload_admin)
+        not SHA256_RE.fullmatch(shared_runtime)
         or not re.fullmatch(r"\d+\.\d+\.\d+", payload_core)
         or not re.fullmatch(r"helloada-content-v\d+", content_version)
         or content_contract.get("coreVersion") != payload_core
@@ -480,7 +479,7 @@ def synchronize_customer_payload_contract(
     ):
         raise RuntimeError("generated Payload package, schema and manifest identities do not agree")
     customer.update({
-        "payloadAdmin": payload_admin,
+        "sharedRuntimeFingerprint": shared_runtime,
         "payloadCore": payload_core,
         "contentContract": content_version,
         "schemaRevision": schema_revision,
@@ -539,8 +538,8 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
         raise RuntimeError("Worker compatibility flags are missing or invalid")
     if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
         raise RuntimeError("Worker name or tenant binding does not match the registry")
-    if worker_config.get("admin") != customer["payloadAdmin"]:
-        raise RuntimeError("Worker admin version does not match the registry")
+    if worker_config.get("sharedRuntimeFingerprint") != customer["sharedRuntimeFingerprint"]:
+        raise RuntimeError("Worker shared runtime fingerprint does not match the release")
     if (worker_config.get("core") != customer["payloadCore"]
             or worker_config.get("contract") != customer["contentContract"]
             or worker_config.get("schemaRevision") != customer["schemaRevision"]
@@ -1564,7 +1563,7 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str,
     if body.get("ok") is not True or body.get("tenant") != tenant:
         raise RuntimeError("live tenant health mismatch")
     expected = {
-        "payloadAdmin": customer["payloadAdmin"],
+        "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"],
         "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"],
         "schemaRevision": customer["schemaRevision"],
@@ -1852,7 +1851,7 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         raise ValueError("verification purpose differs from the exact queued release operation")
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
                 "worker": customer["worker"], "repository": customer["repository"],
-                "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+                "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"], "payloadCore": customer["payloadCore"],
                 "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"],
                 "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
                 "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
@@ -1992,9 +1991,6 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         raise RuntimeError("artifact is missing a canonical workspace, service content or release health route")
     if any("/api/atelier" in route for route in routes):
         raise RuntimeError("artifact still contains the obsolete Atelier API")
-    package = json.loads((checkout / "node_modules/@weareheadless/helloada-payload-admin/package.json").read_text())
-    if package["version"] != customer["payloadAdmin"]:
-        raise RuntimeError("installed Payload admin version does not match the registry")
     core_package = json.loads((checkout / "node_modules/@weareheadless/helloada-payload-core/package.json").read_text())
     if core_package["version"] != customer["payloadCore"]:
         raise RuntimeError("installed Payload core version does not match the registry")
@@ -2021,7 +2017,6 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         raise RuntimeError("shared runtime fingerprint is invalid")
     expected_marker = {
         "sourceSha": sha,
-        "payloadAdmin": customer["payloadAdmin"],
         "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"],
         "schemaRevision": customer["schemaRevision"],
@@ -2088,7 +2083,6 @@ def main() -> int:
     customer = dict(registered_customer)
     from site_agent.application.shared_runtime import shared_package_versions
     package_versions = shared_package_versions(ROOT)
-    customer["payloadAdmin"] = package_versions["@weareheadless/helloada-payload-admin"]
     customer["payloadCore"] = package_versions["@weareheadless/helloada-payload-core"]
     validate_target(customer, args.tenant, args.ref, args.release_id)
     try:
@@ -2117,7 +2111,7 @@ def main() -> int:
         "sharedRuntimeSourceSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
         "nodeVersion": manifest["nodeVersion"], "npmVersion": manifest["npmVersion"],
         "worker": customer["worker"], "repository": customer["repository"],
-        "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+        "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
         "websitePresent": customer["websitePresent"],
@@ -2234,8 +2228,7 @@ def main() -> int:
         if (args.shared_runtime_fingerprint is not None
                 and runtime_provenance["fingerprint"] != args.shared_runtime_fingerprint):
             raise RuntimeError("materialized shared runtime differs from the immutable queued fingerprint")
-        if (runtime_provenance["payloadAdmin"] != customer["payloadAdmin"]
-                or runtime_provenance["payloadCore"] != customer["payloadCore"]):
+        if runtime_provenance["payloadCore"] != customer["payloadCore"]:
             raise RuntimeError("materialized shared package versions differ from the release contract")
         receipt["sharedRuntime"] = runtime_provenance
         receipt["sharedRuntimeFingerprint"] = runtime_provenance["fingerprint"]
@@ -2261,7 +2254,8 @@ def main() -> int:
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         stage("generate-payload-contract")
         contract_generator = ROOT / "scripts/generate-payload-contract.mjs"
-        run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, base)
+        contract_env = {**base, "HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_provenance["fingerprint"]}
+        run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, contract_env)
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
         generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
@@ -2271,7 +2265,6 @@ def main() -> int:
             (checkout / "wrangler.jsonc").read_bytes()
         ).hexdigest()
         receipt.update({
-            "payloadAdmin": customer["payloadAdmin"],
             "payloadCore": customer["payloadCore"],
             "contentContract": customer["contentContract"],
             "schemaRevision": customer["schemaRevision"],
@@ -2289,7 +2282,7 @@ def main() -> int:
                       "if(r.error)throw Error('Invalid Wrangler JSONC');const c=r.config;"
                       "process.stdout.write(JSON.stringify({name:c.name,tenant:c.vars?.HELLOADA_TENANT_ID,"
                       "main:c.main,"
-                      "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
+                      "sharedRuntimeFingerprint:c.vars?.HELLOADA_SHARED_RUNTIME_FINGERPRINT,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
                       "contract:c.vars?.HELLOADA_CONTENT_CONTRACT_VERSION,"
                       "schemaRevision:Number(c.vars?.HELLOADA_PAYLOAD_SCHEMA_REVISION||0),"
                       "schemaIdentity:c.vars?.HELLOADA_SCHEMA_IDENTITY,"
@@ -2360,7 +2353,7 @@ def main() -> int:
         stage("build")
         mailflare_source = json.loads((ROOT / "packages/helloada-mailflare/UPSTREAM.json").read_text())
         marker = {"sourceSha": args.ref, "pipelineSha": receipt["pipelineSha"],
-                  "tenant": args.tenant, "payloadAdmin": customer["payloadAdmin"],
+                  "tenant": args.tenant,
                   "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
                   "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
                   "migrationHead": customer["migrationHead"],

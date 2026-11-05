@@ -36,7 +36,6 @@ def _receipt() -> dict:
             "state": "outcome-unknown",
             "strategy": "atomic",
         },
-        "payloadAdmin": "0.10.9",
         "payloadCore": "0.5.7",
         "contentContract": "helloada-content-v1",
         "schemaRevision": 7,
@@ -74,7 +73,7 @@ def _health() -> dict:
         "migrationHead": "f" * 64,
         "schemaIdentity": "e" * 64,
         "schemaRevision": 7,
-        "payloadAdmin": "0.10.9",
+        "sharedRuntimeFingerprint": FINGERPRINT,
         "payloadCore": "0.5.7",
         "contentContract": "helloada-content-v1",
     }

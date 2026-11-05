@@ -113,26 +113,15 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert manifest['payloadCore'] == core_version
     assert re.search('"HELLOADA_PAYLOAD_CORE_VERSION":\\s*"' + re.escape(core_version) + '"', worker)
 
-    admin_package = root / 'packages/helloada-payload-admin'
-    admin_source_version = json.loads((admin_package / 'package.json').read_text())['version']
-    runtime = (admin_package / 'src/version.ts').read_text()
-    runtime_version = r"HELLOADA_PAYLOAD_ADMIN_VERSION\s*=\s*['\"]" + re.escape(admin_source_version) + r"['\"]"
-    assert re.search(runtime_version, runtime)
-
     template_package = json.loads((template / 'package.json').read_text())
     template_lock = json.loads((template / 'package-lock.json').read_text())
-    admin_version = template_lock['packages']['node_modules/@weareheadless/helloada-payload-admin']['version']
-    assert manifest['payloadAdmin'] == admin_version
-    assert re.search('"HELLOADA_PAYLOAD_ADMIN_VERSION":\\s*"' + re.escape(admin_version) + '"', worker)
-    release_asset = (
-        f"https://github.com/weareheadless/site-agent/releases/download/payload-admin-v{admin_version}/"
-        f"weareheadless-helloada-payload-admin-{admin_version}.tgz"
-    )
-    assert template_package['dependencies']['@weareheadless/helloada-payload-admin'] == release_asset
-    locked_admin = template_lock['packages']['node_modules/@weareheadless/helloada-payload-admin']
-    assert locked_admin['version'] == admin_version
-    assert locked_admin['resolved'] == release_asset
-    assert re.fullmatch(r'sha512-[A-Za-z0-9+/]+={0,2}', locked_admin['integrity'])
+    # The admin is shared runtime source now, identified by the fingerprint the
+    # release runner injects, not by a pinned package version.
+    assert '@weareheadless/helloada-payload-admin' not in template_package['dependencies']
+    assert 'node_modules/@weareheadless/helloada-payload-admin' not in template_lock['packages']
+    assert 'payloadAdmin' not in manifest
+    assert re.fullmatch(r'[0-9a-f]{64}', manifest['sharedRuntimeFingerprint'])
+    assert re.search('"HELLOADA_SHARED_RUNTIME_FINGERPRINT":\\s*"' + manifest['sharedRuntimeFingerprint'] + '"', worker)
 
     core_version = json.loads((root / 'packages/helloada-payload-core/package.json').read_text())['version']
     core_asset = (

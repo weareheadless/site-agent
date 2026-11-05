@@ -28,8 +28,7 @@ def _setup(tmp_path: Path, tenant_id="new-site"):
         source_deployment={"worker_name": f"{tenant_id}-worker"})
     tenant_config["site"]["payload"].update(enabled=True, token_env=f"PROVISIONED_{tenant_id.upper().replace('-', '_')}_TOKEN",
         url=f"https://{tenant_id}.example", api_prefix="/api/workspace",
-        runtime_activation=binding.to_dict(), contract={
-        "adminVersion": "1.0", "contract": "helloada-content-v1", "coreVersion": "2.0.0",
+        runtime_activation=binding.to_dict(), contract={ "contract": "helloada-content-v1", "coreVersion": "2.0.0",
         "schemaRevision": 3, "schemaIdentity": "d" * 64, "migrationHead": "e" * 64, "media_fields": [],
     })
     TenantRegistrationService._replace_config(path, tenant_config)
@@ -39,8 +38,7 @@ def _setup(tmp_path: Path, tenant_id="new-site"):
         "sharedRuntimeFingerprint": binding.shared_runtime_fingerprint,
         "uploadedVersion": binding.uploaded_version, "payloadAdmin": "1.0", "contentContract": "helloada-content-v1",
         "payloadCore": "2.0.0", "schemaRevision": 3, "schemaIdentity": "d" * 64, "migrationHead": "e" * 64,
-        "websitePresent": True, "health": {"ok": True, "tenant": tenant_id, "releaseSha": binding.source_sha,
-            "payloadAdmin": "1.0", "contentContract": "helloada-content-v1", "payloadCore": "2.0.0",
+        "websitePresent": True, "health": {"ok": True, "tenant": tenant_id, "releaseSha": binding.source_sha, "contentContract": "helloada-content-v1", "payloadCore": "2.0.0",
             "schemaRevision": 3, "schemaIdentity": "d" * 64, "migrationHead": "e" * 64},
         "deployment": {"id": "receipt-deploy", "versions": [{"version_id": binding.uploaded_version, "percentage": 100}]}}
     run = tmp_path / "releases" / "runs" / tenant_id / binding.release_id
@@ -260,7 +258,7 @@ def test_two_registered_tenants_resolve_only_their_own_activation_and_receipt(tm
     from site_agent.application.tenant_registration import tenant_token_env
     second_config["site"]["payload"].update(enabled=True, token_env=tenant_token_env("second-site"),
         url="https://second-site.example", api_prefix="/api/workspace", runtime_activation=second_binding.to_dict(),
-        contract={"adminVersion": "1.0", "contract": "helloada-content-v1", "coreVersion": "2.0.0",
+        contract={"contract": "helloada-content-v1", "coreVersion": "2.0.0",
             "schemaRevision": 3, "schemaIdentity": "4" * 64, "migrationHead": "5" * 64, "media_fields": []})
     TenantRegistrationService._replace_config(second_path, second_config)
     registration.mark_runtime_mounted("second-site")

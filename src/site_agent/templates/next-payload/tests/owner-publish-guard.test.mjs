@@ -81,7 +81,7 @@ const harness = async (t) => {
   await writeFile(stub, stubs)
   const bundled = await build({
     entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node',
-    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@weareheadless/helloada-payload-admin/server','@/helloada.config'].map(specifier => [specifier, stub])),
+    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@/admin/server/runtime-env','@/helloada.config'].map(specifier => [specifier, stub])),
   })
   const bundlePath = path.join(temp, 'route.mjs')
   await writeFile(bundlePath, bundled.outputFiles[0].text)

@@ -321,7 +321,6 @@ def _adoption_fixture(tmp_path, *, registered=True):
     receipt_path = releases / "runs" / tenant_id / release_id / "receipt.json"
     receipt_path.parent.mkdir(parents=True)
     identity = {
-        "payloadAdmin": "0.10.2",
         "payloadCore": "0.5.6",
         "contentContract": "helloada-content-v3",
         "schemaRevision": 6,
@@ -363,6 +362,7 @@ def _adoption_fixture(tmp_path, *, registered=True):
             "ok": True,
             "tenant": tenant_id,
             "releaseSha": source_sha,
+            "sharedRuntimeFingerprint": "9" * 64,
             **identity,
         },
     }
@@ -549,7 +549,6 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "pipelineSha": "d" * 40,
         "sharedRuntimeFingerprint": "e" * 64,
         "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
-        "payloadAdmin": "0.10.1",
         "payloadCore": "0.5.1",
         "contentContract": "helloada-content-v3",
         "schemaRevision": 5,
@@ -562,7 +561,7 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "tenant": tenant_id,
         "releaseSha": source_sha,
         **{key: receipt[key] for key in (
-            "payloadAdmin", "payloadCore", "contentContract", "schemaRevision",
+            "sharedRuntimeFingerprint", "payloadCore", "contentContract", "schemaRevision",
             "schemaIdentity", "migrationHead",
         )},
     }
@@ -724,7 +723,7 @@ def _runtime_activation_composition(tmp_path, *, release_id="rel-20261030123456-
     tenant_id = "new-site"
     source_sha = "a" * 40
     runtime_identity = {
-        "adminVersion": "0.10.1", "contract": "helloada-content-v3",
+        "contract": "helloada-content-v3",
         "coreVersion": "0.5.2", "schemaRevision": 5,
         "schemaIdentity": "b" * 64, "migrationHead": "c" * 64,
     }
@@ -758,7 +757,6 @@ def _runtime_activation_composition(tmp_path, *, release_id="rel-20261030123456-
             "pipelineSha": activation["control_sha"],
             "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
             "deployment": {"versions": [{"version_id": activation["uploaded_version"], "percentage": 100}]},
-            "payloadAdmin": runtime_identity["adminVersion"],
             "payloadCore": runtime_identity["coreVersion"],
             "contentContract": runtime_identity["contract"],
             "schemaRevision": runtime_identity["schemaRevision"],
@@ -766,7 +764,7 @@ def _runtime_activation_composition(tmp_path, *, release_id="rel-20261030123456-
             "migrationHead": runtime_identity["migrationHead"], "websitePresent": True,
             "health": {
                 "ok": True, "tenant": tenant_id, "releaseSha": source_sha,
-                "payloadAdmin": runtime_identity["adminVersion"],
+                "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
                 "payloadCore": runtime_identity["coreVersion"],
                 "contentContract": runtime_identity["contract"],
                 "schemaRevision": runtime_identity["schemaRevision"],
@@ -800,7 +798,6 @@ def test_release_activation_composes_real_registration_and_registry_mount(tmp_pa
     release_id = "rel-20261030123456-aabbccdd"
     source_sha = "a" * 40
     runtime_identity = {
-        "adminVersion": "0.10.1",
         "contract": "helloada-content-v3",
         "coreVersion": "0.5.2",
         "schemaRevision": 5,
@@ -846,7 +843,6 @@ def test_release_activation_composes_real_registration_and_registry_mount(tmp_pa
             "pipelineSha": activation["control_sha"],
             "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
             "deployment": {"versions": [{"version_id": activation["uploaded_version"], "percentage": 100}]},
-            "payloadAdmin": runtime_identity["adminVersion"],
             "payloadCore": runtime_identity["coreVersion"],
             "contentContract": runtime_identity["contract"],
             "schemaRevision": runtime_identity["schemaRevision"],
@@ -857,7 +853,7 @@ def test_release_activation_composes_real_registration_and_registry_mount(tmp_pa
                 "ok": True,
                 "tenant": tenant_id,
                 "releaseSha": source_sha,
-                "payloadAdmin": runtime_identity["adminVersion"],
+                "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
                 "payloadCore": runtime_identity["coreVersion"],
                 "contentContract": runtime_identity["contract"],
                 "schemaRevision": runtime_identity["schemaRevision"],
@@ -940,6 +936,7 @@ def test_release_activation_reloads_valid_stale_mounted_binding(
             updated_receipt["pipelineSha"] = "f" * 40
         else:
             updated_receipt["sharedRuntimeFingerprint"] = "9" * 64
+            updated_receipt["health"]["sharedRuntimeFingerprint"] = "9" * 64
         if changed_provenance == "release_id":
             context["receipt_path"] = context["receipt_path"].parent.parent / context["release_id"] / "receipt.json"
             context["receipt_path"].parent.mkdir()
@@ -1122,7 +1119,8 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
         "approvalId": approval_id,
         "uploadedVersion": "version-current",
         "deployment": {"versions": [{"version_id": "version-current", "percentage": 100}]},
-        "payloadAdmin": "0.10.1",
+        "pipelineSha": "d" * 40,
+        "sharedRuntimeFingerprint": "a" * 64,
         "payloadCore": "0.5.2",
         "contentContract": "helloada-content-v3",
         "schemaRevision": 5,
@@ -1136,7 +1134,7 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
         "ok": True,
         "tenant": tenant_id,
         "releaseSha": source_sha,
-        "payloadAdmin": receipt["payloadAdmin"],
+        "sharedRuntimeFingerprint": receipt["sharedRuntimeFingerprint"],
         "payloadCore": receipt["payloadCore"],
         "contentContract": receipt["contentContract"],
         "schemaRevision": receipt["schemaRevision"],
@@ -1175,13 +1173,14 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
         tenant_id, release_id=release_id, source_sha=source_sha,
     )
 
+    from site_agent.application.runtime_activation import RuntimeActivation
+
     assert result["runtime_active"] is True
     assert activated == [(
         tenant_id,
         {"tenant_id": tenant_id},
         {
             "runtime_identity": {
-                "adminVersion": "0.10.1",
                 "contract": "helloada-content-v3",
                 "coreVersion": "0.5.2",
                 "schemaRevision": 5,
@@ -1189,7 +1188,7 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
                 "migrationHead": "c" * 64,
             },
             "website_present": True,
-            "runtime_activation": None,
+            "runtime_activation": RuntimeActivation.from_receipt(tenant_id, release_id, receipt),
         },
     )]
 
@@ -1227,7 +1226,8 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
         "initialSchemaHead": "c" * 64,
         "uploadedVersion": "version-demo",
         "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
-        "payloadAdmin": "0.10.1",
+        "pipelineSha": "d" * 40,
+        "sharedRuntimeFingerprint": "a" * 64,
         "payloadCore": "0.5.1",
         "contentContract": "helloada-content-v3",
         "schemaRevision": 5,
@@ -1240,7 +1240,7 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
         "tenant": tenant_id,
         "releaseSha": source_sha,
         **{key: receipt[key] for key in (
-            "payloadAdmin", "payloadCore", "contentContract", "schemaRevision",
+            "sharedRuntimeFingerprint", "payloadCore", "contentContract", "schemaRevision",
             "schemaIdentity", "migrationHead",
         )},
     }
@@ -1428,7 +1428,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.weareheadless.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.weareheadless.workers.dev/"
-    assert config["site"]["payload"]["contract"]["adminVersion"] == template_manifest["payloadAdmin"]
+    assert config["site"]["payload"]["contract"]["sharedRuntimeFingerprint"] == template_manifest["sharedRuntimeFingerprint"]
     assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["migrationHead"] == template_manifest["migrationHead"]
@@ -1756,7 +1756,7 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
     assert marker == {
         "tenantId": "demo",
         "templateSchema": manifest["templateSchema"],
-        "payloadAdmin": manifest["payloadAdmin"],
+        "sharedRuntimeFingerprint": manifest["sharedRuntimeFingerprint"],
         "payloadCore": manifest["payloadCore"],
         "contentContract": manifest["contentContract"],
         "schemaRevision": manifest["schemaRevision"],

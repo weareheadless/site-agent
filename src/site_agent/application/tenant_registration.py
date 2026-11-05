@@ -371,7 +371,7 @@ class TenantRegistrationService:
             except (TypeError, ValueError) as exc:
                 raise TenantRegistrationError("runtime activation binding is invalid") from exc
         expected_keys = {
-            "adminVersion", "contract", "coreVersion", "schemaRevision",
+            "contract", "coreVersion", "schemaRevision",
             "schemaIdentity", "migrationHead",
         }
         locale_keys = {"configurationIdentity", "locales", "defaultLocale"}
@@ -393,9 +393,7 @@ class TenantRegistrationService:
             ):
                 raise TenantRegistrationError("verified Payload locale configuration identity is invalid")
         if (
-            not isinstance(identity["adminVersion"], str)
-            or not re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", identity["adminVersion"])
-            or not isinstance(identity["contract"], str)
+            not isinstance(identity["contract"], str)
             or not re.fullmatch(r"helloada-content-v[1-9][0-9]*", identity["contract"])
             or not isinstance(identity["coreVersion"], str)
             or not re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", identity["coreVersion"])

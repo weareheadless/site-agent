@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,7 +45,8 @@ export const createHelloAdaContractIdentity = (selection) => ({
 })
 ''')
     subprocess.run(['node', '--experimental-strip-types', str(generator), f'--site-root={site}'],
-                   cwd=site, check=True, capture_output=True, text=True)
+                   cwd=site, check=True, capture_output=True, text=True,
+                   env={**os.environ, 'HELLOADA_SHARED_RUNTIME_FINGERPRINT': 'a' * 64})
     generated = json.loads(manifest_path.read_text())
     assert generated['locales'] == ['en', 'es']
     assert generated['defaultLocale'] == 'es'

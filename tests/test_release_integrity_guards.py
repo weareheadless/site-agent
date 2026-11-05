@@ -12,28 +12,28 @@ SPEC.loader.exec_module(GUARD)
 
 def fixture(monkeypatch, tmp_path, marker="2.0.0"):
     monkeypatch.setattr(GUARD, "ROOT", tmp_path)
-    package = tmp_path / "packages/helloada-payload-admin"
-    (package / "src").mkdir(parents=True)
+    package = tmp_path / "packages/helloada-payload-core"
+    (package / "src/schema").mkdir(parents=True)
     (package / "package.json").write_text(json.dumps({"version": "2.0.0"}))
-    (package / "src/version.ts").write_text(f"export const HELLOADA_PAYLOAD_ADMIN_VERSION = '{marker}'")
+    (package / "src/schema/index.ts").write_text(f"export const HELLOADA_CORE_VERSION = '{marker}'")
     monkeypatch.setattr(GUARD.subprocess, "run", lambda *a, **k: type("Result", (), {"stdout": '{"version":"1.0.0"}'})())
 
 def test_source_change_without_version_bump_fails(monkeypatch, tmp_path):
     fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(GUARD.subprocess, "run", lambda *a, **k: type("Result", (), {"stdout": '{"version":"2.0.0"}'})())
-    assert GUARD.validate(["packages/helloada-payload-admin/src/index.ts"], "base")
+    assert GUARD.validate(["packages/helloada-payload-core/src/schema/index.ts"], "base")
 
 def test_source_change_with_bump_passes(monkeypatch, tmp_path):
     fixture(monkeypatch, tmp_path)
-    assert GUARD.validate(["packages/helloada-payload-admin/src/index.ts"], "base") == []
+    assert GUARD.validate(["packages/helloada-payload-core/src/schema/index.ts"], "base") == []
 
 def test_non_source_change_passes():
-    assert GUARD.validate(["packages/helloada-payload-admin/README.md"], "HEAD") == []
+    assert GUARD.validate(["packages/helloada-payload-core/README.md"], "HEAD") == []
 
 def test_package_bump_without_matching_marker_fails(monkeypatch, tmp_path):
     fixture(monkeypatch, tmp_path, marker="1.0.0")
-    errors = GUARD.validate(["packages/helloada-payload-admin/src/index.ts"], "base")
-    assert errors and "payload-admin-v2.0.0" in errors[0]
+    errors = GUARD.validate(["packages/helloada-payload-core/src/schema/index.ts"], "base")
+    assert errors and "helloada-payload-core-v2.0.0" in errors[0]
 
 def assert_no_tracked_symlink_escape(repository: Path):
     metadata = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repository, capture_output=True, text=True)

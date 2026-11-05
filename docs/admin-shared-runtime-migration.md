@@ -289,9 +289,21 @@ Landed on `main`:
   `src/components/admin`) plus `src/app/(payload)/custom.scss`; the preview path,
   the release path and the fingerprint all expand the trees, and a symlink or
   special file inside a tree fails closed.
-- [ ] Steps 3 and 5 — pin removal and the `sharedRuntime` identity, landing
-  together because the generator and preflight read the pin.
-- [ ] Step 6 — delete the packaging flow.
+- [x] Steps 3 and 5 — the pin is gone and the identity is
+  `sharedRuntimeFingerprint`: a 64-hex hash of the overlay contract and the
+  exact shared source bytes, injected into the contract generator, written to
+  the Wrangler vars, reported by `/api/health`, and recorded in every release
+  receipt. It is a release property, never part of the tenant contract, so no
+  tenant release needs a fingerprint update first. The overlay also removes a
+  leftover admin dependency from tenant manifests and rewrites the one
+  platform-owned import in the tenant-owned `src/helloada.config.ts`.
+  Verified: 2490 Python tests, 153 template tests, template typecheck and Next
+  build, and a wheel build.
+- [ ] Step 6 — delete the packaging flow. `packages/helloada-payload-admin`
+  and `.github/workflows/release-payload-admin.yml` still exist and are now dead
+  weight: nothing pins or imports the package in a tenant build. Deleting them
+  is the next commit, and until then the directory is a duplicate source tree
+  that must not be edited.
 - [ ] Step 7 — generated project map.
 
 Code checkpoints already exist: History lists published versions and a restore

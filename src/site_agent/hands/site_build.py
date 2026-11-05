@@ -436,10 +436,6 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 _SHARED_ARTIFACT_PATTERNS = {
-    "@weareheadless/helloada-payload-admin": re.compile(
-        r"^https://github\.com/weareheadless/site-agent/releases/download/"
-        r"payload-admin-v(?P<v>\d+\.\d+\.\d+)/weareheadless-helloada-payload-admin-(?P=v)\.tgz$"
-    ),
     "@weareheadless/helloada-payload-core": re.compile(
         r"^https://github\.com/weareheadless/site-agent/releases/download/"
         r"helloada-payload-core-v(?P<v>\d+\.\d+\.\d+)/weareheadless-helloada-payload-core-(?P=v)\.tgz$"
@@ -548,10 +544,7 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
     template_dependencies = toolchain
     shared_packages = {
         name: template_dependencies[name]
-        for name in (
-            "@weareheadless/helloada-payload-admin",
-            "@weareheadless/helloada-payload-core",
-        )
+        for name in ("@weareheadless/helloada-payload-core",)
         if name in template_dependencies
     }
     declared: dict[str, str] = {}

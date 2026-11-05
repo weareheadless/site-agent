@@ -49,7 +49,6 @@ def _read_yaml(path: Path, label: str) -> dict[str, Any]:
 
 def _validate_runtime_identity(value: Mapping[str, Any], label: str) -> dict[str, Any]:
     identity = {
-        "adminVersion": value.get("adminVersion"),
         "contract": value.get("contract"),
         "coreVersion": value.get("coreVersion"),
         "schemaRevision": value.get("schemaRevision"),
@@ -57,9 +56,7 @@ def _validate_runtime_identity(value: Mapping[str, Any], label: str) -> dict[str
         "migrationHead": value.get("migrationHead"),
     }
     if (
-        not isinstance(identity["adminVersion"], str)
-        or not re.fullmatch(r"\d+\.\d+\.\d+", identity["adminVersion"])
-        or not isinstance(identity["contract"], str)
+        not isinstance(identity["contract"], str)
         or not re.fullmatch(r"helloada-content-v[1-9][0-9]*", identity["contract"])
         or not isinstance(identity["coreVersion"], str)
         or not re.fullmatch(r"\d+\.\d+\.\d+", identity["coreVersion"])
@@ -77,7 +74,6 @@ def _validate_runtime_identity(value: Mapping[str, Any], label: str) -> dict[str
 
 def _expected_runtime_contract(customer: Mapping[str, Any]) -> dict[str, Any]:
     return _validate_runtime_identity({
-        "adminVersion": customer.get("payloadAdmin"),
         "contract": customer.get("contentContract"),
         "coreVersion": customer.get("payloadCore"),
         "schemaRevision": customer.get("schemaRevision"),
@@ -146,7 +142,6 @@ def _read_active_worker_contract(tenant_id: str, customer: Mapping[str, Any]) ->
     ):
         raise ValueError(f"tenant {tenant_id} active Worker health identity is invalid")
     return _validate_runtime_identity({
-        "adminVersion": health.get("payloadAdmin"),
         "contract": health.get("contentContract"),
         "coreVersion": health.get("payloadCore"),
         "schemaRevision": health.get("schemaRevision"),
@@ -204,7 +199,7 @@ def _updated_config(
         f"tenant {tenant_id} active Worker health",
     )
     allowed = {
-        "adminVersion", "contract", "coreVersion", "schemaRevision", "schemaIdentity",
+        "contract", "coreVersion", "schemaRevision", "schemaIdentity",
         "migrationHead", "media_fields", "locales", "defaultLocale", "collections", "globals",
     }
     unknown = set(contract_raw) - allowed
@@ -363,7 +358,6 @@ def validate_runtime_configs(
         if isinstance(customer, Mapping):
             contract = client.contract
             actual = _validate_runtime_identity({
-                "adminVersion": raw_payload["contract"].get("adminVersion"),
                 "contract": contract.contract_version,
                 "coreVersion": contract.core_version,
                 "schemaRevision": contract.schema_revision,

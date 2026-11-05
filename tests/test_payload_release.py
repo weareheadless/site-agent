@@ -57,7 +57,7 @@ def test_static_source_admission_is_required_for_every_release_purpose(tmp_path)
         release.validate_presentation_source(tmp_path, customer, worker)
 CUSTOMER = {
     **REGISTRY["customers"]["oceanicvibes"],
-    "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],
+    "sharedRuntimeFingerprint": TEMPLATE_MANIFEST["sharedRuntimeFingerprint"],
     "payloadCore": TEMPLATE_MANIFEST["payloadCore"],
     "contentContract": TEMPLATE_MANIFEST["contentContract"],
     "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
@@ -79,7 +79,7 @@ CUSTOMER = {
 }
 CANDIDATE_CUSTOMER = {
     **CUSTOMER,
-    "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],
+    "sharedRuntimeFingerprint": TEMPLATE_MANIFEST["sharedRuntimeFingerprint"],
     "payloadCore": TEMPLATE_MANIFEST["payloadCore"],
     "contentContract": TEMPLATE_MANIFEST["contentContract"],
     "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
@@ -90,7 +90,7 @@ CANDIDATE_CUSTOMER = {
 WORKER_CONFIG = {
     "name": CUSTOMER["worker"],
     "tenant": "oceanicvibes",
-    "admin": CUSTOMER["payloadAdmin"],
+    "sharedRuntimeFingerprint": CUSTOMER["sharedRuntimeFingerprint"],
     "core": CUSTOMER["payloadCore"],
     "contract": CUSTOMER["contentContract"],
     "schemaRevision": CUSTOMER["schemaRevision"],
@@ -525,7 +525,7 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
                 "clone_path": str(site_dir),
             },
             "payload": {"contract": {
-                "adminVersion": manifest["payloadAdmin"],
+                "sharedRuntimeFingerprint": manifest["sharedRuntimeFingerprint"],
                 "coreVersion": manifest["payloadCore"],
                 "contract": manifest["contentContract"],
                 "schemaRevision": manifest["schemaRevision"],
@@ -569,7 +569,7 @@ def test_customer_without_a_committed_migration_identity_cannot_be_released():
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
-@pytest.mark.parametrize("field", ["payloadAdmin", "payloadCore", "contentContract", "schemaRevision", "schemaIdentity"])
+@pytest.mark.parametrize("field", ["payloadCore", "contentContract", "schemaRevision", "schemaIdentity"])
 def test_release_registry_requires_exact_shared_payload_versions(field):
     customer = {**CUSTOMER, field: ""}
     with pytest.raises(ValueError, match="version|contract|schema"):
@@ -580,7 +580,6 @@ def test_generated_schema_contract_advances_shared_identity_and_preserves_migrat
     migration_head = "b" * 64
     customer = {
         **CUSTOMER,
-        "payloadAdmin": "0.10.8",
         "payloadCore": "0.5.7",
         "contentContract": "helloada-content-v3",
         "schemaRevision": 7,
@@ -592,7 +591,7 @@ def test_generated_schema_contract_advances_shared_identity_and_preserves_migrat
 
     release.synchronize_customer_payload_contract(customer, manifest, contract)
 
-    assert customer["payloadAdmin"] == TEMPLATE_MANIFEST["payloadAdmin"]
+    assert customer["sharedRuntimeFingerprint"] == TEMPLATE_MANIFEST["sharedRuntimeFingerprint"]
     assert customer["payloadCore"] == TEMPLATE_MANIFEST["payloadCore"]
     assert customer["contentContract"] == TEMPLATE_MANIFEST["contentContract"]
     assert customer["schemaRevision"] == TEMPLATE_MANIFEST["schemaRevision"]
@@ -633,7 +632,7 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         **WORKER_CONFIG,
         "name": customer["worker"],
         "tenant": "oceanicvibes",
-        "admin": customer["payloadAdmin"],
+        "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"],
         "core": customer["payloadCore"],
         "contract": customer["contentContract"],
         "schemaRevision": customer["schemaRevision"],
@@ -1148,7 +1147,7 @@ def test_same_admin_version_does_not_prove_new_source(monkeypatch):
             pass
 
         def read(self):
-            return json.dumps({"ok": True, "tenant": "oceanicvibes", "payloadAdmin": customer["payloadAdmin"],
+            return json.dumps({"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"],
                                "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
                                "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
                                "migrationHead": customer["migrationHead"],
@@ -1161,7 +1160,7 @@ def test_same_admin_version_does_not_prove_new_source(monkeypatch):
 
 
 @pytest.mark.parametrize("key,value", [
-    ("payloadAdmin", "0.8.5"),
+    ("sharedRuntimeFingerprint", "0" * 64),
     ("payloadCore", "0.0.9"),
     ("contentContract", "helloada-content-v0"),
     ("schemaRevision", 99),
@@ -1169,7 +1168,7 @@ def test_same_admin_version_does_not_prove_new_source(monkeypatch):
 ])
 def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key, value):
     customer = CUSTOMER
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": customer["payloadAdmin"],
+    body = {"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"],
             "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
             "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
             "migrationHead": customer["migrationHead"],
@@ -1191,7 +1190,7 @@ def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key
     ("configurationIdentity", "f" * 64), ("locales", ["en"]), ("defaultLocale", "es-MX"),
 ])
 def test_live_health_requires_exact_locale_configuration_identity(monkeypatch, key, value):
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+    body = {"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": CUSTOMER["sharedRuntimeFingerprint"],
             "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
             "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
             "migrationHead": CUSTOMER["migrationHead"], "configurationIdentity": CUSTOMER["configurationIdentity"],
@@ -1216,7 +1215,7 @@ def test_new_candidate_health_is_bound_to_generated_manifest_locale_tuple(monkey
         "coreVersion": manifest["payloadCore"], "contract": manifest["contentContract"],
         "schemaRevision": manifest["schemaRevision"],
     })
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": expected["payloadAdmin"],
+    body = {"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": expected["sharedRuntimeFingerprint"],
             "payloadCore": expected["payloadCore"], "contentContract": expected["contentContract"],
             "schemaRevision": expected["schemaRevision"], "schemaIdentity": expected["schemaIdentity"],
             "migrationHead": expected["migrationHead"], "configurationIdentity": "c" * 64,
@@ -1235,7 +1234,7 @@ def test_new_candidate_health_is_bound_to_generated_manifest_locale_tuple(monkey
 
 
 def test_live_health_rejects_partial_locale_identity_tuple(monkeypatch):
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+    body = {"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": CUSTOMER["sharedRuntimeFingerprint"],
             "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
             "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
             "migrationHead": CUSTOMER["migrationHead"], "configurationIdentity": CUSTOMER["configurationIdentity"],
@@ -1254,7 +1253,7 @@ def test_live_health_rejects_partial_locale_identity_tuple(monkeypatch):
 def test_live_health_accepts_complete_legacy_tuple_omission(monkeypatch):
     legacy_customer = {key: value for key, value in CUSTOMER.items()
                        if key not in {"configurationIdentity", "locales", "defaultLocale"}}
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": CUSTOMER["payloadAdmin"],
+    body = {"ok": True, "tenant": "oceanicvibes", "sharedRuntimeFingerprint": CUSTOMER["sharedRuntimeFingerprint"],
             "payloadCore": CUSTOMER["payloadCore"], "contentContract": CUSTOMER["contentContract"],
             "schemaRevision": CUSTOMER["schemaRevision"], "schemaIdentity": CUSTOMER["schemaIdentity"],
             "migrationHead": CUSTOMER["migrationHead"], "releaseSha": SHA}
@@ -1288,7 +1287,6 @@ def artifact(tmp_path):
             "/api/workspace/media/route": "media.js",
             "/api/health/route": "health.js",
         }),
-        "node_modules/@weareheadless/helloada-payload-admin/package.json": json.dumps({"version": customer["payloadAdmin"]}),
         "node_modules/@weareheadless/helloada-payload-core/package.json": json.dumps({"version": customer["payloadCore"]}),
         "helloada-content-contract.json": json.dumps({"contract": customer["contentContract"]}),
         "template-manifest.json": json.dumps(TEMPLATE_MANIFEST),
@@ -1310,7 +1308,7 @@ def artifact(tmp_path):
         ".mailflare/server/ssr/index.js": "export default {};\n",
         ".open-next/assets/mail/_next/static/mailflare.js": "/* pinned Mailflare client */\n",
         ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA,
-            "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+            "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"], "payloadCore": customer["payloadCore"],
             "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
             "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
             "mailflareCommit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
@@ -1948,7 +1946,7 @@ def promoted_receipt(tmp_path):
     customer = dict(CUSTOMER)
     result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
-              "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+              "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"], "payloadCore": customer["payloadCore"],
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "websitePresent": customer["websitePresent"],
@@ -2641,8 +2639,7 @@ def test_contract_generator_refreshes_stale_manifest_versions_from_locked_packag
 
     assert "contract.coreVersion !== corePackage.version" in source
     assert "manifest.payloadCore !== corePackage.version" not in source
-    assert "manifest.payloadAdmin !== adminPackage.version" not in source
-    assert "sitePackage.dependencies['@weareheadless/helloada-payload-admin']" in source
+    assert "sitePackage.dependencies['@weareheadless/helloada-payload-admin'] !== undefined" in source
     assert "sitePackage.dependencies['@weareheadless/helloada-payload-core']" in source
 
 

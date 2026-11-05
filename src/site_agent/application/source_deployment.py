@@ -716,7 +716,7 @@ class SourceDeploymentService:
         # bindings while importing public content or rendering the candidate.
         local_worker = {key: worker[key] for key in ("name", "compatibility_date", "compatibility_flags") if key in worker}
         public_vars = {"HELLOADA_TENANT_ID", "HELLOADA_SITE_NAME", "HELLOADA_TEMPLATE_SCHEMA",
-                       "HELLOADA_PAYLOAD_ADMIN_VERSION", "HELLOADA_PAYLOAD_CORE_VERSION",
+                       "HELLOADA_SHARED_RUNTIME_FINGERPRINT", "HELLOADA_PAYLOAD_CORE_VERSION",
                        "HELLOADA_PAYLOAD_SCHEMA_REVISION", "HELLOADA_CONTENT_CONTRACT_VERSION",
                        "HELLOADA_SCHEMA_IDENTITY", "HELLOADA_PAYLOAD_MIGRATION_HEAD", "HELLOADA_SITE_AGENT_VERSION"}
         local_worker.update({"main": ".open-next/worker.js", "assets": {"directory": ".open-next/assets", "binding": "ASSETS"},

@@ -198,19 +198,18 @@ def _validate_managed_payload_scaffold(root: Path) -> None:
     except (OSError, UnicodeError, ValueError) as exc:
         raise DesignExperimentError("existing scaffold is not the canonical managed Payload template") from exc
     dependencies = package.get("dependencies") if isinstance(package, dict) else None
-    admin_version = str(manifest.get("payloadAdmin") or "") if isinstance(manifest, dict) else ""
+    shared_runtime = str(manifest.get("sharedRuntimeFingerprint") or "") if isinstance(manifest, dict) else ""
     core_version = str(manifest.get("payloadCore") or "") if isinstance(manifest, dict) else ""
     if (
         not isinstance(manifest, dict)
         or not isinstance(canonical_manifest, dict)
         or manifest.get("templateSchema") != canonical_manifest.get("templateSchema")
         or not re.fullmatch(r"helloada-content-v\d+", str(manifest.get("contentContract") or ""))
-        or not re.fullmatch(r"\d+\.\d+\.\d+", admin_version)
+        or not re.fullmatch(r"[0-9a-f]{64}", shared_runtime)
         or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)
         or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("schemaIdentity") or ""))
         or manifest.get("schemaIdentity") != canonical_manifest.get("schemaIdentity")
         or not isinstance(dependencies, dict)
-        or f"payload-admin-v{admin_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-admin") or "")
         or f"helloada-payload-core-v{core_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-core") or "")
         or "createHelloAdaSchema" not in payload_config
         or "VPS pipeline" not in agent_guide

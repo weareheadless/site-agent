@@ -364,7 +364,7 @@ def reconcile_lifecycle_receipt(
         "releaseSha": source_sha,
         "payloadSchema": "ready",
     }
-    for key in ("migrationHead", "schemaIdentity", "schemaRevision", "payloadAdmin", "payloadCore", "contentContract"):
+    for key in ("migrationHead", "schemaIdentity", "schemaRevision", "sharedRuntimeFingerprint", "payloadCore", "contentContract"):
         if immutable_receipt.get(key) is not None:
             required_health[key] = immutable_receipt[key]
     if any(health.get(key) != expected for key, expected in required_health.items()):

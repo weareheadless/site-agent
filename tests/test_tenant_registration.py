@@ -189,7 +189,6 @@ def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_pat
             enabled=True,
             token_env="PROVISIONED_NEW_SITE_TOKEN",
             contract={
-                "adminVersion": "0.8.10",
                 "contract": "helloada-content-v2",
                 "coreVersion": "0.2.0",
                 "schemaRevision": 2,
@@ -204,7 +203,6 @@ def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_pat
         )
         TenantRegistrationService._replace_config(tenant_path, tenant_config)
         identity = {
-            "adminVersion": "0.10.1",
             "contract": "helloada-content-v3",
             "coreVersion": "0.5.2",
             "schemaRevision": 5,
@@ -252,13 +250,13 @@ def test_runtime_activation_is_payload_sibling_and_clear_is_explicit(tmp_path):
         tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
         tenant_config["site"]["payload"].update(
             enabled=True, token_env="PROVISIONED_NEW_SITE_TOKEN",
-            contract={"adminVersion": "0.10.1", "contract": "helloada-content-v3",
+            contract={"contract": "helloada-content-v3",
                       "coreVersion": "0.5.2", "schemaRevision": 5,
                       "schemaIdentity": "c" * 64, "migrationHead": "d" * 64,
                       "media_fields": ["alt"], "locales": ["en"], "defaultLocale": "en"},
         )
         TenantRegistrationService._replace_config(tenant_path, tenant_config)
-        identity = {"adminVersion": "0.10.1", "contract": "helloada-content-v3",
+        identity = {"contract": "helloada-content-v3",
                     "coreVersion": "0.5.2", "schemaRevision": 5,
                     "schemaIdentity": "c" * 64, "migrationHead": "d" * 64}
         binding = {"schema": 1, "tenant_id": "new-site", "release_id": "rel-1",

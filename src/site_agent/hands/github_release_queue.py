@@ -80,7 +80,7 @@ class GitHubReleaseQueue:
     @staticmethod
     def _required_customer(customer: Mapping[str, Any]) -> dict[str, Any]:
         result = {key: customer.get(key) for key in (
-            "repository", "worker", "health", "adminPath", "websitePresent", "payloadAdmin", "payloadCore",
+            "repository", "worker", "health", "adminPath", "websitePresent", "payloadCore",
             "contentContract", "schemaRevision", "schemaIdentity", "migrationHead",
             "d1DatabaseId", "d1DatabaseName", "mailflareD1DatabaseId", "mailflareD1DatabaseName",
             "r2BucketName", "privateEmailR2BucketName", "mailflareR2BucketName",
@@ -101,8 +101,8 @@ class GitHubReleaseQueue:
             if customer["presentationProfile"] != "static" or result["websitePresent"] is not True:
                 raise GitHubReleaseQueueError("explicit static presentation requires a present website")
             result["presentationProfile"] = "static"
-        if not _VERSION.fullmatch(str(result["payloadAdmin"] or "")) or not _VERSION.fullmatch(str(result["payloadCore"] or "")):
-            raise GitHubReleaseQueueError("exact shared Payload package versions are required")
+        if not _VERSION.fullmatch(str(result["payloadCore"] or "")):
+            raise GitHubReleaseQueueError("exact shared Payload package version is required")
         if not _CONTRACT.fullmatch(str(result["contentContract"] or "")):
             raise GitHubReleaseQueueError("exact shared Payload contract is required")
         if isinstance(result["schemaRevision"], bool) or not isinstance(result["schemaRevision"], int) or result["schemaRevision"] < 1:

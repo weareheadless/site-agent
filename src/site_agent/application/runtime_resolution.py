@@ -37,7 +37,7 @@ def _contract(config: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     if not isinstance(raw, Mapping):
         raise RuntimeResolutionError("registered Payload runtime contract is unavailable")
     identity = {
-        "adminVersion": raw.get("adminVersion"), "contract": raw.get("contract"),
+        "contract": raw.get("contract"),
         "coreVersion": raw.get("coreVersion"), "schemaRevision": raw.get("schemaRevision"),
         "schemaIdentity": raw.get("schemaIdentity"), "migrationHead": raw.get("migrationHead"),
     }
@@ -85,7 +85,7 @@ def _validate_receipt(receipt: Any, tenant_id: str, activation: RuntimeActivatio
         raise RuntimeResolutionError("canonical release receipt activation is incomplete") from None
     health = receipt.get("health")
     expected = {"ok": True, "tenant": tenant_id, "releaseSha": activation.source_sha,
-        "payloadAdmin": identity["adminVersion"], "payloadCore": identity["coreVersion"],
+        "payloadCore": identity["coreVersion"],
         "contentContract": identity["contract"], "schemaRevision": identity["schemaRevision"],
         "schemaIdentity": identity["schemaIdentity"], "migrationHead": identity["migrationHead"]}
     if not isinstance(health, Mapping) or any(health.get(k) != v for k, v in expected.items()):

@@ -19,7 +19,6 @@ TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
 CUSTOMER = {
     "tenantId": "oceanicvibes",
     "worker": "oceanicvibes",
-    "payloadAdmin": "0.10.11",
     "payloadCore": "0.5.7",
     "contentContract": "helloada-content-v3",
     "schemaRevision": 7,
@@ -43,7 +42,6 @@ CUSTOMER = {
 CANONICAL = json.loads((TEMPLATE / "template-manifest.json").read_text())
 CANONICAL_CUSTOMER = {
     **CUSTOMER,
-    "payloadAdmin": CANONICAL["payloadAdmin"],
     "payloadCore": CANONICAL["payloadCore"],
 }
 
@@ -165,25 +163,19 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     lock = json.loads((checkout / "package-lock.json").read_text())
     manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
     template_lock = json.loads((TEMPLATE / "package-lock.json").read_text())
-    admin_pin = template_lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"]
-    admin_version = manifest["payloadAdmin"]
-    admin_url = admin_pin["resolved"]
-    assert f"payload-admin-v{admin_version}/" in admin_url
-    assert package["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
-    assert lock["packages"][""]["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
-    assert lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"] == {
-        **lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"],
-        "version": admin_version,
-        "resolved": admin_url,
-        "integrity": admin_pin["integrity"],
-    }
+    core_pin = template_lock["packages"]["node_modules/@weareheadless/helloada-payload-core"]
+    assert "payload-admin" not in json.dumps(package["dependencies"])
+    assert "payload-admin" not in json.dumps(lock["packages"].get("") or {})
+    assert lock["packages"].get("node_modules/@weareheadless/helloada-payload-admin") is None
+    assert package["dependencies"]["@weareheadless/helloada-payload-core"] == core_pin["resolved"]
+    assert lock["packages"]["node_modules/@weareheadless/helloada-payload-core"] == core_pin
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
-    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == admin_version
+    assert config["vars"]["HELLOADA_SHARED_RUNTIME_FINGERPRINT"] == result["fingerprint"]
     assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == CANONICAL_CUSTOMER["payloadCore"]
     assert manifest["migrationHead"] == CANONICAL["migrationHead"]
     assert manifest["contentContract"] == "helloada-content-v4"
     assert manifest["schemaRevision"] == CANONICAL["schemaRevision"]
-    assert result["payloadAdmin"] == admin_version
+    assert result["sharedRuntimeFingerprint"] == result["fingerprint"]
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
     assert "template-manifest.json" in result["changedPaths"]
@@ -195,8 +187,7 @@ def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
 
     manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
 
-    assert versions == {"@weareheadless/helloada-payload-admin": manifest["payloadAdmin"],
-                        "@weareheadless/helloada-payload-core": manifest["payloadCore"]}
+    assert versions == {"@weareheadless/helloada-payload-core": manifest["payloadCore"]}
 
 
 def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source(tmp_path: Path):
@@ -250,7 +241,7 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     admin_source.write_text("admin")
     lockfile = template / "package-lock.json"
     lock = json.loads(lockfile.read_text())
-    lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"]["resolved"] += "?changed"
+    lock["packages"]["node_modules/@weareheadless/helloada-payload-core"]["resolved"] += "?changed"
     lockfile.write_text(json.dumps(lock))
     assert shared_runtime_fingerprint(control) != original
 
@@ -407,12 +398,18 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
     }}
     (worktree / "package.json").write_text(json.dumps(tenant_package))
     (worktree / "package-lock.json").write_text(json.dumps(tenant_lock))
+    (worktree / "src").mkdir(parents=True, exist_ok=True)
+    (worktree / "src/helloada.config.ts").write_text(
+        "import { defineHelloAdaSite } from '@weareheadless/helloada-payload-admin/config'\n"
+    )
 
     result = apply_preview_runtime_overlay(worktree, package_root=package)
 
     assert result["copied"] == ["src/lib/runtime.ts", "src/admin/components/Workspace.tsx"]
     assert (worktree / "src/admin/components/Workspace.tsx").read_text() == "export const Workspace = 'canonical'\n"
     assert result["removed"] == ["src/lib/retired.ts"]
+    assert result["migrated"] == ["src/helloada.config.ts"]
+    assert "from '@/admin/config/site'" in (worktree / "src/helloada.config.ts").read_text()
     assert (worktree / "src/lib/runtime.ts").read_text() == "export const runtime = 'canonical'\n"
     assert not (worktree / "src/lib/retired.ts").exists()
     package_after = json.loads((worktree / "package.json").read_text())
@@ -443,6 +440,8 @@ def test_preview_overlay_rejects_a_symlink_inside_a_copied_tree(tmp_path: Path):
     (template / "package-lock.json").write_text(json.dumps({"packages": {"": {"dependencies": {}}}}))
     worktree = tmp_path / "worktree"
     worktree.mkdir()
+    (worktree / "src").mkdir()
+    (worktree / "src/helloada.config.ts").write_text("export const helloAdaSite = {}\n")
     (worktree / "package.json").write_text(json.dumps({"dependencies": {}}))
     (worktree / "package-lock.json").write_text(json.dumps({"packages": {"": {"dependencies": {}}}}))
 

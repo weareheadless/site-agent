@@ -33,7 +33,7 @@ def test_canonical_neutral_scaffold_is_created_and_reused_unchanged(tmp_path):
     assert _git(root, "status", "--porcelain") == ""
 
 
-@pytest.mark.parametrize("mutation", ["schema", "admin_pin", "core_pin", "schema_identity", "dirty", "remote"])
+@pytest.mark.parametrize("mutation", ["schema", "core_pin", "schema_identity", "dirty", "remote"])
 def test_neutral_scaffold_reuse_rejects_unsupported_or_unsafe_scaffolds(tmp_path, mutation):
     root = tmp_path / "scaffold"
     initialize_neutral_repository(root)

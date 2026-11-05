@@ -43,7 +43,6 @@ def _fixture(tmp_path: Path):
                 "api_prefix": "/api/workspace",
                 "token_env": "PROVISIONED_OCEANICVIBES_TOKEN",
                 "contract": {
-                    "adminVersion": "0.8.10",
                     "contract": "helloada-content-v2",
                     "coreVersion": "0.2.0",
                     "schemaRevision": 2,
@@ -63,7 +62,6 @@ def _fixture(tmp_path: Path):
     config_path.chmod(0o600)
     customer = {
         "health": "https://oceanicvibes.com/api/health",
-        "payloadAdmin": "0.8.10",
         "payloadCore": "0.2.0",
         "contentContract": "helloada-content-v2",
         "schemaRevision": 2,
@@ -79,7 +77,6 @@ def _fixture(tmp_path: Path):
 def _active_worker_health(tenant_id, _customer):
     assert tenant_id == "oceanicvibes"
     return {
-        "adminVersion": "0.8.10",
         "contract": "helloada-content-v2",
         "coreVersion": "0.2.0",
         "schemaRevision": 2,
@@ -100,7 +97,6 @@ def test_sync_is_dry_run_by_default_and_removes_duplicate_schema_field_maps(tmp_
     contract = updated["site"]["payload"]["contract"]
     assert applied["status"] == "updated"
     assert contract == {
-        "adminVersion": "0.8.10",
         "contract": "helloada-content-v2",
         "coreVersion": "0.2.0",
         "schemaRevision": 2,
@@ -239,7 +235,7 @@ def test_health_preflight_retries_edge_challenges_but_still_requires_exact_ident
             raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
         return Response(json.dumps({
             "ok": True, "tenant": "tenant", "releaseSha": "a" * 40,
-            "payloadAdmin": "0.10.46", "payloadCore": "0.5.10", "contentContract": "helloada-content-v4",
+            "payloadCore": "0.5.10", "contentContract": "helloada-content-v4",
             "schemaRevision": 9, "schemaIdentity": "e13af32daa00ba2f90248d0d2a89101f2811f99cd165dad0a1f6f07a507afb0e",
             "migrationHead": "806dedc866c1005b0004aea6446b1a0501e3482b7772be383368abb24d6f91ac",
         }).encode())
@@ -247,7 +243,7 @@ def test_health_preflight_retries_edge_challenges_but_still_requires_exact_ident
     monkeypatch.setattr(urllib.request, "urlopen", challenged)
     monkeypatch.setattr(sync.time, "sleep", lambda _seconds: None)
     result = sync._read_active_worker_contract("tenant", customer)
-    assert result["adminVersion"] == "0.10.46"
+    assert result["coreVersion"] == "0.5.10"
     assert len(attempts) == 3
 
     attempts.clear()

@@ -461,7 +461,6 @@ class WebsiteBootstrapService:
 
         health = receipt.get("health")
         runtime_identity = {
-            "payloadAdmin": receipt.get("payloadAdmin"),
             "payloadCore": receipt.get("payloadCore"),
             "contentContract": receipt.get("contentContract"),
             "schemaRevision": receipt.get("schemaRevision"),
@@ -487,6 +486,8 @@ class WebsiteBootstrapService:
             "releaseSha": source_sha,
             **runtime_identity,
         }
+        if receipt.get("sharedRuntimeFingerprint") is not None:
+            expected_health["sharedRuntimeFingerprint"] = receipt["sharedRuntimeFingerprint"]
         if any(health.get(key) != value for key, value in expected_health.items()):
             raise BootstrapError("release health does not match the requested tenant and schema contract")
         if all(present_locale_fields) and any(health.get(field) != receipt[field] for field in locale_fields):
@@ -655,7 +656,6 @@ class WebsiteBootstrapService:
             if not isinstance(health, Mapping):
                 raise BootstrapError("runtime activation has no verified Worker health receipt")
             runtime_identity = {
-                "adminVersion": receipt.get("payloadAdmin"),
                 "contract": receipt.get("contentContract"),
                 "coreVersion": receipt.get("payloadCore"),
                 "schemaRevision": receipt.get("schemaRevision"),
@@ -668,17 +668,27 @@ class WebsiteBootstrapService:
                 raise BootstrapError("runtime activation receipt has a partial locale configuration identity")
             if all(present_locale_fields):
                 runtime_identity.update({field: receipt[field] for field in locale_fields})
+            # Parse the exact provenance before comparing health so a malformed
+            # receipt fails with its own diagnostic instead of a health mismatch.
+            try:
+                activation = RuntimeActivation.from_receipt(normalized, release_id, receipt)
+            except ValueError as exc:
+                raise BootstrapError(str(exc)) from exc
             expected_health = {
                 "ok": True,
                 "tenant": normalized,
                 "releaseSha": source_sha,
-                "payloadAdmin": runtime_identity["adminVersion"],
                 "payloadCore": runtime_identity["coreVersion"],
                 "contentContract": runtime_identity["contract"],
                 "schemaRevision": runtime_identity["schemaRevision"],
                 "schemaIdentity": runtime_identity["schemaIdentity"],
                 "migrationHead": runtime_identity["migrationHead"],
             }
+            # A receipt from before the runtime fingerprint existed cannot assert
+            # one; only compare identities the receipt actually records.
+            if receipt.get("sharedRuntimeFingerprint") is not None:
+                expected_health["sharedRuntimeFingerprint"] = receipt["sharedRuntimeFingerprint"]
+            expected_health = {key: value for key, value in expected_health.items() if value is not None}
             if any(health.get(key) != value for key, value in expected_health.items()):
                 raise BootstrapError("runtime activation Worker health does not match the release contract")
             health_locale = [field in health for field in locale_fields]
@@ -691,11 +701,6 @@ class WebsiteBootstrapService:
             website_present = receipt.get("websitePresent")
             if not isinstance(website_present, bool):
                 raise BootstrapError("runtime activation release has no explicit websitePresent state")
-            try:
-                activation = RuntimeActivation.from_receipt(normalized, release_id, receipt)
-            except ValueError as exc:
-                raise BootstrapError(str(exc)) from exc
-
             self._mount_runtime(
                 normalized,
                 state,
@@ -1224,7 +1229,7 @@ class WebsiteBootstrapService:
         expected = {
             "tenantId": tenant_id,
             "templateSchema": manifest.get("templateSchema"),
-            "payloadAdmin": manifest.get("payloadAdmin"),
+            "sharedRuntimeFingerprint": manifest.get("sharedRuntimeFingerprint"),
             "payloadCore": manifest.get("payloadCore"),
             "contentContract": manifest.get("contentContract"),
             "schemaRevision": manifest.get("schemaRevision"),
@@ -1329,7 +1334,7 @@ class WebsiteBootstrapService:
         marker = {
             "tenantId": str(tenant_id),
             "templateSchema": manifest["templateSchema"],
-            "payloadAdmin": manifest["payloadAdmin"],
+            "sharedRuntimeFingerprint": manifest["sharedRuntimeFingerprint"],
             "payloadCore": manifest["payloadCore"],
             "contentContract": manifest["contentContract"],
             "schemaRevision": manifest["schemaRevision"],
@@ -1458,7 +1463,7 @@ class WebsiteBootstrapService:
                 "token_env": token_env,
                 "api_prefix": "/api/workspace",
                 "contract": {
-                    "adminVersion": payload_contract["adminVersion"],
+                    "sharedRuntimeFingerprint": payload_contract["sharedRuntimeFingerprint"],
                     "contract": payload_contract["contract"],
                     "coreVersion": payload_contract["coreVersion"],
                     "schemaRevision": payload_contract["schemaRevision"],
@@ -1626,7 +1631,7 @@ class WebsiteBootstrapService:
             or template.get("contentContract") != contract["contract"]
             or template.get("schemaRevision") != contract["schemaRevision"]
             or not isinstance(template.get("templateSchema"), int)
-            or not isinstance(template.get("payloadAdmin"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(template.get("sharedRuntimeFingerprint") or ""))
             or not re.fullmatch(r"[0-9a-f]{64}", str(template.get("schemaIdentity") or ""))
             or not isinstance(template.get("locales"), list)
             or not template["locales"]
@@ -1640,7 +1645,7 @@ class WebsiteBootstrapService:
             raise BootstrapError("Payload package, template, and schema identities do not agree")
         return {
             **contract,
-            "adminVersion": template["payloadAdmin"],
+            "sharedRuntimeFingerprint": template["sharedRuntimeFingerprint"],
             "locales": template["locales"],
             "defaultLocale": template["defaultLocale"],
             "schemaIdentity": template["schemaIdentity"],
@@ -1683,7 +1688,7 @@ class WebsiteBootstrapService:
             "HELLOADA_TENANT_ID": tenant_id,
             "HELLOADA_SITE_AGENT_VERSION": __version__,
             "HELLOADA_TEMPLATE_SCHEMA": str(template.get("templateSchema") or ""),
-            "HELLOADA_PAYLOAD_ADMIN_VERSION": str(template.get("payloadAdmin") or ""),
+            "HELLOADA_SHARED_RUNTIME_FINGERPRINT": str(template.get("sharedRuntimeFingerprint") or ""),
             "HELLOADA_PAYLOAD_CORE_VERSION": str(payload_contract.get("coreVersion") or ""),
             "HELLOADA_PAYLOAD_SCHEMA_REVISION": str(payload_contract.get("schemaRevision") or ""),
             "HELLOADA_CONTENT_CONTRACT_VERSION": str(payload_contract.get("contract") or ""),

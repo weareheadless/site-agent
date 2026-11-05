@@ -6,7 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = {
-    "helloada-payload-admin": ("packages/helloada-payload-admin", "src/version.ts", "HELLOADA_PAYLOAD_ADMIN_VERSION", "payload-admin"),
     "helloada-payload-core": ("packages/helloada-payload-core", "src/schema/index.ts", "HELLOADA_CORE_VERSION", "helloada-payload-core"),
 }
 TEMPLATE_PIN = "src/site_agent/templates/next-payload/package.json"

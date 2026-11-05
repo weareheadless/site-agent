@@ -19,25 +19,22 @@ const contract = JSON.parse(read('helloada-content-contract.json'))
 const packageJson = JSON.parse(read('package.json'))
 const lock = JSON.parse(read('package-lock.json'))
 
-test('template pins the exact shared schema and admin releases it advertises', () => {
+test('template pins the exact shared schema release and carries the runtime fingerprint', () => {
   assert.equal(contract.contract, manifest.contentContract)
   assert.equal(contract.coreVersion, manifest.payloadCore)
   assert.equal(contract.schemaRevision, manifest.schemaRevision)
-  assert.match(packageJson.dependencies['@weareheadless/helloada-payload-admin'], new RegExp(`payload-admin-v${manifest.payloadAdmin}`))
+  assert.equal(packageJson.dependencies['@weareheadless/helloada-payload-admin'], undefined)
+  assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], undefined)
+  assert.equal(lock.packages['node_modules/@weareheadless/helloada-payload-admin'], undefined)
   assert.match(packageJson.dependencies['@weareheadless/helloada-payload-core'], new RegExp(`helloada-payload-core-v${manifest.payloadCore}`))
-  assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], packageJson.dependencies['@weareheadless/helloada-payload-admin'])
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-core'], packageJson.dependencies['@weareheadless/helloada-payload-core'])
-  for (const [name, version] of [
-    ['@weareheadless/helloada-payload-admin', manifest.payloadAdmin],
-    ['@weareheadless/helloada-payload-core', manifest.payloadCore],
-  ]) {
-    const entry = lock.packages[`node_modules/${name}`]
-    assert.equal(entry.version, version)
-    assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/)
-  }
+  const core = lock.packages['node_modules/@weareheadless/helloada-payload-core']
+  assert.equal(core.version, manifest.payloadCore)
+  assert.match(core.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/)
+  assert.match(manifest.sharedRuntimeFingerprint, /^[0-9a-f]{64}$/)
   const runtime = JSON.parse(read('wrangler.jsonc')).vars
   assert.equal(runtime.HELLOADA_TEMPLATE_SCHEMA, String(manifest.templateSchema))
-  assert.equal(runtime.HELLOADA_PAYLOAD_ADMIN_VERSION, manifest.payloadAdmin)
+  assert.equal(runtime.HELLOADA_SHARED_RUNTIME_FINGERPRINT, manifest.sharedRuntimeFingerprint)
   assert.equal(runtime.HELLOADA_PAYLOAD_CORE_VERSION, manifest.payloadCore)
   assert.equal(runtime.HELLOADA_PAYLOAD_SCHEMA_REVISION, String(manifest.schemaRevision))
   assert.equal(runtime.HELLOADA_CONTENT_CONTRACT_VERSION, manifest.contentContract)
