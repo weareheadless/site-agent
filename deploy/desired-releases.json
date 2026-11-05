@@ -13,10 +13,10 @@
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261105170016-abd70075",
+      "id": "rel-20261105170851-c4d8f82b",
       "sha": "59ea0fdff6fd31d4f0b2702dcf5045a0cd7c9c72",
       "schemaMigration": {
-        "fromLedgerIdentity": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
+        "fromLedgerIdentity": "14736a687a4705c37d7f68373f92cdaf09295632a64eb79f3889ef8503a6fafe",
         "targetMigrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
       }
     },
