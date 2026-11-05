@@ -8,7 +8,7 @@ next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
 The next service implementation follows the
-[Ada Growth SEO/AEO pipeline plan](ada-growth-seo-aeo-pipeline-implementation-plan.md):
+[Ada Growth SEO/AEO pipeline plan](archive/ada-growth-seo-aeo-pipeline-implementation-plan.md):
 one default growth goal, durable background work, real reviewed improvements,
 precise owner approval and scope-correct outcomes. That plan is a specification,
 not a claim that those additional capabilities are already shipped.

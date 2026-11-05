@@ -4,7 +4,7 @@
 > Its Pelican, static article, and raw-file preview requirements are retired and
 > must not be implemented. Use
 > [the Payload platform consolidation plan](site-agent-payload-platform-consolidation-implementation-plan.md)
-> and [AGENTS.md](../AGENTS.md) for active architecture and release rules.
+> and [AGENTS.md](../../AGENTS.md) for active architecture and release rules.
 
 **Status:** Archived; historical UX and capability context only
 

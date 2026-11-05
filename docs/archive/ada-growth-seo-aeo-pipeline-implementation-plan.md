@@ -31,7 +31,7 @@ This is the authoritative growth-orchestration, goal and review contract when
 older SEO plans disagree. It does not override `AGENTS.md`, the
 [brand/behavior plan](brand-composition-and-behavior-system-implementation-plan.md),
 [Payload-first plan](payload-first-helloada-default-and-customer-upgrade-plan.md),
-or [connection contract](helloada-connection-contract.md). In particular, do not
+or [connection contract](../helloada-connection-contract.md). In particular, do not
 waive the brand plan's outstanding autonomous-design proof or rollout stop
 conditions. Narrow content work still needs its own complete proof.
 

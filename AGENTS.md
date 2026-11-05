@@ -88,11 +88,12 @@ Reuse existing tenant-scoped work IDs, jobs, approvals and immutable receipts;
 never add a parallel workflow, local-only fallback or manual customer deployment.
 Do not build the dashboard before the underlying causal acceptance gate passes.
 It is the current owner-approved implementation contract and supersedes the
-earlier screen/state plan in
+earlier screen/state plan now in
 `docs/archive/growth-decision-workspace-implementation-plan.md`. Rendering a screen
-is not end-to-end Growth validation. Retain
-`docs/archive/ada-growth-seo-aeo-pipeline-implementation-plan.md` for the underlying
-research, evidence, goals, budget and orchestration requirements. Reuse the canonical
+is not end-to-end Growth validation. The research, evidence, goals, budget and
+orchestration requirements behind it are recorded in
+`docs/archive/ada-growth-seo-aeo-pipeline-implementation-plan.md`; where that plan
+and the current contract disagree, the current contract wins. Reuse the canonical
 evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows. Ada's investigation
 and recommendation topics are open-ended and evidence-led: the typed
@@ -111,9 +112,9 @@ composition and motion; a canonical schema is not a generic presentation.
 For shared Payload content and owner review, follow
 `docs/private-package-deployment.md` for central credentials, exact authenticated
 package fetching and disk-backed build temporary storage;
-`docs/payload-context-repair.md` for the shared client-context boundary and
-`docs/archive/helloada-shared-content-and-owner-review-status.md` and the canonical
-`packages/helloada-payload-core` contract. `site-agent` owns the schema, field
+`docs/payload-context-repair.md` for the shared client-context boundary; and the
+canonical `packages/helloada-payload-core` contract. Historical status notes are
+in `docs/archive/helloada-shared-content-and-owner-review-status.md`. `site-agent` owns the schema, field
 bindings, admin and default scaffold; customer sites own only tenant data and
 their frontend composition. Never add a local schema/reader/bridge copy or let
 Ada mutate schemas, migrations, admin, auth, package pins or runtime configuration.
