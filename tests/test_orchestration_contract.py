@@ -377,6 +377,9 @@ def test_delegated_permissions_allow_only_planned_files_and_no_shell(tmp_path):
     assert permissions['edit'][planned] == 'allow'
     assert permissions['edit'][str(tmp_path / planned)] == 'allow'
     assert 'src/app/(frontend)/oceanic.css' not in permissions['edit']
+    # The brief requires the gitignored builder artifact; denying it failed a
+    # completed build on its final write.
+    assert permissions['edit']['.opencode/tweak-map.json'] == 'allow'
     assert permissions['bash'] == permissions['shell'] == 'deny'
     assert permissions['external_directory'] == 'deny'
     assert permissions['task'] == 'deny'

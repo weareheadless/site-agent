@@ -3831,6 +3831,12 @@ def _delegated_permissions(clone: Path, task: dict[str, Any]) -> dict[str, Any]:
             raise RunnerError('delegated source path is outside its ownership contract')
         edits[path] = 'allow'
         edits[str(root / path)] = 'allow'
+    # The builder records owner-editable parameters here. It is a gitignored
+    # builder artifact, not a source change, and the brief requires it; denying
+    # it made a finished build exit non-zero on the write.
+    tweak_map = '.opencode/tweak-map.json'
+    edits[tweak_map] = 'allow'
+    edits[str(root / tweak_map)] = 'allow'
     # Shell access could bypass edit permissions. The host owns compilation and
     # validation; this worker needs native file inspection and exact file edits.
     return {'edit': edits, 'bash': 'deny', 'shell': 'deny',
