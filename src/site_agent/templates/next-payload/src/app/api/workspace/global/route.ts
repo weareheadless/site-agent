@@ -103,6 +103,7 @@ export async function POST(request: Request) {
     if (operation === 'update') {
       const global = await withRecoveredWrite(payload, { kind: 'global', global: slug, locale, expectedHash, data }, () => payload.updateGlobal({
         ...options,
+        depth: 0,
         data: data as never,
         context: { helloAdaExpectedRevision: { kind: 'global', global: slug, hash: expectedHash, locale } },
       })) as unknown as Record<string, unknown>

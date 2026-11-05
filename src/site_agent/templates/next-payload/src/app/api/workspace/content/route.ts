@@ -211,7 +211,7 @@ export async function POST(request: Request) {
       let document: Record<string, unknown>
       try {
         document = await withRecoveredWrite(payload, { collection }, () => payload.create({
-          collection, data: data as never, draft: true, locale, overrideAccess: true,
+          collection, data: data as never, draft: true, locale, depth: REVISION_DEPTH, overrideAccess: true,
         })) as unknown as Record<string, unknown>
       } catch (error) {
         // The unique route is the destination's idempotency key. A concurrent
@@ -272,6 +272,7 @@ export async function POST(request: Request) {
           data: data as never,
           draft: true,
           locale,
+          depth: REVISION_DEPTH,
           overrideAccess: true,
           context: { helloAdaExpectedRevision: { kind: 'collection', collection, id, hash: expectedHash, locale } },
         })) as unknown as Record<string, unknown>
