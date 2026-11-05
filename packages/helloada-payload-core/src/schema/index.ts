@@ -4,8 +4,8 @@ import { catalogProductFields, createProductAttributesCollection, createProductV
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.6.4'
-export const HELLOADA_SCHEMA_REVISION = 12
+export const HELLOADA_CORE_VERSION = '0.6.5'
+export const HELLOADA_SCHEMA_REVISION = 13
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -1133,6 +1133,7 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
     {
       name: 'criteria',
       type: 'group',
+      localized: true,
       label: 'Collection criteria',
       admin: { description: 'The saved search this collection renders. Membership is derived from these criteria, not curated by hand.' },
       validate: validateCategoryCriteria,

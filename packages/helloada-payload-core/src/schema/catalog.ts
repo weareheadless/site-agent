@@ -91,7 +91,10 @@ export const validateCatalogCurrency = (value: unknown): true | string =>
   typeof value === 'string' && /^[A-Z]{3}$/.test(value) ? true : 'Declare a three-letter uppercase currency before using minor-unit prices.'
 
 export const catalogProductFields = (): Field[] => [
-  { name: 'priceMinor', type: 'number', min: 0, validate: validateMinorAmount, admin: { description: 'Integer minor units for the declared currency. Never infer a conversion from legacy price.' } },
+  // The source stores price and location per locale, so the same saved search
+  // returns a different set in each language. They stay facts, not translations:
+  // each locale carries the value the source published for it.
+  { name: 'priceMinor', type: 'number', min: 0, localized: true, validate: validateMinorAmount, admin: { description: 'Integer minor units for the declared currency. Never infer a conversion from legacy price.' } },
   {
     name: 'options', type: 'array', maxRows: 10, fields: [
       { name: 'key', type: 'text', required: true },
@@ -104,9 +107,9 @@ export const catalogProductFields = (): Field[] => [
   },
   { name: 'location', type: 'group', fields: [
     { name: 'address', type: 'text', localized: true },
-    { name: 'city', type: 'text', index: true },
-    { name: 'region', type: 'text', index: true },
-    { name: 'neighbourhood', type: 'text', index: true },
+    { name: 'city', type: 'text', localized: true, index: true },
+    { name: 'region', type: 'text', localized: true, index: true },
+    { name: 'neighbourhood', type: 'text', localized: true, index: true },
     { name: 'postalCode', type: 'text' },
     { name: 'countryCode', type: 'text', maxLength: 2, minLength: 2 },
     { name: 'latitude', type: 'number', min: -90, max: 90 },

@@ -7,6 +7,7 @@ import * as migration_20261104_010000_business_catalog from './20261104_010000_b
 import * as migration_20261104_170000_category_criteria from './20261104_170000_category_criteria';
 import * as migration_20261104_190000_category_drafts from './20261104_190000_category_drafts';
 import * as migration_20261104_220000_category_version_backfill from './20261104_220000_category_version_backfill';
+import * as migration_20261105_020000_localized_catalog_facts from './20261105_020000_localized_catalog_facts';
 
 export const migrations = [
   {
@@ -53,5 +54,10 @@ export const migrations = [
     up: migration_20261104_220000_category_version_backfill.up,
     down: migration_20261104_220000_category_version_backfill.down,
     name: '20261104_220000_category_version_backfill'
+  },
+  {
+    up: migration_20261105_020000_localized_catalog_facts.up,
+    down: migration_20261105_020000_localized_catalog_facts.down,
+    name: '20261105_020000_localized_catalog_facts'
   },
 ];
