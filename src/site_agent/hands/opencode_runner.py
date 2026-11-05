@@ -3451,9 +3451,55 @@ def _payload_revision_manifest(context: Mapping[str, Any]) -> tuple[list[dict[st
         raise RunnerError(str(exc)) from exc
 
 
+def _draft_candidate_sha(draft: Mapping[str, Any]) -> str:
+    """The exact candidate a review draft points at, when it has one."""
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+    for value in (
+        meta.get("candidate_sha"),
+        meta.get("head_sha"),
+        preview.get("head_sha"),
+        preview.get("candidate_sha"),
+    ):
+        text = str(value or "").strip().lower()
+        if _re.fullmatch(r"[0-9a-f]{40}", text):
+            return text
+    return ""
+
+
+def _continues_pending_review(context: Mapping[str, Any], outcome: Mapping[str, Any],
+                              pending: Mapping[str, Any]) -> bool:
+    """Whether this build stacked on the candidate the owner has not decided on.
+
+    ``_build_base_ref`` starts a follow-up build from ``origin/preview`` when an
+    earlier build is still pending, so the new commit contains the unapproved
+    page. That is only true when the pending draft's candidate is an ancestor of
+    the base this build actually used; anything else would drop or replace work
+    the owner has not seen yet, and must fail closed.
+    """
+    candidate = _draft_candidate_sha(pending)
+    base_sha = str(outcome.get("base_sha") or "").strip().lower()
+    if not (_re.fullmatch(r"[0-9a-f]{40}", candidate)
+            and _re.fullmatch(r"[0-9a-f]{40}", base_sha)):
+        return False
+    if candidate == base_sha:
+        return True
+    site = (context.get("config") or {}).get("site") or {}
+    clone = str(site.get("clone_path") or "").strip()
+    if not clone:
+        return False
+    try:
+        _git(Path(clone), "merge-base", "--is-ancestor", candidate, base_sha)
+    except RunnerError:
+        return False
+    return True
+
+
 def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, Any]) -> int:
     """Turn a finished build into an approval-gated, revision-bound draft."""
     memory = context["memory"]
+    context.pop("_revised_pending_draft_id", None)
+    context.pop("_revised_pending_candidate", None)
     pending_website_reviews = [
         draft for draft in memory.list_drafts(status="pending")
         if draft.get("kind") in {"design", "merge", "rollback"}
@@ -3494,9 +3540,26 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         ):
             raise RunnerError("The selected Growth proposal changed; reload it before asking Ada to revise it.")
     elif pending_website_reviews:
-        raise RunnerError(
-            "A website change is already awaiting its owner decision; resolve it before preparing another preview."
+        # A follow-up request improves the one review still waiting for the
+        # owner, but only when this build stacked on that exact candidate: the
+        # new commit then contains the unapproved page instead of replacing it.
+        # Any other case would silently drop work the owner has not decided on.
+        pending = pending_website_reviews[0]
+        pending_meta = pending.get("meta") if isinstance(pending.get("meta"), Mapping) else {}
+        growth_bound = any(
+            key in pending_meta
+            for key in ("growth_package", "growth_candidate_pending", "review_package_hash")
         )
+        if (
+            len(pending_website_reviews) > 1
+            or growth_bound
+            or not _continues_pending_review(context, outcome, pending)
+        ):
+            raise RunnerError(
+                "A website change is already awaiting its owner decision; resolve it before preparing another preview."
+            )
+        context["_revised_pending_draft_id"] = int(pending.get("id") or 0)
+        context["_revised_pending_candidate"] = _draft_candidate_sha(pending)
     changed_paths = outcome.get("changed_paths") if isinstance(outcome.get("changed_paths"), list) else []
     preview = dict(
         outcome.get("preview")
@@ -3551,12 +3614,29 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         meta["media_asset_ids"] = list(context["_media_asset_ids"])
         meta["materialized_media_paths"] = list(context.get("_materialized_media_paths") or [])
     title_state = "ready" if preview.get("status") == "ready" and not preview.get("requires_build") else "preparing"
-    draft_id = memory.save_draft(
-        title=f"Preview {title_state}: {message[:60]}",
-        body=outcome.get("diff_stat", ""),
-        kind="merge",
-        meta=meta,
-    )
+    revised_draft_id = int(context.get("_revised_pending_draft_id") or 0)
+    title = f"Preview {title_state}: {message[:60]}"
+    if revised_draft_id:
+        # Revising the pending review in place keeps exactly one owner decision
+        # open while the candidate carries the earlier unapproved work forward.
+        meta["revised_pending_review"] = True
+        previous_candidate = str(context.get("_revised_pending_candidate") or "")
+        if previous_candidate:
+            meta["revised_from_candidate_sha"] = previous_candidate
+        draft_id = memory.save_draft(
+            title=title,
+            body=outcome.get("diff_stat", ""),
+            kind="merge",
+            meta=meta,
+            draft_id=revised_draft_id,
+        )
+    else:
+        draft_id = memory.save_draft(
+            title=title,
+            body=outcome.get("diff_stat", ""),
+            kind="merge",
+            meta=meta,
+        )
     if isinstance(revision, Mapping):
         initiative_id = int(revision["initiativeId"])
         initiative = next((
@@ -3596,6 +3676,7 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
     }
     if outcome.get("changed") and context.get("memory") is not None:
         merge_draft_id = stage_merge_draft(context, message, outcome)
+        revised_pending = bool(context.get("_revised_pending_draft_id"))
         preview = dict(preview or preview_plan_for_paths([]))
         candidate_sha = _candidate_sha(context, outcome, str(outcome.get("branch") or PREVIEW_BRANCH))
         payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
@@ -3642,16 +3723,21 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
             "preview": preview,
         })
         changed = ", ".join(str(path) for path in (outcome.get("changed_paths") or [])[:6]) or "the requested site files"
+        opening = (
+            "I updated the change already waiting for your decision"
+            if revised_pending
+            else "I made the requested change"
+        )
         if preview.get("status") == "ready":
             reply = (
-                f"I made the requested change and prepared it in the website preview.\n\n"
+                f"{opening} and prepared it in the website preview.\n\n"
                 f"What changed: {message[:400]}\n"
                 f"Files involved: {changed}.\n\n"
                 f"Review draft #{merge_draft_id} in Design. The public site is unchanged until you approve it."
             )
         elif preview.get("status") == "building":
             reply = (
-                f"I made the requested change in a private candidate.\n\n"
+                f"{opening} in a private candidate.\n\n"
                 f"What changed: {message[:400]}\n"
                 f"I’m preparing the real website preview now; it will appear in Design when ready. "
                 f"The public site is unchanged."

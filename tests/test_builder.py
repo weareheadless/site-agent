@@ -768,6 +768,88 @@ def test_stage_merge_draft_preserves_older_pending_owner_proposals(tmp_path):
     memory.close()
 
 
+def test_stage_merge_draft_revises_the_pending_review_it_was_built_on(tmp_path):
+    memory = Memory(tmp_path / "m.db")
+    candidate = "a" * 40
+    pending = memory.save_draft(
+        "first build", "diff", kind="merge",
+        meta={"head": "preview", "base": "main", "candidate_sha": candidate,
+              "preview": {"status": "ready", "head_sha": candidate}},
+    )
+    context = {"config": {}, "memory": memory}
+    draft_id = runner.stage_merge_draft(
+        context, "make the journal listing feel less generic",
+        {"diff_stat": "journal.css | 9 +-", "base_sha": candidate, "candidate_sha": "b" * 40},
+    )
+    drafts = memory.list_drafts(limit=10)
+    assert [draft["id"] for draft in drafts] == [pending]
+    assert draft_id == pending
+    draft = drafts[0]
+    assert draft["status"] == "pending"
+    assert draft["meta"]["head_sha"] == "b" * 40
+    assert draft["meta"]["revised_pending_review"] is True
+    assert draft["meta"]["revised_from_candidate_sha"] == candidate
+    assert "journal listing" in draft["title"]
+    memory.close()
+
+
+def test_stage_merge_draft_revises_a_pending_review_whose_build_lagged(tmp_path):
+    clone = _make_clone(tmp_path)
+    preview_sha = _git(clone, "rev-parse", "origin/preview").stdout.strip()
+    _git(clone, "checkout", "-q", "preview")
+    (clone / "journal.html").write_text("<html><body>later pass</body></html>")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "later pass on the same preview")
+    head_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    _git(clone, "update-ref", "refs/remotes/origin/preview", head_sha)
+    _git(clone, "checkout", "-q", "main")
+
+    memory = Memory(tmp_path / "data" / "memory.db")
+    pending = memory.save_draft(
+        "first build", "diff", kind="merge",
+        meta={"head": "preview", "base": "main", "candidate_sha": preview_sha,
+              "preview": {"status": "ready", "head_sha": preview_sha}},
+    )
+    context = {"config": _builder_config(clone), "memory": memory}
+    draft_id = runner.stage_merge_draft(
+        context, "one navbar everywhere", {"diff_stat": "journal.html | 2 ++", "base_sha": head_sha},
+    )
+    assert draft_id == pending
+    assert len(memory.list_drafts(limit=10)) == 1
+    memory.close()
+
+
+def test_stage_merge_draft_refuses_a_build_that_did_not_continue_the_pending_review(tmp_path):
+    clone = _make_clone(tmp_path)
+    main_sha = _git(clone, "rev-parse", "origin/main").stdout.strip()
+    preview_sha = _git(clone, "rev-parse", "origin/preview").stdout.strip()
+    memory = Memory(tmp_path / "data" / "memory.db")
+    memory.save_draft(
+        "first build", "diff", kind="merge",
+        meta={"head": "preview", "base": "main", "candidate_sha": preview_sha,
+              "preview": {"status": "ready", "head_sha": preview_sha}},
+    )
+    context = {"config": _builder_config(clone), "memory": memory}
+    with pytest.raises(runner.RunnerError, match="already awaiting its owner decision"):
+        runner.stage_merge_draft(context, "start over from main", {"base_sha": main_sha})
+    memory.close()
+
+
+def test_stage_merge_draft_keeps_a_growth_review_bound_to_its_own_package(tmp_path):
+    memory = Memory(tmp_path / "m.db")
+    candidate = "c" * 40
+    memory.save_draft(
+        "growth candidate", "diff", kind="merge",
+        meta={"head": "preview", "base": "main", "candidate_sha": candidate,
+              "growth_package": {"candidateType": "source_code"},
+              "review_package_hash": "d" * 64},
+    )
+    context = {"config": {}, "memory": memory}
+    with pytest.raises(runner.RunnerError, match="already awaiting its owner decision"):
+        runner.stage_merge_draft(context, "a generic tweak", {"base_sha": candidate})
+    memory.close()
+
+
 def test_stage_merge_draft_binds_payload_effects_to_an_exact_revision_set(tmp_path):
     memory = Memory(tmp_path / "m.db")
     context = {

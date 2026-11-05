@@ -164,22 +164,21 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     package = json.loads((checkout / "package.json").read_text())
     lock = json.loads((checkout / "package-lock.json").read_text())
     manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
+    template_lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    admin_pin = template_lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"]
     admin_version = manifest["payloadAdmin"]
-    admin_url = (
-        "https://github.com/weareheadless/site-agent/releases/download/"
-        "payload-admin-v0.10.50/weareheadless-helloada-payload-admin-0.10.50.tgz"
-    )
-    assert admin_version == "0.10.50"
+    admin_url = admin_pin["resolved"]
+    assert f"payload-admin-v{admin_version}/" in admin_url
     assert package["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
     assert lock["packages"][""]["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
     assert lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"] == {
         **lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"],
-        "version": "0.10.50",
+        "version": admin_version,
         "resolved": admin_url,
-        "integrity": "sha512-8ptcdF/MQyWtBBv0d6H/9747ZZ3Uvbj2X1shfM0gc3SCh4kmzETuXkrRiGKddVbXu5EQNtTbyDz5ahjh4XVChA==",
+        "integrity": admin_pin["integrity"],
     }
     assert manifest["payloadCore"] == canonical_customer["payloadCore"]
-    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.50"
+    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == admin_version
     assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == CANONICAL_CUSTOMER["payloadCore"]
     assert manifest["migrationHead"] == CANONICAL["migrationHead"]
     assert manifest["contentContract"] == "helloada-content-v4"
