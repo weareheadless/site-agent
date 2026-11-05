@@ -152,3 +152,6 @@ await payload.destroy()
 await cloudflare.dispose?.()
 console.log(JSON.stringify({ ok: true, documents: snapshot.documents.length,
   media: (snapshot.media || []).length, globals: snapshot.globals.length }))
+// The local dev context can keep a Miniflare child alive; the seed's work is
+// complete, so end the process rather than waiting on it.
+process.exit(0)

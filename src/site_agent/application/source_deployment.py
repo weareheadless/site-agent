@@ -932,12 +932,49 @@ class SourceDeploymentService:
             checks = [self._check([npm, "run", "payload", "--", "migrate"], worktree,
                        "preview_schema", timeout, preview_secret=preview_secret, local_payload=True)]
             script = Path(__file__).with_name("seed_compiled_preview.mjs")
-            checks.append(self._check([str(Path(str(self.settings["node_path"])) / "node"), "--import", "tsx",
-                          str(script), str(worktree), str(path)], worktree, "preview_content", timeout,
-                          preview_secret=preview_secret, local_payload=True))
+            # The seed initializes OpenNext's local dev context, which leaves a
+            # Miniflare child running. Capture its output in a file instead of a
+            # pipe so the step returns when the seed process exits rather than
+            # waiting for that child to close an inherited descriptor.
+            checks.append(self._check_to_file(
+                [str(Path(str(self.settings["node_path"])) / "node"), "--import", "tsx",
+                 str(script), str(worktree), str(path)], worktree, "preview_content", timeout,
+                preview_secret=preview_secret, local_payload=True))
             return checks
         finally:
             path.unlink(missing_ok=True)
+
+    def _check_to_file(
+        self,
+        command: list[str],
+        cwd: Path,
+        name: str,
+        timeout: int,
+        *,
+        preview_secret: str | None = None,
+        local_payload: bool = False,
+    ) -> dict[str, Any]:
+        """Run one preview step with file-backed output so a lingering child cannot block it."""
+        log_path = self._preview_home / "tmp" / f"{name}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        child_env = self._preview_env(payload_secret=preview_secret)
+        if local_payload:
+            child_env.update({"NODE_ENV": "development", "PAYLOAD_CLI": "1"})
+        try:
+            with log_path.open("wb") as stream:
+                result = subprocess.run(
+                    command, cwd=str(cwd), env=child_env,
+                    stdout=stream, stderr=subprocess.STDOUT, timeout=timeout,
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            tail = log_path.read_text(errors="replace")[-1_500:] if log_path.is_file() else ""
+            raise SourceDeploymentError(
+                f"command failed: {' '.join(command[:4])}: {str(exc)[:300]}" + (f"\n{tail}" if tail else "")
+            ) from exc
+        if result.returncode:
+            tail = log_path.read_text(errors="replace")[-1_500:] if log_path.is_file() else ""
+            raise SourceDeploymentError(f"{' '.join(command[:4])}: {tail}")
+        return {"name": name, "ok": True}
 
     def _build(self, job: dict[str, Any], branch: str, commit: str, mode: str) -> dict[str, Any]:
         if mode != _COMPILED_PREVIEW:
