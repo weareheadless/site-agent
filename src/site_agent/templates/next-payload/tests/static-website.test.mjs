@@ -28,7 +28,8 @@ const request = (path = '/', method = 'GET') => new Request('https://tenant.work
 
 test('the tenant Worker passes the configured admin preview mount into static routing', () => {
   const worker = readFileSync(new URL('../worker.ts', import.meta.url), 'utf8')
-  assert.match(worker, /staticWebsiteResponse\(request, env, helloAdaSite\.routes\.preview\)/)
+  assert.match(worker, /staticWebsiteResponse\(request, env, helloAdaSite\.routes\.preview, managedPaths\)/)
+  assert.match(worker, /managedPaths = \(helloAdaSite\.routes as unknown as \{ managedPaths\?: unknown \}\)\.managedPaths/)
 })
 
 test('the committed route inventory ships as an asset, never as a text binding', async () => {
@@ -196,4 +197,25 @@ test('site-level origins merge with the page declaration instead of replacing it
   assert.match(csp, /img-src[^;]*https:\/\/images\.example\.com/)
   assert.match(csp, /img-src[^;]*https:\/\/img\.example\.com/)
   assert.match(csp, /script-src[^;]*https:\/\/cdn\.example\.com/)
+})
+
+test('a tenant-declared managed base is served by Next, never by the stored snapshot', async () => {
+  const served = { ...manifest, routes: { ...manifest.routes, '/collections/one/': '/collections/one/index.html' }, files: { ...manifest.files, '/collections/one/index.html': 'hash' } }
+  const managed = ['/collections', '/es/collections/']
+  for (const path of ['/collections/one/', '/collections/one', '/es/collections/one/']) {
+    assert.equal(await staticWebsiteResponse(request(path), env({}, served), undefined, managed), null,
+      `${path} must reach the managed route`)
+  }
+  // The managed base owns every path beneath it, including unknown ones: the
+  // Next route decides between the category and a real 404.
+  assert.equal(await staticWebsiteResponse(request('/collections/other/'), env({}, served), undefined, managed), null)
+  assert.equal(await staticWebsiteResponse(request('/collections'), env({}, served), undefined, managed), null)
+  const unmanaged = await staticWebsiteResponse(request('/collections/one/'), env({}, served), undefined, [])
+  assert.equal(unmanaged.status, 200, 'without a declaration the snapshot keeps serving')
+})
+
+test('a malformed managed path declaration fails closed', async () => {
+  for (const value of ['/collections', ['collections'], ['//evil.example'], ['/a?b'], [42]]) {
+    await assert.rejects(staticWebsiteResponse(request('/'), env(), undefined, value), /managed presentation path/i)
+  }
 })

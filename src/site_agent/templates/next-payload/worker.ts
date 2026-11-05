@@ -60,7 +60,10 @@ const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
     if ((request.method === "GET" || request.method === "HEAD") && (pathname === "/admin/login" || pathname === "/admin/login/")) {
       return Promise.resolve(helloAdaAdminEntry(env.HELLOADA_HANDOFF_ISSUER, env.HELLOADA_TENANT_ID))
     }
-    const staticResponse = await staticWebsiteResponse(request, env, helloAdaSite.routes.preview)
+    // Managed bases are declared by the tenant and served by Next, not by the
+    // stored presentation inventory.
+    const managedPaths = (helloAdaSite.routes as unknown as { managedPaths?: unknown }).managedPaths
+    const staticResponse = await staticWebsiteResponse(request, env, helloAdaSite.routes.preview, managedPaths)
     if (staticResponse) return staticResponse
     const handler = openNextWorker as unknown as {
       fetch: (request: Request, env: TenantEnv, context: WorkerContext) => Promise<Response>

@@ -64,7 +64,9 @@ const assertLocale = (req: WriteRequest, expected: ExpectedRevision) => {
 
 export const readCollectionRevision = async (
   payload: any,
-  options: { collection: string; id: string; locale?: string; draft?: boolean },
+  // `null` is Payload's "all locales" value; a generated TypedLocale narrows it
+  // away, but a tenant without generated types still passes it through.
+  options: { collection: string; id: string; locale?: string | null; draft?: boolean },
 ): Promise<Document> => payload.findByID({
   collection: options.collection,
   id: options.id,
@@ -76,7 +78,7 @@ export const readCollectionRevision = async (
 
 export const readGlobalRevision = async (
   payload: any,
-  options: { global: string; locale?: string; draft?: boolean },
+  options: { global: string; locale?: string | null; draft?: boolean },
 ): Promise<Document> => payload.findGlobal({
   slug: options.global,
   draft: options.draft ?? true,

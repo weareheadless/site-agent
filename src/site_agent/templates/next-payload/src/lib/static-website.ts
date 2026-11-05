@@ -44,7 +44,26 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => (
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[character]!)
 
-export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv, previewMount?: string): Promise<Response | null> {
+/**
+ * Bases the tenant serves from Payload instead of the static inventory.
+ *
+ * The handler runs before Next, so a managed base must be excluded here or the
+ * stored snapshot would always win. The declaration belongs to the tenant: a
+ * hardcoded list would silently take pages away from other static sites.
+ */
+const managedBases = (value: unknown): string[] => {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('Managed presentation paths must be an array')
+  return value.map((item) => {
+    const base = typeof item === 'string' ? item.trim() : ''
+    if (!base.startsWith('/') || base.startsWith('//') || base.includes('?') || base.includes('#')) {
+      throw new Error('A managed presentation path must be an absolute site path')
+    }
+    return base.length > 1 ? base.replace(/\/+$/, '') : base
+  })
+}
+
+export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv, previewMount?: string, managedPaths?: unknown): Promise<Response | null> {
   if (!env.HELLOADA_PRESENTATION_PROFILE || env.HELLOADA_PRESENTATION_PROFILE === 'payload') return null
   if (env.HELLOADA_PRESENTATION_PROFILE !== 'static') throw new Error('Unsupported presentation profile')
   if (!env.ASSETS) throw new Error('Static website declaration or asset binding is missing')
@@ -71,6 +90,7 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   if (url.pathname === STATIC_MANIFEST_PATH) return new Response('Page not found', { status: 404 })
   // Platform paths always retain their canonical authentication/route handling.
   if (url.pathname === '/helloada-release.json') return null
+  if (managedBases(managedPaths).some((base) => url.pathname === base || url.pathname.startsWith(`${base}/`))) return null
   if (/^\/(admin|api|mail|_next|blog|_helloada|helloada-preview)(\/|$)/.test(url.pathname)) return null
   const canonicalPath = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/'
   if (!url.pathname.endsWith('/') && Object.hasOwn(manifest.routes, canonicalPath)) {
