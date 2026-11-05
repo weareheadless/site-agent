@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261105022000-api-preview-gate-parity",
-    "sha": "a05a02376fe9913bbe231542adbb2356bc1fb00d"
+    "id": "20261105030000-api-preview-runtime-log",
+    "sha": "85adc0f0e9cfd4d0a13af06111e2c194241b3f96"
   }
 }
