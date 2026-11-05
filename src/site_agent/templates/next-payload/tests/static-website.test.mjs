@@ -219,3 +219,12 @@ test('a malformed managed path declaration fails closed', async () => {
     await assert.rejects(staticWebsiteResponse(request('/'), env(), undefined, value), /managed presentation path/i)
   }
 })
+
+test('a published trailing-slash managed URL is rewritten internally, not redirected', async () => {
+  const { managedPathRewrite } = await import('../src/lib/static-website.ts')
+  assert.equal(managedPathRewrite('/collections/one/', ['/collections']), '/collections/one')
+  assert.equal(managedPathRewrite('/collections/', ['/collections/']), '/collections')
+  assert.equal(managedPathRewrite('/collections/one', ['/collections']), undefined, 'an already canonical path is untouched')
+  assert.equal(managedPathRewrite('/properties/', ['/collections']), undefined, 'other paths keep their own routing')
+  assert.equal(managedPathRewrite('/', ['/collections']), undefined)
+})

@@ -63,6 +63,22 @@ const managedBases = (value: unknown): string[] => {
   })
 }
 
+/**
+ * The internal path for a managed URL published with a trailing slash.
+ *
+ * Next normalises trailing slashes before middleware runs, so a managed page
+ * would answer 308. The Worker rewrites the request internally instead, which
+ * keeps the published URL serving the managed page.
+ */
+export const managedPathRewrite = (pathname: string, managedPaths?: unknown): string | undefined => {
+  if (!pathname || pathname === '/' || !pathname.endsWith('/')) return undefined
+  const trimmed = pathname.replace(/\/+$/, '')
+  if (!trimmed) return undefined
+  return managedBases(managedPaths).some((base) => trimmed === base || trimmed.startsWith(`${base}/`))
+    ? trimmed
+    : undefined
+}
+
 export async function staticWebsiteResponse(request: Request, env: StaticWebsiteEnv, previewMount?: string, managedPaths?: unknown): Promise<Response | null> {
   if (!env.HELLOADA_PRESENTATION_PROFILE || env.HELLOADA_PRESENTATION_PROFILE === 'payload') return null
   if (env.HELLOADA_PRESENTATION_PROFILE !== 'static') throw new Error('Unsupported presentation profile')
