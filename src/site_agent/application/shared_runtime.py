@@ -369,6 +369,43 @@ def _update_shared_packages(tenant_root: Path, template_root: Path) -> None:
     lock_path.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
 
 
+def apply_preview_runtime_overlay(
+    worktree: Path,
+    *,
+    package_root: Path,
+    manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    """Copy and remove the centrally owned runtime files in a disposable preview.
+
+    A compiled preview must compile exactly what the release will build. The
+    release runner materializes the same overlay before its typecheck; without
+    this step a preview compiles tenant files the runtime deletes and can fail
+    on code that never ships.
+    """
+    package_root = package_root.resolve()
+    template_root = package_root / "templates" / "next-payload"
+    manifest_path = (manifest_path or package_root / "templates" / "shared-runtime-overlay.json").resolve()
+    manifest, _raw = _validate_manifest(package_root, manifest_path)
+    worktree = worktree.resolve()
+    copied: list[str] = []
+    removed: list[str] = []
+    for relative in manifest["copy"]:
+        source = _safe_path(template_root, relative)
+        if not source.is_file() or source.is_symlink():
+            raise SharedRuntimeError(f"preview runtime source is missing or unsafe: {relative}")
+        target = _safe_path(worktree, relative)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        copied.append(str(relative))
+    for relative in manifest["remove"]:
+        target = _safe_path(worktree, relative)
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+            removed.append(str(relative))
+    _update_shared_packages(worktree, template_root)
+    return {"copied": copied, "removed": removed, "manifest": manifest}
+
+
 def apply_shared_runtime_overlay(
     control_root: Path,
     tenant_root: Path,

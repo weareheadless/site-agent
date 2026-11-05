@@ -336,3 +336,74 @@ def test_overlay_rejects_an_unsupported_presentation_profile(tmp_path: Path):
             ROOT, checkout, CANONICAL_CUSTOMER,
             shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
         )
+
+
+def test_packaged_overlay_manifest_matches_the_release_manifest():
+    """The API package must ship the exact manifest the release runner uses."""
+    packaged = ROOT / "src/site_agent/templates/shared-runtime-overlay.json"
+    released = ROOT / "deploy/shared-runtime-overlay.json"
+    assert packaged.read_bytes() == released.read_bytes()
+
+
+def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
+    """A compiled preview must compile the same runtime boundary as a release."""
+    from site_agent.application.shared_runtime import apply_preview_runtime_overlay
+
+    package = tmp_path / "package"
+    template = package / "templates" / "next-payload"
+    (template / "src/lib").mkdir(parents=True)
+    (template / "src/lib/runtime.ts").write_text("export const runtime = 'canonical'\n")
+    (package / "templates").mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema": 2,
+        "contract": "helloada-shared-runtime-v2",
+        "copy": ["src/lib/runtime.ts"],
+        "remove": ["src/lib/retired.ts"],
+        "fingerprintTrees": [],
+    }
+    (package / "templates/shared-runtime-overlay.json").write_text(json.dumps(manifest))
+
+    admin_url = "https://example.test/payload-admin.tgz"
+    core_url = "https://example.test/payload-core.tgz"
+    template_package = {"dependencies": {
+        "@weareheadless/helloada-payload-admin": admin_url,
+        "@weareheadless/helloada-payload-core": core_url,
+    }}
+    template_lock = {"packages": {
+        "": {"dependencies": dict(template_package["dependencies"])},
+        "node_modules/@weareheadless/helloada-payload-admin": {
+            "version": "0.10.50", "resolved": admin_url, "integrity": "sha512-AAAA==",
+        },
+        "node_modules/@weareheadless/helloada-payload-core": {
+            "version": "0.6.4", "resolved": core_url, "integrity": "sha512-BBBB==",
+        },
+    }}
+    (template / "package.json").write_text(json.dumps(template_package))
+    (template / "package-lock.json").write_text(json.dumps(template_lock))
+
+    worktree = tmp_path / "worktree"
+    (worktree / "src/lib").mkdir(parents=True)
+    (worktree / "src/lib/runtime.ts").write_text("export const runtime = 'stale'\n")
+    (worktree / "src/lib/retired.ts").write_text("export const retired = true\n")
+    tenant_package = {"dependencies": {
+        "@weareheadless/helloada-payload-admin": "https://example.test/old-admin.tgz",
+        "@weareheadless/helloada-payload-core": "https://example.test/old-core.tgz",
+    }}
+    tenant_lock = {"packages": {
+        "": {"dependencies": dict(tenant_package["dependencies"])},
+        "node_modules/@weareheadless/helloada-payload-admin": {"version": "0.10.8"},
+        "node_modules/@weareheadless/helloada-payload-core": {"version": "0.5.7"},
+    }}
+    (worktree / "package.json").write_text(json.dumps(tenant_package))
+    (worktree / "package-lock.json").write_text(json.dumps(tenant_lock))
+
+    result = apply_preview_runtime_overlay(worktree, package_root=package)
+
+    assert result["copied"] == ["src/lib/runtime.ts"]
+    assert result["removed"] == ["src/lib/retired.ts"]
+    assert (worktree / "src/lib/runtime.ts").read_text() == "export const runtime = 'canonical'\n"
+    assert not (worktree / "src/lib/retired.ts").exists()
+    package_after = json.loads((worktree / "package.json").read_text())
+    assert package_after["dependencies"]["@weareheadless/helloada-payload-core"] == core_url
+    lock_after = json.loads((worktree / "package-lock.json").read_text())
+    assert lock_after["packages"]["node_modules/@weareheadless/helloada-payload-core"]["version"] == "0.6.4"

@@ -953,6 +953,20 @@ class SourceDeploymentService:
         try:
             checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id"),
                           **({"design_run_id": run_id} if run_id else {})))
+            # Compile exactly what the release will build: the shared runtime
+            # copies replace tenant copies and the retired files are removed
+            # before any typecheck, lint or Next build runs.
+            from .shared_runtime import apply_preview_runtime_overlay
+
+            runtime_overlay = apply_preview_runtime_overlay(
+                worktree, package_root=Path(__file__).resolve().parents[1],
+            )
+            checks.append({
+                "name": "shared_runtime_overlay",
+                "ok": True,
+                "copied": len(runtime_overlay["copied"]),
+                "removed": len(runtime_overlay["removed"]),
+            })
             self._write_revision_marker(worktree, local_head)
             self._prepare_preview_mount(worktree, job)
             local_secrets = worktree / ".dev.vars"
