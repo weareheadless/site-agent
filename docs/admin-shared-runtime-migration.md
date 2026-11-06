@@ -336,6 +336,16 @@ Landed on `main`:
   approval. The restore adapter accepted only `helloada-content-v1`, so every
   current site's checkpoint failed with "predates the supported baseline"; it
   now accepts the supported contract family.
+- [x] Preview latency and the inert publish dialog — a source candidate has no
+  Payload document, so the publish dialog's confirm button stayed disabled and
+  the owner could click nothing. The dialog now uses the toolbar's readiness
+  rule. Measured cold preview cost was 4.5 min: OpenNext build 173 s, preview
+  schema 40 s, `npm ci` 32 s, typecheck 23 s, runtime start ~50 s. Dependencies
+  now come from a per-tenant hard-link cache keyed by `package.json` plus
+  `package-lock.json` (about 2 s instead of 32 s), and every build reports its
+  current step. An API restart used to invalidate the preview and pay the whole
+  build again; recovery now restarts the exact compiled output and only
+  rebuilds when that output is gone or belongs to another commit.
 - [ ] Follow-up from that refusal — a stale base still blocks publish with no
   owner-visible remedy. The admin needs a "refresh candidate" action that
   rebases the preview branch onto current main, rebuilds, and updates the
