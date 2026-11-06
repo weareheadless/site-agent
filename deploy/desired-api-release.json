@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261106211500-api-preview-worktree-sweep",
-    "sha": "66847b0098be39b4787e59c57043e39e1bfb328f"
+    "id": "20261106220000-api-preview-garbage-sweep",
+    "sha": "fbb7ac4d8c455851bc6457d9d8a4fb7f233e4581"
   }
 }
