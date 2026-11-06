@@ -299,6 +299,18 @@ Landed on `main`:
   platform-owned import in the tenant-owned `src/helloada.config.ts`.
   Verified: 2490 Python tests, 153 template tests, template typecheck and Next
   build, and a wheel build.
+- [x] Preview parity — the preview reads the fingerprint the release activation
+  recorded for the tenant, requires an exact hash, and stamps it into the
+  tenant's contract manifest. The API runs from a wheel with no control
+  checkout, so it cannot recompute the fingerprint; a tenant without a recorded
+  activation fails with a clear message instead of a build error.
+- [x] Canary release — OceanicVibes released through the queue at
+  `1afb6250` with fingerprint `c99a4f0d…`, core 0.6.5, schema revision 13.
+  `/api/health` reports `sharedRuntimeFingerprint` and no `payloadAdmin`; the
+  admin loads, the Website tab renders the preview, the page selector lists
+  every route, and the preview `/blog` stays inside the preview mount with six
+  listing entries. One design warning remains in the preview console: a GSAP
+  tween targets `.image-caption`, which the journal page does not render.
 - [ ] Step 6 — delete the packaging flow. `packages/helloada-payload-admin`
   and `.github/workflows/release-payload-admin.yml` still exist and are now dead
   weight: nothing pins or imports the package in a tenant build. Deleting them
