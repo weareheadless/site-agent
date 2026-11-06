@@ -9,9 +9,6 @@ admin, the API and any future surface describe a release the same way.
 
 from __future__ import annotations
 
-import json
-import re
-from pathlib import Path
 from typing import Any, Mapping
 
 # Ordered stages the release runner can report, with the fraction of the work
@@ -171,24 +168,4 @@ def phase_steps() -> list[dict[str, str]]:
     return [{"phase": phase, "label": label} for phase, label, _stages in _PHASES]
 
 
-def read_receipt(root: Path, tenant: str, release_id: str) -> dict[str, Any] | None:
-    """Read one release receipt, or None when the runner has not started it."""
-    if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", str(tenant or "")):
-        return None
-    if not re.fullmatch(r"rel-\d{14}-[0-9a-f]{8}", str(release_id or "")):
-        return None
-    path = Path(root) / "runs" / tenant / release_id / "receipt.json"
-    try:
-        if path.is_symlink():
-            return None
-        receipt = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeError, ValueError):
-        return None
-    if not isinstance(receipt, Mapping):
-        return None
-    if receipt.get("tenant") != tenant or receipt.get("releaseId") != release_id:
-        return None
-    return dict(receipt)
-
-
-__all__ = ["phase_steps", "read_receipt", "release_progress"]
+__all__ = ["phase_steps", "release_progress"]
