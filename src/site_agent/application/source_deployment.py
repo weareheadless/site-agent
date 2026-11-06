@@ -130,9 +130,50 @@ class SourceDeploymentService:
         self._runtime_logs: dict[str, tuple[Any, Path]] = {}
         with self._lock:
             self._recover_production_jobs()
+            self._sweep_stale_worktrees()
             self._persist()
         for job_id, branch, commit, mode in recover:
             self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, commit, mode)
+
+    def _sweep_stale_worktrees(self) -> None:
+        """Remove this tenant's preview worktrees that no retained job owns.
+
+        A killed build or a process restart leaves a full checkout (and its
+        node_modules) behind. Only worktrees registered against this tenant's
+        own checkout are considered, and one that a resumable job still points
+        at is kept.
+        """
+        try:
+            checkout = self._local_checkout()
+        except SourceDeploymentError:
+            return
+        try:
+            listing = self._run(["git", "worktree", "list", "--porcelain"], checkout, timeout=60).stdout
+        except SourceDeploymentError:
+            return
+        referenced = {
+            str(Path(str(job.get("worktree_path"))).expanduser().resolve())
+            for job in self._jobs.values()
+            if isinstance(job, Mapping) and job.get("worktree_path")
+        }
+        for block in listing.split("\n\n"):
+            path = next((line[len("worktree "):] for line in block.splitlines() if line.startswith("worktree ")), "")
+            if not path:
+                continue
+            resolved = Path(path).expanduser().resolve()
+            if resolved == checkout or not resolved.name.startswith("site-agent-source-preview-"):
+                continue
+            if str(resolved) in referenced:
+                continue
+            try:
+                self._run(["git", "worktree", "remove", "--force", str(resolved)], checkout, timeout=120)
+            except SourceDeploymentError:
+                pass
+            shutil.rmtree(resolved, ignore_errors=True)
+        try:
+            self._run(["git", "worktree", "prune"], checkout, timeout=60)
+        except SourceDeploymentError:
+            pass
 
     def _persist(self) -> None:
         if self.memory is None:
