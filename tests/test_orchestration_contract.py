@@ -169,12 +169,12 @@ def test_stale_job_moves_its_linked_owner_action_to_waiting(tmp_path):
             "locale": "en",
             "summary": "Updated the requested draft fields",
         }], "I've updated the page draft with the requested fields. It remains unpublished."),
-        ([], "To be clear, I haven't built or previewed this yet. These are directions only. "
+        ([], "I haven't built or previewed this yet, so nothing has changed. "
              "Choose a direction, then ask me to build it when you're ready."),
         ([{"kind": "collection", "operation": "update"}],
-         "To be clear, I haven't built or previewed this yet. These are directions only. "
+         "I haven't built or previewed this yet, so nothing has changed. "
          "Choose a direction, then ask me to build it when you're ready."),
-        (None, "To be clear, I haven't built or previewed this yet. These are directions only. "
+        (None, "I haven't built or previewed this yet, so nothing has changed. "
               "Choose a direction, then ask me to build it when you're ready."),
     ],
 )
@@ -395,3 +395,44 @@ def test_delegated_permissions_refuse_unowned_paths_before_install(tmp_path):
             _delegated_permissions(tmp_path, {
                 'source_paths': [path], 'ownership': source_authoring_contract(config()),
             })
+
+
+def test_an_offer_to_build_later_does_not_erase_the_answer_around_it():
+    """A plan that ends "I'll build it when you confirm" is not a false claim.
+
+    Replacing the whole message with one canned sentence also replaced the
+    assistant turn in the conversation, so the owner's next "state the plan
+    again" had nothing left to restate.
+    """
+    from site_agent.brain.owner_copy import owner_message_without_unstarted_build
+
+    plan = (
+        "A page is the right shape. A section alone cannot rank for his name, cannot hold "
+        "the credentials without bloating the homepage, and gives you nothing to link to "
+        "from course pages.\n\n"
+        "1. A page at /about/peter-abaji with the credential strip and competition record.\n"
+        "2. A homepage band with a portrait and three facts, linking to the page.\n"
+        "3. A byline on every course page that links to it.\n\n"
+        "I'll build it once you confirm the portrait and the bio are ready."
+    )
+    assert owner_message_without_unstarted_build(plan, action_started=False) == plan
+
+
+def test_a_false_completion_claim_is_removed_without_discarding_the_rest():
+    from site_agent.brain.owner_copy import owner_message_without_unstarted_build
+
+    message = (
+        "I've built the profile page and the preview is ready. "
+        "It uses the journal type scale and the same footer as the homepage."
+    )
+    kept = owner_message_without_unstarted_build(message, action_started=False)
+    assert "I've built" not in kept
+    assert "preview is ready" not in kept
+    assert "journal type scale" in kept
+
+
+def test_a_message_that_is_only_a_false_completion_claim_states_the_truth():
+    from site_agent.brain.owner_copy import owner_message_without_unstarted_build
+
+    kept = owner_message_without_unstarted_build("I've built the page.", action_started=False)
+    assert "haven't built or previewed" in kept

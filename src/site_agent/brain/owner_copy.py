@@ -40,6 +40,12 @@ _POSITIVE_COMPLETION = re.compile(
 )
 
 
+_CLAIM_NEGATED = re.compile(
+    r"\b(?:not|never|haven['’]t|hasn['’]t|isn['’]t|wasn['’]t|no)\b",
+    re.IGNORECASE,
+)
+
+
 def owner_safe_reply(reply: str) -> str:
     """Keep transient implementation failures out of Ada's visible prose.
 
@@ -66,18 +72,35 @@ def owner_safe_reply(reply: str) -> str:
     return "".join(paragraphs).strip()
 
 
+_CORRECTION = (
+    "I haven't built or previewed this yet, so nothing has changed. "
+    "Choose a direction, then ask me to build it when you're ready."
+)
+
+
 def owner_message_without_unstarted_build(message: str, *, action_started: bool) -> str:
-    """Prevent an advice turn from promising a build or result it did not start."""
+    """Remove a false completion claim without discarding the rest of the answer.
+
+    This used to replace the whole message whenever it merely *offered* to build
+    something later ("I'll build it once you confirm the portrait"). A complete,
+    correct plan was replaced by one canned sentence, and that sentence then
+    became the assistant turn in the conversation history, so the owner's next
+    "state the plan again" had no plan left to restate. Only a claim that work
+    already happened is unsupported here; a forward-looking offer is not, and a
+    false claim is now removed sentence by sentence.
+    """
     text = owner_safe_reply(message)
-    if action_started or not (
-        re.search(r"\b(?:i['’]ll|i will|i can)\s+(?:build|create|implement|make)\b", text, re.IGNORECASE)
-        or _POSITIVE_COMPLETION.search(text)
-    ):
+    if action_started or not _POSITIVE_COMPLETION.search(text):
         return text
-    return (
-        "To be clear, I haven't built or previewed this yet. These are directions only. "
-        "Choose a direction, then ask me to build it when you're ready."
-    )
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        if _POSITIVE_COMPLETION.search(sentence) and not _CLAIM_NEGATED.search(sentence):
+            continue
+        kept.append(sentence)
+    remainder = " ".join(part.strip() for part in kept if part.strip()).strip()
+    if len(remainder) < 40:
+        return _CORRECTION
+    return remainder
 
 
 def owner_safe_failure(error: str) -> str:

@@ -346,6 +346,14 @@ Landed on `main`:
   current step. An API restart used to invalidate the preview and pay the whole
   build again; recovery now restarts the exact compiled output and only
   rebuilds when that output is gone or belongs to another commit.
+- [x] Ada's answer erased by a host guard — `owner_message_without_unstarted_build`
+  replaced the **entire** message with one canned sentence whenever the answer
+  contained a forward-looking offer ("I'll build it once you confirm the
+  portrait"). A complete, correct plan became a 141-character caveat, and that
+  caveat was then stored as the assistant turn, so the owner's next "state the
+  plan again" had no plan left in context. The guard now removes only a sentence
+  that claims work already happened, and keeps the rest of the answer. Verified
+  live: the same advisory question returns a 3,417-character plan.
 - [ ] Follow-up from that refusal — a stale base still blocks publish with no
   owner-visible remedy. The admin needs a "refresh candidate" action that
   rebases the preview branch onto current main, rebuilds, and updates the

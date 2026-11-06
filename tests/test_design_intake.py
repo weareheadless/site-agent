@@ -190,7 +190,7 @@ def test_chat_job_downgrades_completion_claim_when_no_build_started(tmp_path):
         "status-worker",
     )
 
-    assert "To be clear, I haven't built or previewed this yet." in result["reply"]
+    assert "I haven't built or previewed this yet" in result["reply"]
     assert memory.get_chat_job(queued["job_id"])["status"] == "done"
     memory.close()
 
@@ -1703,7 +1703,9 @@ def test_intake_advisor_hides_internal_read_failure_and_does_not_claim_a_build()
     assert "nothing has been changed" in result.assistant_message
 
 
-def test_intake_advisor_does_not_promise_unstarted_builds():
+def test_intake_advisor_keeps_an_offer_to_build_later():
+    """Offering to build later is not a claim that a build happened."""
+
     class _LLM:
         def chat(self, messages, **kwargs):
             return json.dumps({
@@ -1722,7 +1724,7 @@ def test_intake_advisor_does_not_promise_unstarted_builds():
         DesignIntakeDraft.empty(), [], "Give me some homepage directions."
     )
 
-    assert "I haven't built or previewed this yet" in result.assistant_message
+    assert result.assistant_message == "I can build this on a preview when you choose a direction."
 
 
 def test_intake_advisor_skips_entrim_thinking_knob_on_openrouter_client():
