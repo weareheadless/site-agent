@@ -4662,7 +4662,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                       image_files: Sequence[str] | None = None,
                       memory: Any | None = None,
                       agent_name: str = "build",
-                      home: Path | None = None) -> dict[str, Any]:
+                      home: Path | None = None,
+                      reply_mode: str = "tail") -> dict[str, Any]:
     """Retry explicit pre-generation provider rejections, never partial work.
 
     The same prompt, model, credentials and session are used. Process timeouts,
@@ -4676,7 +4677,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 clone, brief, config, progress=progress, session_id=session_id,
                 timeout_seconds=timeout_seconds, api_key=api_key, env=env,
                 api_key_env=api_key_env, image_files=image_files, memory=memory,
-                agent_name=agent_name, home=home,
+                agent_name=agent_name, home=home, reply_mode=reply_mode,
             )
             if failures:
                 result["provider_retry_attempts"] = failures
@@ -4709,7 +4710,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                       image_files: Sequence[str] | None = None,
                       memory: Any | None = None,
                       agent_name: str = "build",
-                      home: Path | None = None) -> dict[str, Any]:
+                      home: Path | None = None,
+                      reply_mode: str = "tail") -> dict[str, Any]:
     """Run one structured OpenCode turn, optionally continuing a session.
 
     OpenCode's JSON event stream is the source of truth for tool calls. Plain
@@ -4809,6 +4811,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
     session = session_id
     protocol_error: str | None = None
     last_tool_prose_index = 0
+    per_message: dict[str, dict[str, Any]] = {}
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
     step_started = process_started
     step_count = 0
@@ -4894,8 +4897,15 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             session = session or _event_value(event, "sessionID")
             part = event.get("part") or {}
             event_type = event.get("type") or part.get("type") or ""
+            message_id = str(part.get("messageID") or "")
+            if message_id:
+                record = per_message.setdefault(message_id, {"texts": [], "tools": 0})
+            else:
+                record = None
             if event_type == "tool_use" or part.get("type") == "tool":
                 last_tool_prose_index = len(prose)
+                if record is not None:
+                    record["tools"] += 1
                 state = part.get("state") or {}
                 tool_calls.append({
                     "tool": part.get("tool") or part.get("name") or "unknown",
@@ -4909,6 +4919,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                 protocol_error = text[:400]
                 terminate_process()
                 break
+            if record is not None:
+                record["texts"].append(text)
             for text_line in text.splitlines():
                 cleaned = _clean_ui_line(text_line)
                 if not cleaned:
@@ -4988,8 +5000,9 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
     # answer. Return only the final prose segment after the last tool event so
     # the chat does not dump the entire work log when the job finishes.
     reply_lines = prose[last_tool_prose_index:] or prose[-24:] or tail[-24:]
+    final_message = _final_message_reply(per_message) if reply_mode == "final_message" else ""
     return {
-        "reply": chr(10).join(reply_lines),
+        "reply": final_message or chr(10).join(reply_lines),
         "raw_tail": list(tail)[-80:],
         "session_id": str(session or ""),
         "tool_calls": tool_calls,
@@ -5000,6 +5013,21 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
         "raw_output": "\n".join(tail),
         "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
     }
+
+
+def _final_message_reply(per_message: Mapping[str, dict[str, Any]]) -> str:
+    """The last message the agent finished without calling a tool.
+
+    An agent writes between tool calls. Selecting "prose after the last tool
+    call" keeps only fragments of such an answer, so the owner-facing reply is
+    the last completed message that had no tool call in it.
+    """
+    for record in reversed(list(per_message.values())):
+        if int(record.get("tools") or 0) == 0 and record.get("texts"):
+            text = chr(10).join(str(item) for item in record["texts"]).strip()
+            if text:
+                return text
+    return ""
 
 
 def _current_persona(config: dict[str, Any], memory: Any = None) -> str:

@@ -741,3 +741,31 @@ def test_compiled_preview_rebuilds_when_the_output_is_missing(tmp_path, monkeypa
         assert service._resume_build(job, "preview", "b" * 40, "compiled_preview") is None
     finally:
         service.close()
+
+
+def test_the_final_message_is_the_last_completed_answer_not_a_fragment():
+    from site_agent.hands.opencode_runner import _final_message_reply
+
+    per_message = {
+        "m1": {"texts": ["I'll look at the site first."], "tools": 2},
+        "m2": {"texts": [], "tools": 4},
+        "m3": {"texts": ["Here is the reasoning."], "tools": 1},
+        "m4": {"texts": ["The answer, in full."], "tools": 0},
+    }
+    assert _final_message_reply(per_message) == "The answer, in full."
+
+
+def test_the_final_message_skips_a_trailing_message_that_only_called_tools():
+    from site_agent.hands.opencode_runner import _final_message_reply
+
+    per_message = {
+        "m1": {"texts": ["The full answer."], "tools": 0},
+        "m2": {"texts": ["One more check."], "tools": 1},
+    }
+    assert _final_message_reply(per_message) == "The full answer."
+
+
+def test_no_completed_answer_returns_empty_so_the_caller_can_fall_back():
+    from site_agent.hands.opencode_runner import _final_message_reply
+
+    assert _final_message_reply({"m1": {"texts": ["working"], "tools": 3}}) == ""

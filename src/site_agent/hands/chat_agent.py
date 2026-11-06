@@ -210,6 +210,7 @@ def run_turn(
         env=dict(context.get("env") or {}),
         memory=memory,
         home=home,
+        reply_mode="final_message",
     )
     reply = str(result.get("reply") or "").strip()
     if not reply:
