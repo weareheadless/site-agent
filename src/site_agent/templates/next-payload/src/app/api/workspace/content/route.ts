@@ -112,7 +112,17 @@ export async function GET(request: Request) {
   if (!identifier) {
     const requestedLimit = Number(params.get('limit') || '100')
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100)) : 100
-    const result = await payload.find({ collection, draft, locale, limit, depth: 1, pagination: false, overrideAccess: true, sort: '-updatedAt' })
+    // Catalog children are read by their owner when an operator needs one
+    // exact fact; the newest-100 window is not enough once a catalogue grows.
+    const product = Number(params.get('product') || '')
+    const factKey = String(params.get('key') || '').trim()
+    const where: import('payload').Where[] = []
+    if (Number.isFinite(product) && product > 0) where.push({ product: { equals: product } })
+    if (factKey) where.push({ key: { equals: factKey } })
+    const result = await payload.find({
+      collection, draft, locale, limit, depth: 1, pagination: false, overrideAccess: true,
+      sort: '-updatedAt', ...(where.length ? { where: { and: where } } : {}),
+    })
     try {
       // A draft is allowed to be incomplete: a locale can be authored before it
       // has a route slug, so draft reads stay raw instead of failing the route.
