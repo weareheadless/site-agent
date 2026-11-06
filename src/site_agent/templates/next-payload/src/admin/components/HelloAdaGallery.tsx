@@ -10,6 +10,7 @@ import { useHelloAdaSite } from '../config/provider'
 import { mediaUrl as migrationMediaUrl } from '../lib/media'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
+import { responseMessage } from '../api/response-message'
 
 type GalleryMedia = {
   id: string | number
@@ -68,7 +69,7 @@ export function HelloAdaGallery() {
       if (query.trim()) params.set('search', query.trim())
       const response = await fetchHelloAda(`/api/helloada/media-library?${params.toString()}`, { cache: 'no-store' })
       const body = (await response.json()) as GalleryResponse & { message?: string }
-      if (!response.ok) throw new Error(body.message || t('error.pageLoad'))
+      if (!response.ok) throw new Error(responseMessage(body, t('error.pageLoad')))
       setMedia((current) => append ? [...current, ...(body.media || []).filter((item) => !current.some((known) => String(known.id) === String(item.id)))] : body.media || [])
       setPage(nextPage)
       setHasNextPage(body.hasNextPage === true)
@@ -94,7 +95,7 @@ export function HelloAdaGallery() {
       form.append('file', file)
       const response = await fetchHelloAda('/api/helloada/media/upload', { method: 'POST', body: form })
       const body = (await response.json()) as { attachment?: { asset_id?: string | number; url?: string; preview_url?: string; name?: string; alt_text?: string }; message?: string }
-      if (!response.ok || body.attachment?.asset_id === undefined) throw new Error(body.message || t('error.imageAttach'))
+      if (!response.ok || body.attachment?.asset_id === undefined) throw new Error(responseMessage(body, t('error.imageAttach')))
       analysisPollsRef.current = 0
       await load(1, false, search)
     } catch (cause) {

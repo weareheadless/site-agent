@@ -20,6 +20,7 @@ import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFil
 import { useHelloAdaSite } from '../config/provider'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
+import { responseMessage } from '../api/response-message'
 
 type WorkspaceDocument = {
   id: string
@@ -1022,7 +1023,7 @@ function ReviewWorkspace() {
       if (search.trim()) params.set('search', search.trim())
       const response = await fetchHelloAda(`/api/helloada/media-library?${params.toString()}`, { cache: 'no-store' })
       const body = (await response.json()) as MediaLibraryResponse & { message?: string }
-      if (!response.ok) throw new Error(body.message || t('error.pageLoad'))
+      if (!response.ok) throw new Error(responseMessage(body, t('error.pageLoad')))
       const nextMedia = (body.media || []).map((media) => ({
         ...media,
         url: publicMediaUrl(media),
@@ -1048,7 +1049,7 @@ function ReviewWorkspace() {
     if (selectedDocument?.id) query.set('documentId', selectedDocument.id)
     const response = await fetchHelloAda(`/api/helloada/page-fields?${query.toString()}`, { cache: 'no-store' })
     const body = (await response.json()) as ContentImageResponse
-    if (!response.ok) throw new Error(body.message || t('error.pageLoad'))
+    if (!response.ok) throw new Error(responseMessage(body, t('error.pageLoad')))
     const fields = (body.fields || [])
       .map(editorEntryFromContent)
       .filter((entry): entry is EditablePageEntry => Boolean(entry))
@@ -1093,7 +1094,7 @@ function ReviewWorkspace() {
     return fetchHelloAda('/api/helloada/workspace', { cache: 'no-store' })
       .then(async (response) => {
         const body = (await response.json()) as WorkspaceSnapshot & { message?: string }
-        if (!response.ok) throw new Error(body.message || t('error.workspaceLoad'))
+        if (!response.ok) throw new Error(responseMessage(body, t('error.workspaceLoad')))
         transientFailures.current.workspace = 0
         setWorkspace(body)
       })
@@ -1296,7 +1297,7 @@ function ReviewWorkspace() {
         id: body.attachment?.asset_id || '',
         filename: body.attachment?.name || 'image',
       })
-      if (!response.ok || !body.attachment?.asset_id || !uploadedUrl) throw new Error(body.message || t('error.pageImageUpload'))
+      if (!response.ok || !body.attachment?.asset_id || !uploadedUrl) throw new Error(responseMessage(body, t('error.pageImageUpload')))
       updateEditorEntry(key, {
         image: {
           id: body.attachment.asset_id,
@@ -1758,7 +1759,7 @@ function ReviewWorkspace() {
           resolvePath: helloAdaPath,
           onProgress: (progress) => setUploadEntries((current) => current.map((item) => item.id === entry.id ? { ...item, progress } : item)),
         })
-        if (!body.attachment?.asset_id) throw new Error(body.message || t('error.imageAttach'))
+        if (!body.attachment?.asset_id) throw new Error(responseMessage(body, t('error.imageAttach')))
         const attachment: ChatAttachment & { asset_id: number | string } = { ...body.attachment, asset_id: body.attachment.asset_id }
         const media: EditableMedia = {
           id: attachment.asset_id,
@@ -1828,7 +1829,7 @@ function ReviewWorkspace() {
         phase?: AdaPhase
         website_present?: boolean
       }
-      if (!response.ok) throw new Error(body.message || body.error || t('error.adaReceive'))
+      if (!response.ok) throw new Error(responseMessage(body, body.error || t('error.adaReceive')))
       if (!body.job_id) throw new Error(t('error.jobAccepted'))
       const activeConversationId = body.conversation_id || conversationId
       if (!activeConversationId) throw new Error(t('error.jobAccepted'))
@@ -1958,7 +1959,7 @@ function ReviewWorkspace() {
         id: body.attachment?.asset_id || '',
         filename: body.attachment?.name || 'image',
       })
-      if (!response.ok || !body.attachment?.asset_id || !uploadedUrl) throw new Error(body.message || t('error.pageImageUpload'))
+      if (!response.ok || !body.attachment?.asset_id || !uploadedUrl) throw new Error(responseMessage(body, t('error.pageImageUpload')))
       updateFieldEditorEntry({
         image: {
           id: body.attachment.asset_id,
@@ -2035,7 +2036,7 @@ function ReviewWorkspace() {
           }),
         })
         const body = (await response.json()) as { message?: string; draftHash?: string }
-        if (!response.ok) throw new Error(body.message || t('error.pageSave'))
+        if (!response.ok) throw new Error(responseMessage(body, t('error.pageSave')))
         if (!body.draftHash) throw new Error(t('error.pageSave'))
         savedDraftHash = body.draftHash
       }
@@ -2077,7 +2078,7 @@ function ReviewWorkspace() {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
         })
         const body = await response.json() as { message?: string }
-        if (!response.ok) throw new Error(body.message || t('error.draftPublish'))
+        if (!response.ok) throw new Error(responseMessage(body, t('error.draftPublish')))
         setPublishNotice(t('history.publishQueued'))
         await loadWorkspace(true)
         return
@@ -2095,7 +2096,7 @@ function ReviewWorkspace() {
         }),
       })
        const body = (await response.json()) as { message?: string; published?: Array<{ collection?: string; documentId?: string }> }
-       if (!response.ok) throw new Error(body.message || t('error.draftPublish'))
+       if (!response.ok) throw new Error(responseMessage(body, t('error.draftPublish')))
 
       setDraftUpdatedKey(undefined)
       setPendingChanges({})

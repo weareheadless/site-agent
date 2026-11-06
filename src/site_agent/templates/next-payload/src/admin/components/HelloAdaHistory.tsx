@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { HelloAdaChatMessage } from './HelloAdaChatMessage'
+import { responseMessage } from '../api/response-message'
 
 type DraftItem = {
   id: number
@@ -129,7 +130,7 @@ export function HelloAdaHistory() {
   const load = useCallback(async (signal?: AbortSignal) => {
     const response = await fetchHelloAda('/api/helloada/history?limit=100', { cache: 'no-store', signal })
     const body = (await response.json()) as ActivityData
-    if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
+    if (!response.ok) throw new Error(responseMessage(body, t('error.historyLoad')))
     setData(body)
   }, [t])
 
@@ -202,7 +203,7 @@ export function HelloAdaHistory() {
       const endpoint = report.source === 'seo' ? 'seo-reports' : 'drafts'
       const response = await fetchHelloAda(`/api/helloada/history/${endpoint}/${report.id}`, { cache: 'no-store' })
       const body = (await response.json()) as ReportDetail
-      if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
+      if (!response.ok) throw new Error(responseMessage(body, t('error.historyLoad')))
       setReportBodies((current) => ({ ...current, [key]: { ...body, body: String(body.body || '') } }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
@@ -218,7 +219,7 @@ export function HelloAdaHistory() {
     try {
       const response = await fetchHelloAda(`/api/helloada/history/executions/${encodeURIComponent(runId)}`, { cache: 'no-store' })
       const body = (await response.json()) as ExecutionDetail
-      if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
+      if (!response.ok) throw new Error(responseMessage(body, t('error.historyLoad')))
       setExecutionDetails((current) => ({ ...current, [runId]: body }))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
@@ -265,7 +266,7 @@ export function HelloAdaHistory() {
     try {
       const response = await fetchHelloAda(`/api/helloada/versions/${version.id}/restore`, { method: 'POST' })
       const body = (await response.json()) as { message?: string }
-      if (!response.ok) throw new Error(body.message || t('error.rollback'))
+      if (!response.ok) throw new Error(responseMessage(body, t('error.rollback')))
       setNotice(t('history.restoreQueued'))
       await load()
     } catch (cause) {
