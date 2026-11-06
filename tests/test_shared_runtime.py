@@ -402,13 +402,16 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
     (worktree / "src/helloada.config.ts").write_text(
         "import { defineHelloAdaSite } from '@weareheadless/helloada-payload-admin/config'\n"
     )
+    (worktree / "template-manifest.json").write_text(json.dumps({"templateSchema": 1, "payloadAdmin": "0.10.50"}))
 
-    result = apply_preview_runtime_overlay(worktree, package_root=package)
+    result = apply_preview_runtime_overlay(worktree, package_root=package, runtime_fingerprint="f" * 64)
 
     assert result["copied"] == ["src/lib/runtime.ts", "src/admin/components/Workspace.tsx"]
     assert (worktree / "src/admin/components/Workspace.tsx").read_text() == "export const Workspace = 'canonical'\n"
     assert result["removed"] == ["src/lib/retired.ts"]
-    assert result["migrated"] == ["src/helloada.config.ts"]
+    assert result["migrated"] == ["src/helloada.config.ts", "template-manifest.json"]
+    stamped = json.loads((worktree / "template-manifest.json").read_text())
+    assert stamped["sharedRuntimeFingerprint"] == "f" * 64
     assert "from '@/admin/config/site'" in (worktree / "src/helloada.config.ts").read_text()
     assert (worktree / "src/lib/runtime.ts").read_text() == "export const runtime = 'canonical'\n"
     assert not (worktree / "src/lib/retired.ts").exists()
@@ -446,4 +449,4 @@ def test_preview_overlay_rejects_a_symlink_inside_a_copied_tree(tmp_path: Path):
     (worktree / "package-lock.json").write_text(json.dumps({"packages": {"": {"dependencies": {}}}}))
 
     with pytest.raises(SharedRuntimeError, match="symlink"):
-        apply_preview_runtime_overlay(worktree, package_root=package)
+        apply_preview_runtime_overlay(worktree, package_root=package, runtime_fingerprint="f" * 64)

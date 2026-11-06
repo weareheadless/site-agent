@@ -1037,8 +1037,17 @@ class SourceDeploymentService:
             # before any typecheck, lint or Next build runs.
             from .shared_runtime import apply_preview_runtime_overlay
 
+            payload_config = (self.config.get("site") or {}).get("payload") or {}
+            activation = payload_config.get("runtime_activation") or {}
+            runtime_fingerprint = str(activation.get("shared_runtime_fingerprint") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", runtime_fingerprint):
+                raise SourceDeploymentError(
+                    "the tenant has no activated shared runtime; release the site before previewing"
+                )
             runtime_overlay = apply_preview_runtime_overlay(
-                worktree, package_root=Path(__file__).resolve().parents[1],
+                worktree,
+                package_root=Path(__file__).resolve().parents[1],
+                runtime_fingerprint=runtime_fingerprint,
             )
             checks.append({
                 "name": "shared_runtime_overlay",

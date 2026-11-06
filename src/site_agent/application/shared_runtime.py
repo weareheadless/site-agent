@@ -439,10 +439,35 @@ def _migrate_tenant_site_config(tenant_root: Path) -> bool:
     return True
 
 
+def _stamp_preview_runtime_identity(worktree: Path, fingerprint: str) -> bool:
+    """Stamp the preview manifest with the exact shared runtime identity.
+
+    The release runner regenerates the whole contract manifest. The preview
+    compiles the tenant's committed manifest, which predates the shared runtime
+    fingerprint, so it would fail type checking on a field that only the release
+    generator writes. The tenant manifest stays authoritative for its locales,
+    migrations and schema identity; only the shared runtime field is stamped.
+    """
+    path = worktree / "template-manifest.json"
+    if path.is_symlink() or not path.is_file():
+        raise SharedRuntimeError("preview template manifest is missing or unsafe")
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise SharedRuntimeError("preview template manifest is invalid") from error
+    if not isinstance(manifest, dict):
+        raise SharedRuntimeError("preview template manifest root must be an object")
+    changed = manifest.pop("payloadAdmin", None) is not None or manifest.get("sharedRuntimeFingerprint") != fingerprint
+    manifest["sharedRuntimeFingerprint"] = fingerprint
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return changed
+
+
 def apply_preview_runtime_overlay(
     worktree: Path,
     *,
     package_root: Path,
+    runtime_fingerprint: str,
     manifest_path: Path | None = None,
 ) -> dict[str, Any]:
     """Copy and remove the centrally owned runtime files in a disposable preview.
@@ -456,6 +481,8 @@ def apply_preview_runtime_overlay(
     template_root = package_root / "templates" / "next-payload"
     manifest_path = (manifest_path or package_root / "templates" / "shared-runtime-overlay.json").resolve()
     manifest, _raw = _validate_manifest(package_root, manifest_path)
+    if not re.fullmatch(r"[0-9a-f]{64}", str(runtime_fingerprint or "")):
+        raise SharedRuntimeError("preview requires the activated shared runtime fingerprint")
     worktree = worktree.resolve()
     copied: list[str] = []
     removed: list[str] = []
@@ -475,7 +502,15 @@ def apply_preview_runtime_overlay(
             removed.append(str(relative))
     _update_shared_packages(worktree, template_root)
     migrated = [str(_SITE_CONFIG_PATH)] if _migrate_tenant_site_config(worktree) else []
-    return {"copied": copied, "removed": removed, "migrated": migrated, "manifest": manifest}
+    if _stamp_preview_runtime_identity(worktree, runtime_fingerprint):
+        migrated.append("template-manifest.json")
+    return {
+        "copied": copied,
+        "removed": removed,
+        "migrated": migrated,
+        "fingerprint": runtime_fingerprint,
+        "manifest": manifest,
+    }
 
 
 def apply_shared_runtime_overlay(
