@@ -108,7 +108,8 @@ class SourceDeploymentService:
                     job.update({
                         "status": "queued",
                         "ok": True,
-                        "error": "source deployment process restarted; rebuilding the exact preview commit",
+                        "error": "source deployment process restarted; restarting the exact compiled preview",
+                        "resume": bool(job.get("worktree_path")),
                         "updated_at": _now(),
                     })
                     for stale_key in ("runtime_path", "preview_url", "runtime_port"):
@@ -1114,6 +1115,56 @@ class SourceDeploymentService:
             raise SourceDeploymentError(f"{' '.join(command[:4])}: {tail}")
         return {"name": name, "ok": True}
 
+    @staticmethod
+    def _preview_secret_from(worktree: Path) -> str:
+        try:
+            for line in (worktree / ".dev.vars").read_text(encoding="utf-8").splitlines():
+                name, _, value = line.partition("=")
+                if name.strip() == "PAYLOAD_SECRET":
+                    return str(json.loads(value.strip()))
+        except (OSError, UnicodeError, ValueError):
+            return ""
+        return ""
+
+    def _resume_build(
+        self, job: dict[str, Any], branch: str, commit: str, mode: str,
+    ) -> dict[str, Any] | None:
+        """Restart an already-compiled preview instead of rebuilding it.
+
+        A process restart used to discard the compiled output and pay the whole
+        build again before the owner could look at their own candidate. The
+        worktree and its OpenNext output survive on disk; only the runtime has
+        to start.
+        """
+        if mode != _COMPILED_PREVIEW or not job.get("resume"):
+            return None
+        raw = str(job.get("worktree_path") or "").strip()
+        if not raw:
+            return None
+        worktree = Path(raw).expanduser().resolve()
+        if not worktree.is_dir() or not (worktree / ".open-next").is_dir():
+            return None
+        try:
+            head = self._run(["git", "rev-parse", "HEAD"], worktree, timeout=30).stdout.strip().lower()
+        except SourceDeploymentError:
+            return None
+        if head != commit:
+            return None
+        preview_secret = self._preview_secret_from(worktree)
+        if not preview_secret:
+            return None
+        self._mark_step(job, "runtime")
+        runtime = self._start_runtime(job, worktree, head, preview_secret=preview_secret)
+        return {
+            "ok": True,
+            "branch": branch,
+            "commit": head,
+            "checks": list(job.get("checks") or []),
+            "worktree_path": str(worktree),
+            "resumed": True,
+            **runtime,
+        }
+
     def _build(self, job: dict[str, Any], branch: str, commit: str, mode: str) -> dict[str, Any]:
         if mode != _COMPILED_PREVIEW:
             raise SourceDeploymentError("production builds and uploads are owned by the central VPS release pipeline")
@@ -1223,6 +1274,7 @@ class SourceDeploymentService:
                 "ok": True,
                 "branch": branch,
                 "commit": local_head,
+                "worktree_path": str(worktree),
                 "checks": checks,
                 **({"content_authority": job["content_authority"]} if job.get("content_authority") else {}),
                 **({"output_artifact": job["output_artifact"]} if job.get("output_artifact") else {}),
@@ -1375,7 +1427,7 @@ class SourceDeploymentService:
                             if run_id else self._head(branch))
             if current_head != commit:
                 raise SourceDeploymentError("deployment branch advanced before its build started; rescan and retry")
-            result = self._build(job, branch, commit, mode)
+            result = self._resume_build(job, branch, commit, mode) or self._build(job, branch, commit, mode)
             with self._lock:
                 self._jobs[job_id] = {**self._jobs[job_id], **result, "updated_at": _now()}
                 self._jobs[job_id].pop("error", None)

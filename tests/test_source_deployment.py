@@ -508,7 +508,7 @@ def test_compiled_preview_rebuilds_exact_commit_after_process_restart(monkeypatc
 
     job = service.status("preview-job")
     assert job["status"] == "queued"
-    assert job["error"] == "source deployment process restarted; rebuilding the exact preview commit"
+    assert job["error"] == "source deployment process restarted; restarting the exact compiled preview"
     assert "runtime_path" not in job
     assert "runtime_port" not in job
     assert len(service._executor.submitted) == 1
@@ -698,3 +698,46 @@ def test_for_draft_projects_the_central_release_receipt(tmp_path, monkeypatch):
     finally:
         service.close()
         memory.close()
+
+
+def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch):
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / ".dev.vars").write_text('PAYLOAD_SECRET="resume-secret"\n', encoding="utf-8")
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "queued",
+        "resume": True, "worktree_path": str(worktree), "checks": [{"name": "build", "ok": True}],
+    }
+    started = {}
+
+    class Result:
+        stdout = commit + "\n"
+
+    monkeypatch.setattr(service, "_run", lambda *args, **kwargs: Result())
+    def start_runtime(job, directory, expected=None, *, preview_secret):
+        started.update({"worktree": directory, "secret": preview_secret})
+        return {"runtime_port": 4321, "preview_url": "/api/workspace/source/preview/preview-1/runtime/"}
+
+    monkeypatch.setattr(service, "_start_runtime", start_runtime)
+    try:
+        result = service._resume_build(service._jobs["preview-1"], "preview", commit, "compiled_preview")
+        assert result["resumed"] is True
+        assert result["commit"] == commit
+        assert result["worktree_path"] == str(worktree)
+        assert started == {"worktree": worktree, "secret": "resume-secret"}
+        assert service._jobs["preview-1"]["build_step"] == "runtime"
+    finally:
+        service.close()
+
+
+def test_compiled_preview_rebuilds_when_the_output_is_missing(tmp_path, monkeypatch):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        monkeypatch.setattr(service, "_start_runtime", lambda *a, **k: pytest.fail("no output to resume"))
+        job = {"id": "preview-2", "mode": "compiled_preview", "commit": "b" * 40,
+               "resume": True, "worktree_path": str(tmp_path / "missing")}
+        assert service._resume_build(job, "preview", "b" * 40, "compiled_preview") is None
+    finally:
+        service.close()
