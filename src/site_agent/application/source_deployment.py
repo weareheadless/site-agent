@@ -1081,8 +1081,8 @@ class SourceDeploymentService:
                 [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
                 worktree, "dependencies", timeout, preview_secret=preview_secret,
             ))
-            if len(assets) != 2:
-                raise SourceDeploymentError("candidate source did not resolve the two locked shared packages")
+            if not assets:
+                raise SourceDeploymentError("candidate source did not resolve the locked shared package")
             if self.payload_gateway is not None:
                 checks.extend(self._seed_canonical_preview(worktree, job, npm, timeout, preview_secret))
             if not run_id:
