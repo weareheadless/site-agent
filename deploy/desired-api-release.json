@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261106003000-api-preview-runtime-fingerprint",
-    "sha": "48c148ea67fe5915493f7b4a661d665bd4ec128e"
+    "id": "20261106004000-api-preview-runtime-fingerprint-fix",
+    "sha": "b71fd83c228eb2de50a143417e502c2d2ad56af8"
   }
 }
