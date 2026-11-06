@@ -174,6 +174,19 @@ class SourceDeploymentService:
             self._run(["git", "worktree", "prune"], checkout, timeout=60)
         except SourceDeploymentError:
             pass
+        # A worktree removed without its Git registration leaves a partial
+        # directory behind. A real preview worktree always carries both a Git
+        # pointer and the Worker configuration, so an unreferenced directory
+        # with neither is garbage from an interrupted build.
+        root = checkout.parent
+        if not root.is_dir():
+            return
+        for entry in root.glob("site-agent-source-preview-*"):
+            if not entry.is_dir() or str(entry.resolve()) in referenced:
+                continue
+            if (entry / ".git").exists() or (entry / "wrangler.jsonc").exists():
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
 
     def _persist(self) -> None:
         if self.memory is None:
