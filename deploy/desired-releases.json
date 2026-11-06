@@ -14,11 +14,11 @@
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
       "id": "rel-20261105170851-c4d8f82b",
-      "sha": "59ea0fdff6fd31d4f0b2702dcf5045a0cd7c9c72",
       "schemaMigration": {
         "fromLedgerIdentity": "14736a687a4705c37d7f68373f92cdaf09295632a64eb79f3889ef8503a6fafe",
         "targetMigrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
-      }
+      },
+      "sha": "59ea0fdff6fd31d4f0b2702dcf5045a0cd7c9c72"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261103223219-bf91af50",
@@ -26,8 +26,9 @@
       "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
     },
     "oceanicvibes": {
-      "id": "rel-20261105235500-oceanic-runtime-fingerprint-2",
-      "sha": "1afb6250329410fb4b004b24fd0328e60f3ebec2"
+      "approvalId": 65,
+      "id": "rel-20261106121511-c4b235c7",
+      "sha": "e6f4516fcd35e37a0fb56d263f51d71a22b9ff35"
     },
     "site-5fe73d3d38ff6f77": {
       "id": "rel-20261103222325-4d1982f6",
