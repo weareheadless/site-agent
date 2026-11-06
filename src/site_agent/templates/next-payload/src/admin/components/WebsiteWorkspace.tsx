@@ -1130,11 +1130,6 @@ function ReviewWorkspace() {
       }
       const headSha = draft?.meta?.candidate_sha || draft?.meta?.head_sha || plan.head_sha || ''
       if (!draft) return
-      if (draft.kind === 'merge' && plan.mode === 'overlay' && !plan.requires_build) {
-        setSourceReview(undefined)
-        setPreviewPlan({ ...plan, head_sha: headSha })
-        return
-      }
       setSourceReview((current) => current?.draftId === draft.id && current.sha === headSha
         ? current : { draftId: draft.id, sha: headSha, url: '' })
       setPreviewPlan({ ...plan, head_sha: headSha })

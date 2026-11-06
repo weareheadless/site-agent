@@ -5110,15 +5110,9 @@ def preview_plan_for_paths(changed_paths: Sequence[str]) -> dict[str, Any]:
     deterministic and path-based instead of asking Ada to infer it from prose.
     """
     paths = sorted({str(path).replace("\\", "/").lstrip("/") for path in changed_paths if str(path).strip()})
-    css_only = bool(paths) and all(Path(path).suffix.lower() == ".css" for path in paths)
-    if css_only:
-        return {
-            "mode": "overlay",
-            "status": "ready",
-            "requires_build": False,
-            "changed_paths": paths,
-            "reason": "CSS-only changes are layered onto the review iframe without a site build.",
-        }
+    # A stylesheet is compiled into the Next build exactly like rendered code.
+    # The earlier no-build overlay left the owner with no candidate preview and
+    # no publish action, so every source change now gets a compiled preview.
     return {
         "mode": "compile",
         "status": "build_required",

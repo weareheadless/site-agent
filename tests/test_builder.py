@@ -906,13 +906,13 @@ def test_stage_build_returns_owner_ready_css_receipt(tmp_path, monkeypatch):
         "give the homepage headings more room",
     )
 
-    assert result["change"]["status"] == "ready_for_review"
-    assert result["preview"]["status"] == "ready"
-    assert "What changed:" in result["reply"]
+    assert result["change"]["status"] == "blocked"
+    assert result["preview"]["status"] == "blocked"
+    assert "could not prepare its review preview" in result["reply"]
     assert "internal builder transcript" not in result["reply"]
     draft = memory.list_drafts(limit=1)[0]
     assert draft["meta"]["head_sha"] == candidate
-    assert draft["meta"]["preview"]["status"] == "ready"
+    assert draft["meta"]["preview"]["status"] == "blocked"
     memory.close()
 
 
@@ -957,10 +957,10 @@ def test_stage_build_queues_compiled_preview_and_does_not_claim_ready(tmp_path, 
     memory.close()
 
 
-def test_preview_plan_uses_overlay_for_css_and_compile_for_rendered_code():
+def test_preview_plan_compiles_stylesheets_and_rendered_code():
     css = runner.preview_plan_for_paths(["src/app/(frontend)/styles.css"])
-    assert css["mode"] == "overlay"
-    assert css["requires_build"] is False
+    assert css["mode"] == "compile"
+    assert css["requires_build"] is True
 
     code = runner.preview_plan_for_paths(["src/components/SiteChrome.tsx"])
     assert code["mode"] == "compile"
