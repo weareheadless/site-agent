@@ -54,6 +54,8 @@ class WorkspaceServer:
             "env": env,
             "payload_gateway": payload,
             "tenant_id": str(config.get("instance_name") or ""),
+            # The build path reports progress and links its draft to this job.
+            "_chat_job_id": job_id,
         }
         if payload is not None:
             context["media_service"] = PayloadMediaService(payload)
