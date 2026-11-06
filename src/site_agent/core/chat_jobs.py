@@ -25,6 +25,13 @@ def _job_worker_id() -> str:
     return f"{time.time_ns()}-{threading.get_ident()}"
 
 
+def _chat_engine(context: dict[str, Any]) -> str:
+    """Which engine answers an owner chat turn: the opencode agent or the legacy loop."""
+    chat = (context.get("config") or {}).get("chat") or {}
+    engine = str(chat.get("engine") or "legacy").strip().lower()
+    return "opencode" if engine == "opencode" else "legacy"
+
+
 def _owner_action_started(result: dict[str, Any], context: dict[str, Any] | None = None) -> bool:
     """Return whether this job actually started or completed owner-visible work.
 
@@ -253,6 +260,26 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
                 followup = after_turn(job, result)
                 if isinstance(followup, dict):
                     result["build_followup"] = followup
+        elif _chat_engine(context) == "opencode":
+            from ..application import agent_tools
+            from ..hands import chat_agent
+
+            context["_delegated_job_id"] = int(job_id)
+            context["_delegated_conversation_id"] = conv_id
+            turn = chat_agent.run_turn(
+                context, int(job_id), message, history, progress=progress,
+            )
+            summary = agent_tools.turn_summary(context["memory"], context, int(job_id))
+            result = {
+                "reply": turn["reply"],
+                "proposal_id": None,
+                "merge_draft_id": summary.get("merge_draft_id"),
+                "preview": summary.get("preview"),
+                "change": summary.get("change"),
+                "changed": summary.get("changed"),
+                "completed_payload_effects": summary.get("completed_payload_effects") or [],
+            }
+            context["_completed_payload_effects"] = result["completed_payload_effects"]
         else:
             from ..brain import editor as brain_editor
 
@@ -288,7 +315,9 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
                 "change": outcome.get("change"),
                 "changed": outcome.get("changed"),
             })
-        if isinstance(result.get("reply"), str):
+        if isinstance(result.get("reply"), str) and _chat_engine(context) != "opencode":
+            # The opencode agent owns its message. The owner sees exactly what
+            # it wrote; the host only refuses actions, never rewrites prose.
             result["reply"] = owner_message_without_unstarted_build(
                 result["reply"],
                 action_started=_owner_action_started(result, context),

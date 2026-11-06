@@ -4276,6 +4276,7 @@ def _isolated_env(
     provider: str = "openrouter",
     source_env: Mapping[str, str] | None = None,
     api_key_env: str | None = None,
+    home: Path | None = None,
 ) -> dict[str, str]:
     """Give the builder only the process environment it needs.
 
@@ -4288,7 +4289,7 @@ def _isolated_env(
     # The API supplies a full host environment, including HOME. Reusing it
     # shares a managed OpenCode service (and its startup provider environment)
     # across candidates/tenants instead of isolating this execution.
-    home = (clone / ".agent-home").expanduser().resolve()
+    home = (Path(home) if home is not None else clone / ".agent-home").expanduser().resolve()
     passthrough = {
         "PATH", "USER", "SHELL", "LANG", "LC_ALL", "TERM", "TMPDIR", "NO_COLOR", "CI",
         "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
@@ -4660,7 +4661,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                       api_key_env: str | None = None,
                       image_files: Sequence[str] | None = None,
                       memory: Any | None = None,
-                      agent_name: str = "build") -> dict[str, Any]:
+                      agent_name: str = "build",
+                      home: Path | None = None) -> dict[str, Any]:
     """Retry explicit pre-generation provider rejections, never partial work.
 
     The same prompt, model, credentials and session are used. Process timeouts,
@@ -4674,7 +4676,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 clone, brief, config, progress=progress, session_id=session_id,
                 timeout_seconds=timeout_seconds, api_key=api_key, env=env,
                 api_key_env=api_key_env, image_files=image_files, memory=memory,
-                agent_name=agent_name,
+                agent_name=agent_name, home=home,
             )
             if failures:
                 result["provider_retry_attempts"] = failures
@@ -4706,7 +4708,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                       api_key_env: str | None = None,
                       image_files: Sequence[str] | None = None,
                       memory: Any | None = None,
-                      agent_name: str = "build") -> dict[str, Any]:
+                      agent_name: str = "build",
+                      home: Path | None = None) -> dict[str, Any]:
     """Run one structured OpenCode turn, optionally continuing a session.
 
     OpenCode's JSON event stream is the source of truth for tool calls. Plain
@@ -4748,6 +4751,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
         provider=_model_provider(builder_model),
         source_env=env,
         api_key_env=api_key_env,
+        home=home,
     )
     # This turn's private server receives this exact model credential and
     # project config, rather than attaching to a previously started service.

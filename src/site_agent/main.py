@@ -1325,6 +1325,13 @@ def main(argv: list[str] | None = None) -> int:
     compare_parser.add_argument("--host", default="127.0.0.1", help="comparison server host")
     compare_parser.add_argument("--port", type=int, default=8765, help="comparison server port")
 
+    mcp_parser = sub.add_parser("mcp", help="serve a workspace tool surface over MCP")
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_workspace = mcp_sub.add_parser("workspace", help="stdio MCP server for one chat turn")
+    mcp_workspace.add_argument("--config", required=True, help="registered tenant configuration")
+    mcp_workspace.add_argument("--env", required=True, help="registered tenant environment file")
+    mcp_workspace.add_argument("--job", required=True, type=int, help="chat job this turn belongs to")
+
     args, unknown = parser.parse_known_args(argv)
     if unknown:
         parser.error(f"unrecognized arguments: {' '.join(unknown)}")
@@ -1350,6 +1357,10 @@ def main(argv: list[str] | None = None) -> int:
             args.command = "design-lab-compare"
         else:
             parser.error("design-lab requires generate or serve")
+    if args.command == "mcp" and args.mcp_command == "workspace":
+        from .hands.workspace_mcp import main as workspace_mcp_main
+
+        return workspace_mcp_main(["--config", args.config, "--env", args.env, "--job", str(args.job)])
     handler = handlers.get(args.command)
     if handler is None:
         parser.print_help()
