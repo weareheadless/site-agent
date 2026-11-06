@@ -32,6 +32,8 @@ export function helloAdaWorkspacePath(path: string, method: string, search = "")
   if (draft && method === "POST") return `/workspace/drafts/${draft[1]}/${draft[2]}${search}`;
   const version = suffix.match(/^\/versions\/([0-9]+)\/restore$/);
   if (version && method === "POST") return `/workspace/versions/${version[1]}/restore${search}`;
+  if (["/publication", "/checkpoints"].includes(suffix) && method === "GET") return `/workspace${suffix}${search}`;
+  if (suffix === "/checkpoints/restore" && method === "POST") return `/workspace/checkpoints/restore${search}`;
   if (suffix === "/worktree/discard" && method === "POST") return `/workspace/worktree/discard${search}`;
   if (suffix === "/source/preview" && ["GET", "POST"].includes(method)) return `/workspace/source/preview${search}`;
   if (/^\/source\/preview\/(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/deploy|\/runtime(?:\/.*)?)?$/.test(suffix) && ["GET", "POST"].includes(method)) return `/workspace${suffix}${search}`;

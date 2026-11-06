@@ -1,9 +1,10 @@
 import type { CSSProperties } from 'react'
 
-type IconName = 'arrow' | 'chevron' | 'close' | 'desktop' | 'mobile' | 'tablet' | 'plus' | 'settings' | 'check' | 'external' | 'refresh'
+type IconName = 'arrow' | 'chevron' | 'close' | 'desktop' | 'mobile' | 'tablet' | 'plus' | 'settings' | 'check' | 'external' | 'refresh' | 'history'
 
 const paths: Record<IconName, string> = {
   refresh: 'M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 3M19 16A8 8 0 0 1 6 19l-2-3',
+  history: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 8v4l3 2',
   arrow: 'M5 12h14m-6-6 6 6-6 6',
   chevron: 'm8 10 4 4 4-4',
   close: 'm6 6 12 12M6 18 18 6',

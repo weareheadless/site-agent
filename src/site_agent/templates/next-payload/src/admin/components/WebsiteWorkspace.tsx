@@ -10,6 +10,8 @@ import { HelloAdaGrowth } from './HelloAdaGrowth'
 import { HelloAdaGallery } from './HelloAdaGallery'
 import { MailflarePayloadView } from './MailflarePayloadView'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
+import { PublicationProgress } from './PublicationProgress'
+import { CheckpointHistory } from './CheckpointHistory'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { helloAdaPath } from '../config/site'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -835,6 +837,8 @@ function ReviewWorkspace() {
   const [editorError, setEditorError] = useState('')
   const [editorNotice, setEditorNotice] = useState('')
   const [publishNotice, setPublishNotice] = useState('')
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [releaseRefresh, setReleaseRefresh] = useState(0)
   const [previewEditTargets, setPreviewEditTargets] = useState<PreviewEditTarget[]>([])
   const [activePreviewEditKey, setActivePreviewEditKey] = useState<string>()
   const [pendingChanges, setPendingChanges] = useState<Record<string, EditablePageEntry>>({})
@@ -2075,6 +2079,7 @@ function ReviewWorkspace() {
         const body = await response.json() as { message?: string }
         if (!response.ok) throw new Error(responseMessage(body, t('error.draftPublish')))
         setPublishNotice(t('history.publishQueued'))
+        setReleaseRefresh((current) => current + 1)
         await loadWorkspace(true)
         return
       }
@@ -2431,6 +2436,17 @@ function ReviewWorkspace() {
                 ))}
               </select>
             </label>
+            <button
+              className="helloada-history-trigger"
+              type="button"
+              onClick={() => setHistoryOpen(true)}
+              title={t('checkpoints.openHint')}
+              aria-haspopup="dialog"
+              aria-expanded={historyOpen}
+            >
+              <WorkspaceIcon name="history" size={15} />
+              <span>{t('checkpoints.open')}</span>
+            </button>
               {canEditPage ? <details className="helloada-preview-options">
                 <summary aria-label={t('owner.pageOptions')} title={t('owner.pageOptions')}><WorkspaceIcon name="settings" /></summary>
                 <div><button type="button" onClick={() => void openEditor()}>{t('owner.editManually')}</button><label><input type="checkbox" checked={manualEditing} onChange={(event) => setManualEditing(event.target.checked)} />{t('owner.quickEditing')}</label></div>
@@ -2460,6 +2476,24 @@ function ReviewWorkspace() {
                 {publishNotice ? <p className="helloada-draft-confirmation" role="status" aria-live="polite">{publishNotice}</p> : null}
               </div> : null}
              </div>
+
+             <PublicationProgress
+               refreshKey={releaseRefresh}
+               onAskAda={() => {
+                 setMobilePane('ada')
+                 window.setTimeout(() => messageInputRef.current?.focus(), 60)
+               }}
+             />
+             <CheckpointHistory
+               open={historyOpen}
+               onClose={() => setHistoryOpen(false)}
+               onRestored={() => {
+                 setHistoryOpen(false)
+                 setPublishNotice(t('checkpoints.restored'))
+                 void loadWorkspace(true)
+                 void loadPreviewPlan()
+               }}
+             />
 
              {candidateReviewLinked ? (
                <p className="helloada-candidate-review-status" role="status">

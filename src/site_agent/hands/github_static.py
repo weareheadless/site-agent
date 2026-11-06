@@ -18,7 +18,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ..config import resolve_secret
 from ..credentials import credential_environment, github_api_token, github_remote, github_ssh_command
@@ -436,6 +436,63 @@ class GithubStatic(SiteAdapter):
         _, body = _request("GET", f"{API}/repos/{self.repo}/commits/{sha}", token=self.token)
         return body
 
+    def list_commits(self, branch: str | None = None, limit: int = 30) -> list[dict[str, Any]]:
+        """Return the official branch history newest first, with exact SHAs.
+
+        The owner-visible history is the tenant repository's own history, so it
+        is read from GitHub when an API identity is available and from the
+        registered checkout otherwise. Nothing here mutates a branch.
+        """
+        target = str(branch or self.branch or "").strip()
+        self._branch_ref(target)  # validates the branch name
+        bounded = max(1, min(int(limit), 60))
+        if self.token and not self._api_unavailable:
+            status, body = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/commits?sha={urllib.parse.quote(target)}&per_page={bounded}",
+                token=self.token,
+            )
+            if status == 200 and isinstance(body, list):
+                return [
+                    {
+                        "sha": str(item.get("sha") or "").lower(),
+                        "message": str(((item.get("commit") or {}).get("message")) or "").splitlines()[0][:240],
+                        "author": str((((item.get("commit") or {}).get("author")) or {}).get("name") or ""),
+                        "date": str(((((item.get("commit") or {}).get("author")) or {}).get("date")) or ""),
+                        "parents": [
+                            str((parent or {}).get("sha") or "").lower()
+                            for parent in (item.get("parents") or [])
+                            if isinstance(parent, Mapping)
+                        ],
+                    }
+                    for item in body
+                    if isinstance(item, Mapping)
+                ]
+            if status in (401, 403, 404):
+                raise AdapterError("github: the repository history is not readable with the configured identity")
+            self._api_unavailable = True
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: the website history is unavailable")
+        ref = self._local_remote_ref(target)
+        output = self._git(
+            ["log", f"-n{bounded}", "--format=%H%x1f%P%x1f%an%x1f%aI%x1f%s", ref],
+            checkout,
+        ).stdout.decode("utf-8", errors="replace")
+        rows: list[dict[str, Any]] = []
+        for line in output.splitlines():
+            fields = line.split("\x1f")
+            if len(fields) < 5 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+                continue
+            rows.append({
+                "sha": fields[0],
+                "parents": [sha for sha in fields[1].split() if sha],
+                "author": fields[2],
+                "date": fields[3],
+                "message": fields[4][:240],
+            })
+        return rows
+
     def reset_preview_branch(self, name: str | None = None) -> dict[str, Any]:
         """Force the preview branch back to the production branch head, discarding
         any rejected/stale staged work so the next build starts from main again."""
@@ -664,7 +721,7 @@ class GithubStatic(SiteAdapter):
             contract = json.loads(marker_data.decode("utf-8"))
         except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AdapterError("github: selected version has an invalid content-contract marker") from exc
-        if contract.get("contract") != "helloada-content-v1":
+        if not re.fullmatch(r"helloada-content-v[1-9][0-9]*", str(contract.get("contract") or "")):
             raise AdapterError("github: selected version does not use the supported shared-content contract")
 
         frontend_paths = {

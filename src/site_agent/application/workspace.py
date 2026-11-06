@@ -5586,6 +5586,165 @@ class ChatService:
             wake_growth_pending(memory)
         return {"ok": True, "draft_id": normalized_id, "status": "discarded"}
 
+    def publication(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Report the owner-visible state of the current production release.
+
+        The projection is the central VPS receipt, never a local build state: a
+        release is live when the pipeline says it is live, and it is stopped
+        with the pipeline's own reason when it stops.
+        """
+        from .release_progress import phase_steps, release_progress
+
+        memory, _llm, _tenant_id = self._scope(tenant)
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        activation = self._runtime_activation(tenant)
+        deployer = tenant.context.get("source_deployment")
+        job: dict[str, Any] = {}
+        if deployer is not None:
+            latest_release = getattr(deployer, "latest_release", None)
+            latest = getattr(deployer, "latest", None)
+            read_status = getattr(deployer, "status", None)
+            try:
+                if callable(latest_release):
+                    candidate = latest_release()
+                else:
+                    candidate = latest(mode="production") if callable(latest) else {}
+            except Exception:  # noqa: BLE001 - a status read must never break the workspace
+                candidate = {}
+            if isinstance(candidate, Mapping) and candidate.get("id"):
+                try:
+                    job = dict(read_status(str(candidate["id"]))) if callable(read_status) else dict(candidate)
+                except Exception:  # noqa: BLE001
+                    job = dict(candidate)
+        activated = bool(activation.get("source_sha"))
+        if not job:
+            # No production job in this process. The activated runtime is still
+            # the truthful live identity, but there is no progress to show.
+            return {
+                "release": None,
+                "live": {
+                    "sha": str(activation.get("source_sha") or ""),
+                    "releaseId": str(activation.get("release_id") or ""),
+                    "fingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
+                    "schemaRevision": None,
+                    "activated": activated,
+                },
+                "steps": phase_steps(),
+                "latestPublish": self._latest_publish(memory),
+            }
+        status = str(job.get("status") or "queued")
+        progress = release_progress(job.get("phase"), status)
+        published = self._latest_publish(memory)
+        return {
+            "release": {
+                "id": str(job.get("release_id") or activation.get("release_id") or ""),
+                "commit": str(job.get("commit") or activation.get("source_sha") or ""),
+                "draftId": job.get("draft_id"),
+                "status": status,
+                "stage": progress["stage"],
+                "phase": progress["phase"],
+                "phaseLabel": progress["phaseLabel"],
+                "step": progress["step"],
+                "progress": progress["progress"],
+                "complete": progress["complete"],
+                "failed": progress["failed"],
+                "startedAt": str(job.get("release_started_at") or job.get("created_at") or ""),
+                "finishedAt": str(job.get("release_finished_at") or ""),
+                "error": str(job.get("error") or "")[:600],
+                "live": status in {"deployed", "verified"},
+            },
+            "live": {
+                "sha": str(activation.get("source_sha") or ""),
+                "releaseId": str(activation.get("release_id") or ""),
+                "fingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
+                "schemaRevision": None,
+                "activated": activated,
+            },
+            "steps": phase_steps(),
+            "latestPublish": published,
+        }
+
+    @staticmethod
+    def _latest_publish(memory: Any) -> dict[str, Any] | None:
+        rows = memory.list_publishes(limit=1)
+        if not rows:
+            return None
+        row = rows[0]
+        return {
+            "summary": str(row.get("summary") or ""),
+            "ts": str(row.get("ts") or ""),
+            "commit": str(row.get("commit_sha") or ""),
+            "versionType": str(row.get("version_type") or ""),
+        }
+
+    def checkpoints(self, *, limit: int = 30, tenant: Tenant | None = None) -> dict[str, Any]:
+        """List the site's own production history as restorable checkpoints.
+
+        The list is the tenant repository's official branch, not a private
+        ledger: what the owner sees here is what the coding agent and every
+        release actually committed. Each row says whether it is live, whether
+        it was an owner-approved publication, and whether a restoration review
+        can be prepared from it.
+        """
+        memory, _llm, tenant_id = self._scope(tenant)
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        bounded = max(1, min(int(limit), 60))
+        adapter = self._merge_adapter(tenant, capability="list_commits")
+        list_commits = getattr(adapter, "list_commits", None)
+        if not callable(list_commits):
+            raise BridgeError("the website history is not available for this site")
+        try:
+            commits = list_commits(limit=bounded)
+        except Exception as exc:  # noqa: BLE001 - report the repository's own reason
+            raise BridgeError(f"the website history could not be read: {str(exc)[:300]}") from exc
+        publishes = {
+            str(item.get("commit_sha") or "").lower(): item
+            for item in memory.list_publishes(limit=200)
+            if item.get("commit_sha")
+        }
+        activation = self._runtime_activation(tenant)
+        live_sha = str(activation.get("source_sha") or "").strip().lower()
+        if not live_sha:
+            live_sha = next(iter(publishes), "")
+        pending = [
+            item for item in memory.list_drafts(status="pending", limit=500)
+            if item.get("kind") in {"design", "merge", "rollback"}
+        ]
+        rows = []
+        for commit in commits:
+            sha = str((commit or {}).get("sha") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", sha):
+                continue
+            published = publishes.get(sha) or {}
+            rows.append({
+                "sha": sha,
+                "shortSha": sha[:7],
+                "message": str((commit or {}).get("message") or "")[:240],
+                "author": str((commit or {}).get("author") or "")[:80],
+                "date": str((commit or {}).get("date") or ""),
+                "isLive": sha == live_sha,
+                "published": bool(published),
+                "summary": str(published.get("summary") or "")[:240],
+                "publishedTs": str(published.get("ts") or ""),
+                "versionType": str(published.get("version_type") or ""),
+                "canRestore": sha != live_sha,
+            })
+        review = pending[0] if pending else None
+        return {
+            "checkpoints": rows,
+            "liveSha": live_sha,
+            "live": {
+                "sha": str(activation.get("source_sha") or ""),
+                "releaseId": str(activation.get("release_id") or ""),
+                "fingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
+            },
+            "reviewPending": bool(pending),
+            "reviewDraftId": int(review["id"]) if review else None,
+            "reviewTitle": str((review or {}).get("title") or ""),
+        }
+
     def restore_version(self, version_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Create an approval-gated rollback draft; never mutate production directly."""
         memory, _llm, _tenant_id = self._scope(tenant)
@@ -5600,6 +5759,72 @@ class ChatService:
             raise BridgeError("version not found")
         if version.get("reverted_ts"):
             raise BridgeError("version has already been rolled back")
+        return self._prepare_frontend_restore(
+            tenant,
+            target_sha=str(version["commit_sha"]),
+            summary=str(version.get("summary") or normalized_id)[:120],
+            published_date=str(version.get("ts") or "")[:10],
+            target_publish_id=normalized_id,
+        )
+
+    def restore_checkpoint(
+        self,
+        commit: Any,
+        *,
+        summary: str | None = None,
+        tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Prepare an approval-gated restoration from one exact production commit.
+
+        The owner picks a checkpoint from the site's own Git history. Nothing is
+        published here: the call prepares the same frontend-only rollback review
+        the version list uses, and production still changes only on approval.
+        """
+        memory, _llm, tenant_id = self._scope(tenant)
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        target_sha = str(commit or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", target_sha):
+            raise BridgeError("a checkpoint must be a full production commit")
+        activation = self._runtime_activation(tenant)
+        live_sha = str(activation.get("source_sha") or "").strip().lower()
+        if live_sha and live_sha == target_sha:
+            raise BridgeError("that checkpoint is already live")
+        publishes = {
+            str(item.get("commit_sha") or "").lower(): item
+            for item in memory.list_publishes(limit=200)
+            if item.get("commit_sha")
+        }
+        published = publishes.get(target_sha) or {}
+        label = str(summary or published.get("summary") or "").strip()
+        if not label:
+            label = f"checkpoint {target_sha[:7]}"
+        return self._prepare_frontend_restore(
+            tenant,
+            target_sha=target_sha,
+            summary=label[:120],
+            published_date=str(published.get("ts") or "")[:10],
+            target_publish_id=None,
+        )
+
+    @staticmethod
+    def _runtime_activation(tenant: Tenant) -> dict[str, Any]:
+        site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
+        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+        activation = payload.get("runtime_activation")
+        return dict(activation) if isinstance(activation, Mapping) else {}
+
+    def _prepare_frontend_restore(
+        self,
+        tenant: Tenant,
+        *,
+        target_sha: str,
+        summary: str,
+        published_date: str,
+        target_publish_id: int | None,
+    ) -> dict[str, Any]:
+        """Prepare one frontend-only restoration on the preview branch."""
+        memory, _llm, _tenant_id = self._scope(tenant)
         pending_code_reviews = [
             item for item in memory.list_drafts(status="pending", limit=500)
             if item.get("kind") in {"design", "merge", "rollback"}
@@ -5620,9 +5845,9 @@ class ChatService:
             if callable(ensure_branch):
                 ensure_branch(preview_branch)
             preview = restore(
-                str(version["commit_sha"]),
+                target_sha,
                 preview_branch,
-                f"Restore frontend version: {str(version.get('summary') or normalized_id)[:120]}",
+                f"Restore frontend version: {summary[:120]}",
             )
             candidate_sha = str(preview.get("commit_sha") or "").strip().lower()
             base_sha = str(preview.get("parent_sha") or "").strip().lower()
@@ -5632,32 +5857,34 @@ class ChatService:
             if isinstance(exc, BridgeError):
                 raise
             raise BridgeError(str(exc)[:500]) from exc
-        summary = str(version.get("summary") or normalized_id)[:120]
         review_payload = {
             "scope": "frontend_only",
             "contract": "helloada-content-v1",
-            "target_sha": str(version["commit_sha"]),
+            "target_sha": target_sha,
             "candidate_sha": candidate_sha,
             "base_sha": base_sha,
         }
         review_hash = "sha256:" + hashlib.sha256(
             json.dumps(review_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        restored_from = f" from {published_date}" if published_date else ""
+        meta: dict[str, Any] = {
+            **review_payload,
+            "review_package_hash": review_hash,
+            "head_sha": base_sha,
+            "head": preview_branch,
+            "base": (tenant.config.get("site") or {}).get("branch", "main"),
+            "summary": summary,
+            "preview": {"status": "building", "requires_build": True, "head_sha": candidate_sha},
+        }
+        if target_publish_id is not None:
+            meta["target_publish_id"] = target_publish_id
         draft_id = memory.save_draft(
             title=f"Restore website design: {summary}",
-            body=("Restore only the website's frontend design from "
-                  f"{str(version.get('ts') or '')[:10]}. Current content, images, settings, Payload schema and admin stay unchanged."),
+            body=("Restore only the website's frontend design"
+                  f"{restored_from}. Current content, images, settings, Payload schema and admin stay unchanged."),
             kind="rollback",
-            meta={
-                **review_payload,
-                "review_package_hash": review_hash,
-                "target_publish_id": normalized_id,
-                "head_sha": base_sha,
-                "head": preview_branch,
-                "base": (tenant.config.get("site") or {}).get("branch", "main"),
-                "summary": summary,
-                "preview": {"status": "building", "requires_build": True, "head_sha": candidate_sha},
-            },
+            meta=meta,
         )
         try:
             preview_job = start_preview({
@@ -5668,9 +5895,9 @@ class ChatService:
             })
         except Exception as exc:  # noqa: BLE001 — a failed validation must not create a reviewable decision
             memory.update_draft_status(draft_id, "publish_failed")
-            memory.record_action("rollback_preview_failed", f"version #{normalized_id}: {str(exc)[:300]}")
+            memory.record_action("rollback_preview_failed", f"{target_sha[:12]}: {str(exc)[:300]}")
             raise BridgeError(f"frontend restoration preview could not be started: {str(exc)[:400]}") from exc
-        memory.record_action("rollback_preview", f"version #{normalized_id} -> draft #{draft_id}")
+        memory.record_action("rollback_preview", f"{target_sha[:12]} -> draft #{draft_id}")
         return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview_job}
 
     def analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:

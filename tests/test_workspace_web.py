@@ -4076,3 +4076,147 @@ def test_a_live_design_draft_is_not_offered_for_review(tmp_path):
     assert statuses[draft_id] == "live"
     assert (statuses.get(draft_id) in {"pending", "publish_failed"}) is False
     memory.close()
+
+
+def test_workspace_reports_release_progress_from_the_central_receipt(tmp_path):
+    """The owner sees the pipeline's own stage, never a local guess."""
+    memory = Memory(tmp_path / "release-progress" / "memory.db")
+
+    class Deployment:
+        def latest(self, branch=None, *, mode=None):
+            assert mode == "production"
+            return {"id": "job-1"}
+
+        def status(self, job_id):
+            assert job_id == "job-1"
+            return {
+                "id": "job-1",
+                "release_id": "rel-20261106153936-3bccb2fd",
+                "commit": "b" * 40,
+                "draft_id": 66,
+                "status": "running",
+                "phase": "build",
+                "created_at": "2026-11-06T15:40:41Z",
+            }
+
+    tenant = Tenant(
+        tenant_id="release-progress",
+        config={
+            "site": {
+                "preview_branch": "preview",
+                "payload": {"runtime_activation": {
+                    "release_id": "rel-20261106121511-c4b235c7",
+                    "source_sha": "a" * 40,
+                    "shared_runtime_fingerprint": "f" * 64,
+                }},
+            },
+        },
+        memory=memory,
+        runtime=None,
+        context={"llm": object(), "source_deployment": Deployment()},
+        api_token="progress-token",
+    )
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=ChatService(registry=registry), registry=registry, prefix="/v1/workspace",
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/v1/workspace/publication", headers={"Authorization": "Bearer progress-token"})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["release"]["id"] == "rel-20261106153936-3bccb2fd"
+    assert body["release"]["phase"] == "building"
+    assert body["release"]["progress"] == pytest.approx(0.52)
+    assert body["release"]["complete"] is False
+    assert body["live"]["sha"] == "a" * 40
+    assert [step["phase"] for step in body["steps"]] == [
+        "queued", "preparing", "building", "uploading", "going_live", "verifying",
+    ]
+    memory.close()
+
+
+def test_workspace_checkpoints_and_restore_use_the_site_git_history(tmp_path):
+    memory = Memory(tmp_path / "checkpoints" / "memory.db")
+    live_sha = "a" * 40
+    older_sha = "b" * 40
+    candidate_sha = "c" * 40
+
+    class Adapter:
+        def ensure_branch(self, branch):
+            return {"branch": branch}
+
+        def list_commits(self, limit=30):
+            return [
+                {"sha": live_sha, "message": "Publish website update: journal", "author": "Ada",
+                 "date": "2026-11-06T15:39:36Z", "parents": [older_sha]},
+                {"sha": older_sha, "message": "Ada: refine the journal", "author": "Ada",
+                 "date": "2026-11-05T12:00:00Z", "parents": []},
+            ]
+
+        def restore_frontend_paths(self, commit_sha, branch, message):
+            assert commit_sha == older_sha
+            assert branch == "preview"
+            return {"committed": True, "commit_sha": candidate_sha, "parent_sha": live_sha,
+                    "scope": "frontend_only", "paths": ["src/app/(frontend)/site.css"]}
+
+    class Deployment:
+        def start(self, request, allow_production=False):
+            assert allow_production is False
+            assert request["mode"] == "compiled_preview"
+            return {"status": "queued", "id": "preview-1"}
+
+    memory.log_publish("Journal redesign", "site", live_sha, version_type="merge")
+    tenant = Tenant(
+        tenant_id="checkpoints",
+        config={
+            "site": {
+                "preview_branch": "preview",
+                "payload": {"runtime_activation": {"release_id": "rel-1", "source_sha": live_sha}},
+            },
+        },
+        memory=memory,
+        runtime=None,
+        context={"llm": object(), "design_adapter": Adapter(), "source_deployment": Deployment()},
+        api_token="checkpoint-token",
+    )
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=ChatService(registry=registry), registry=registry, prefix="/v1/workspace",
+    )
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer checkpoint-token"}
+        listing = client.get("/v1/workspace/checkpoints", headers=headers)
+        restored = client.post(
+            "/v1/workspace/checkpoints/restore",
+            headers=headers,
+            json={"commit": older_sha},
+        )
+        already_live = client.post(
+            "/v1/workspace/checkpoints/restore",
+            headers=headers,
+            json={"commit": live_sha},
+        )
+
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()["checkpoints"]
+    assert [row["sha"] for row in rows] == [live_sha, older_sha]
+    assert rows[0]["isLive"] is True and rows[0]["canRestore"] is False
+    assert rows[0]["published"] is True and rows[0]["summary"] == "Journal redesign"
+    assert rows[1]["isLive"] is False and rows[1]["canRestore"] is True
+    assert listing.json()["reviewPending"] is False
+
+    assert restored.status_code == 200, restored.text
+    draft_id = restored.json()["draft_id"]
+    draft = memory.get_draft(draft_id)
+    assert draft["kind"] == "rollback"
+    assert draft["meta"]["target_sha"] == older_sha
+    assert draft["meta"]["candidate_sha"] == candidate_sha
+    assert draft["meta"]["scope"] == "frontend_only"
+
+    assert already_live.status_code == 409
+    memory.close()

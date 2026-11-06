@@ -331,3 +331,93 @@ def test_prose_filter_keeps_prose_that_mentions_filenames():
     # a natural summary sentence is kept even though it names files
     assert _looks_like_prose("I updated styles.css and app.js")
     assert not _looks_like_prose("styles.css app.js index.html")  # bare listing still dropped
+
+
+def test_list_commits_reads_the_official_branch_newest_first(monkeypatch):
+    seen = []
+
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        seen.append(url)
+        assert method == "GET"
+        return 200, [
+            {
+                "sha": "A" * 40,
+                "commit": {
+                    "message": "Publish website update: journal\n\nBody text",
+                    "author": {"name": "Ada (site-agent)", "date": "2026-11-06T15:39:36Z"},
+                },
+                "parents": [{"sha": "b" * 40}],
+            }
+        ]
+
+    monkeypatch.setattr(github_static, "_request", fake_request)
+    adapter = get_adapter("github_static", _config())
+    adapter.token = "test-token"
+    commits = adapter.list_commits(limit=5)
+
+    assert "sha=main" in seen[0]
+    assert commits == [{
+        "sha": "a" * 40,
+        "message": "Publish website update: journal",
+        "author": "Ada (site-agent)",
+        "date": "2026-11-06T15:39:36Z",
+        "parents": ["b" * 40],
+    }]
+
+
+def test_list_commits_falls_back_to_the_registered_checkout(monkeypatch):
+    adapter = get_adapter("github_static", _config())
+    adapter.token = ""
+    adapter._local_checkout = lambda: __import__("pathlib").Path("/repo")
+    adapter._local_remote_ref = lambda branch: f"refs/remotes/origin/{branch}"
+
+    class Result:
+        stdout = ("c" * 40 + "\x1f" + "d" * 40 + "\x1fAda\x1f2026-11-06T15:00:00Z\x1fCheckpoint").encode()
+
+    adapter._git = lambda args, cwd, timeout=120: Result()
+
+    assert adapter.list_commits(limit=3) == [{
+        "sha": "c" * 40,
+        "parents": ["d" * 40],
+        "author": "Ada",
+        "date": "2026-11-06T15:00:00Z",
+        "message": "Checkpoint",
+    }]
+
+
+def test_frontend_restore_accepts_later_shared_content_contract_versions(monkeypatch):
+    import json as _json
+
+    marker = base64.b64encode(_json.dumps({"contract": "helloada-content-v4"}).encode()).decode()
+
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        if method == "GET" and "/commits/target" in url:
+            return 200, {"commit": {"tree": {"sha": "target-tree"}}}
+        if method == "GET" and "/git/ref/heads/main" in url:
+            return 200, {"object": {"sha": "current-sha"}}
+        if method == "GET" and "/commits/current-sha" in url:
+            return 200, {"commit": {"tree": {"sha": "current-tree"}}}
+        if method == "GET" and "/git/trees/target-tree" in url:
+            return 200, {"tree": [
+                {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "marker"},
+                {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "old-css"},
+            ]}
+        if method == "GET" and "/git/trees/current-tree" in url:
+            return 200, {"tree": [
+                {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "marker"},
+                {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "new-css"},
+            ]}
+        if method == "GET" and "/contents/helloada-content-contract.json?ref=target" in url:
+            return 200, {"content": marker, "encoding": "base64"}
+        if method == "POST" and "/git/trees" in url:
+            return 201, {"sha": "rollback-tree"}
+        if method == "POST" and "/git/commits" in url:
+            return 201, {"sha": "rollback-commit"}
+        if method == "PATCH" and "/git/refs/heads/preview" in url:
+            return 200, {"object": {"sha": "rollback-commit"}}
+        raise AssertionError((method, url, payload))
+
+    monkeypatch.setattr(github_static, "_request", fake_request)
+    adapter = get_adapter("github_static", _config())
+    result = adapter.restore_frontend_paths("target", "preview", "Restore version")
+    assert result["commit_sha"] == "rollback-commit"

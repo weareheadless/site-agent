@@ -830,6 +830,35 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/publication")
+    def workspace_publication(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.publication(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/checkpoints")
+    def workspace_checkpoints(request: Request, limit: int = 30):
+        tenant = require_service(request)
+        try:
+            return service.checkpoints(limit=limit, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/checkpoints/restore")
+    def workspace_restore_checkpoint(request: Request, body: dict[str, Any] | None = Body(default=None)):
+        tenant = require_service(request)
+        payload = body or {}
+        try:
+            return service.restore_checkpoint(
+                payload.get("commit"),
+                summary=str(payload.get("summary") or "") or None,
+                tenant=tenant,
+            )
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post(f"{prefix}/media/analyze")
     async def workspace_analyze_media(request: Request):
         tenant = require_service(request)

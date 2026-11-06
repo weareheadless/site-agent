@@ -3651,3 +3651,643 @@ textarea:focus-visible {
   border: 0;
   background: #fff;
 }
+
+/* =====================================================================
+   Publication progress + site history
+   One release, one honest account of where it is. The progress rail and the
+   history drawer share the same visual grammar: a thin rail, a small caps
+   label, and monospace identity for anything that must be exact.
+   ===================================================================== */
+
+.helloada-history-trigger {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 9px;
+  color: var(--helloada-muted);
+  background: var(--helloada-panel-soft);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: color 220ms var(--helloada-ease), border-color 220ms var(--helloada-ease), background-color 220ms var(--helloada-ease);
+}
+
+.helloada-history-trigger:hover,
+.helloada-history-trigger[aria-expanded='true'] {
+  border-color: var(--helloada-line);
+  color: var(--helloada-ink);
+  background: var(--helloada-panel);
+}
+
+.helloada-release {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 9px;
+  margin: 10px 11px 0;
+  padding: 12px 14px 11px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 14px;
+  background:
+    linear-gradient(118deg, rgba(255, 200, 87, 0.07), transparent 42%),
+    var(--helloada-panel-soft);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  animation: helloada-release-in 320ms var(--helloada-spring) both;
+}
+
+.helloada-release.is-live {
+  border-color: rgba(32, 99, 71, 0.28);
+  background:
+    linear-gradient(118deg, rgba(32, 99, 71, 0.09), transparent 46%),
+    var(--helloada-panel-soft);
+}
+
+.helloada-release.is-failed {
+  border-color: rgba(181, 42, 62, 0.3);
+  background:
+    linear-gradient(118deg, rgba(181, 42, 62, 0.08), transparent 46%),
+    var(--helloada-panel-soft);
+}
+
+@keyframes helloada-release-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.helloada-release-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.helloada-release-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 50%;
+  color: var(--helloada-positive);
+  background: var(--helloada-panel);
+}
+
+.helloada-release-mark i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--helloada-accent);
+  box-shadow: 0 0 0 0 rgba(255, 107, 94, 0.45);
+  animation: helloada-release-pulse 1.9s ease-out infinite;
+}
+
+.helloada-release.is-failed .helloada-release-mark {
+  color: var(--helloada-negative);
+}
+
+.helloada-release.is-failed .helloada-release-mark i {
+  background: var(--helloada-negative);
+  animation: none;
+}
+
+@keyframes helloada-release-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 107, 94, 0.45); }
+  70% { box-shadow: 0 0 0 7px rgba(255, 107, 94, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(255, 107, 94, 0); }
+}
+
+.helloada-release-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.helloada-release-copy strong {
+  color: var(--helloada-ink);
+  font-size: 11.5px;
+  font-weight: 750;
+  letter-spacing: 0.005em;
+}
+
+.helloada-release-copy span {
+  overflow: hidden;
+  color: var(--helloada-muted);
+  font-size: 10px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+}
+
+.helloada-release-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--helloada-dim);
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.helloada-release-meta em {
+  color: var(--helloada-ink);
+  font-family: 'DM Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.helloada-release-meta small {
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.helloada-release-meta button,
+.helloada-release-meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 7px;
+  color: var(--helloada-ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: border-color 200ms var(--helloada-ease), color 200ms var(--helloada-ease);
+}
+
+.helloada-release-meta button:hover,
+.helloada-release-meta a:hover {
+  border-color: var(--helloada-line);
+}
+
+.helloada-release-open {
+  color: var(--helloada-positive) !important;
+  border-color: rgba(32, 99, 71, 0.32) !important;
+}
+
+.helloada-release-dismiss {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0 !important;
+  border: 0 !important;
+  color: var(--helloada-dim) !important;
+  background: transparent !important;
+}
+
+.helloada-release-dismiss:hover {
+  color: var(--helloada-ink) !important;
+}
+
+.helloada-release-bar {
+  position: relative;
+  overflow: hidden;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--helloada-inset);
+}
+
+.helloada-release-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--helloada-accent), var(--helloada-violet));
+  transition: width 700ms var(--helloada-ease);
+}
+
+.helloada-release-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.helloada-release-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--helloada-dim);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.helloada-release-steps li i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.helloada-release-steps li.is-done {
+  color: var(--helloada-muted);
+}
+
+.helloada-release-steps li.is-done i {
+  background: var(--helloada-positive);
+  opacity: 1;
+}
+
+.helloada-release-steps li.is-active {
+  color: var(--helloada-ink);
+}
+
+.helloada-release-steps li.is-active i {
+  background: var(--helloada-accent);
+  opacity: 1;
+  box-shadow: 0 0 0 3px var(--helloada-cyan-soft);
+}
+
+.helloada-release-commit {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--helloada-dim);
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.helloada-release-commit code {
+  color: var(--helloada-muted);
+  font-family: 'DM Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.helloada-release-commit span {
+  opacity: 0.7;
+  text-transform: none;
+}
+
+/* The history drawer: the site's own Git history, read-only until review.
+   It uses the native modal dialog the Manage drawer already uses, so focus
+   trapping, Escape and the backdrop behave the way the owner expects. */
+
+.helloada-checkpoints-drawer {
+  @include surfaces.paper;
+  position: fixed;
+  inset: 12px 12px 12px auto;
+  display: none;
+  flex-direction: column;
+  width: min(410px, calc(100vw - 24px));
+  height: calc(100dvh - 24px);
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 24px;
+  color: var(--helloada-ink);
+  background: var(--helloada-panel);
+  box-shadow: inset 0 1px rgba(255, 244, 223, 0.045), 0 30px 80px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.helloada-checkpoints-drawer[open] {
+  display: flex;
+  animation: helloada-drawer-in 350ms var(--helloada-ease) both;
+}
+
+.helloada-checkpoints-drawer::backdrop {
+  background: rgba(8, 7, 6, 0.5);
+  backdrop-filter: blur(4px);
+}
+
+.helloada-checkpoints-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 22px 14px;
+  border-bottom: 1px solid var(--helloada-soft-line);
+}
+
+.helloada-checkpoints-head h2 {
+  margin: 4px 0 0;
+  color: var(--helloada-ink);
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.helloada-checkpoints-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 9px;
+  color: var(--helloada-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.helloada-checkpoints-close:hover {
+  color: var(--helloada-ink);
+  border-color: var(--helloada-line);
+}
+
+.helloada-checkpoints-scroll {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 22px 20px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.helloada-live-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px 13px;
+  border: 1px solid rgba(32, 99, 71, 0.22);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 92% 12%, rgba(32, 99, 71, 0.12), transparent 60%),
+    var(--helloada-panel-soft);
+}
+
+.helloada-live-card strong {
+  color: var(--helloada-ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.helloada-checkpoint-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0;
+  color: var(--helloada-dim);
+  font-size: 9px;
+}
+
+.helloada-checkpoint-meta code {
+  color: var(--helloada-muted);
+  font-family: 'DM Mono', ui-monospace, monospace;
+  font-size: 9.5px;
+}
+
+.helloada-checkpoint-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--helloada-soft-line);
+  color: var(--helloada-dim);
+  font-size: 8.5px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.helloada-checkpoint-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.helloada-checkpoint {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--helloada-soft-line);
+}
+
+.helloada-checkpoint:last-child {
+  border-bottom: 0;
+}
+
+.helloada-checkpoint-rail {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+}
+
+.helloada-checkpoint-rail::before {
+  position: absolute;
+  top: 12px;
+  bottom: -14px;
+  left: 50%;
+  width: 1px;
+  background: var(--helloada-soft-line);
+  content: '';
+  transform: translateX(-50%);
+}
+
+.helloada-checkpoint:last-child .helloada-checkpoint-rail::before {
+  display: none;
+}
+
+.helloada-checkpoint-rail i {
+  position: relative;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  border: 1px solid var(--helloada-line);
+  border-radius: 50%;
+  background: var(--helloada-panel);
+}
+
+.helloada-checkpoint.is-live .helloada-checkpoint-rail i {
+  border-color: var(--helloada-positive);
+  background: var(--helloada-positive);
+  box-shadow: 0 0 0 3px rgba(32, 99, 71, 0.16);
+}
+
+.helloada-checkpoint-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.helloada-checkpoint-title {
+  margin: 0;
+  color: var(--helloada-ink);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.helloada-checkpoint-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 999px;
+  color: var(--helloada-muted);
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.helloada-checkpoint-badge.is-live {
+  border-color: rgba(32, 99, 71, 0.35);
+  color: var(--helloada-positive);
+}
+
+.helloada-checkpoint-badge.is-quiet {
+  border-style: dashed;
+  color: var(--helloada-dim);
+}
+
+.helloada-checkpoint-action {
+  justify-self: start;
+  padding: 3px 9px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 7px;
+  color: var(--helloada-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+  transition: color 200ms var(--helloada-ease), border-color 200ms var(--helloada-ease), background-color 200ms var(--helloada-ease);
+}
+
+.helloada-checkpoint-action:hover:not(:disabled) {
+  border-color: var(--helloada-accent);
+  color: var(--helloada-ink);
+  background: var(--helloada-cyan-soft);
+}
+
+.helloada-checkpoint-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.helloada-checkpoint-confirm {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(255, 200, 87, 0.4);
+  border-radius: 10px;
+  background: var(--helloada-warm);
+}
+
+.helloada-checkpoint-confirm p {
+  margin: 0;
+  color: var(--helloada-ink);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.helloada-checkpoint-confirm div {
+  display: flex;
+  gap: 6px;
+}
+
+.helloada-checkpoint-confirm button {
+  padding: 4px 10px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--helloada-muted);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.helloada-checkpoint-confirm button.is-primary {
+  border-color: transparent;
+  color: var(--helloada-action-ink);
+  background: var(--helloada-cyan);
+}
+
+.helloada-checkpoint-confirm button.is-quiet {
+  border-color: rgba(29, 39, 59, 0.18);
+}
+
+.helloada-checkpoints-empty {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--helloada-dim);
+  font-size: 10.5px;
+  line-height: 1.6;
+}
+
+.helloada-drawer-note {
+  margin: 0;
+  padding: 9px 11px;
+  border-left: 2px solid var(--helloada-accent);
+  border-radius: 0 8px 8px 0;
+  color: var(--helloada-muted);
+  background: var(--helloada-inset);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.helloada-drawer-note em {
+  color: var(--helloada-ink);
+  font-family: 'DM Mono', ui-monospace, monospace;
+  font-style: normal;
+}
+
+.helloada-checkpoints-foot {
+  display: grid;
+  gap: 8px;
+  padding: 12px 22px 16px;
+  border-top: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-panel-soft);
+}
+
+.helloada-checkpoints-foot p {
+  margin: 0;
+  color: var(--helloada-dim);
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.helloada-checkpoints-foot button {
+  display: inline-flex;
+  justify-self: start;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 7px;
+  color: var(--helloada-muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.helloada-checkpoints-foot button:hover:not(:disabled) {
+  color: var(--helloada-ink);
+  border-color: var(--helloada-line);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .helloada-release,
+  .helloada-release-mark i,
+  .helloada-release-bar span,
+  .helloada-checkpoints-drawer[open] {
+    animation: none !important;
+    transition: none !important;
+  }
+}

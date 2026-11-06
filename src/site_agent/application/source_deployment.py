@@ -240,6 +240,8 @@ class SourceDeploymentService:
                 pipeline_sha=str(receipt.get("pipelineSha") or ""),
                 updated_at=_now(),
             )
+        job["release_started_at"] = str(receipt.get("startedAt") or "") or job.get("release_started_at")
+        job["release_finished_at"] = str(receipt.get("finishedAt") or "") or job.get("release_finished_at")
         self._jobs[str(job.get("id") or "")] = job
         self._persist()
         return job
@@ -1530,6 +1532,21 @@ class SourceDeploymentService:
                 self._persist()
             results.append({"draftId": int(draft["id"]), **checkpoint})
         return results
+
+    def latest_release(self) -> dict[str, Any]:
+        """The most recently queued production release, by creation time.
+
+        ``latest`` orders by last update, which can surface an older terminal
+        release that happened to be refreshed later. The owner is asking about
+        the newest release they approved, so order by when it was queued.
+        """
+        with self._lock:
+            jobs = [dict(value) for value in self._jobs.values() if isinstance(value, Mapping) and value.get("mode") == _PRODUCTION]
+            if not jobs:
+                return {}
+            job = max(jobs, key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")))
+        self._refresh_release_job(job)
+        return dict(job)
 
     def latest(self, branch: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
         with self._lock:
