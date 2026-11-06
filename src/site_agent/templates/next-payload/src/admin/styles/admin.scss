@@ -4290,6 +4290,27 @@ textarea:focus-visible {
   border-color: var(--helloada-line);
 }
 
+@media (max-width: 560px) {
+  .helloada-release-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .helloada-release-meta {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .helloada-release-steps {
+    gap: 4px 9px;
+  }
+
+  .helloada-checkpoints-drawer {
+    inset: 8px;
+    width: auto;
+    height: calc(100dvh - 16px);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .helloada-release,
   .helloada-release-mark i,

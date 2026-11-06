@@ -4220,3 +4220,48 @@ def test_workspace_checkpoints_and_restore_use_the_site_git_history(tmp_path):
 
     assert already_live.status_code == 409
     memory.close()
+
+
+def test_checkpoint_restore_explains_a_checkpoint_that_matches_live(tmp_path):
+    memory = Memory(tmp_path / "checkpoint-identical" / "memory.db")
+    live_sha = "a" * 40
+
+    class Adapter:
+        def ensure_branch(self, branch):
+            return {"branch": branch}
+
+        def list_commits(self, limit=30):
+            return [{"sha": live_sha, "message": "Live", "author": "Ada", "date": "2026-11-06T15:00:00Z"}]
+
+        def restore_frontend_paths(self, commit_sha, branch, message):
+            raise RuntimeError("github: selected version has no frontend differences from the current website")
+
+    class Deployment:
+        def start(self, request, allow_production=False):
+            raise AssertionError("an identical checkpoint must not start a preview build")
+
+    tenant = Tenant(
+        tenant_id="checkpoint-identical",
+        config={"site": {"preview_branch": "preview", "payload": {"runtime_activation": {"source_sha": live_sha}}}},
+        memory=memory,
+        runtime=None,
+        context={"llm": object(), "design_adapter": Adapter(), "source_deployment": Deployment()},
+        api_token="identical-token",
+    )
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=ChatService(registry=registry), registry=registry, prefix="/v1/workspace",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/workspace/checkpoints/restore",
+            headers={"Authorization": "Bearer identical-token"},
+            json={"commit": "b" * 40},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "This checkpoint already matches the live website, so there is nothing to restore."
+    assert memory.list_drafts(limit=10) == []
+    memory.close()

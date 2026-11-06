@@ -323,6 +323,19 @@ Landed on `main`:
   live site and no publish action appeared. Every source change now gets a
   compiled preview (`20261106161500-api-compile-css-candidates-fix`), and the
   dead admin overlay branch is removed.
+- [x] Publication progress — publishing used to answer with one sentence and
+  then nothing. The workspace now projects the central VPS receipt
+  (`GET /v1/workspace/publication`) as an owner-facing phase with a progress
+  rail, elapsed time and the pipeline's own failure reason, polled while a
+  release runs. The admin source ships through the shared runtime overlay.
+- [x] Site history and checkpoints — the Website toolbar opens a drawer listing
+  the tenant repository's official branch (`GET /v1/workspace/checkpoints`),
+  annotated as live, published or never released. "Restore" prepares the
+  existing frontend-only rollback review
+  (`POST /v1/workspace/checkpoints/restore`); production still changes only on
+  approval. The restore adapter accepted only `helloada-content-v1`, so every
+  current site's checkpoint failed with "predates the supported baseline"; it
+  now accepts the supported contract family.
 - [ ] Follow-up from that refusal — a stale base still blocks publish with no
   owner-visible remedy. The admin needs a "refresh candidate" action that
   rebases the preview branch onto current main, rebuilds, and updates the

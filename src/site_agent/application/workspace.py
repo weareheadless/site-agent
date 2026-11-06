@@ -5874,7 +5874,12 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 — keep rollback approval-gated
             if isinstance(exc, BridgeError):
                 raise
-            raise BridgeError(str(exc)[:500]) from exc
+            reason = str(exc)
+            if "no frontend differences" in reason:
+                raise BridgeError("This checkpoint already matches the live website, so there is nothing to restore.") from exc
+            if "predates the supported shared-content" in reason:
+                raise BridgeError("This checkpoint predates the current content system and cannot be restored.") from exc
+            raise BridgeError(reason[:500]) from exc
         review_payload = {
             "scope": "frontend_only",
             "contract": "helloada-content-v1",
