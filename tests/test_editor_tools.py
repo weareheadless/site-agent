@@ -867,3 +867,66 @@ def test_tool_calling_required_no_json_fallback(env):
     with pytest.raises(RuntimeError, match="Native tool calling is required"):
         handle_message({"config": config, "memory": env[0], "llm": NoToolsLLM()},
                        Adapter(), "build a page")
+
+
+def test_a_short_closing_note_does_not_replace_the_answer_already_written(env):
+    """The owner sees one message; a closing caveat must not erase the answer."""
+    from site_agent.brain.editor import handle_message
+    from site_agent.hands.base import SiteAdapter
+
+    analysis = (
+        "A profile page is the right move. It gives the owner a citable entity, "
+        "it can rank for his name and for instructor queries, and it carries the "
+        "credentials a buyer is looking for. Keep the homepage section as a short "
+        "teaser that links to the page, and put the full record on the page: "
+        "level, years teaching, students certified, competition results, and the "
+        "safety work at named events. Add Person schema with sameAs links to the "
+        "AIDA instructor, athlete and safety profiles. Do not copy the AIDA text; "
+        "write it in his own words and link the source as verification."
+    )
+    closing = "To be clear, I haven't built or previewed this yet. Choose a direction and ask me to build it."
+
+    class Adapter(SiteAdapter):
+        name = "t"
+
+        def commit_file(self, *args, **kwargs):
+            raise AssertionError("an advisory turn must not write source")
+
+    memory, config, context = env
+    llm = FakeToolsLLM([
+        {"content": analysis, "tool_calls": _tc("list_drafts")},
+        {"content": closing, "tool_calls": []},
+    ])
+    result = handle_message({**context, "llm": llm}, Adapter(), "should we add a profile page?")
+
+    assert analysis in result["reply"]
+    assert result["reply"].endswith(closing)
+    assert result["merge_draft_id"] is None
+
+
+def test_a_normal_build_summary_is_not_prefixed_with_planning_narration(env, monkeypatch):
+    from site_agent.brain.editor import handle_message
+    from site_agent.hands import opencode_runner as runner
+    from site_agent.hands.base import SiteAdapter
+
+    class Adapter(SiteAdapter):
+        name = "t"
+
+        def commit_file(self, *args, **kwargs):
+            raise AssertionError("the builder stages source, not the chat adapter")
+
+    memory, config, context = env
+    config["builder"] = {"enabled": True}
+    config["site"]["clone_path"] = "/tmp/existing-site"
+    monkeypatch.setattr(runner, "stage_build", lambda ctx, brief, progress=None: {
+        "reply": "The footer is now on every journal page. Review the preview before publishing.",
+        "merge_draft_id": 44,
+        "changed": True,
+    })
+    llm = FakeToolsLLM([
+        {"content": "I will plan this change first so the host can validate it against the requested files.",
+         "tool_calls": _tc("plan_website_change", content_effects=[], source_brief="add the footer", response_only=False)},
+        {"content": None, "tool_calls": _tc("spawn_build", brief="add the footer")},
+    ])
+    result = handle_message({**context, "llm": llm}, Adapter(), "add the footer")
+    assert result["reply"].startswith("The footer is now on every journal page")

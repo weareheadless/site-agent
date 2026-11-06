@@ -1492,7 +1492,9 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         "the host records per-request dispatch evidence; a corrected validated plan may replace an earlier plan only while "
         "that evidence is absent. Once recorded, the plan stays frozen even if the call raises or its outcome is uncertain. "
         "Do not replay a dispatched Payload effect or source build, and do not infer that no dispatch occurred from missing "
-        "completed_fields or a missing receipt. A response_only plan is for read-only answers."
+        "completed_fields or a missing receipt. A response_only plan is for read-only answers. "
+        "Your final message must stand alone: the owner sees only that message, so restate any answer "
+        "you already wrote and never end with a closing note that refers to text you did not include."
     )
     try:
         from .prompts import memory_context
@@ -1528,6 +1530,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         context["_source_message_id"] = source_message_id
 
     max_steps = _max_work_steps(context)
+    answer_blocks: list[str] = []
     for hop in range(max_steps):
         design_intent = _looks_like_design_request(message)
         tool_spec = _tools_spec(
@@ -1586,13 +1589,16 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                     })
                     continue
             return {
-                "reply": _owner_safe_reply(reply),
+                "reply": _owner_safe_reply(_complete_owner_answer(reply, answer_blocks, context)),
                 "proposal_id": context.get("_last_proposal_id"),
                 "merge_draft_id": context.get("_last_merge_draft_id"),
                 "preview": context.get("_last_preview"),
                 "change": context.get("_last_change"),
                 "changed": context.get("_last_changed"),
             }
+        narration = str(resp.get("content") or "").strip()
+        if len(narration) >= 400:
+            answer_blocks.append(narration)
         side_effect_calls = [c for c in calls if c["function"]["name"] in SIDE_EFFECTS]
         if side_effect_calls and len(calls) != 1:
             tool_names = ",".join(sorted(
@@ -1649,6 +1655,23 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                     "changed": context.get("_last_changed"),
                 }
     raise RuntimeError(f"Ada reached the configured tool-step limit ({max_steps}); the request did not complete.")
+
+
+def _complete_owner_answer(reply: str, blocks: list[str], context: dict[str, Any]) -> str:
+    """Never deliver only a closing caveat as the owner-facing answer.
+
+    A model turn can write its answer, keep reading, then end with one short
+    closing line. Only the final message is returned to the owner, so that line
+    must not replace the answer that was already written in the same turn.
+    """
+    if len(reply) >= 240 or not blocks:
+        return reply
+    if context.get("_last_changed") or context.get("_last_merge_draft_id"):
+        return reply
+    earlier = max(blocks, key=len).strip()
+    if len(earlier) < 400:
+        return reply
+    return earlier + "\n\n" + reply
 
 
 def handle_message(
