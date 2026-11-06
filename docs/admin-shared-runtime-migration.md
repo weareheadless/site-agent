@@ -311,6 +311,18 @@ Landed on `main`:
   every route, and the preview `/blog` stays inside the preview mount with six
   listing entries. One design warning remains in the preview console: a GSAP
   tween targets `.image-caption`, which the journal page does not render.
+- [x] Publish refusal — the owner's publish failed because the candidate's
+  production base (`6ae47ab`) no longer matched `main` (`1afb6250`, the revision
+  13 merge), and the admin reported only "The draft could not be published."
+  The admin now resolves both error shapes (`message` and FastAPI's `detail`).
+  The candidate was rebased onto current main and rebuilt, then published:
+  merge `e6f4516f`, release `rel-20261106121511-c4b235c7` deployed, live
+  `/blog` serving the new journal with six entries.
+- [ ] Follow-up from that refusal — a stale base still blocks publish with no
+  owner-visible remedy. The admin needs a "refresh candidate" action that
+  rebases the preview branch onto current main, rebuilds, and updates the
+  draft's base and head, instead of requiring an operator.
+
 - [ ] Step 6 — delete the packaging flow. `packages/helloada-payload-admin`
   and `.github/workflows/release-payload-admin.yml` still exist and are now dead
   weight: nothing pins or imports the package in a tenant build. Deleting them
