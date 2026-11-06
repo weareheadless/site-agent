@@ -318,6 +318,11 @@ Landed on `main`:
   The candidate was rebased onto current main and rebuilt, then published:
   merge `e6f4516f`, release `rel-20261106121511-c4b235c7` deployed, live
   `/blog` serving the new journal with six entries.
+- [x] CSS-only candidates — a stylesheet change was classified as a no-build
+  overlay, but the admin never applied that overlay: the preview showed the
+  live site and no publish action appeared. Every source change now gets a
+  compiled preview (`20261106161500-api-compile-css-candidates-fix`), and the
+  dead admin overlay branch is removed.
 - [ ] Follow-up from that refusal — a stale base still blocks publish with no
   owner-visible remedy. The admin needs a "refresh candidate" action that
   rebases the preview branch onto current main, rebuilds, and updates the
