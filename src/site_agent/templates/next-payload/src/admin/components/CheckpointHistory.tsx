@@ -16,6 +16,7 @@ type Checkpoint = {
   isLive: boolean
   published: boolean
   summary: string
+  label: string
   publishedTs: string
   versionType: string
   canRestore: boolean
@@ -65,7 +66,7 @@ export function CheckpointHistory({
     setLoading(true)
     setError('')
     try {
-      const response = await fetchHelloAda('/api/helloada/checkpoints?limit=40', { cache: 'no-store' })
+      const response = await fetchHelloAda('/api/helloada/checkpoints?limit=25', { cache: 'no-store' })
       const body = (await response.json()) as CheckpointIndex & { message?: string }
       if (!response.ok) throw new Error(responseMessage(body, t('checkpoints.unavailable')))
       setData(body)
@@ -97,7 +98,7 @@ export function CheckpointHistory({
       const response = await fetchHelloAda('/api/helloada/checkpoints/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ commit: checkpoint.sha, summary: checkpoint.summary || checkpoint.message }),
+        body: JSON.stringify({ commit: checkpoint.sha, summary: checkpoint.label || checkpoint.message }),
       })
       const body = (await response.json()) as { draft_id?: number; message?: string }
       if (!response.ok) throw new Error(responseMessage(body, t('checkpoints.restoreFailed')))
@@ -140,7 +141,7 @@ export function CheckpointHistory({
           <p className="helloada-title-kicker">{t('checkpoints.liveNow')}</p>
           {live ? (
             <>
-              <strong>{live.summary || live.message}</strong>
+              <strong>{live.label || live.message}</strong>
               <p className="helloada-checkpoint-meta">
                 <code>{live.shortSha}</code>
                 <span>·</span>
@@ -181,7 +182,7 @@ export function CheckpointHistory({
                 <li key={checkpoint.sha} className={`helloada-checkpoint ${checkpoint.isLive ? 'is-live' : ''} ${isConfirming ? 'is-confirming' : ''}`}>
                   <span className="helloada-checkpoint-rail" aria-hidden="true"><i /></span>
                   <div className="helloada-checkpoint-body">
-                    <p className="helloada-checkpoint-title">{checkpoint.summary || checkpoint.message}</p>
+                    <p className="helloada-checkpoint-title">{checkpoint.label || checkpoint.message}</p>
                     <p className="helloada-checkpoint-meta">
                       <code>{checkpoint.shortSha}</code>
                       <span>·</span>

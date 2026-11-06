@@ -5718,15 +5718,18 @@ class ChatService:
             if not re.fullmatch(r"[0-9a-f]{40}", sha):
                 continue
             published = publishes.get(sha) or {}
+            message = str((commit or {}).get("message") or "")
+            summary = str(published.get("summary") or "")
             rows.append({
                 "sha": sha,
                 "shortSha": sha[:7],
-                "message": str((commit or {}).get("message") or "")[:240],
+                "message": message[:240],
+                "label": self._checkpoint_label(summary or message),
                 "author": str((commit or {}).get("author") or "")[:80],
                 "date": str((commit or {}).get("date") or ""),
                 "isLive": sha == live_sha,
                 "published": bool(published),
-                "summary": str(published.get("summary") or "")[:240],
+                "summary": summary[:240],
                 "publishedTs": str(published.get("ts") or ""),
                 "versionType": str(published.get("version_type") or ""),
                 "canRestore": sha != live_sha,
@@ -5744,6 +5747,21 @@ class ChatService:
             "reviewDraftId": int(review["id"]) if review else None,
             "reviewTitle": str((review or {}).get("title") or ""),
         }
+
+    @staticmethod
+    def _checkpoint_label(value: Any, *, limit: int = 140) -> str:
+        """Turn a stored draft/commit title into one readable history label.
+
+        Draft titles carry the review flow's own prefix, and a truncated title
+        can end mid-word. The owner is reading a history, not a job record.
+        """
+        text = " ".join(str(value or "").split())
+        for prefix in ("Preview ready: ", "Publish website update: ", "Ada: "):
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+        if len(text) > limit:
+            text = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-") + "…"
+        return text
 
     def restore_version(self, version_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Create an approval-gated rollback draft; never mutate production directly."""
