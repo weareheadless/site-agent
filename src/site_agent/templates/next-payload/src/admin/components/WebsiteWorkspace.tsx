@@ -776,6 +776,7 @@ function ReviewWorkspace() {
   const [manualEditing, setManualEditing] = useState(false)
   const [adaUnavailable, setAdaUnavailable] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<PreviewUiStatus>('idle')
+  const [previewStep, setPreviewStep] = useState('')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [sourceReview, setSourceReview] = useState<{ draftId: number; sha: string; url: string }>()
   const sourceReviewIdentityRef = useRef('')
@@ -973,6 +974,13 @@ function ReviewWorkspace() {
     setPreviewStatus('ready')
   }, [candidatePreviewReady, candidatePreviewIdentity, previewPlan, syncRouteFromPreview])
 
+  const previewStepLabel = (step: string) => {
+    if (!step) return ''
+    const key = `preview.step.${step}`
+    const translated = t(key)
+    return translated === key ? '' : translated
+  }
+
   const previewStatusMessage = previewStatus === 'refreshing'
     ? t('workspace.previewRefreshing')
     : previewStatus === 'build-required'
@@ -1146,12 +1154,14 @@ function ReviewWorkspace() {
         commit?: string
         draft_id?: number
         error?: string
+        build_step?: string
       }
       if (!isCurrentRequest()) return
       const sameRevision = draft?.kind === 'design'
         ? Boolean(headSha && latest.commit === headSha)
         : Boolean(headSha && latest.commit === headSha && latest.draft_id === draft.id)
       if (latestResponse.ok && sameRevision && latest.status === 'ready' && latest.id) {
+        setPreviewStep('')
         setSourceReview({ draftId: draft.id, sha: headSha,
           url: `/api/helloada/source/preview/${encodeURIComponent(latest.id)}/runtime/` })
         setPreviewPlan({ ...plan, head_sha: headSha, status: 'ready', requires_build: false })
@@ -1163,6 +1173,7 @@ function ReviewWorkspace() {
         return
       }
       setSourceReview({ draftId: draft.id, sha: headSha, url: '' })
+      setPreviewStep(latestResponse.ok && sameRevision ? String(latest.build_step || '') : '')
       sourceReviewIdentityRef.current = ''
       if (latestResponse.ok && sameRevision && latest.status === 'failed') {
         setPreviewStatus('error')
@@ -2501,7 +2512,7 @@ function ReviewWorkspace() {
                    ? `${t('workspace.candidatePreviewReady')} · ${t('workspace.candidateNotApproved')}`
                    : designBuild?.preview?.status === 'failed'
                      ? `${t('workspace.candidatePreviewFailed')} ${designBuild.preview.error || ''}`
-                     : t('workspace.candidatePreviewPreparing')}
+                     : `${t('workspace.candidatePreviewPreparing')}${previewStepLabel(previewStep) ? ` · ${previewStepLabel(previewStep)}` : ''}`}
                </p>
              ) : null}
              <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
@@ -2991,7 +3002,7 @@ function ReviewWorkspace() {
           <div className="helloada-publish-dialog-scroll">
             <HelloAdaMark size={40} /><h2 id="helloada-publish-title">{t('owner.publishTitle')}</h2><p><strong>{currentRouteLabel}</strong> · {site.siteName}</p><p>{t('owner.publishNote')}</p>
           </div>
-          <footer><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || !selectedDocument?.draftHash || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></footer>
+          <footer><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={publishing || Boolean(pendingChangeCount) || (sourceReview ? !sourceReview.url : !hasDraft || !selectedDocument?.draftHash)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></footer>
        </dialog>
 
         {fieldEditorEntry && fieldEditorKey ? (

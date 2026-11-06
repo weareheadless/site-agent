@@ -564,6 +564,99 @@ class SourceDeploymentService:
             raise
         return directory, local_head
 
+    def _mark_step(self, job: Mapping[str, Any], step: str) -> None:
+        """Publish the current build step so the owner sees movement, not a spinner."""
+        with self._lock:
+            current = self._jobs.get(str(job.get("id") or ""))
+            if current is None:
+                return
+            current["build_step"] = step
+            current["updated_at"] = _now()
+            self._persist()
+
+    def _node_modules_root(self) -> Path | None:
+        configured = str(self.settings.get("worktree_root") or "").strip()
+        root = Path(configured).expanduser().resolve() if configured else self._local_checkout().parent
+        if not root.is_dir():
+            return None
+        tenant = re.sub(r"[^a-z0-9-]+", "-", str(self.config.get("instance_name") or "tenant").lower()).strip("-")
+        if not tenant:
+            return None
+        return root / ".site-agent-node-modules" / tenant
+
+    @staticmethod
+    def _node_modules_key(worktree: Path) -> str:
+        digest = hashlib.sha256()
+        for name in ("package.json", "package-lock.json"):
+            digest.update(name.encode("utf-8"))
+            path = worktree / name
+            digest.update(path.read_bytes() if path.is_file() else b"")
+        return digest.hexdigest()[:24]
+
+    def _link_cached_node_modules(self, worktree: Path, key: str) -> bool:
+        """Hard-link an exact, already-installed dependency tree into a new worktree.
+
+        A preview starts from a fresh Git worktree, so a cold ``npm ci`` of the
+        same lockfile ran on every build. The tree is identical for an identical
+        lockfile, and hard links cost only directory metadata.
+        """
+        root = self._node_modules_root()
+        if root is None:
+            return False
+        cache = root / key
+        if not (cache / ".site-agent-cache-key").is_file():
+            return False
+        target = worktree / "node_modules"
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        try:
+            result = subprocess.run(
+                ["cp", "-a", "-l", str(cache), str(target)],
+                capture_output=True, text=True, timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        if result.returncode != 0:
+            shutil.rmtree(target, ignore_errors=True)
+            return False
+        (target / ".site-agent-cache-key").write_text(key, encoding="utf-8")
+        return True
+
+    def _store_node_modules(self, worktree: Path, key: str) -> None:
+        root = self._node_modules_root()
+        if root is None:
+            return
+        cache = root / key
+        if cache.exists():
+            return
+        source = worktree / "node_modules"
+        if not source.is_dir():
+            return
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            staging = root / f".{key}.{os.getpid()}"
+            shutil.rmtree(staging, ignore_errors=True)
+            result = subprocess.run(
+                ["cp", "-a", "-l", str(source), str(staging)],
+                capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode != 0:
+                shutil.rmtree(staging, ignore_errors=True)
+                return
+            (staging / ".site-agent-cache-key").write_text(key, encoding="utf-8")
+            os.rename(staging, cache)
+        except (OSError, subprocess.TimeoutExpired):
+            return
+        # One lockfile identity per tenant is normal; keep one previous build in
+        # case the owner reverts a dependency change.
+        entries = sorted(
+            (item for item in root.iterdir() if item.is_dir() and not item.name.startswith(".")),
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for stale in entries[2:]:
+            shutil.rmtree(stale, ignore_errors=True)
+
     def _check(
         self,
         command: list[str],
@@ -576,6 +669,7 @@ class SourceDeploymentService:
         preview_secret: str | None = None,
         local_payload: bool = False,
     ) -> dict[str, Any]:
+        started = time.monotonic()
         try:
             child_env = self._preview_env(production=production, payload_secret=preview_secret)
             if local_payload:
@@ -593,7 +687,7 @@ class SourceDeploymentService:
         if result.returncode:
             output = (result.stderr or result.stdout or "command failed").strip()
             raise SourceDeploymentError(f"{' '.join(command[:4])}: {output[-1_500:]}")
-        item: dict[str, Any] = {"name": name, "ok": True}
+        item: dict[str, Any] = {"name": name, "ok": True, "seconds": round(time.monotonic() - started, 1)}
         output = (result.stdout or result.stderr or "").strip()
         if parse_json:
             try:
@@ -1025,6 +1119,7 @@ class SourceDeploymentService:
             raise SourceDeploymentError("production builds and uploads are owned by the central VPS release pipeline")
         checkout = self._local_checkout()
         run_id = str(job.get("design_run_id") or "")
+        self._mark_step(job, "worktree")
         worktree, local_head = (self._worktree(checkout, branch, commit, retained=True)
                                if run_id else self._worktree(checkout, branch, commit))
         timeout = int(self.settings.get("build_timeout_seconds") or 1_800)
@@ -1037,6 +1132,7 @@ class SourceDeploymentService:
             # Compile exactly what the release will build: the shared runtime
             # copies replace tenant copies and the retired files are removed
             # before any typecheck, lint or Next build runs.
+            self._mark_step(job, "overlay")
             from .shared_runtime import apply_preview_runtime_overlay
 
             payload_config = (self.config.get("site") or {}).get("payload") or {}
@@ -1072,6 +1168,7 @@ class SourceDeploymentService:
                     preview_secret=preview_secret,
                 ))
 
+            self._mark_step(job, "dependencies")
             assets = prepare_release_dependencies(
                 worktree,
                 github_api_token(self.config, self._resolved_env()),
@@ -1079,13 +1176,19 @@ class SourceDeploymentService:
                 self._preview_home / "tmp",
                 seed_private_package,
             )
-            checks.append(self._check(
-                [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
-                worktree, "dependencies", timeout, preview_secret=preview_secret,
-            ))
+            dependency_key = self._node_modules_key(worktree)
+            if self._link_cached_node_modules(worktree, dependency_key):
+                checks.append({"name": "dependencies", "ok": True, "cached": True})
+            else:
+                checks.append(self._check(
+                    [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
+                    worktree, "dependencies", timeout, preview_secret=preview_secret,
+                ))
+                self._store_node_modules(worktree, dependency_key)
             if not assets:
                 raise SourceDeploymentError("candidate source did not resolve the locked shared package")
             if self.payload_gateway is not None:
+                self._mark_step(job, "content")
                 checks.extend(self._seed_canonical_preview(worktree, job, npm, timeout, preview_secret))
             if not run_id:
                 # Design candidates are checked by the design quality gates,
@@ -1095,12 +1198,14 @@ class SourceDeploymentService:
                 checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True, preview_secret=preview_secret))
             else:
                 job["content_authority"] = self._content_inventory(checkout, worktree, timeout, preview_secret)
+            self._mark_step(job, "typecheck")
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
             # The release gate is typecheck plus the OpenNext build; it never
             # runs lint. Linting here would fail a preview on canonical runtime
             # files that ship unchanged, so keep the gates identical.
             # OpenNext invokes the managed Next build itself. A separate build
             # here compiles the same candidate twice before the owner sees it.
+            self._mark_step(job, "build")
             checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
 
             if run_id:
@@ -1111,6 +1216,7 @@ class SourceDeploymentService:
                 artifact.pop("path", None)
                 job["output_artifact"] = {"status": "passed", "mode": "compiled_runtime", **artifact}
 
+            self._mark_step(job, "runtime")
             runtime = self._start_runtime(job, worktree, local_head, preview_secret=preview_secret)
             keep_worktree = True
             result = {
