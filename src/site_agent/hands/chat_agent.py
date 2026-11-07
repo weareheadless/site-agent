@@ -75,7 +75,6 @@ def _write_agent_files(
     job_id: int,
     model: str,
     key_env: str,
-    api_key: str,
 ) -> None:
     oc = worktree / ".opencode"
     oc.mkdir(parents=True, exist_ok=True)
@@ -125,12 +124,12 @@ def _write_agent_files(
                 # not to whatever a checkout or a .pth file resolves to.
                 "environment": {
                     "PYTHONPATH": str(_package_root()),
-                    # The build path resolves its model credential from the
-                    # process environment, exactly as the API does.
-                    key_env: api_key,
+                    "SITE_AGENT_MCP_LOG": str(Path(str(config.get("data_dir") or ".")) / "logs" / "chat-tools.log"),
                 },
                 "enabled": True,
-                "timeout": {"startup": 120000, "execution": 1800000},
+                # A build runs inside this tool call; the whole turn must not
+                # time out at the MCP request layer.
+                "timeout": 1_800_000,
             }
         },
     }
@@ -180,8 +179,18 @@ def run_turn(
     model = str(builder.get("model") or (config.get("llm") or {}).get("model") or "").strip()
     if not model:
         raise RuntimeError("no model is configured for the chat agent")
-    key_env = str((config.get("llm") or {}).get("api_key_env") or "OPENROUTER_API_KEY").strip()
-    api_key = str((context.get("env") or {}).get("SITE_AGENT_LLM_API_KEY") or "").strip()
+    # One name for the credential in opencode and in the tool process it
+    # spawns; the generated configuration only ever interpolates it.
+    key_env = "SITE_AGENT_LLM_API_KEY"
+    import os
+
+    api_key = str(
+        (context.get("env") or {}).get("SITE_AGENT_LLM_API_KEY")
+        or os.environ.get("SITE_AGENT_LLM_API_KEY")
+        or ""
+    ).strip()
+    if not api_key:
+        raise RuntimeError("no model credential is available to the chat agent")
 
     base_ref = opencode_runner._build_base_ref(context.get("memory"), config)
     if progress:
@@ -195,7 +204,6 @@ def run_turn(
         job_id=job_id,
         model=model,
         key_env=key_env,
-        api_key=api_key,
     )
 
     memory = context.get("memory")
@@ -214,6 +222,7 @@ def run_turn(
         agent_name=CHAT_AGENT,
         timeout_seconds=int(builder.get("timeout_seconds", 1800)),
         api_key=api_key,
+        api_key_env=key_env,
         env=dict(context.get("env") or {}),
         memory=memory,
         home=home,

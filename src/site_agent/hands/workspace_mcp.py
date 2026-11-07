@@ -73,12 +73,35 @@ class WorkspaceServer:
     def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         from ..application.agent_tools import AgentToolError, call_tool
 
+        _log(f"call {name}")
         try:
-            return call_tool(self.memory, self.context, self.job_id, name, arguments), False
+            result = call_tool(self.memory, self.context, self.job_id, name, arguments)
+            _log(f"ok {name} ({len(result)} chars)")
+            return result, False
         except AgentToolError as exc:
+            _log(f"refused {name}: {exc}")
             return f"REFUSED: {exc}", True
         except Exception as exc:  # noqa: BLE001 — a tool failure is reported, not fatal
+            import traceback
+
+            _log(f"failed {name}: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
             return f"{type(exc).__name__}: {str(exc)[:400]}", True
+
+
+def _log(message: str) -> None:
+    """Append a line to the operator log when one is configured."""
+    import os
+    import time
+
+    path = str(os.environ.get("SITE_AGENT_MCP_LOG") or "").strip()
+    if not path:
+        return
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"{time.strftime('%H:%M:%S')} {message}\n")
+    except OSError:
+        pass
 
 
 def _write(payload: dict[str, Any]) -> None:
