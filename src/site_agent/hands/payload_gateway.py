@@ -117,7 +117,13 @@ def _revision(document: Any, response: Mapping[str, Any], label: str) -> dict[st
     digest = str(response.get("documentHash") or response.get("globalHash") or "").strip()
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         raise PayloadGatewayError(f"gateway returned no exact {label} revision")
-    return {**document, "_helloadaRevision": digest}
+    revision = {**document, "_helloadaRevision": digest}
+    # The version this write replaced is the durable handle a later revert
+    # restores; without it a revert could only guess from content.
+    base_version_id = str(response.get("baseVersionId") or "").strip()
+    if base_version_id:
+        revision["_helloadaBaseVersionId"] = base_version_id
+    return revision
 
 
 def _valid_date(value: str) -> bool:
@@ -822,6 +828,60 @@ class PayloadGatewayClient:
             },
         )
         return _revision(response.get("document"), response, "updated document")
+
+    def restore_revision(self, collection: str, document_id: str, version_id: str, *, locale: str | None = None, expected_hash: str | None = None) -> dict[str, Any]:
+        """Restore one exact prior version into the draft, with a CAS base.
+
+        ``expected_hash`` is the revision the caller reviewed as current; the
+        gateway refuses if the draft moved on, so a revert never overwrites a
+        later edit.
+        """
+        collection = self._collection(collection)
+        capabilities = self.require_authoring_contract()
+        locale = self._authoring_locale(capabilities, locale)
+        if collection not in ((capabilities.get("enabled") or {}).get("collections") or []):
+            raise PayloadGatewayError(f"the {collection} module is not enabled for this website")
+        document_id = str(document_id or "").strip()
+        version_id = str(version_id or "").strip()
+        if not document_id or not version_id:
+            raise PayloadGatewayError("a document id and an exact version id are required")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("a version restore requires the exact current draft revision")
+        response = self._request(
+            "POST",
+            self._gateway_path("content"),
+            payload={
+                "operation": "restore",
+                "collection": collection,
+                "id": document_id,
+                "versionId": version_id,
+                "expectedHash": expected_hash,
+                "locale": locale,
+            },
+        )
+        return _revision(response.get("document"), response, "restored document")
+
+    def restore_global_revision(self, global_name: str, version_id: str, *, locale: str | None = None, expected_hash: str | None = None) -> dict[str, Any]:
+        capabilities = self.require_authoring_contract()
+        locale = self._authoring_locale(capabilities, locale)
+        global_name = str(global_name or "").strip()
+        version_id = str(version_id or "").strip()
+        if not global_name or not version_id:
+            raise PayloadGatewayError("a global and an exact version id are required")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("a version restore requires the exact current global revision")
+        response = self._request(
+            "POST",
+            self._gateway_path("global"),
+            payload={
+                "operation": "restore",
+                "global": global_name,
+                "versionId": version_id,
+                "expectedHash": expected_hash,
+                "locale": locale,
+            },
+        )
+        return _revision(response.get("global"), response, "restored global")
 
     def publish(self, collection: str, document_id: str, *, locale: str | None = None, expected_hash: str | None = None, expected_fields: list[str] | None = None) -> dict[str, Any]:
         collection = self._collection(collection)

@@ -22,6 +22,15 @@ type Checkpoint = {
   canRestore: boolean
 }
 
+type ContentVersion = {
+  id: string
+  revision: string
+  status: string
+  createdAt: string
+  updatedAt: string
+  latest: boolean
+}
+
 type CheckpointIndex = {
   checkpoints: Checkpoint[]
   liveSha: string
@@ -49,10 +58,14 @@ export function CheckpointHistory({
   open,
   onClose,
   onRestored,
+  document,
+  onContentRestored,
 }: {
   open: boolean
   onClose: () => void
   onRestored?: (draftId: number) => void
+  document?: { collection: string; id: string; title: string; draftHash: string }
+  onContentRestored?: () => void
 }) {
   const { language, t } = useHelloAdaTranslations()
   const [data, setData] = useState<CheckpointIndex>()
@@ -60,6 +73,10 @@ export function CheckpointHistory({
   const [error, setError] = useState('')
   const [busySha, setBusySha] = useState('')
   const [confirming, setConfirming] = useState('')
+  const [contentVersions, setContentVersions] = useState<ContentVersion[]>()
+  const [contentError, setContentError] = useState('')
+  const [contentBusy, setContentBusy] = useState('')
+  const [contentConfirming, setContentConfirming] = useState('')
   const dialogRef = useRef<HTMLDialogElement>(null)
 
   const load = useCallback(async () => {
@@ -111,6 +128,62 @@ export function CheckpointHistory({
     }
   }
 
+  // The owner workspace passes a fresh document object on every render, so the
+  // read depends on its identity fields, never on the object itself: an object
+  // dependency would re-run the fetch after every state update.
+  const collection = document?.collection || ''
+  const documentId = document?.id || ''
+
+  const loadContent = useCallback(async () => {
+    if (!collection || !documentId) {
+      setContentVersions(undefined)
+      return
+    }
+    setContentError('')
+    try {
+      const params = new URLSearchParams({ collection, documentId })
+      const response = await fetchHelloAda(`/api/helloada/content/history?${params.toString()}`, { cache: 'no-store' })
+      const body = await response.json() as { versions?: ContentVersion[]; message?: string }
+      if (!response.ok) throw new Error(responseMessage(body, t('contentHistory.unavailable')))
+      setContentVersions(body.versions || [])
+    } catch (cause) {
+      setContentError(cause instanceof Error ? cause.message : t('contentHistory.unavailable'))
+    }
+  }, [collection, documentId, t])
+
+  useEffect(() => {
+    if (!open || !collection || !documentId) return
+    const timer = window.setTimeout(() => { void loadContent() }, 0)
+    return () => window.clearTimeout(timer)
+  }, [collection, documentId, loadContent, open])
+
+  const restoreContent = async (version: ContentVersion) => {
+    if (!document || contentBusy) return
+    setContentBusy(version.id)
+    setContentError('')
+    try {
+      const response = await fetchHelloAda('/api/helloada/content/history', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collection: document.collection,
+          documentId: document.id,
+          versionId: version.id,
+          expectedHash: document.draftHash,
+        }),
+      })
+      const body = await response.json() as { message?: string }
+      if (!response.ok) throw new Error(responseMessage(body, t('contentHistory.failed')))
+      setContentConfirming('')
+      await loadContent()
+      onContentRestored?.()
+    } catch (cause) {
+      setContentError(cause instanceof Error ? cause.message : t('contentHistory.failed'))
+    } finally {
+      setContentBusy('')
+    }
+  }
+
   const live = data?.checkpoints.find((checkpoint) => checkpoint.isLive)
   const rows = data?.checkpoints || []
 
@@ -157,6 +230,67 @@ export function CheckpointHistory({
             <p className="helloada-checkpoints-empty">{t('checkpoints.noLive')}</p>
           )}
         </section>
+
+        {document ? (
+          <section className="helloada-checkpoint-section" aria-label={t('contentHistory.title')}>
+            <div className="helloada-checkpoint-heading">
+              <span>{t('contentHistory.title')} · {document.title}</span>
+              <span>{contentVersions?.length || 0}</span>
+            </div>
+            <p className="helloada-drawer-note">{t('contentHistory.note')}</p>
+            {contentError ? <div className="helloada-alert" role="alert">{contentError}</div> : null}
+            {contentVersions === undefined ? (
+              <p className="helloada-checkpoints-empty">{t('contentHistory.loading')}</p>
+            ) : contentVersions.length ? (
+              <ol className="helloada-checkpoint-list">
+                {contentVersions.map((version) => {
+                  const isConfirming = contentConfirming === version.id
+                  const disabled = Boolean(contentBusy) || Boolean(version.latest)
+                  return (
+                    <li key={version.id} className={`helloada-checkpoint ${version.latest ? 'is-live' : ''} ${isConfirming ? 'is-confirming' : ''}`}>
+                      <span className="helloada-checkpoint-rail" aria-hidden="true"><i /></span>
+                      <div className="helloada-checkpoint-body">
+                        <p className="helloada-checkpoint-title">
+                          {new Date(version.createdAt).toLocaleString(language)}
+                          {version.latest ? <span className="helloada-checkpoint-badge is-live">{t('contentHistory.current')}</span> : null}
+                        </p>
+                        <p className="helloada-checkpoint-meta">
+                          <code>{version.revision.slice(7, 14)}</code>
+                          <span>·</span>
+                          <span>{version.status}</span>
+                        </p>
+                        {isConfirming ? (
+                          <div className="helloada-checkpoint-confirm" role="group" aria-label={t('contentHistory.confirmTitle')}>
+                            <p>{t('contentHistory.confirmBody')}</p>
+                            <div>
+                              <button type="button" className="is-primary" disabled={Boolean(contentBusy)} onClick={() => void restoreContent(version)}>
+                                {contentBusy === version.id ? t('contentHistory.restoring') : t('contentHistory.confirm')}
+                              </button>
+                              <button type="button" className="is-quiet" disabled={Boolean(contentBusy)} onClick={() => setContentConfirming('')}>
+                                {t('contentHistory.cancel')}
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="helloada-checkpoint-action"
+                            disabled={disabled}
+                            onClick={() => setContentConfirming(version.id)}
+                          >
+                            {t('contentHistory.restore')}
+                          </button>
+                        )}
+                      </div>
+                    </li>
+                  )
+                })}
+              </ol>
+            ) : (
+              <p className="helloada-checkpoints-empty">{t('contentHistory.empty')}</p>
+            )}
+          </section>
+        ) : null}
 
         {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
         {data?.reviewPending ? (

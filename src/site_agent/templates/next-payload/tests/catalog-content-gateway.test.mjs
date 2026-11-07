@@ -20,6 +20,9 @@ const harness = async (t) => {
     export const getPayload = async () => globalThis.__catalogPayload
     export const JWTAuthentication = async () => ({user:null})
     export const getCloudflareContext = async () => ({env:{}})
+    export const latestCollectionVersionId = async () => '11'
+    export const latestGlobalVersionId = async () => '12'
+    export const versionRevision = async () => 'sha256:' + 'a'.repeat(64)
     export const readBookingSettings = async () => { throw new Error('unexpected booking access') }
     export const readBookingTypeById = readBookingSettings
     export const resolveTenantBookingOwner = readBookingSettings
@@ -29,7 +32,7 @@ const harness = async (t) => {
   await writeFile(response, 'export const NextResponse = {json:(body, options) => Response.json(body, options)}')
   const compiled = await build({ entryPoints: [source.pathname], bundle: true, write: false, format: 'esm', platform: 'node', alias: {
     '@payload-config': stub, 'next/server': response, payload: stub,
-    '@/helloada.config': stub, '@/lib/service-auth': stub, '@opennextjs/cloudflare': stub,
+    '@/helloada.config': stub, '@/lib/service-auth': stub, '@/lib/payload-versions': stub, '@opennextjs/cloudflare': stub,
     '@weareheadless/helloada-payload-core/schema': schema,
   }, plugins: [{ name: 'mailflare-boundary', setup(build) {
     build.onResolve({ filter: /mailflare-booking-service$/ }, () => ({ path: stub }))

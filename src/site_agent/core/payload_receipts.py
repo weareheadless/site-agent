@@ -14,6 +14,7 @@ from typing import Any
 
 
 _REVISION = re.compile(r"^sha256:[0-9a-f]{64}$")
+_VERSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def payload_revision_manifest(raw: Sequence[Any]) -> tuple[list[dict[str, Any]], str]:
@@ -38,6 +39,9 @@ def payload_revision_manifest(raw: Sequence[Any]) -> tuple[list[dict[str, Any]],
             raise ValueError("the Payload effect set contains a duplicate destination revision")
         seen.add(identity)
         fields = item.get("fields") if isinstance(item.get("fields"), list) else []
+        base_version_id = str(item.get("base_version_id") or "").strip()
+        if base_version_id and not _VERSION_ID.fullmatch(base_version_id):
+            raise ValueError("a Payload effect carries an invalid base version identity")
         manifest.append({
             "kind": kind,
             "operation": str(item.get("operation") or "update"),
@@ -48,6 +52,11 @@ def payload_revision_manifest(raw: Sequence[Any]) -> tuple[list[dict[str, Any]],
             "fields": sorted({str(field) for field in fields if str(field).strip()}),
             "summary": str(item.get("summary") or "")[:500],
         })
+        if base_version_id:
+            # The key is present only when a version was recorded, so manifests
+            # written before this field existed keep their canonical form and
+            # their stored hash.
+            manifest[-1]["base_version_id"] = base_version_id
     manifest.sort(key=lambda item: (item["kind"], item["target"], item["document_id"], item["locale"]))
     encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return manifest, hashlib.sha256(encoded.encode("utf-8")).hexdigest()

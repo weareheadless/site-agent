@@ -4267,6 +4267,8 @@ def build_brief(message: str, config: dict[str, Any]) -> str:
         "typecheck/build path after source changes, and never create a local schema, static content store, or "
         "alternate publishing path."
     )
+    from ..brain.design_contract import DESIGN_AND_CONTENT_CONTRACT
+    lines.append(DESIGN_AND_CONTENT_CONTRACT)
     return "\n".join(lines)
 
 

@@ -5577,6 +5577,9 @@ class ChatService:
                 except Exception as exc:  # noqa: BLE001 — draft cancellation remains bounded
                     raise BridgeError(str(exc)[:500]) from exc
 
+        content_restore: dict[str, Any] = {"restored": [], "unsupported": [], "superseded": []}
+        if kind in {"design", "merge", "rollback"} and tenant is not None:
+            content_restore = self._restore_draft_content(draft, tenant)
         if not memory.update_draft_status(normalized_id, "discarded"):
             raise BridgeError("no such draft")
         memory.record_action("discard", f"#{normalized_id}")
@@ -5584,7 +5587,67 @@ class ChatService:
             from .growth_candidates import wake_growth_pending
 
             wake_growth_pending(memory)
-        return {"ok": True, "draft_id": normalized_id, "status": "discarded"}
+        return {"ok": True, "draft_id": normalized_id, "status": "discarded", "content_restore": content_restore}
+
+    def _restore_draft_content(self, draft: Mapping[str, Any], tenant: Tenant) -> dict[str, Any]:
+        """Restore the exact content versions a design draft replaced.
+
+        Each Payload effect recorded the version id its write replaced. Reverting
+        the draft restores those ids; a revision without a recorded id cannot be
+        reverted exactly and is reported, never guessed from content.
+
+        A destination the owner (or another writer) changed after this draft is
+        no longer this draft's to revert: it is reported as superseded and left
+        alone, so discarding never overwrites newer work. Only an unreadable or
+        unreachable gateway aborts the discard, because then nothing is known
+        about the content and the owner must not lose both the review and it.
+        """
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        effects = meta.get("payload_effects") if isinstance(meta.get("payload_effects"), list) else []
+        if not effects:
+            return {"restored": [], "unsupported": [], "superseded": []}
+        gateway = tenant.context.get("payload_gateway")
+        if gateway is None:
+            raise BridgeError("the website content gateway is not configured; the draft was not discarded")
+        from ..hands.payload_gateway import PayloadGatewayError
+
+        restored: list[dict[str, Any]] = []
+        unsupported: list[dict[str, Any]] = []
+        superseded: list[dict[str, Any]] = []
+        for effect in effects:
+            if not isinstance(effect, Mapping):
+                continue
+            target = str(effect.get("target") or "").strip()
+            document_id = str(effect.get("document_id") or "").strip()
+            base_version_id = str(effect.get("base_version_id") or "").strip()
+            revision = str(effect.get("revision") or "").strip()
+            locale = str(effect.get("locale") or "").strip() or None
+            entry = {"target": target, "document_id": document_id, "version_id": base_version_id}
+            if not base_version_id:
+                unsupported.append({"target": target, "document_id": document_id, "reason": "no-recorded-base-version"})
+                continue
+            try:
+                if effect.get("kind") == "global":
+                    gateway.restore_global_revision(target, base_version_id, locale=locale, expected_hash=revision)
+                else:
+                    gateway.restore_revision(target, document_id, base_version_id, locale=locale, expected_hash=revision)
+            except PayloadGatewayError as exc:
+                if exc.status_code in (404, 409):
+                    # The version is gone or the destination moved past this
+                    # draft. Either way this draft no longer owns the content.
+                    superseded.append({**entry, "reason": "version-not-found" if exc.status_code == 404 else "changed-after-draft"})
+                    continue
+                raise BridgeError(
+                    "the content for " + (target or document_id or "this draft")
+                    + " could not be restored exactly; the draft was not discarded"
+                ) from exc
+            except Exception as exc:  # noqa: BLE001 - the discard must fail closed with the cause
+                raise BridgeError(
+                    "the content for " + (target or document_id or "this draft")
+                    + " could not be restored exactly; the draft was not discarded"
+                ) from exc
+            restored.append(entry)
+        return {"restored": restored, "unsupported": unsupported, "superseded": superseded}
 
     def publication(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Report the owner-visible state of the current production release.

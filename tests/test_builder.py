@@ -1329,6 +1329,28 @@ def test_build_brief_always_enforces_the_canonical_payload_source_contract():
     assert "alternate publishing path" in brief
 
 
+def test_build_brief_carries_the_design_copy_and_search_standard():
+    brief = runner.build_brief("design the about page", {})
+    for marker in (
+        "Design, copy and search standard",
+        "read the site you are extending",
+        "prefers-reduced-motion",
+        "one H1",
+        "never invent credentials",
+        "390px, 768px and 1440px",
+        "then load the exact page and look at it",
+    ):
+        assert marker in brief
+
+
+def test_chat_instructions_carry_the_design_standard_and_page_completion_rule():
+    from site_agent.hands import chat_agent
+
+    assert "Design, copy and search standard" in chat_agent.INSTRUCTIONS
+    assert "A new page is not finished when its content is saved" in chat_agent.INSTRUCTIONS
+    assert "build it" in chat_agent.INSTRUCTIONS
+
+
 def test_install_agent_files_does_not_modify_site_files(tmp_path):
     clone = _token_clone(tmp_path)
     gitignore = clone / ".gitignore"

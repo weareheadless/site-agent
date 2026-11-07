@@ -49,6 +49,7 @@ existing generated tenants; they are not the current owner journey.
 ## Invariants
 
 - A site mutation is either an explicit owner action or a pending draft.
+- Content recovery follows `docs/content-recovery.md`: every Payload write records the exact base version it replaced, restores are draft-only and CAS-verified, and discarding a design draft restores the content versions it replaced.
 - A pending visual build is reviewed in the Design tab; do not add raw preview
   links as a substitute for the review flow.
 - Production is changed only by an explicit approval operation.

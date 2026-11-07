@@ -2390,6 +2390,7 @@ function ReviewWorkspace() {
     ? [[t('workspace.shortClarify'), t('workspace.shortClarifyPrompt')]]
     : [
         [t('owner.improvePage'), t('owner.improvePrompt')],
+        [t('owner.designPage'), t('owner.designPrompt')],
         [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
         [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
       ]
@@ -2552,6 +2553,16 @@ function ReviewWorkspace() {
              <CheckpointHistory
                open={historyOpen}
                onClose={() => setHistoryOpen(false)}
+               document={selectedDocument ? {
+                 collection: selectedDocument.collection,
+                 id: selectedDocument.id,
+                 title: selectedDocument.title,
+                 draftHash: selectedDocument.draftHash,
+               } : undefined}
+               onContentRestored={() => {
+                 setPublishNotice(t('contentHistory.restored'))
+                 void loadWorkspace(true)
+               }}
                onRestored={() => {
                  setHistoryOpen(false)
                  setPublishNotice(t('checkpoints.restored'))

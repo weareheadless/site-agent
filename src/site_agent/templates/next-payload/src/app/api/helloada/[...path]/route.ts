@@ -18,6 +18,7 @@ import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/ad
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
 import { createHelloAdaPreviewToken, helloAdaPreviewLifetime } from '@/lib/helloada-preview'
+import { latestCollectionVersionId, latestGlobalVersionId } from '@/lib/payload-versions'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject as growthObject,
@@ -334,13 +335,52 @@ export async function GET(request: Request, { params }: RouteProps) {
   }
   if (path === '/content/history') {
     try {
-      const versions = (await Promise.all(editableCollections.map(async (collection) => {
-        const result = await auth.payload.findVersions({ collection: collection as CollectionSlug, depth: 0, limit: 40, overrideAccess: false, req: auth.req, sort: '-createdAt' })
-        return result.docs.map((item) => {
+      const query = new URL(request.url).searchParams
+      const documentId = text(query.get('documentId'))
+      const globalName = text(query.get('global'))
+      if (globalName) {
+        if (!['siteSettings', 'navigation'].includes(globalName)) return errorResponse('unsupported global')
+        const result = await auth.payload.findGlobalVersions({
+          slug: globalName as GlobalSlug, depth: 0, limit: 40, overrideAccess: false, req: auth.req, sort: '-createdAt',
+        })
+        const versions = await Promise.all(result.docs.map(async (item) => {
           const row = item as unknown as Record<string, unknown>
           const version = asObject(row.version)
-          return { id: text(row.id), parent: text(row.parent), collection, title: text(version.title) || text(version.slug) || 'Untitled content', slug: text(version.slug), status: text(version._status) || 'unknown', createdAt: text(row.createdAt), updatedAt: text(row.updatedAt), latest: row.latest === true }
+          return {
+            id: text(row.id), parent: globalName, global: globalName, collection: '',
+            title: text(version.title) || globalName, slug: '', status: text(version._status) || 'unknown',
+            createdAt: text(row.createdAt), updatedAt: text(row.updatedAt), latest: row.latest === true,
+            revision: await hashJson(withoutPayloadMetadata(version)),
+          }
+        }))
+        return NextResponse.json({ versions }, { headers: { 'Cache-Control': 'private, no-store' } })
+      }
+      const requested = text(query.get('collection'))
+      if (documentId && !isEditableCollection(requested)) {
+        return errorResponse('a document history read requires its editable collection')
+      }
+      const collections = documentId ? [requested] : editableCollections
+      const versions = (await Promise.all(collections.map(async (collection) => {
+        const result = await auth.payload.findVersions({
+          collection: collection as CollectionSlug,
+          depth: 0,
+          limit: documentId ? 40 : 20,
+          overrideAccess: false,
+          req: auth.req,
+          sort: '-createdAt',
+          ...(documentId ? { where: { parent: { equals: documentId } } } : {}),
         })
+        return Promise.all(result.docs.map(async (item) => {
+          const row = item as unknown as Record<string, unknown>
+          const version = asObject(row.version)
+          return {
+            id: text(row.id), parent: text(row.parent), collection,
+            title: text(version.title) || text(version.slug) || 'Untitled content',
+            slug: text(version.slug), status: text(version._status) || 'unknown',
+            createdAt: text(row.createdAt), updatedAt: text(row.updatedAt), latest: row.latest === true,
+            revision: await hashJson(withoutPayloadMetadata(version)),
+          }
+        }))
       }))).flat().sort((left, right) => right.createdAt.localeCompare(left.createdAt))
       return NextResponse.json({ versions: versions.slice(0, 80) }, { headers: { 'Cache-Control': 'private, no-store' } })
     } catch (cause) {
@@ -681,11 +721,82 @@ export async function POST(request: Request, { params }: RouteProps) {
   }
   if (path === '/content/history') {
     const body = asObject(await request.json().catch(() => ({})))
-    const collection = documentCollection(body)
     const versionId = text(body.versionId || body.version_id)
     if (!versionId) return errorResponse('version id is required')
-    const document = await auth.payload.restoreVersion({ collection: collection as CollectionSlug, draft: true, id: versionId, overrideAccess: false, req: auth.req })
-    return NextResponse.json({ ok: true, collection, versionId, document })
+    const globalName = text(body.global)
+    const locale = helloAdaSite.defaultLocale as TypedLocale
+    if (globalName) {
+      if (!['siteSettings', 'navigation'].includes(globalName)) return errorResponse('unsupported global')
+      const version = await auth.payload.findGlobalVersionByID({
+        slug: globalName as GlobalSlug, id: versionId, depth: 0, locale, overrideAccess: false, req: auth.req, user: auth.user,
+      }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+      if (!version) return errorResponse('version not found', 404)
+      const expectedHash = text(body.expectedHash)
+      if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a version restore')
+      const currentGlobal = await auth.payload.findGlobal({
+        slug: globalName as GlobalSlug, draft: true, locale, depth: 0, overrideAccess: false, req: auth.req, user: auth.user,
+      }) as unknown as Record<string, unknown>
+      const currentHash = await hashJson(withoutPayloadMetadata(currentGlobal))
+      const targetHash = await hashJson(withoutPayloadMetadata(asObject(version.version)))
+      if (currentHash === targetHash) {
+        return NextResponse.json({ ok: true, global: globalName, versionId, documentHash: currentHash, alreadyRestored: true }, { headers: { 'Cache-Control': 'private, no-store' } })
+      }
+      if (currentHash !== expectedHash) {
+        return errorResponse('The settings changed after the reviewed revision. Reload before restoring.', 409)
+      }
+      const baseVersionId = await latestGlobalVersionId(auth.payload, globalName)
+      let global: Record<string, unknown>
+      try {
+        global = await auth.payload.restoreGlobalVersion({
+          slug: globalName as GlobalSlug, id: versionId, locale, depth: 0,
+          overrideAccess: false, req: auth.req, user: auth.user,
+        }) as unknown as Record<string, unknown>
+      } catch (cause) {
+        return errorResponse('That settings version could not be restored. The current draft is unchanged: ' + errorMessage(cause), 409)
+      }
+      const restoredHash = await hashJson(withoutPayloadMetadata(global))
+      if (restoredHash !== targetHash) return errorResponse('The restored settings do not match the selected version. Reload before trying again.', 409)
+      return NextResponse.json({ ok: true, global: globalName, versionId, documentHash: restoredHash, baseVersionId }, { headers: { 'Cache-Control': 'private, no-store' } })
+    }
+    const collection = documentCollection(body)
+    const documentId = text(body.documentId || body.document_id)
+    const version = await auth.payload.findVersionByID({
+      collection: collection as CollectionSlug, id: versionId, depth: 0, locale, overrideAccess: false, req: auth.req, user: auth.user,
+    }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+    if (!version) return errorResponse('version not found', 404)
+    const parent = typeof version.parent === 'object' && version.parent !== null
+      ? text((version.parent as Record<string, unknown>).id)
+      : text(version.parent)
+    if (!parent) return errorResponse('the version has no document identity', 409)
+    if (documentId && parent !== documentId) return errorResponse('that version belongs to a different document', 409)
+    const expectedHash = text(body.expectedHash)
+    if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a version restore')
+    const currentDraft = await auth.payload.findByID({
+      collection: collection as CollectionSlug, id: parent, draft: true, locale, depth: 0, overrideAccess: false, req: auth.req, user: auth.user,
+    }) as unknown as Record<string, unknown>
+    const currentHash = await hashJson(withoutPayloadMetadata(currentDraft))
+    const targetHash = await hashJson(withoutPayloadMetadata(asObject(version.version)))
+    if (currentHash === targetHash) {
+      return NextResponse.json({ ok: true, collection, documentId: parent, versionId, documentHash: currentHash, alreadyRestored: true }, { headers: { 'Cache-Control': 'private, no-store' } })
+    }
+    if (currentHash !== expectedHash) {
+      return errorResponse('The draft changed after the reviewed revision. Reload before restoring.', 409)
+    }
+    const baseVersionId = await latestCollectionVersionId(auth.payload, collection, parent)
+    let document: Record<string, unknown>
+    try {
+      document = await auth.payload.restoreVersion({
+        collection: collection as CollectionSlug, id: versionId, draft: true, locale, depth: 0,
+        overrideAccess: false, req: auth.req, user: auth.user,
+      }) as unknown as Record<string, unknown>
+    } catch (cause) {
+      return errorResponse('That version could not be restored. The current draft is unchanged: ' + errorMessage(cause), 409)
+    }
+    const restoredHash = await hashJson(withoutPayloadMetadata(document))
+    if (restoredHash !== targetHash) return errorResponse('The restored draft does not match the selected version. Reload before trying again.', 409)
+    return NextResponse.json({
+      ok: true, collection, documentId: parent, versionId, documentHash: restoredHash, baseVersionId,
+    }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
   return upstream || errorResponse('HelloAda service is unavailable', 503)

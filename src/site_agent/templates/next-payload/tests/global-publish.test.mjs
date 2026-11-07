@@ -21,6 +21,9 @@ const harness = async (t) => {
     export const helloAdaSite = { defaultLocale: 'es', locales: ['es', 'en'] }
     export const validateHelloAdaAuthoringData = () => undefined
     export const getPayload = async () => globalThis.__payload
+    export const latestCollectionVersionId = async () => '11'
+    export const latestGlobalVersionId = async () => '12'
+    export const versionRevision = async () => 'sha256:' + 'a'.repeat(64)
   `)
   const configStub = path.join(temp, 'config.mjs')
   await writeFile(configStub, 'export default {}')
@@ -38,6 +41,7 @@ const harness = async (t) => {
       'payload': stub,
       '@/helloada.config': stub,
       '@/lib/service-auth': stub,
+      '@/lib/payload-versions': stub,
       '@weareheadless/helloada-payload-core/schema': stub,
     },
   })

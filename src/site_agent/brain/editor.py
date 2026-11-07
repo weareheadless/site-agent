@@ -794,6 +794,11 @@ def _record_payload_effect(
         "fields": fields,
         "summary": effect.get("summary"),
     }
+    # The exact version this write replaced, when the gateway could identify it.
+    # A revert restores that id; it never reconstructs content from a hash.
+    base_version_id = str(document.get("_helloadaBaseVersionId") or "").strip()
+    if base_version_id:
+        receipt["base_version_id"] = base_version_id
     context.setdefault("_completed_payload_effects", []).append(receipt)
     context["_last_payload_effect"] = receipt
     memory = context.get("memory")

@@ -7,6 +7,7 @@ import { helloAdaSite } from '@/helloada.config'
 import { withRecoveredWrite } from '@/lib/growth-contract'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { REVISION_DEPTH, readCollectionRevision, revisionHash } from '@/lib/payload-revision'
+import { latestCollectionVersionId, versionRevision } from '@/lib/payload-versions'
 import { withPublicRoute } from '@/lib/public-content-route'
 import { fieldMismatchDiagnostic, fieldMismatchKeys, fieldValueMatches } from '@/lib/payload-field-match'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
@@ -282,6 +283,9 @@ export async function POST(request: Request) {
       if (await revisionHash(current) !== expectedHash) return errorResponse('The Payload draft changed. Read it again before updating.', 409)
       const bookingFailure = await validateBookingBindings({ ...current, ...data }, false)
       if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
+      // Capture the exact version this write replaces so a later revert can
+      // restore it by id instead of guessing from content.
+      const baseVersionId = await latestCollectionVersionId(payload, collection, id)
       let document: Record<string, unknown>
       try {
         document = await withRecoveredWrite(payload, { collection, id, locale, expectedHash, data }, () => payload.update({
@@ -304,6 +308,7 @@ export async function POST(request: Request) {
           document: latest,
           documentHash: await hashJson(withoutPayloadMetadata(latest)),
           idempotent: true,
+          baseVersionId,
           effectKey: `${collection}:${id}:${expectedHash}`,
         }, { headers: { 'Cache-Control': 'no-store' } })
       }
@@ -314,8 +319,65 @@ export async function POST(request: Request) {
         document,
         documentHash: await hashJson(withoutPayloadMetadata(document)),
         idempotent: false,
+        baseVersionId,
         effectKey: `${collection}:${id}:${expectedHash}`,
       })
+    }
+    if (operation === 'restore') {
+      const versionId = String(body.versionId || '').trim()
+      if (!versionId) return errorResponse('versionId is required', 400)
+      const expectedHash = String(body.expectedHash || '').trim()
+      if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a version restore', 400)
+      const currentDraft = await readCollectionRevision(payload, { collection, id, draft: true, locale })
+      const currentHash = await revisionHash(currentDraft)
+      const version = await payload.findVersionByID({
+        collection,
+        id: versionId,
+        depth: 0,
+        locale,
+        overrideAccess: true,
+      }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+      if (!version) return errorResponse('version not found', 404)
+      const parent = typeof version.parent === 'object' && version.parent !== null
+        ? String((version.parent as Record<string, unknown>).id || '')
+        : String(version.parent || '')
+      if (parent !== id) return errorResponse('that version belongs to a different document', 409)
+      const targetHash = await versionRevision(version.version)
+      // A revert is idempotent: the draft already at the selected version is done.
+      if (currentHash === targetHash) {
+        return NextResponse.json({
+          collection, document: currentDraft, documentHash: currentHash,
+          restoredFromVersionId: versionId, alreadyRestored: true,
+        }, { headers: { 'Cache-Control': 'no-store' } })
+      }
+      if (currentHash !== expectedHash) {
+        return errorResponse('The Payload draft changed after the reviewed revision. Read it again before restoring.', 409)
+      }
+      const baseVersionId = await latestCollectionVersionId(payload, collection, id)
+      let restored: Record<string, unknown>
+      try {
+        restored = await withRecoveredWrite(payload, { collection, id, locale }, () => payload.restoreVersion({
+          collection,
+          id: versionId,
+          draft: true,
+          locale,
+          depth: REVISION_DEPTH,
+          overrideAccess: true,
+        })) as unknown as Record<string, unknown>
+      } catch (error) {
+        return payloadFailure(error, 'Payload could not restore that version. The current draft is unchanged.')
+      }
+      const restoredHash = await hashJson(withoutPayloadMetadata(restored))
+      if (restoredHash !== targetHash) {
+        return errorResponse('The restored draft does not match the selected version. Read the draft before trying again.', 409)
+      }
+      return NextResponse.json({
+        collection,
+        document: restored,
+        documentHash: restoredHash,
+        restoredFromVersionId: versionId,
+        baseVersionId,
+      }, { headers: { 'Cache-Control': 'no-store' } })
     }
     if (operation === 'publish') {
       const expectedHash = String(body.expectedHash || '').trim()
