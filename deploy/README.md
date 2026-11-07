@@ -370,7 +370,7 @@ bindings, no workers.dev route, and is not a customer entry in
 host `cloudflare` profile:
 
 - delete any conflicting apex A/AAAA/CNAME record first;
-- upload the script to
+- upload `deploy/apex-redirects/casamigo.net.js` to
   `/accounts/{account_id}/workers/scripts/casamigo-apex-redirect`;
 - attach the hostname with `PUT /accounts/{account_id}/workers/domains`
   (`service: casamigo-apex-redirect`, `environment: production`);
