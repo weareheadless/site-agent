@@ -5806,14 +5806,13 @@ def run_owner_turn(
         instructions_suffix=instructions_suffix,
     )
     try:
-        env = dict(context.get("env") or {})
-        api_key = str(env.get("SITE_AGENT_LLM_API_KEY") or "").strip()
+        # The key is resolved and exported by the runner under the same name
+        # the installed provider config reads; passing a different name here
+        # would authenticate nothing.
         result = run_opencode_turn(
             clone, brief, config,
             progress=progress,
             session_id=session_id or None,
-            api_key=api_key or None,
-            api_key_env="SITE_AGENT_LLM_API_KEY" if api_key else None,
             memory=memory,
             agent_name="build",
             reply_mode="final_message",
