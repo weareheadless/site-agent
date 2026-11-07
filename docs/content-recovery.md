@@ -37,6 +37,11 @@ document's versions with their revision hashes; `?global=navigation` does the
 same for a global. The History drawer shows the selected page's versions and
 offers a restore with the same rules.
 
+A restore reads and restores the version with the site's default locale applied,
+and the restored draft is verified against that same read. The current tenant
+set is single-locale; a multi-locale site has not been exercised through this
+path yet.
+
 ## What discarding a design draft does
 
 Discarding a pending `design`, `merge` or `rollback` draft now restores the
