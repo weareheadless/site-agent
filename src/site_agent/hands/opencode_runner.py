@@ -4367,22 +4367,33 @@ def _ensure_service_port(env: Mapping[str, str]) -> None:
 def _opencode_bin(config: dict[str, Any]) -> str:
     """Find the opencode CLI without relying on $PATH (systemd units have a
     minimal PATH that misses ~/.opencode/bin)."""
+    import os
     import shutil
 
     b = config.get("builder") or {}
-    custom = str(b.get("bin") or "").strip()
+    # A tool process runs with the agent's isolated HOME, so its own
+    # `~/.opencode/bin` probe points at the wrong directory. The process that
+    # starts the agent resolves the binary and passes it down.
+    custom = str(b.get("bin") or os.environ.get("SITE_AGENT_OPENCODE_BIN") or "").strip()
     if custom:
-        if Path(custom).exists():
-            return custom
+        candidate = Path(custom).expanduser()
+        if candidate.exists():
+            return str(candidate)
         raise RunnerError(f"builder.bin points to missing file: {custom}")
     found = shutil.which("opencode")
     if found:
         return found
     for cand in (Path.home() / ".opencode" / "bin" / "opencode",
                  "/usr/local/bin/opencode", "/usr/bin/opencode"):
-        if cand.exists():
-            return str(cand)
+        candidate = Path(cand).expanduser()
+        if candidate.exists():
+            return str(candidate)
     raise RunnerError("opencode CLI not found — set builder.bin in config.yaml")
+
+
+def opencode_bin(config: dict[str, Any]) -> str:
+    """Resolve the CLI once, before an attempt is recorded as dispatched."""
+    return _opencode_bin(config)
 
 
 def _qualified_model(model: str, *, provider: str | None = None) -> str:

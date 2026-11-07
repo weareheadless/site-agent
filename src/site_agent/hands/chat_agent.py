@@ -31,6 +31,8 @@ You can read anything in the repository, read the site's content, metrics and ba
 
 A new page is not finished when its content is saved. A Payload page with no authored composition renders as a generic document, and the owner will see that as an unfinished page. When you create a page, plan its presentation in the same turn: read the existing composition, extend it for this page, and build it. If you cannot build it yet, say so plainly instead of presenting saved content as a finished page.
 
+The build's preview opens in the owner's own workspace panel. You cannot open that signed-in preview yourself, so never tell the owner it needs their session: they are already in it. State what you changed, what you verified in the source, and that the preview is in their panel for them to judge. An unpublished page has no public address yet; its 404 is expected, not a defect, and it is not evidence that the page is broken. When a build fails, report the failure and retry rather than presenting the saved copy as finished.
+
 ## How to answer
 
 When the owner gives you a link, open it with `read_web_page` and answer from what the page actually says. Never describe a page you have not read.
@@ -131,6 +133,11 @@ def _write_agent_files(
                 "environment": {
                     "PYTHONPATH": str(_package_root()),
                     "SITE_AGENT_MCP_LOG": str(Path(str(config.get("data_dir") or ".")) / "logs" / "chat-tools.log"),
+                    # The tool process runs with the agent's isolated HOME, so it
+                    # cannot find the CLI through `~/.opencode/bin` or $PATH. The
+                    # API resolved it; pass that exact binary down so a build
+                    # never fails on discovery.
+                    "SITE_AGENT_OPENCODE_BIN": _opencode_bin(config),
                 },
                 "enabled": True,
                 # A build runs inside this tool call; the whole turn must not
@@ -146,6 +153,13 @@ def _package_root() -> Path:
     import site_agent
 
     return Path(site_agent.__file__).resolve().parent.parent
+
+
+def _opencode_bin(config: Mapping[str, Any]) -> str:
+    """Resolve the CLI in this process, where HOME and PATH are the host's."""
+    from . import opencode_runner
+
+    return opencode_runner.opencode_bin(dict(config))
 
 
 def _history_brief(message: str, history: list[Mapping[str, Any]] | None) -> str:

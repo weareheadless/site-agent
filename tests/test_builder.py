@@ -1582,3 +1582,75 @@ def test_template_tokens_injected_into_chat_tools_prompt(tmp_path):
     assert "Design reference" in system_prompt
     assert "section vertical spacing: 180px" in system_prompt
     memory.close()
+
+
+def test_opencode_bin_reports_a_missing_cli_instead_of_crashing(monkeypatch, tmp_path):
+    # A tool process runs with the agent's isolated HOME and a minimal PATH, so
+    # every fallback candidate is absent there. That must be a clear runner
+    # error, never an AttributeError on a string path.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SITE_AGENT_OPENCODE_BIN", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(runner.RunnerError, match="opencode CLI not found"):
+        runner._opencode_bin({"builder": {}})
+
+
+def test_opencode_bin_honours_the_binary_the_parent_process_resolved(monkeypatch, tmp_path):
+    fake = tmp_path / "opencode"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("SITE_AGENT_OPENCODE_BIN", str(fake))
+    monkeypatch.setenv("HOME", str(tmp_path / "nowhere"))
+    assert runner._opencode_bin({"builder": {}}) == str(fake)
+
+
+def test_chat_agent_passes_the_resolved_binary_to_its_tool_process(tmp_path, monkeypatch):
+    from site_agent.hands import chat_agent
+
+    fake = tmp_path / "opencode"
+    fake.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake.chmod(0o755)
+    monkeypatch.setenv("SITE_AGENT_OPENCODE_BIN", str(fake))
+    worktree = tmp_path / "site"
+    worktree.mkdir()
+    (tmp_path / "data").mkdir()
+    chat_agent._write_agent_files(
+        worktree,
+        config={"builder": {"model": "openrouter/x"}, "data_dir": str(tmp_path / "data")},
+        tenant_config_path=str(tmp_path / "config.yaml"),
+        tenant_env_path=str(tmp_path / "tenant.env"),
+        job_id=1,
+        model="openrouter/x",
+        key_env="SITE_AGENT_LLM_API_KEY",
+    )
+    written = json.loads((worktree / "opencode.json").read_text())
+    assert written["mcp"]["workspace"]["environment"]["SITE_AGENT_OPENCODE_BIN"] == str(fake)
+
+
+def test_a_build_that_never_reached_the_builder_can_be_retried_in_the_same_turn(monkeypatch, tmp_path):
+    from site_agent.brain import editor
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        def refuse(_config):
+            raise runner.RunnerError("opencode CLI not found — set builder.bin in config.yaml")
+
+        monkeypatch.setattr(runner, "opencode_bin", refuse)
+        monkeypatch.setattr(runner, "builder_available", lambda _config: True)
+        context = {
+            "config": {"builder": {}, "site": {}},
+            "memory": memory,
+            "_website_change_plan": {
+                "content_effects": [],
+                "source_brief": "rebuild the about page presentation",
+                "source_paths": ["src/components/site/TenantSections.tsx"],
+            },
+            "_completed_payload_effects": [],
+        }
+        with pytest.raises(RuntimeError, match="opencode CLI not found"):
+            editor._execute_tool(context, None, "spawn_build", {"brief": "rebuild"}, lambda _phrase: None)
+        # Nothing ran, so the attempt is not uncertain and the plan is open.
+        assert context.get("_website_change_source_build_dispatched") is False
+        assert context.get("_website_change_plan_dispatched") is False
+    finally:
+        memory.close()

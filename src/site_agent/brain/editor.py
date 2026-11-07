@@ -1475,9 +1475,16 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 + json.dumps(payload_receipts, ensure_ascii=False, sort_keys=True)
             )
         try:
+            # Resolve the CLI before the attempt is recorded as dispatched: a
+            # missing binary did no work, so the plan stays reopenable and Ada
+            # can retry in the same turn instead of reporting an uncertain build.
+            runner.opencode_bin(context["config"])
             _mark_website_change_dispatched(context, source_build=True)
             outcome = runner.stage_build(context, authoritative_brief + execution_context, say)
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, runner.RunnerError) and not exc.result:
+                context["_website_change_source_build_dispatched"] = False
+                context["_website_change_plan_dispatched"] = False
             raise RuntimeError(f"Builder failed: {exc}") from exc
         context["_last_merge_draft_id"] = outcome.get("merge_draft_id")
         context["_last_preview"] = outcome.get("preview")
