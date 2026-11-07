@@ -14,6 +14,7 @@ the source ownership rules keep exactly one owner.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from ..brain.turn_state import TurnState
@@ -87,6 +88,19 @@ def _require_job(memory: Any, job_id: Any) -> int:
     return job_id
 
 
+def _build_preflight(context: Mapping[str, Any]) -> str:
+    """Refuse a build this process cannot finish, instead of half-building one."""
+    from ..config import resolve_secret
+
+    config = context.get("config") or {}
+    if not resolve_secret(dict(config), "llm_api_key", dict(context.get("env") or {})):
+        return "REFUSED: the build agent has no model credential in this process; nothing was started."
+    clone = str((config.get("site") or {}).get("clone_path") or "").strip()
+    if not clone or not Path(clone).is_dir():
+        return "REFUSED: the site checkout is unavailable to the build agent; nothing was started."
+    return ""
+
+
 def call_tool(
     memory: Any,
     context: Mapping[str, Any],
@@ -100,6 +114,10 @@ def call_tool(
     if name not in available:
         raise AgentToolError(f"unknown workspace tool: {name}")
     state = _prepared_context(memory, context, job)
+    if name == "spawn_build":
+        refusal = _build_preflight(state)
+        if refusal:
+            return refusal
     result = _editor()._execute_tool(state, None, name, dict(arguments or {}), lambda _: None)
     return result if isinstance(result, str) else str(result)
 

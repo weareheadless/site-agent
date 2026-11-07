@@ -841,6 +841,17 @@ def _tools_spec(
                 },
                 ["collection", "identifier"],
             ),
+            fn(
+                "list_payload_content",
+                "List the documents in one Payload collection with their slug, title, status and publication date. "
+                "Use this to answer what exists on the site instead of reading source files or migration fixtures.",
+                {
+                    "collection": collection,
+                    "draft": {"type": "boolean", "description": "Include unpublished drafts (default true)"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                ["collection"],
+            ),
          ])
         create_variants = []
         update_variants = []
@@ -1165,8 +1176,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         context["_last_action_succeeded"] = True
         return "Validated website change plan: " + json.dumps(plan, ensure_ascii=False)
     if name in {
-        "read_payload_content", "create_payload_draft", "update_payload_draft",
-        "read_payload_global", "update_payload_global",
+        "read_payload_content", "list_payload_content", "create_payload_draft",
+        "update_payload_draft", "read_payload_global", "update_payload_global",
     }:
         payload = _payload_gateway(context)
         if payload is None:
@@ -1174,6 +1185,24 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         try:
             locale = _payload_locale(payload, context)
             context["_resolved_payload_locale"] = locale
+            if name == "list_payload_content":
+                locale = _payload_locale(payload, context)
+                documents = payload.list(
+                    str(args.get("collection") or ""),
+                    draft=bool(args.get("draft", True)),
+                    limit=int(args.get("limit") or 100),
+                    locale=locale,
+                )
+                rows = []
+                for document in documents:
+                    if not isinstance(document, dict):
+                        continue
+                    rows.append({
+                        key: document.get(key) for key in (
+                            "id", "sourceId", "slug", "title", "published", "publishedAt", "_status",
+                        ) if document.get(key) is not None
+                    })
+                return json.dumps(rows, ensure_ascii=False)
             if name == "read_payload_content":
                 read_kwargs = {
                     "identifier": str(args.get("identifier") or ""),

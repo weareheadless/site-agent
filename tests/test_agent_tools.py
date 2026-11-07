@@ -21,6 +21,12 @@ class FakePayload:
     def require_authoring_contract(self):
         return self.contract
 
+    def list(self, collection, *, draft=True, limit=100, locale=None):
+        return [
+            {"id": 4, "sourceId": f"{collection}:a", "slug": "a", "title": "Article A", "published": True},
+            {"id": 6, "sourceId": f"{collection}:b", "slug": "b", "title": "Article B", "published": True},
+        ]
+
 
 @pytest.fixture
 def workspace(tmp_path):
@@ -48,7 +54,8 @@ def test_the_catalog_publishes_the_workspace_tools(workspace):
     memory, context = workspace
     names = {tool["name"] for tool in agent_tools.tool_catalog(memory, context)}
 
-    assert {"plan_website_change", "spawn_build", "get_metrics", "list_drafts"} <= names
+    assert {"plan_website_change", "spawn_build", "get_metrics", "list_drafts",
+            "list_payload_content"} <= names
     assert "create_payload_draft" in names
 
 
@@ -97,3 +104,24 @@ def test_the_plan_survives_a_second_tool_process(workspace):
 
     summary = agent_tools.turn_summary(memory, context, job_id)
     assert summary["plan"]["source_brief"] == "add the shared footer"
+
+
+def test_listing_content_answers_from_the_canonical_store(workspace):
+    memory, context = workspace
+    conversation = memory.create_conversation()
+    job_id = memory.enqueue_chat_job(conversation, "what is published?")
+
+    text = agent_tools.call_tool(memory, context, job_id, "list_payload_content", {"collection": "posts"})
+
+    assert '"title": "Article A"' in text
+    assert '"slug": "b"' in text
+
+
+def test_a_build_without_a_model_credential_is_refused_before_it_starts(workspace):
+    memory, context = workspace
+    conversation = memory.create_conversation()
+    job_id = memory.enqueue_chat_job(conversation, "change the footer")
+
+    text = agent_tools.call_tool(memory, context, job_id, "spawn_build", {"brief": "add the footer"})
+
+    assert text.startswith("REFUSED: the build agent has no model credential")

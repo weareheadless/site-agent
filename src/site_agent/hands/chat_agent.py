@@ -75,6 +75,7 @@ def _write_agent_files(
     job_id: int,
     model: str,
     key_env: str,
+    api_key: str,
 ) -> None:
     oc = worktree / ".opencode"
     oc.mkdir(parents=True, exist_ok=True)
@@ -122,7 +123,12 @@ def _write_agent_files(
                 ],
                 # Pin the tool process to the exact code this API is running,
                 # not to whatever a checkout or a .pth file resolves to.
-                "environment": {"PYTHONPATH": str(_package_root())},
+                "environment": {
+                    "PYTHONPATH": str(_package_root()),
+                    # The build path resolves its model credential from the
+                    # process environment, exactly as the API does.
+                    key_env: api_key,
+                },
                 "enabled": True,
                 "timeout": {"startup": 120000, "execution": 1800000},
             }
@@ -189,6 +195,7 @@ def run_turn(
         job_id=job_id,
         model=model,
         key_env=key_env,
+        api_key=api_key,
     )
 
     memory = context.get("memory")

@@ -33,16 +33,20 @@ def _env_file(path: Path) -> dict[str, str]:
 
 class WorkspaceServer:
     def __init__(self, config_path: Path, env_path: Path, job_id: int) -> None:
-        import yaml
+        import os
 
+        from ..config import load
         from ..core.memory import Memory
         from ..hands.payload_gateway import PayloadGatewayClient, PayloadMediaService
 
         self.job_id = job_id
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        # The canonical loader merges the packaged defaults, which carry the
+        # secret-name mappings the raw file omits. Loading the file directly
+        # left the build path with no model credential.
+        env = {**os.environ, **_env_file(env_path)}
+        config, _defaults = load(config_path, env)
         if not isinstance(config, dict):
             raise ValueError("workspace configuration is not an object")
-        env = _env_file(env_path)
         data_dir = Path(str(config.get("data_dir") or "")).expanduser()
         if not str(data_dir) or not data_dir.is_dir():
             raise ValueError("workspace data directory is unavailable")
