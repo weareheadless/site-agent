@@ -33,7 +33,7 @@ def test_attribute_creates_match_exact_product_and_key_not_a_fabricated_route():
 def test_variant_create_uses_sku_and_does_not_weaken_planned_field_scope():
     context = {"_website_change_plan": plan("productVariants", "SHIRT-M", "sku", ["product", "sku"])}
     assert editor._plan_effect_for_tool(context, "create_payload_draft", {"collection": "productVariants", "data": {"product": 42, "sku": "SHIRT-M"}})
-    with pytest.raises(ValueError, match="exactly match"):
+    with pytest.raises(ValueError, match="must match the validated plan"):
         editor._plan_effect_for_tool(context, "create_payload_draft", {"collection": "productVariants", "data": {"product": 42, "sku": "SHIRT-M", "stock": 5}})
     with pytest.raises(ValueError, match="canonical"):
         plan("productVariants", "shirt", "slug", ["product", "sku"])

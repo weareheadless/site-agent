@@ -611,6 +611,21 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
             matches = isinstance(document, dict) and str(document.get(locator) or "") == str(effect.get("identifier") or "")
         if matches:
             candidates.append(effect)
+    if not candidates and name == "update_payload_draft":
+        # A page with many fields is written in more than one call: create with
+        # the fields available now, then complete the rest. The plan stays
+        # frozen; only the already-planned fields of that same document may be
+        # written again.
+        for effect in plan.get("content_effects", []):
+            if (not isinstance(effect, dict) or effect.get("kind") != "collection"
+                    or effect.get("operation") != "create"
+                    or effect.get("target") != collection):
+                continue
+            if str(effect.get("_document_id") or "") != identifier:
+                continue
+            remaining = set(effect.get("fields") or []) - set(effect.get("completed_fields") or [])
+            if set(data) and set(data) <= remaining:
+                candidates.append(effect)
     if len(candidates) != 1:
         raise ValueError("the Payload change does not match one exact target in Ada's validated plan")
     effect = candidates[0]
@@ -623,18 +638,47 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
         document = reads.get((str(revision.get("collection") or ""), str(revision.get("documentId") or ""))) if isinstance(reads, dict) else None
         if not isinstance(document, dict) or not any(document.get(key) != data.get(key) for key in data):
             raise ValueError("the requested Payload revision contains no substantive field change")
-    if effect.get("_dispatched"):
+    remaining_after_dispatch = set(effect.get("fields") or []) - set(effect.get("completed_fields") or [])
+    # A dispatch whose outcome is unknown must never be replayed. Once a write
+    # has returned a document, the remaining planned fields of that same
+    # document may be completed.
+    completing = bool(effect.get("completed_fields")) and bool(remaining_after_dispatch) and set(data) <= remaining_after_dispatch
+    if effect.get("_dispatched") and not completing:
         raise ValueError("this planned Payload effect was already dispatched; do not replay an uncertain write")
     planned_fields = set(effect.get("fields") or [])
-    if set(data) != planned_fields:
+    unexpected_fields = sorted(set(data) - planned_fields)
+    if unexpected_fields:
+        raise ValueError(
+            "the Payload fields must match the validated plan "
+            f"(unexpected data fields: {', '.join(unexpected_fields)})"
+        )
+    if not set(data):
+        raise ValueError("the Payload change carries no fields")
+    contract = context.get("_authoring_contract")
+    collection_fields = None
+    if isinstance(contract, dict) and kind == "collection":
+        collection_fields = ((contract.get("authoring") or {}).get("collections") or {}).get(collection)
+    if isinstance(collection_fields, list):
+        # With the live schema we can tell an optional field the owner does not
+        # have yet (a portrait, for example) from a required one, so a new
+        # document may be written across more than one call. An update never
+        # re-sends the required fields it is not changing.
+        if operation == "create":
+            required = [
+                str(field.get("name")) for field in collection_fields
+                if isinstance(field, dict) and field.get("required") and isinstance(field.get("name"), str)
+            ]
+            missing_required = sorted(name for name in required if name not in data)
+            if missing_required:
+                raise ValueError(
+                    "the Payload change is missing required fields: " + ", ".join(missing_required))
+    elif set(data) != planned_fields:
         missing_fields = sorted(planned_fields - set(data))
-        unexpected_fields = sorted(set(data) - planned_fields)
         raise ValueError(
             "the Payload fields must exactly match the validated plan "
-            f"(missing planned fields: {', '.join(missing_fields) or '(none)'}; "
-            f"unexpected data fields: {', '.join(unexpected_fields) or '(none)'})"
+            f"(missing planned fields: {', '.join(missing_fields) or '(none)'})"
         )
-    if effect.get("completed_fields"):
+    if effect.get("completed_fields") and not remaining_after_dispatch:
         raise ValueError("this planned Payload effect has already been applied")
 
     if name == "update_payload_draft":
@@ -655,15 +699,22 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
     return effect
 
 
-def _record_payload_effect(context: dict[str, Any], effect: dict[str, Any], document: Any) -> None:
+def _record_payload_effect(
+    context: dict[str, Any],
+    effect: dict[str, Any],
+    document: Any,
+    written: set[str] | None = None,
+) -> None:
     if not isinstance(document, dict):
         raise RuntimeError("Payload write returned no exact document receipt")
     revision = str(document.get("_helloadaRevision") or "")
     document_id = str(document.get("id") or (effect.get("target") if effect.get("kind") == "global" else "") or "")
     if not revision.startswith("sha256:") or not document_id:
         raise RuntimeError("Payload write returned no exact document identity and revision")
-    fields = list(effect.get("fields") or [])
-    effect["completed_fields"] = fields
+    planned = list(effect.get("fields") or [])
+    fields = [name for name in planned if written is None or name in written]
+    effect["completed_fields"] = sorted(set(effect.get("completed_fields") or []) | set(fields))
+    effect["_document_id"] = document_id
     receipt = {
         "kind": effect.get("kind"),
         "operation": effect.get("operation"),
@@ -1246,8 +1297,9 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 effect = _plan_effect_for_tool(context, name, args)
                 write_kwargs = {"locale": locale}
                 _mark_website_change_dispatched(context, effect=effect)
-                document = payload.create(str(args.get("collection") or ""), args.get("data") or {}, **write_kwargs)
-                _record_payload_effect(context, effect, document)
+                data = args.get("data") if isinstance(args.get("data"), dict) else {}
+                document = payload.create(str(args.get("collection") or ""), data, **write_kwargs)
+                _record_payload_effect(context, effect, document, written=set(data))
                 context["_last_action_succeeded"] = True
                 return f"Payload draft created: {_payload_result(document, action='write')}"
             if name == "update_payload_draft":
@@ -1282,7 +1334,10 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     expected_hash=str(args.get("expected_hash") or ""),
                     **write_kwargs,
                 )
-                _record_payload_effect(context, effect, document)
+                _record_payload_effect(
+                    context, effect, document,
+                    written=set(args.get("data") or {}) if isinstance(args.get("data"), dict) else set(),
+                )
                 context["_last_action_succeeded"] = True
                 return f"Payload draft updated: {_payload_result(document, action='write')}"
             if name == "update_payload_global":
@@ -1293,7 +1348,10 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     str(args.get("global") or ""), args.get("data") or {},
                     expected_hash=str(args.get("expected_hash") or ""), **write_kwargs,
                 )
-                _record_payload_effect(context, effect, document)
+                _record_payload_effect(
+                    context, effect, document,
+                    written=set(args.get("data") or {}) if isinstance(args.get("data"), dict) else set(),
+                )
                 context["_last_action_succeeded"] = True
                 return f"Payload global draft updated: {_payload_result(document, action='write')}"
             return "REFUSED: unknown Payload action."

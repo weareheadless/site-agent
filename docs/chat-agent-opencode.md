@@ -73,6 +73,22 @@ queries the workspace instead of a whitelisted subset. It also produced a
 better-grounded answer: it found the stale "DATES ON REQUEST" copy, the
 unattributed journal voice and the absence of structured data.
 
+## Content writes across more than one call
+
+A page with many fields used to require one write carrying every planned field.
+The plan is frozen after the first dispatch, so an owner without a portrait could
+not create the page at all: the plan asked for `featuredImage`, the model could
+not supply it, and every create was refused for the missing fields. The agent
+then described the frozen plan to the owner as an "interrupted save lock", which
+it is not.
+
+With the live schema in hand the host can now tell a required field from an
+optional one. A new document may be created with the required fields, then
+completed by an update that writes the remaining planned fields of that same
+document. An unplanned field is still refused, a dispatch whose outcome is
+unknown is still never replayed, and source work still waits until every planned
+field has been written.
+
 ## Defects found while migrating
 
 1. `owner_message_without_unstarted_build` replaced an entire answer with one

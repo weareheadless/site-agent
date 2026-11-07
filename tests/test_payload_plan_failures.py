@@ -35,7 +35,7 @@ def test_payload_refusal_is_logged_with_job_identity_not_arguments(caplog):
     assert result.startswith('REFUSED:')
     assert 'job=65' in caplog.text
     assert 'tool=create_payload_draft' in caplog.text
-    assert 'exactly match the validated plan' in caplog.text
+    assert 'match the validated plan' in caplog.text or 'missing required fields' in caplog.text
     assert 'new-article' not in caplog.text
 
 

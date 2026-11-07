@@ -33,7 +33,16 @@ def _validated_plan():
 
 
 def _context():
-    return {"_website_change_plan": _validated_plan()}
+    return {
+        "_website_change_plan": _validated_plan(),
+        "_authoring_contract": {
+            "authoring": {"collections": {"posts": [
+                {"name": "slug", "type": "text", "required": True},
+                {"name": "title", "type": "text", "required": True},
+                {"name": "summary", "type": "text"},
+            ]}},
+        },
+    }
 
 
 def _args(data):
@@ -41,9 +50,8 @@ def _args(data):
 
 
 @pytest.mark.parametrize(
-    ("data", "missing", "unexpected"),
+    ("data", "unexpected"),
     [
-        ({"slug": "job66-article"}, "summary, title", "(none)"),
         (
             {
                 "slug": "job66-article",
@@ -52,7 +60,6 @@ def _args(data):
                 "promoText": "sensitive value",
                 "zeta": "another sensitive value",
             },
-            "(none)",
             "promoText, zeta",
         ),
         (
@@ -61,22 +68,35 @@ def _args(data):
                 "promoText": "sensitive value",
                 "zeta": "another sensitive value",
             },
-            "summary, title",
             "promoText, zeta",
         ),
     ],
-    ids=["missing-only", "unexpected-only", "mixed"],
+    ids=["unexpected-only", "mixed"],
 )
-def test_field_set_refusal_reports_sorted_names_without_values(data, missing, unexpected):
+def test_an_unplanned_field_is_refused_without_leaking_its_value(data, unexpected):
     with pytest.raises(ValueError) as exc_info:
         editor._plan_effect_for_tool(_context(), "create_payload_draft", _args(data))
 
     message = str(exc_info.value)
-    assert message.startswith("the Payload fields must exactly match the validated plan")
-    assert f"missing planned fields: {missing}" in message
+    assert message.startswith("the Payload fields must match the validated plan")
     assert f"unexpected data fields: {unexpected}" in message
     assert "sensitive value" not in message
     assert "another sensitive value" not in message
+
+
+def test_a_page_may_be_created_without_an_optional_field_the_owner_lacks():
+    effect = editor._plan_effect_for_tool(
+        _context(), "create_payload_draft", _args({"slug": "job66-article", "title": "Draft"})
+    )
+
+    assert effect["fields"] == ["slug", "summary", "title"]
+
+
+def test_a_create_that_omits_a_required_field_is_refused_before_it_is_dispatched():
+    with pytest.raises(ValueError, match="missing required fields: title"):
+        editor._plan_effect_for_tool(
+            _context(), "create_payload_draft", _args({"slug": "job66-article"})
+        )
 
 
 def test_exact_planned_field_set_is_accepted():
