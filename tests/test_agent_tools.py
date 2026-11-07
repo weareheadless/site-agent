@@ -55,7 +55,7 @@ def test_the_catalog_publishes_the_workspace_tools(workspace):
     names = {tool["name"] for tool in agent_tools.tool_catalog(memory, context)}
 
     assert {"plan_website_change", "spawn_build", "get_metrics", "list_drafts",
-            "list_payload_content"} <= names
+            "list_payload_content", "read_web_page"} <= names
     assert "create_payload_draft" in names
 
 

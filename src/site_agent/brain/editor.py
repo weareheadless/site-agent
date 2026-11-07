@@ -734,6 +734,10 @@ def _tools_spec(
             {"query": {"type": "string", "description": "what you want to remember"}}, ["query"]),
         fn("search_media", "Find ready Library images by description, tags, OCR, name, or suggested use. Returns IDs only, never URLs.",
            {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
+        fn("read_web_page",
+           "Open a public web page the owner linked and return its readable text. "
+           "Use this whenever the owner gives a URL, instead of guessing at or recalling its content.",
+           {"url": {"type": "string", "description": "the exact http(s) link"}}, ["url"]),
     ]
     if not source_builder_available or canonical_design_handoff:
         tools.extend([
@@ -1097,6 +1101,16 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
     if name == "get_growth":
         from ..application.growth import growth_chat_context
         return json.dumps(growth_chat_context(memory, context["config"], context), ensure_ascii=False)
+    if name == "read_web_page":
+        from ..hands.web_read import WebReadError, fetch_text
+
+        url = str(args.get("url") or "").strip()
+        if not url:
+            return "read_web_page needs a link."
+        try:
+            return fetch_text(url)
+        except WebReadError as exc:
+            return f"REFUSED: {exc}"
     if name == "list_drafts":
         drafts = memory.list_drafts(status="pending", limit=10)
         return "\n".join(f"#{d['id']} [{d['kind']}] {d['title']}" for d in drafts) or "(no pending drafts)"
