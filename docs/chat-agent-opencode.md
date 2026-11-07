@@ -54,13 +54,33 @@ Live, through `POST /v1/workspace/chat` on the deployed release:
 
 | turn | legacy loop | opencode agent |
 |---|---|---|
-| advisory question | 38 s, 3,908 chars | 50–67 s, 3,457–4,161 chars |
-| "state the plan again" | 141-char canned caveat | **7.1 s, 2,367 chars, full restatement** |
+| advisory question | 38 s, 3,908 chars | 72 s, 3,702 chars |
+| "state the plan again" | 141-char canned caveat | **12 s, 2,164 chars, full restatement** |
+| traffic and priorities (tools) | — | 28 s, 2,138 chars |
+| how many articles are published | — | 33 s, 427 chars (2 published, 5 drafts) |
 | greeting | — | 3.7 s |
 
-The advisory answer is slower because the agent reads the real repository
-(~20 files) instead of a whitelisted subset. A simple factual question also
-explores more than it needs; that is a tuning item, not a correctness one.
+The advisory answer is slower because the agent reads the real repository and
+queries the workspace instead of a whitelisted subset. It also produced a
+better-grounded answer: it found the stale "DATES ON REQUEST" copy, the
+unattributed journal voice and the absence of structured data.
+
+## Defects found while migrating
+
+1. `owner_message_without_unstarted_build` replaced an entire answer with one
+   canned sentence. Fixed before the migration; it is the reason for it.
+2. The runner returned the prose after the last tool call, losing the middle of
+   an answer written between tool calls (218 characters of fragments live).
+3. The MCP entry carried `"timeout": {"startup": …, "execution": …}`. A local MCP
+   server takes an integer, so opencode skipped the whole entry as malformed and
+   **every chat turn ran with no tools at all** while telling the owner the
+   analytics connection was down. This is why `SITE_AGENT_MCP_LOG` exists.
+4. The generated `opencode.json` contained the model credential in plaintext.
+   The credential now travels only in the process environment, under one name,
+   and the configuration interpolates it.
+5. The MCP process loaded the tenant file directly, skipping the packaged
+   defaults that map `env.llm_api_key`; the build path would have had no model
+   credential.
 
 ## Operating it
 
@@ -77,9 +97,11 @@ loop and its tests are intact.
 
 ## Not yet verified
 
-- A build started from chat through the MCP tool. The tool path is wired and its
-  refusal behaviour is tested, but no real build has been run through it, because
-  a build would revise the owner's pending draft 68.
+- A build started from chat through the MCP tool. The wiring is tested end to
+  end with a stubbed `stage_build` (the validated brief reaches it and its draft
+  comes back into the job), but no real build has run through it, because
+  `run_brief` force-pushes the preview branch and revises the owner's pending
+  draft 68. That test needs the owner to publish or discard 68 first.
 - Parity on five real owner questions (two are measured above).
 - `_validate_website_change_plan` skips its source-path check for a tenant whose
   `design_engine.build_profile` is unset. `spawn_build` still validates paths
