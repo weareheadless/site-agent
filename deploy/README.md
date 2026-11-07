@@ -355,6 +355,31 @@ application-managed business inbox, not a general mailbox or a Gmail
 replacement. The Payload mailbox is marked active only after Cloudflare and
 the exact Worker confirm the same address and Resend confirms the sender domain.
 
+## Apex host redirects
+
+A registered custom origin is the canonical public host; the zone apex must not
+serve a second copy of the site. The Casamigo zone (`casamigo.net`, zone
+`b81140f49c96f81818aaf64ab7795526`) uses a dedicated Cloudflare Worker
+`casamigo-apex-redirect` attached as a Worker custom domain for the apex. It
+returns a 301 to the same path and query on `https://www.casamigo.net`.
+
+This is edge routing, not a tenant site release: the redirect Worker has no
+bindings, no workers.dev route, and is not a customer entry in
+`payload-customers.json`. The tenant site Worker remains the only origin for
+`www`. Create or change an apex redirect through the Cloudflare API with the
+host `cloudflare` profile:
+
+- delete any conflicting apex A/AAAA/CNAME record first;
+- upload the script to
+  `/accounts/{account_id}/workers/scripts/casamigo-apex-redirect`;
+- attach the hostname with `PUT /accounts/{account_id}/workers/domains`
+  (`service: casamigo-apex-redirect`, `environment: production`);
+- verify `https://<apex>/<path>?<query>` returns 301 to the canonical www URL.
+
+Do not add the apex as a second custom domain on the tenant site Worker: that
+would serve duplicate content and split owner sessions. Do not leave a proxied
+A record pointing at the retired Webflow origin.
+
 ## What executes
 
 `helloada-release.timer` starts a systemd service every minute after the previous
