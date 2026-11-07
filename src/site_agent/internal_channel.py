@@ -8,6 +8,11 @@ services live, which is the API.
 The API mints one token per process, passes it to the tool process with this
 channel's address, and accepts the call only from loopback. Nothing here is
 reachable through the public ingress, which proxies only ``/v1/``.
+
+This is a deferred structural fix, not the design. The split it bridges — a
+read-only chat agent that starts a second agent through a tool call — is the
+real fault. One agent owning the worktree, with the turn ending by handing its
+commit to the preview, removes this channel.
 """
 
 from __future__ import annotations

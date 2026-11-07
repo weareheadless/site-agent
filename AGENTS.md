@@ -322,6 +322,34 @@ For a design request, follow this chain in order:
 Do not infer completion from `GET /api/chat/jobs`; that endpoint intentionally
 returns active jobs only.
 
+## Fix the cause, not the symptom
+
+Fixing a bug is never about patching. It is about the bug not happening in the
+first place. A change that adds a mechanism to survive an existing split is a
+patch, even when it is correct, tested and shipped.
+
+Before writing the fix, state the structural cause in one sentence: which
+ownership boundary, contract, or process split produced this failure. If you
+cannot name it, you are not ready to fix it. Then fix that, not the symptom.
+
+- Prefer the change that deletes a layer, a process hop, a fallback, a retry, a
+  special case, or a configuration switch over the one that adds one.
+- Never make a caller work around a boundary it should not have crossed. Move
+  the work to its owner instead.
+- A second fix on the same boundary is evidence that the boundary is wrong.
+  Stop and collapse it; do not add the next layer.
+- Leave no parallel path, compatibility switch, or dead fallback behind. Remove
+  the old route in the same change instead of keeping it "just in case".
+- Make the class of failure impossible, and test the class. A test that only
+  reproduces this instance proves the patch, not the fix.
+- Patch only when the structural fix is genuinely blocked: an external
+  contract, a release boundary, or a defect whose blast radius is larger than
+  the change. Then record, next to the code or in the issue, what the
+  structural fix is and why it is deferred. An undocumented patch is not
+  allowed.
+- This applies to a split you inherit. Do not preserve a wrong boundary because
+  it is already there.
+
 ## Change Rules
 
 - Start with a failing focused test or a reproducible API request.
