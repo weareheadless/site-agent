@@ -336,15 +336,14 @@ export const assertNativeWriteAllowed = async (
   const lease = await acquireContentWrite(req, leaseIntent(req, collection, id))
   try {
     const currentOperation = String(req?.context?.helloAdaGrowthOperation || '')
-    const ownKeys = new Set([currentOperation, lease.operationKey].filter(Boolean))
     const key = writeKeyFor(collection, id)
     const db = await database()
-    const rows = id
-      ? await db.prepare('SELECT operation_key, document_key FROM helloada_growth_operations WHERE document_key = ?1 AND state IN (\'writing\', \'uncertain\')')
-        .bind(key).all()
-      : await db.prepare('SELECT operation_key, document_key FROM helloada_growth_operations WHERE (document_key LIKE ?1 OR document_key = ?2) AND state IN (\'writing\', \'uncertain\')')
-        .bind(`${collection}:%`, key).all()
-    const row = (rows.results || []).find((candidate) => !ownKeys.has(String(candidate.operation_key)))
+    const own = [currentOperation, lease.operationKey]
+    const row = id
+      ? await db.prepare("SELECT operation_key FROM helloada_growth_operations WHERE document_key = ?1 AND state IN ('writing', 'uncertain') AND operation_key NOT IN (?2, ?3) LIMIT 1")
+        .bind(key, own[0], own[1]).first()
+      : await db.prepare("SELECT operation_key FROM helloada_growth_operations WHERE (document_key LIKE ?1 OR document_key = ?2) AND state IN ('writing', 'uncertain') AND operation_key NOT IN (?3, ?4) LIMIT 1")
+        .bind(`${collection}:%`, key, own[0], own[1]).first()
     if (row) throw writeConflict('This document is being prepared by Ada. The owner edit was not overwritten; review the current operation.')
     lease.attempted = true
   } catch (error) {
