@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261107032500-api-provider-credit-error",
-    "sha": "666bcbfec230e6c5e801c7edc86050ea08981b6c"
+    "id": "20261107042000-api-payload-partial-write",
+    "sha": "e11955078693e6d80f896c96bfc098ca8d400a93"
   }
 }
