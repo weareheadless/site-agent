@@ -5823,7 +5823,9 @@ def run_owner_turn(
         _validate_preview(config, clone, base_ref)
         outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
         staged = stage_review(context, subject, outcome, progress)
-        return {**staged, "session_id": new_session}
+        # The owner reads the agent's own message; the host only attaches the
+        # exact draft and preview state it produced.
+        return {**staged, "reply": reply, "session_id": new_session}
     finally:
         _remove_builder_worktree(site_clone, clone)
 

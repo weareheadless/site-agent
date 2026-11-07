@@ -1700,6 +1700,8 @@ def test_an_owner_turn_that_changes_the_worktree_is_validated_and_staged(monkeyp
 
     assert result["merge_draft_id"] == 9
     assert result["session_id"] == "session-1"
+    # The owner reads the agent's own message, never a host-authored one.
+    assert result["reply"] == "I rebuilt the page."
     assert seen["validated"] is True
     assert seen["removed"] is True
 
