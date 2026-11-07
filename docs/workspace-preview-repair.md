@@ -21,6 +21,16 @@ its exact document/hash checks. Compiled source candidates remain a separate
 existing review contract. Never substitute a public display alias for draft or
 candidate approval evidence.
 
+The workspace pane therefore selects the signed route, not the alias, whenever
+the selected page has an unpublished revision. `POST /api/helloada/preview`
+authenticates the owner, reads that exact draft revision plus the draft
+`siteSettings`/`navigation` globals, and returns a workspace-purpose token bound
+to those hashes, the route and the owner. The token route still re-checks the
+live owner session and the exact hashes, so this adds no second reader and no
+public draft path. Only the canonical page renderer is shown this way; the
+bespoke home composition and the article/product routes keep their published
+display alias.
+
 For an explicitly declared static presentation, the Worker serves public assets
 before Next middleware runs. It therefore passes the same configured preview
 mount into `staticWebsiteResponse`, which uses `workspacePreviewPath` to resolve

@@ -71,6 +71,8 @@ const harness = async (t) => {
     export const tenantId = () => 'tenant-a'
     export default {}
     export const serviceAuthorized = () => false
+    export const createHelloAdaPreviewToken = async () => 'signed-preview-token'
+    export const helloAdaPreviewLifetime = () => 3600
     export const withRecoveredWrite = async (payload, target, action) => action()
     export const withPayloadWriteGuard = async (req, action) => {
             await (globalThis.__guard).acquire(req)
@@ -81,7 +83,7 @@ const harness = async (t) => {
   await writeFile(stub, stubs)
   const bundled = await build({
     entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node',
-    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@/admin/server/runtime-env','@/helloada.config'].map(specifier => [specifier, stub])),
+    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/helloada-preview','@/lib/helloada-preview-claims','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@weareheadless/helloada-payload-core/bindings','@/admin/server/runtime-env','@/helloada.config'].map(specifier => [specifier, stub])),
   })
   const bundlePath = path.join(temp, 'route.mjs')
   await writeFile(bundlePath, bundled.outputFiles[0].text)

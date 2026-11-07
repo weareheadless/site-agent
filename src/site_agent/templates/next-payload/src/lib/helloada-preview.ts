@@ -1,22 +1,16 @@
 import { runtimeValue } from '@/lib/runtime-env'
+import {
+  buildHelloAdaPreviewClaims,
+  validHelloAdaPreviewClaims,
+  type HelloAdaPreviewClaims,
+  type HelloAdaPreviewInput,
+} from '@/lib/helloada-preview-claims'
 
-export type HelloAdaPreviewClaims = {
-  version: 1
-  tenantId: string
-  principal: { type: 'owner'; ownerId: string } | { type: 'service' }
-  collection: 'pages' | 'posts' | 'products'
-  documentId: string
-  documentHash: string
-  locale: string
-  globals: Array<{ slug: 'siteSettings' | 'navigation'; hash: string }>
-  route: string
-  state: 'draft' | 'published'
-  expiresAt: number
-}
+export type { HelloAdaPreviewClaims, HelloAdaPreviewPurpose } from '@/lib/helloada-preview-claims'
+export { helloAdaPreviewLifetime } from '@/lib/helloada-preview-claims'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-const collections = new Set<HelloAdaPreviewClaims['collection']>(['pages', 'posts', 'products'])
 
 const base64Url = (bytes: Uint8Array) => {
   let binary = ''
@@ -36,41 +30,8 @@ const signingKey = async () => {
   return crypto.subtle.importKey('raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify'])
 }
 
-const validClaims = (value: unknown, tenantId: string): value is HelloAdaPreviewClaims => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const claims = value as Partial<HelloAdaPreviewClaims>
-  return claims.version === 1
-    && claims.tenantId === tenantId
-    && claims.principal !== null && typeof claims.principal === 'object'
-    && ((claims.principal.type === 'owner' && typeof claims.principal.ownerId === 'string' && claims.principal.ownerId.length > 0)
-      || (claims.principal.type === 'service' && !('ownerId' in claims.principal)))
-    && typeof claims.collection === 'string' && collections.has(claims.collection as HelloAdaPreviewClaims['collection'])
-    && typeof claims.documentId === 'string' && claims.documentId.length > 0
-    && typeof claims.documentHash === 'string' && /^sha256:[0-9a-f]{64}$/.test(claims.documentHash)
-    && typeof claims.locale === 'string' && /^[A-Za-z0-9-]{2,20}$/.test(claims.locale)
-    && Array.isArray(claims.globals)
-    && claims.globals.length === 2
-    && new Set(claims.globals.map(global => global?.slug)).size === 2
-    && claims.globals.every(global =>
-      (global?.slug === 'siteSettings' || global?.slug === 'navigation')
-      && typeof global.hash === 'string'
-      && /^sha256:[0-9a-f]{64}$/.test(global.hash),
-    )
-    && typeof claims.route === 'string' && claims.route.startsWith('/') && !claims.route.startsWith('//')
-    && (claims.state === 'draft' || claims.state === 'published')
-    && Number.isSafeInteger(claims.expiresAt) && Number(claims.expiresAt) > Math.floor(Date.now() / 1000)
-    && Number(claims.expiresAt) <= Math.floor(Date.now() / 1000) + 181
-}
-
-export const createHelloAdaPreviewToken = async (
-  input: Omit<HelloAdaPreviewClaims, 'version' | 'expiresAt'>,
-) => {
-  const claims: HelloAdaPreviewClaims = {
-    version: 1,
-    ...input,
-    expiresAt: Math.floor(Date.now() / 1000) + 180,
-  }
-  if (!validClaims(claims, input.tenantId)) throw new Error('Exact document preview claims are invalid.')
+export const createHelloAdaPreviewToken = async (input: HelloAdaPreviewInput) => {
+  const claims = buildHelloAdaPreviewClaims(input, Math.floor(Date.now() / 1000))
   const payload = encoder.encode(JSON.stringify(claims))
   const signature = await crypto.subtle.sign('HMAC', await signingKey(), payload)
   return `${base64Url(payload)}.${base64Url(new Uint8Array(signature))}`
@@ -89,7 +50,7 @@ export const verifyHelloAdaPreviewToken = async (token: string, tenantId: string
   } catch {
     return undefined
   }
-  if (!validClaims(claims, tenantId)) return undefined
+  if (!validHelloAdaPreviewClaims(claims, tenantId, Math.floor(Date.now() / 1000))) return undefined
   if (!await crypto.subtle.verify('HMAC', await signingKey(), signature, payload)) return undefined
-  return claims
+  return claims as HelloAdaPreviewClaims
 }

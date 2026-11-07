@@ -779,6 +779,7 @@ function ReviewWorkspace() {
   const [previewStep, setPreviewStep] = useState('')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [sourceReview, setSourceReview] = useState<{ draftId: number; sha: string; url: string }>()
+  const [draftPreview, setDraftPreview] = useState<{ key: string; url: string; route: string }>()
   const sourceReviewIdentityRef = useRef('')
   const previewPlanRequestRef = useRef(0)
   const [message, setMessage] = useState('')
@@ -899,6 +900,52 @@ function ReviewWorkspace() {
     [selectedRouteData, workspace],
   )
 
+  // The display alias serves published content only. A selected page with an
+  // unpublished revision is shown through the signed exact-preview route so the
+  // owner reviews the revision that publishing would make live. Only the
+  // canonical page renderer is used here: the bespoke home composition and the
+  // article/product routes keep their published display alias.
+  const draftPreviewKey = selectedDocument
+    && selectedDocument.collection === 'pages'
+    && selectedDocument.slug
+    && selectedDocument.slug !== 'home'
+    && selectedRoute !== '/'
+    && !sourceReview
+    && (selectedDocument.status === 'draft' || draftUpdatedKey === `${selectedDocument.collection}:${selectedDocument.id}`)
+    ? `${selectedDocument.collection}:${selectedDocument.id}:${selectedDocument.draftHash}`
+    : ''
+
+  useEffect(() => {
+    // A stale entry never matches the current key, so nothing has to be cleared
+    // synchronously here; a failed re-mint keeps the last valid token for the
+    // same revision.
+    if (!draftPreviewKey || !selectedDocument) return
+    let cancelled = false
+    const load = async () => {
+      try {
+        const response = await fetchHelloAda('/api/helloada/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ collection: selectedDocument.collection, documentId: selectedDocument.id }),
+        })
+        if (!response.ok) {
+          const failure = await response.json().catch(() => undefined) as { message?: unknown; detail?: unknown } | undefined
+          throw new Error(responseMessage(failure, 'The draft preview could not be prepared.'))
+        }
+        const result = await response.json() as { url?: string; route?: string }
+        if (!result.url || !result.route) throw new Error('The exact draft preview address is missing.')
+        if (!cancelled) setDraftPreview({ key: draftPreviewKey, url: result.url, route: result.route })
+      } catch {
+        // The published alias remains the fallback; the owner still sees the
+        // page and the footer still marks the change as not live.
+      }
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [draftPreviewKey, selectedDocument])
+
   const canEditPage = Boolean(
     websitePresent
       && adaPhase === 'workspace'
@@ -927,6 +974,9 @@ function ReviewWorkspace() {
       const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
       return `${window.location.origin}${base}${path}`
     }
+    if (draftPreview && draftPreview.key === draftPreviewKey) {
+      return `${window.location.origin}${draftPreview.url}`
+    }
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
     if (sourceReview && !sourceReview.url) return 'about:blank'
     const baseUrl = sourceReview
@@ -934,7 +984,7 @@ function ReviewWorkspace() {
       : `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, previewRevision, selectedRoute, site.routes.preview, sourceReview, websitePresent])
+  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewRevision, selectedRoute, site.routes.preview, sourceReview, websitePresent])
 
   const syncRouteFromPreview = useCallback(() => {
     // Browsing inside the preview and the page selector must agree: a nav link
@@ -1012,7 +1062,11 @@ function ReviewWorkspace() {
       },
       preview: {
         state: 'draft',
-        url: previewUrl,
+        // Never hand the signed exact-preview token to the model; the route is
+        // the context Ada needs, and the display alias names it.
+        url: draftPreview && draftPreview.key === draftPreviewKey
+          ? `${site.routes.preview}${selectedRoute === '/' ? '' : selectedRoute}`
+          : previewUrl,
         revision: previewRevision,
       },
       surface: 'The Ada conversation and the website preview share this workspace. The selected page is visible in the website window.',
@@ -1026,7 +1080,7 @@ function ReviewWorkspace() {
           }
         : null,
     }
-  }, [adaPhase, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.siteName, websitePresent, workspace])
+  }, [adaPhase, draftPreview, draftPreviewKey, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.routes.preview, site.siteName, websitePresent, workspace])
 
   const loadEditorMedia = useCallback(async (page: number, append: boolean, search: string) => {
     setEditorMediaLoading(true)

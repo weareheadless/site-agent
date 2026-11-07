@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import config from '@payload-config'
 import { getPayload } from 'payload'
-import type { CollectionSlug, PayloadRequest, TypedLocale } from 'payload'
+import type { CollectionSlug, GlobalSlug, PayloadRequest, TypedLocale } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { serviceAuthorized } from '@/lib/service-auth'
@@ -17,6 +17,7 @@ import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/b
 import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/admin/server/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
+import { createHelloAdaPreviewToken, helloAdaPreviewLifetime } from '@/lib/helloada-preview'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject as growthObject,
@@ -399,6 +400,65 @@ export async function POST(request: Request, { params }: RouteProps) {
   if (path === '/media/upload' && serviceAuthorized(request)) return serviceMediaUpload(request)
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
+  if (path === '/preview') {
+    // The workspace pane shows the owner's exact pending revision through the
+    // signed preview route. This only mints that token; it never publishes.
+    const body = asObject(await request.json().catch(() => ({})))
+    if (!isEditableCollection(body.collection)) return errorResponse('content collection is invalid')
+    const collection = body.collection
+    const documentId = text(body.documentId || body.document_id)
+    if (!documentId) return errorResponse('a document id is required')
+    const locale = helloAdaSite.defaultLocale as TypedLocale
+    let document: Record<string, unknown>
+    try {
+      document = await auth.payload.findByID({
+        collection: collection as CollectionSlug,
+        depth: 2,
+        draft: true,
+        id: documentId,
+        locale,
+        overrideAccess: false,
+        req: auth.req,
+        user: auth.user,
+      }) as unknown as Record<string, unknown>
+    } catch {
+      return errorResponse('content not found', 404)
+    }
+    const slug = text(document.slug).replace(/^\/+|\/+$/g, '')
+    if (!slug) return errorResponse('this draft has no address yet; save a slug first', 409)
+    const route = pathForDocument(collection, slug)
+    const documentHash = await hashJson(withoutPayloadMetadata(document))
+    const globals = await Promise.all((['siteSettings', 'navigation'] as const).map(async (globalSlug) => {
+      const global = await auth.payload.findGlobal({
+        slug: globalSlug as GlobalSlug,
+        depth: 2,
+        draft: true,
+        locale,
+        overrideAccess: false,
+        req: auth.req,
+        user: auth.user,
+      }) as unknown as Record<string, unknown>
+      return { slug: globalSlug, hash: await hashJson(withoutPayloadMetadata(global)) }
+    }))
+    const token = await createHelloAdaPreviewToken({
+      tenantId: helloAdaSite.tenantId,
+      principal: { type: 'owner', ownerId: String(auth.user.id) },
+      collection,
+      documentId,
+      documentHash,
+      locale: helloAdaSite.defaultLocale,
+      globals,
+      route,
+      state: 'draft',
+      purpose: 'workspace',
+    })
+    return NextResponse.json({
+      url: `/helloada-preview/${token}`,
+      route,
+      documentHash,
+      expiresAt: Math.floor(Date.now() / 1000) + helloAdaPreviewLifetime('workspace'),
+    }, { headers: { 'Cache-Control': 'private, no-store' } })
+  }
   if (path === '/language') {
     const body = await request.json().catch(() => ({})) as { language?: string }
     const language = ['en', 'es', 'fr'].includes(String(body.language || '')) ? String(body.language) : 'en'

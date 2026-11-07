@@ -31,6 +31,7 @@
     "src/lib/helloada-auth.ts",
     "src/lib/helloada-form-runtime.ts",
     "src/lib/helloada-handoff.ts",
+    "src/lib/helloada-preview-claims.ts",
     "src/lib/helloada-preview.ts",
     "src/lib/helloada-upstream.ts",
     "src/lib/mailflare-inbox.ts",
