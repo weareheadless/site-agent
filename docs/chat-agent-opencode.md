@@ -39,6 +39,8 @@ what opencode wrote. It does not filter, prefix or replace that message.
   validated plan and completed Payload receipts. The model cannot talk past it.
 - The opencode session id is stored per conversation, so a follow-up continues
   the same turn history. The first turn passes the recent conversation instead.
+  Verified across a process restart: a follow-up answered from a new process
+  restated the earlier plan, which is what an API release does to a live chat.
 
 ## Reply selection
 
