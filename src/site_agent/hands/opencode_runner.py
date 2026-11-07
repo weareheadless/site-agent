@@ -3766,6 +3766,14 @@ def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any],
             "I did not create a site change from this request. Nothing was published. "
             "There is no preview to review yet."
         )
+    # The job record reads these keys; the owner turn no longer runs through a
+    # tool that sets them, so staging records them itself.
+    context["_last_merge_draft_id"] = merge_draft_id
+    context["_last_preview"] = preview
+    context["_last_change"] = change
+    context["_last_changed"] = bool(outcome.get("changed"))
+    if outcome.get("changed"):
+        context["_source_build_completed"] = True
     return {
         "reply": reply,
         "merge_draft_id": merge_draft_id,
