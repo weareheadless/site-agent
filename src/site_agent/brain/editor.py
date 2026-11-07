@@ -468,6 +468,20 @@ def _mark_website_change_dispatched(
         context["_website_change_source_build_dispatched"] = True
 
 
+def _clear_website_change_dispatch(context: dict[str, Any]) -> None:
+    """Reopen a plan after a refusal that provably wrote nothing.
+
+    A 4xx from Payload is validation before persistence. Only an unknown outcome
+    (a 5xx, a timeout or a lost response) may freeze the plan for the turn.
+    """
+    context["_website_change_plan_dispatched"] = False
+    plan = context.get("_website_change_plan")
+    if isinstance(plan, dict):
+        for effect in plan.get("content_effects") or []:
+            if isinstance(effect, dict):
+                effect.pop("_dispatched", None)
+
+
 def _payload_growth_revision(context: dict[str, Any]) -> dict[str, Any] | None:
     revision = context.get("_growth_task_revision")
     return revision if isinstance(revision, dict) and revision.get("candidateType") == "payload_content" else None
@@ -1280,7 +1294,17 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return f"Booking service action failed: {str(exc)[:400]}"
     if name == "plan_website_change":
         if context.get("_website_change_plan_dispatched"):
-            return "REFUSED: this request's plan is frozen because the host recorded a Payload write or source build dispatch; do not replace it after dispatch."
+            # Content writes may not be re-planned after a dispatch. Source work
+            # is independent of those writes, so a source-only plan can still be
+            # added once the content is saved (and never after a build dispatch).
+            requested_effects = args.get("content_effects")
+            source_only = (
+                not requested_effects
+                and bool(str(args.get("source_brief") or "").strip())
+                and not context.get("_website_change_source_build_dispatched")
+            )
+            if not source_only:
+                return "REFUSED: this request's plan is frozen because the host recorded a Payload write or source build dispatch; do not replace it after dispatch."
         try:
             plan = _validate_website_change_plan(args, context.get("_authoring_contract"), context["config"])
             _validate_payload_growth_revision_plan(context, plan)
@@ -1340,7 +1364,12 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 read_kwargs["locale"] = locale
                 document = payload.read_global(str(args.get("global") or ""), **read_kwargs)
                 if isinstance(document, dict):
-                    context.setdefault("_payload_read_globals", {})[str(args.get("global") or "")] = document
+                    # Replace the mapping so TurnState persists the new entry. An
+                    # in-place mutation is never flushed, and the next MCP tool
+                    # call would lose the exact global it just read.
+                    globals_read = dict(context.get("_payload_read_globals") or {})
+                    globals_read[str(args.get("global") or "")] = document
+                    context["_payload_read_globals"] = globals_read
                 return _payload_result(document, action="read")
             if name == "create_payload_draft":
                 effect = _plan_effect_for_tool(context, name, args)
@@ -1412,6 +1441,9 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 context.get("tenant_id"), context.get("_chat_job_id"), name,
                 safe_provider_message(str(exc), max_chars=500),
             )
+            status = getattr(exc, "status_code", None)
+            if isinstance(status, int) and 400 <= status < 500:
+                _clear_website_change_dispatch(context)
             return f"REFUSED: Payload content action failed: {str(exc)[:500]}"
     if name == "spawn_build":
         from ..hands import opencode_runner as runner
