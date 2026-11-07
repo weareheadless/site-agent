@@ -48,13 +48,16 @@ def test_the_catalog_leaves_file_reads_to_the_agent(workspace):
     assert "read_file" not in names
     assert "list_files" not in names
     assert "design_request" not in names
+    # The owner turn owns the worktree itself; a second agent started from this
+    # short-lived tool process is exactly what the one-agent design removed.
+    assert "spawn_build" not in names
 
 
 def test_the_catalog_publishes_the_workspace_tools(workspace):
     memory, context = workspace
     names = {tool["name"] for tool in agent_tools.tool_catalog(memory, context)}
 
-    assert {"plan_website_change", "spawn_build", "get_metrics", "list_drafts",
+    assert {"plan_website_change", "get_metrics", "list_drafts",
             "list_payload_content", "read_web_page"} <= names
     assert "create_payload_draft" in names
 
@@ -115,56 +118,3 @@ def test_listing_content_answers_from_the_canonical_store(workspace):
 
     assert '"title": "Article A"' in text
     assert '"slug": "b"' in text
-
-
-def test_a_build_without_a_model_credential_is_refused_before_it_starts(workspace):
-    memory, context = workspace
-    conversation = memory.create_conversation()
-    job_id = memory.enqueue_chat_job(conversation, "change the footer")
-
-    text = agent_tools.call_tool(memory, context, job_id, "spawn_build", {"brief": "add the footer"})
-
-    assert text.startswith("REFUSED: the build agent has no model credential")
-
-
-def test_a_validated_plan_reaches_the_build_with_its_exact_brief(tmp_path, monkeypatch):
-    from site_agent.hands import opencode_runner
-
-    memory = Memory(tmp_path / "memory.db")
-    clone = tmp_path / "site"
-    clone.mkdir()
-    context = {
-        "config": {
-            "site": {"clone_path": str(clone)},
-            "builder": {"enabled": True},
-            "env": {"llm_api_key": "TEST_LLM_KEY"},
-        },
-        "memory": memory,
-        "payload_gateway": FakePayload(),
-        "env": {"TEST_LLM_KEY": "secret"},
-    }
-    conversation = memory.create_conversation()
-    job_id = memory.enqueue_chat_job(conversation, "add the footer")
-    seen = {}
-
-    def stage_build(ctx, brief, progress=None):
-        seen["brief"] = brief
-        seen["job"] = ctx.get("_chat_job_id")
-        return {"reply": "built", "merge_draft_id": 70, "changed": True, "preview": {"id": "p"}}
-
-    monkeypatch.setattr(opencode_runner, "stage_build", stage_build)
-    try:
-        agent_tools.call_tool(memory, context, job_id, "plan_website_change", {
-            "content_effects": [], "source_brief": "add the shared footer to the journal",
-            "response_only": False,
-            "source_paths": ["src/app/(frontend)/oceanic.css"],
-            "acceptance_criteria": ["the footer renders on the journal"],
-            "business_facts": [],
-        })
-        text = agent_tools.call_tool(memory, context, job_id, "spawn_build", {"brief": "add the footer"})
-
-        assert "add the shared footer to the journal" in seen["brief"]
-        assert text.startswith("built")
-        assert agent_tools.turn_summary(memory, context, job_id)["merge_draft_id"] == 70
-    finally:
-        memory.close()

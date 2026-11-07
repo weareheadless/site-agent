@@ -1,9 +1,11 @@
 """Run one owner-chat turn through opencode.
 
-Ada's chat is an opencode agent with the repository checked out and the
-workspace tools available over MCP. The host prepares the checkout, writes the
-agent contract, runs the turn, and stores the message opencode produced. It
-does not assemble, filter or rewrite that message.
+Ada's chat is one opencode session per conversation. It reads the repository,
+changes it when the owner asks for a change, uses the workspace tools for the
+site's Payload content, and answers in its own words. The host prepares the
+worktree, installs the same instructions and skills a build uses, and stages
+the review draft after the turn. It never assembles, filters or rewrites the
+message opencode produced.
 
 The session id is kept per conversation so a follow-up ("state that again")
 continues the same agent turn history instead of starting from nothing.
@@ -11,146 +13,57 @@ continues the same agent turn history instead of starting from nothing.
 
 from __future__ import annotations
 
-import json
-import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from .. import internal_channel
 from ..brain.design_contract import with_design_contract
 
-CHAT_AGENT = "chat"
-INSTRUCTIONS = with_design_contract("""# Ada — owner chat
+# Appended to the installed agent instructions. The build instructions already
+# carry the repository, design and source-ownership contracts; these are the
+# rules that only apply when the turn is a conversation with the owner.
+OWNER_TURN_RULES = with_design_contract("""# Owner turn
 
-You are Ada, the owner's agent for this website. The owner is a non-technical business owner. You are talking to them in their workspace.
+You are talking to the owner in their workspace, and this same turn owns the repository. When the owner asks for a change, make it here: read the real files, edit them, and leave the work uncommitted. The host validates, commits and prepares the preview after the turn. Never publish, approve, merge or push.
 
-You have this site's repository checked out here, and workspace tools for its content, traffic evidence and Growth backlog. Read the real files before you describe the site; do not describe a website from memory.
+Answer in the owner's language and at their level. Your final message is the whole answer: what you changed, what you checked, and where the preview appears. You cannot open the owner's signed-in preview yourself, so never tell them it needs their session: they are already in it. An unpublished page has no public address yet; its 404 is expected, not a defect. If something failed, say what failed instead of presenting saved content as finished.
 
-## What you can do
-
-You can read anything in the repository, read the site's content, metrics and backlog, prepare content drafts and start a website build when the owner asks for one.
-
-A new page is not finished when its content is saved. A Payload page with no authored composition renders as a generic document, and the owner will see that as an unfinished page. When you create a page, plan its presentation in the same turn: read the existing composition, extend it for this page, and build it. If you cannot build it yet, say so plainly instead of presenting saved content as a finished page.
-
-The build's preview opens in the owner's own workspace panel. You cannot open that signed-in preview yourself, so never tell the owner it needs their session: they are already in it. State what you changed, what you verified in the source, and that the preview is in their panel for them to judge. An unpublished page has no public address yet; its 404 is expected, not a defect, and it is not evidence that the page is broken. When a build fails, report the failure and retry rather than presenting the saved copy as finished.
-
-## How to answer
-
-When the owner gives you a link, open it with `read_web_page` and answer from what the page actually says. Never describe a page you have not read.
-
-Answer the question that was asked. Be concrete: name the page, the file, the section, the trade-off. If you looked at something, say what you found.
-
-Write in the owner's language and at their level of technical detail. No repository jargon, no infrastructure narration, no tooling commentary.
-
-Your final message is the whole answer. The owner sees only that message, so it must stand alone: if you wrote analysis earlier in this turn, the final message carries it. Never end with a note that refers to text you did not include.
+The site's content lives in Payload, not in files. Read and change it through the workspace tools; change presentation in the repository.
 """)
 
 
-def _chat_home(config: Mapping[str, Any]) -> Path:
-    data_dir = Path(str(config.get("data_dir") or "")).expanduser()
-    if not str(data_dir) or not data_dir.parent.is_dir():
-        raise RuntimeError("the workspace data directory is unavailable for the chat agent")
-    home = data_dir / "opencode-chat"
-    home.mkdir(parents=True, exist_ok=True)
-    for sub in ("config", "data", "cache", "tmp"):
-        (home / sub).mkdir(exist_ok=True)
-    return home
-
-
-def _chat_worktree(config: Mapping[str, Any], base_ref: str) -> Path:
-    clone = Path(str((config.get("site") or {}).get("clone_path") or "")).expanduser().resolve()
-    if not str(clone) or not clone.is_dir():
-        raise RuntimeError("the site checkout is unavailable for the chat agent")
-    worktree = clone.parent / f"{clone.name}-chat"
-    if worktree.exists():
-        shutil.rmtree(worktree, ignore_errors=True)
-    subprocess_run = __import__("subprocess").run
-    subprocess_run(["git", "worktree", "prune"], cwd=clone, capture_output=True, text=True, timeout=120)
-    result = subprocess_run(
-        ["git", "worktree", "add", "--detach", str(worktree), base_ref],
-        cwd=clone, capture_output=True, text=True, timeout=300,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("the chat checkout could not be prepared: " + (result.stderr or "").strip()[:300])
-    return worktree
-
-
-def _write_agent_files(
-    worktree: Path,
-    *,
+def _workspace_tool_config(
     config: Mapping[str, Any],
+    *,
     tenant_config_path: str,
     tenant_env_path: str,
     job_id: int,
-    model: str,
-    key_env: str,
-) -> None:
-    oc = worktree / ".opencode"
-    oc.mkdir(parents=True, exist_ok=True)
-    (oc / "ada-instructions.md").write_text(INSTRUCTIONS, encoding="utf-8")
-    deny = {"edit": "deny", "bash": "deny", "task": "deny", "external_directory": "deny",
-            "webfetch": "deny", "websearch": "deny"}
-    allow = {"read": "allow", "glob": "allow", "grep": "allow", "list": "allow"}
-    provider, _, bare = model.partition("/")
-    base_url = str((config.get("llm") or {}).get("base_url") or "https://openrouter.ai/api/v1").rstrip("/")
-    opencode_config: dict[str, Any] = {
-        "$schema": "https://opencode.ai/config.json",
-        "model": model,
-        "instructions": [".opencode/ada-instructions.md"],
-        "permission": {**deny, **allow},
-        "agent": {CHAT_AGENT: {"description": "Owner conversation for this site",
-                               "mode": "primary", "permission": {**deny, **allow}}},
-        "provider": {
-            provider: {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": provider,
-                "options": {
-                    "baseURL": base_url,
-                    "apiKey": "{env:" + key_env + "}",
-                    "timeout": 600000,
-                    "chunkTimeout": 180000,
-                },
-                "models": {
-                    bare: {
-                        "name": "Ada's working model",
-                        "limit": {"context": 1_048_576, "output": 8192},
-                        "options": {"max_tokens": 8192, "reasoning_effort": "low"},
-                    }
-                },
-            }
-        },
-        "mcp": {
-            "workspace": {
-                "type": "local",
-                "command": [
-                    str(Path(__import__("sys").executable)),
-                    "-m", "site_agent", "mcp", "workspace",
-                    "--config", tenant_config_path,
-                    "--env", tenant_env_path,
-                    "--job", str(job_id),
-                ],
-                # Pin the tool process to the exact code this API is running,
-                # not to whatever a checkout or a .pth file resolves to.
-                "environment": {
-                    "PYTHONPATH": str(_package_root()),
-                    "SITE_AGENT_MCP_LOG": str(Path(str(config.get("data_dir") or ".")) / "logs" / "chat-tools.log"),
-                    # The tool process runs with the agent's isolated HOME, so it
-                    # cannot find the CLI through `~/.opencode/bin` or $PATH. The
-                    # API resolved it; pass that exact binary down so a build
-                    # never fails on discovery.
-                    "SITE_AGENT_OPENCODE_BIN": _opencode_bin(config),
-                    # Tools that own durable work run in the API, which holds
-                    # the preview queue; this is how the child reaches it.
-                    **internal_channel.environment(),
-                },
-                "enabled": True,
-                # A build runs inside this tool call; the whole turn must not
-                # time out at the MCP request layer.
-                "timeout": 2_700_000,
-            }
-        },
+) -> dict[str, Any]:
+    """The tool server the owner turn runs beside its repository access."""
+    return {
+        "workspace": {
+            "type": "local",
+            "command": [
+                str(Path(__import__("sys").executable)),
+                "-m", "site_agent", "mcp", "workspace",
+                "--config", tenant_config_path,
+                "--env", tenant_env_path,
+                "--job", str(job_id),
+            ],
+            # Pin the tool process to the exact code this API is running, not
+            # to whatever a checkout or a .pth file resolves to.
+            "environment": {
+                "PYTHONPATH": str(_package_root()),
+                "SITE_AGENT_MCP_LOG": str(Path(str(config.get("data_dir") or ".")) / "logs" / "chat-tools.log"),
+                # The tool process runs with the agent's isolated HOME, so it
+                # cannot find the CLI through `~/.opencode/bin` or $PATH. The
+                # API resolved it; pass that exact binary down.
+                "SITE_AGENT_OPENCODE_BIN": _opencode_bin(config),
+            },
+            "enabled": True,
+            # A build runs inside this turn; the turn must not be cut short.
+            "timeout": 2_700_000,
+        }
     }
-    (worktree / "opencode.json").write_text(json.dumps(opencode_config, indent=2) + "\n", encoding="utf-8")
 
 
 def _package_root() -> Path:
@@ -183,11 +96,10 @@ def run_turn(
     history: list[Mapping[str, Any]] | None = None,
     progress=None,
 ) -> dict[str, Any]:
-    """Run one chat turn and return opencode's message unchanged."""
+    """Run one owner turn and return opencode's message unchanged."""
     from . import opencode_runner
 
     config = dict(context.get("config") or {})
-    builder = config.get("builder") or {}
     if not opencode_runner.builder_available(config):
         raise RuntimeError("the chat agent is not enabled on this instance")
     tenant_config_path = str(context.get("tenant_config_path") or "").strip()
@@ -200,57 +112,28 @@ def run_turn(
             raise RuntimeError("the registered tenant environment file is unavailable")
         tenant_env_path = str(candidate)
 
-    model = str(builder.get("model") or (config.get("llm") or {}).get("model") or "").strip()
-    if not model:
-        raise RuntimeError("no model is configured for the chat agent")
-    # One name for the credential in opencode and in the tool process it
-    # spawns; the generated configuration only ever interpolates it.
-    key_env = "SITE_AGENT_LLM_API_KEY"
-    import os
-
-    api_key = str(
-        (context.get("env") or {}).get("SITE_AGENT_LLM_API_KEY")
-        or os.environ.get("SITE_AGENT_LLM_API_KEY")
-        or ""
-    ).strip()
-    if not api_key:
-        raise RuntimeError("no model credential is available to the chat agent")
-
-    base_ref = opencode_runner._build_base_ref(context.get("memory"), config)
-    if progress:
-        progress("preparing the site checkout")
-    worktree = _chat_worktree(config, base_ref)
-    _write_agent_files(
-        worktree,
-        config=config,
-        tenant_config_path=tenant_config_path,
-        tenant_env_path=tenant_env_path,
-        job_id=job_id,
-        model=model,
-        key_env=key_env,
-    )
-
     memory = context.get("memory")
     conversation_id = context.get("_delegated_conversation_id")
-    session_key = f"chat_session:{conversation_id}" if conversation_id else ""
+    # The session belongs to the agent home of the turn that created it. A
+    # different home cannot resolve an older id, so the key names the design.
+    session_key = f"chat_session:owner-turn:{conversation_id}" if conversation_id else ""
     session_id = str(memory.kv_get(session_key, "")) if (memory is not None and session_key) else ""
     brief = message if session_id else _history_brief(message, history)
-    home = _chat_home(config)
 
-    result = opencode_runner.run_opencode_turn(
-        worktree,
+    result = opencode_runner.run_owner_turn(
+        context,
+        job_id,
         brief,
-        config,
-        progress=progress,
         session_id=session_id or None,
-        agent_name=CHAT_AGENT,
-        timeout_seconds=int(builder.get("timeout_seconds", 1800)),
-        api_key=api_key,
-        api_key_env=key_env,
-        env=dict(context.get("env") or {}),
-        memory=memory,
-        home=home,
-        reply_mode="final_message",
+        message=message,
+        extra_config={"mcp": _workspace_tool_config(
+            config,
+            tenant_config_path=tenant_config_path,
+            tenant_env_path=tenant_env_path,
+            job_id=job_id,
+        )},
+        instructions_suffix=OWNER_TURN_RULES,
+        progress=progress,
     )
     reply = str(result.get("reply") or "").strip()
     if not reply:
@@ -258,4 +141,10 @@ def run_turn(
     new_session = str(result.get("session_id") or "").strip()
     if memory is not None and session_key and new_session:
         memory.kv_set(session_key, new_session)
-    return {"reply": reply, "session_id": new_session, "worktree": str(worktree)}
+    return {
+        "reply": reply,
+        "session_id": new_session,
+        "changed": bool(result.get("changed")),
+        "merge_draft_id": result.get("merge_draft_id"),
+        "preview": result.get("preview"),
+    }

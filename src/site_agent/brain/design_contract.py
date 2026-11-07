@@ -40,7 +40,7 @@ Search and copy:
 - Every section must earn its place. If a section only restates the previous one, cut it. Read the existing copy on the site first, then match its level of specificity.
 
 Delivery:
-- Build the page, then load the exact page and look at it before you report. Name what you checked. If the composition still reads as a generic document, it is not done.
+- Verify what you can: the composition in the source, the type and spacing values, the responsive breakpoints, and the built output. Name what you checked. The owner judges the rendered page, and if the composition still reads as a generic document, it is not done.
 """
 
 

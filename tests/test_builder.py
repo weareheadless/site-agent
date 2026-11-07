@@ -1338,17 +1338,20 @@ def test_build_brief_carries_the_design_copy_and_search_standard():
         "one H1",
         "never invent credentials",
         "390px, 768px and 1440px",
-        "then load the exact page and look at it",
+        "Verify what you can",
     ):
         assert marker in brief
 
 
-def test_chat_instructions_carry_the_design_standard_and_page_completion_rule():
+def test_the_owner_turn_carries_the_design_standard_and_preview_truth():
     from site_agent.hands import chat_agent
 
-    assert "Design, copy and search standard" in chat_agent.INSTRUCTIONS
-    assert "A new page is not finished when its content is saved" in chat_agent.INSTRUCTIONS
-    assert "build it" in chat_agent.INSTRUCTIONS
+    rules = chat_agent.OWNER_TURN_RULES
+    assert "Design, copy and search standard" in rules
+    assert "A page is not finished because its content is saved" in rules
+    # The owner is already signed in; the agent must not claim otherwise.
+    assert "never tell them it needs their session" in rules
+    assert "404 is expected" in rules
 
 
 def test_install_agent_files_does_not_modify_site_files(tmp_path):
@@ -1604,56 +1607,20 @@ def test_opencode_bin_honours_the_binary_the_parent_process_resolved(monkeypatch
     assert runner._opencode_bin({"builder": {}}) == str(fake)
 
 
-def test_chat_agent_passes_the_resolved_binary_to_its_tool_process(tmp_path, monkeypatch):
+def test_the_owner_turn_tool_process_receives_the_resolved_binary(tmp_path, monkeypatch):
     from site_agent.hands import chat_agent
 
     fake = tmp_path / "opencode"
     fake.write_text("#!/bin/sh\n", encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setenv("SITE_AGENT_OPENCODE_BIN", str(fake))
-    worktree = tmp_path / "site"
-    worktree.mkdir()
-    (tmp_path / "data").mkdir()
-    chat_agent._write_agent_files(
-        worktree,
-        config={"builder": {"model": "openrouter/x"}, "data_dir": str(tmp_path / "data")},
+    config = chat_agent._workspace_tool_config(
+        {"data_dir": str(tmp_path)},
         tenant_config_path=str(tmp_path / "config.yaml"),
         tenant_env_path=str(tmp_path / "tenant.env"),
         job_id=1,
-        model="openrouter/x",
-        key_env="SITE_AGENT_LLM_API_KEY",
     )
-    written = json.loads((worktree / "opencode.json").read_text())
-    assert written["mcp"]["workspace"]["environment"]["SITE_AGENT_OPENCODE_BIN"] == str(fake)
-
-
-def test_a_build_that_never_reached_the_builder_can_be_retried_in_the_same_turn(monkeypatch, tmp_path):
-    from site_agent.brain import editor
-
-    memory = Memory(tmp_path / "memory.db")
-    try:
-        def refuse(_config):
-            raise runner.RunnerError("opencode CLI not found — set builder.bin in config.yaml")
-
-        monkeypatch.setattr(runner, "opencode_bin", refuse)
-        monkeypatch.setattr(runner, "builder_available", lambda _config: True)
-        context = {
-            "config": {"builder": {}, "site": {}},
-            "memory": memory,
-            "_website_change_plan": {
-                "content_effects": [],
-                "source_brief": "rebuild the about page presentation",
-                "source_paths": ["src/components/site/TenantSections.tsx"],
-            },
-            "_completed_payload_effects": [],
-        }
-        with pytest.raises(RuntimeError, match="opencode CLI not found"):
-            editor._execute_tool(context, None, "spawn_build", {"brief": "rebuild"}, lambda _phrase: None)
-        # Nothing ran, so the attempt is not uncertain and the plan is open.
-        assert context.get("_website_change_source_build_dispatched") is False
-        assert context.get("_website_change_plan_dispatched") is False
-    finally:
-        memory.close()
+    assert config["workspace"]["environment"]["SITE_AGENT_OPENCODE_BIN"] == str(fake)
 
 
 def test_a_settled_preview_is_reported_with_its_exact_state():
@@ -1686,3 +1653,63 @@ def test_a_failed_preview_is_reported_as_blocked_not_ready():
 
 def test_a_preview_without_a_reader_is_not_claimed_as_ready():
     assert runner._wait_for_preview(object(), "job-1", timeout_seconds=5) is None
+
+
+def _owner_turn(monkeypatch, tmp_path, *, changed: bool):
+    from site_agent.hands import opencode_runner as owner_runner
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    site = tmp_path / "site"
+    site.mkdir()
+    seen: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        owner_runner, "_prepare_builder_context",
+        lambda context, progress=None, **kwargs: (site, clone, "origin/main", ("head", ())),
+    )
+    monkeypatch.setattr(owner_runner, "run_opencode_turn", lambda *args, **kwargs: {
+        "reply": "I rebuilt the page.", "session_id": "session-1",
+    })
+    monkeypatch.setattr(
+        owner_runner, "_change_state",
+        lambda _clone: ("head", (("src/page.tsx", "sha"),)) if changed else ("head", ()),
+    )
+    monkeypatch.setattr(owner_runner, "_validate_preview", lambda *a, **k: seen.setdefault("validated", True))
+    monkeypatch.setattr(owner_runner, "_bump_asset_versions", lambda _clone: None)
+    monkeypatch.setattr(owner_runner, "_remove_builder_worktree", lambda *a: seen.setdefault("removed", True))
+    monkeypatch.setattr(owner_runner, "_finish_builder", lambda *a, **k: {
+        "changed": True,
+        "output": "I rebuilt the page.",
+        "candidate_sha": "a" * 40,
+        "changed_paths": ["src/page.tsx"],
+        "branch": "preview",
+        "preview": {"requires_build": False, "status": "ready"},
+    })
+    monkeypatch.setattr(owner_runner, "stage_review", lambda context, message, outcome, progress=None: {
+        "reply": "staged", "changed": True, "merge_draft_id": 9,
+        "preview": {"status": "ready"}, "change": {},
+    })
+    return owner_runner, seen
+
+
+def test_an_owner_turn_that_changes_the_worktree_is_validated_and_staged(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+
+    result = owner_runner.run_owner_turn({"config": {}}, 1, "rebuild the about page")
+
+    assert result["merge_draft_id"] == 9
+    assert result["session_id"] == "session-1"
+    assert seen["validated"] is True
+    assert seen["removed"] is True
+
+
+def test_an_owner_turn_that_changes_nothing_stages_nothing(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=False)
+
+    result = owner_runner.run_owner_turn({"config": {}}, 1, "what is waiting for me?")
+
+    assert result["changed"] is False
+    assert result["reply"] == "I rebuilt the page."
+    assert "validated" not in seen
+    assert seen["removed"] is True

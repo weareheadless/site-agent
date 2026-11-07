@@ -101,6 +101,19 @@ around them. What remains is provisioning, measurement, release and reporting.
 Ada may still research, monitor, propose and report — that is the management
 side of the interface. She does not silently take over authorship of the site.
 
+## How an owner turn works
+
+One opencode session answers the owner and owns its worktree. It reads the
+site, changes content through the workspace tools, and changes presentation in
+the repository; when the turn ends the host validates the exact working tree,
+commits it to the preview branch and stages the review draft. Publication is
+still the owner's approval.
+
+There is no second agent, no build tool and no channel between processes: the
+agent that talks to the owner is the agent that does the work. The legacy
+in-process chat engine keeps its own build tool until it is retired; it runs
+inside the API, where the deployment services live.
+
 ## Still binding
 
 - One tenant, one repository, one Worker; no second CMS, admin, credential path

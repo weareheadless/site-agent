@@ -17,10 +17,6 @@ from typing import Any
 
 PROTOCOL_VERSION = "2025-11-05"
 
-# Tools that own durable work — the compiled-preview queue and the
-# deployment service — run in the API process, never in this per-turn child.
-API_OWNED_TOOLS = frozenset({"spawn_build"})
-
 
 def _env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -79,8 +75,6 @@ class WorkspaceServer:
         from ..application.agent_tools import AgentToolError, call_tool
 
         _log(f"call {name}")
-        if name in API_OWNED_TOOLS:
-            return self._call_api(name, arguments)
         try:
             result = call_tool(self.memory, self.context, self.job_id, name, arguments)
             _log(f"ok {name} ({len(result)} chars)")
@@ -93,53 +87,6 @@ class WorkspaceServer:
 
             _log(f"failed {name}: {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
             return f"{type(exc).__name__}: {str(exc)[:400]}", True
-
-    def _call_api(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
-        """Run a tool that owns durable work in the API process.
-
-        This process lives only for one chat turn; the compiled-preview queue
-        and deployment service live in the API. Forwarding keeps one owner.
-        """
-        import os
-        import urllib.error
-        import urllib.request
-
-        base = str(os.environ.get("SITE_AGENT_INTERNAL_URL") or "").strip().rstrip("/")
-        token = str(os.environ.get("SITE_AGENT_INTERNAL_TOKEN") or "").strip()
-        if not base or not token:
-            _log(f"refused {name}: no internal channel")
-            return (
-                "REFUSED: the website build service is not reachable from this session; "
-                "nothing was started. Do not retry the same call.",
-                True,
-            )
-        body = json.dumps({
-            "tenant": self.tenant_id,
-            "job_id": self.job_id,
-            "tool": name,
-            "arguments": arguments,
-        }).encode("utf-8")
-        request = urllib.request.Request(
-            f"{base}/internal/workspace/tool",
-            data=body,
-            method="POST",
-            headers={"Content-Type": "application/json", "X-Internal-Token": token},
-        )
-        try:
-            # A build waits for its own bounded turn; this channel must not cut
-            # it short before the tool reports its exact result.
-            with urllib.request.urlopen(request, timeout=2_700) as response:
-                payload = json.loads(response.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            _log(f"failed {name}: internal channel returned {exc.code}")
-            return f"REFUSED: the website build service rejected the call ({exc.code}).", True
-        except Exception as exc:  # noqa: BLE001 — an unreachable channel is reported
-            _log(f"failed {name}: internal channel unreachable: {type(exc).__name__}: {exc}")
-            return f"REFUSED: the website build service is unreachable ({type(exc).__name__}).", True
-        text = str(payload.get("text") or "")
-        failed = not bool(payload.get("ok"))
-        _log(("failed " if failed else "ok ") + f"{name} ({len(text)} chars)")
-        return text, failed
 
 
 def _log(message: str) -> None:

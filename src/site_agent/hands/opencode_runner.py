@@ -3655,8 +3655,7 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
 
 
 def stage_build(context: dict[str, Any], message: str, progress=None, media_asset_ids=None) -> dict[str, Any]:
-    """Build, prepare the actual owner preview, and create its review draft."""
-    builder = (context.get("config") or {}).get("builder") or {}
+    """Run the build agent, then prepare the owner preview and its review draft."""
     previous = context.get("_media_asset_ids")
     if media_asset_ids is not None:
         context["_media_asset_ids"] = list(media_asset_ids)
@@ -3667,6 +3666,10 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
             context.pop("_media_asset_ids", None)
         elif media_asset_ids is not None:
             context["_media_asset_ids"] = previous
+    return stage_review(context, message, outcome, progress)
+def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any], progress=None) -> dict[str, Any]:
+    """Create the owner review draft and its compiled preview for one finished change."""
+    builder = (context.get("config") or {}).get("builder") or {}
     reply = (outcome.get("output") or "").strip()
     merge_draft_id = None
     preview = outcome.get("preview") if isinstance(outcome.get("preview"), Mapping) else None
@@ -3957,7 +3960,9 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
                           task_contract: dict[str, Any] | None = None,
                           include_pipeworx: bool = False,
                           pipeworx_url: str = "",
-                          researcher_prompt: str = "") -> None:
+                          researcher_prompt: str = "",
+                          extra_config: dict[str, Any] | None = None,
+                          instructions_suffix: str = "") -> None:
     """Install Ada's project instructions and skills for native OpenCode Build.
 
     The primary agent remains OpenCode's built-in ``build`` agent. Ada's identity,
@@ -4158,6 +4163,8 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
                 rendered += "\n\n" + mem
         except Exception:  # noqa: BLE001 — memory context must never block a build
             pass
+    if instructions_suffix.strip():
+        rendered = rendered.rstrip() + "\n\n" + instructions_suffix.strip()
     (oc / "ada-instructions.md").write_text(rendered.rstrip() + "\n")
     import json as _json
     # Project configuration is read from the repository root. `.opencode/` is
@@ -4170,6 +4177,14 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
         }
         opencode_config.setdefault("mcp", {})["lemmy"] = pipeworx
         _write_researcher_agent(oc, researcher_prompt or "")
+    if extra_config:
+        # One agent, one project config: the owner turn adds the workspace tool
+        # server here instead of writing a second config beside this one.
+        for key, value in extra_config.items():
+            if isinstance(value, dict) and isinstance(opencode_config.get(key), dict):
+                opencode_config[key] = {**opencode_config[key], **value}
+            else:
+                opencode_config[key] = value
     (clone / "opencode.json").write_text(_json.dumps(opencode_config, indent=2) + "\n")
     skills_dst = oc / "skill"
     skills_dst.mkdir(parents=True, exist_ok=True)
@@ -5270,7 +5285,9 @@ def _validate_preview(config: dict[str, Any], clone: Path, base_ref: str) -> Non
 
 
 def _prepare_builder_context(context: dict[str, Any], progress=None,
-                             base_ref: str | None = None) -> tuple[Path, Path, str, tuple[str, tuple[tuple[str, str], ...]]]:
+                             base_ref: str | None = None,
+                             extra_config: dict[str, Any] | None = None,
+                             instructions_suffix: str = "") -> tuple[Path, Path, str, tuple[str, tuple[tuple[str, str], ...]]]:
     """Prepare one isolated builder checkout and inject Ada's site context."""
     from ..config import resolve_secret
 
@@ -5329,6 +5346,8 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
         output_tokens=int(builder.get("output_tokens", 8192)),
         reasoning_effort=str(builder.get("reasoning_effort", "low")),
         provider_base_url=str((config.get("llm") or {}).get("base_url") or "").strip(),
+        extra_config=extra_config,
+        instructions_suffix=instructions_suffix,
     )
     if task_contract and memory is not None:
         from ..config import timing_enabled
@@ -5745,6 +5764,66 @@ def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str,
             context, clone, base_ref, message,
             "\n\n".join(filter(None, output)), progress,
         )
+    finally:
+        _remove_builder_worktree(site_clone, clone)
+
+
+def run_owner_turn(
+    context: dict[str, Any],
+    job_id: int,
+    brief: str,
+    *,
+    session_id: str | None = None,
+    message: str | None = None,
+    extra_config: dict[str, Any] | None = None,
+    instructions_suffix: str = "",
+    progress=None,
+) -> dict[str, Any]:
+    """One owner turn: the agent reads, edits and answers in its own worktree.
+
+    This is the whole build path. The agent that talks to the owner is the agent
+    that changes the repository, so there is no second agent to start, no tool
+    to bridge and no service the caller cannot reach. When the turn ends, the
+    host validates the exact working tree, commits it to the preview branch and
+    prepares the review draft.
+    """
+    config = context["config"]
+    memory = context.get("memory")
+    # The draft title and the commit message describe the owner's request, not
+    # the conversation preamble that only primes the model.
+    subject = (message or brief).strip()
+    site_clone, clone, base_ref, prepared = _prepare_builder_context(
+        context, progress,
+        extra_config=extra_config,
+        instructions_suffix=instructions_suffix,
+    )
+    try:
+        env = dict(context.get("env") or {})
+        api_key = str(env.get("SITE_AGENT_LLM_API_KEY") or "").strip()
+        result = run_opencode_turn(
+            clone, brief, config,
+            progress=progress,
+            session_id=session_id or None,
+            api_key=api_key or None,
+            api_key_env="SITE_AGENT_LLM_API_KEY" if api_key else None,
+            memory=memory,
+            agent_name="build",
+            reply_mode="final_message",
+        )
+        reply = str(result.get("reply") or "").strip()
+        if not reply:
+            raise RunnerError("the agent returned no message")
+        new_session = str(result.get("session_id") or "")
+        if _change_state(clone) == prepared:
+            return {"reply": reply, "changed": False, "session_id": new_session}
+        if progress:
+            progress("validating the change")
+        _validate_preview(config, clone, base_ref)
+        _bump_asset_versions(clone)
+        _validate_preview(config, clone, base_ref)
+        outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
+        staged = stage_review(context, subject, outcome, progress)
+        return {**staged, "session_id": new_session}
     finally:
         _remove_builder_worktree(site_clone, clone)
 

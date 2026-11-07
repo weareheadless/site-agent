@@ -1483,44 +1483,6 @@ def create_workspace_api_app(
         """
         return {"ok": True}
 
-    @app.post("/internal/workspace/tool")
-    def internal_workspace_tool(request: Request, body: dict = Body(...)):
-        """Run one chat tool in this process, for the agent's child process.
-
-        A source build owns the compiled-preview queue and the deployment
-        service, so it must run here rather than in the short-lived MCP child.
-        Only loopback may call this, and only with the per-process token this
-        API handed to its own child; the public ingress does not proxy it.
-        """
-        from .. import internal_channel
-
-        client = request.client.host if request.client else ""
-        if client not in {"127.0.0.1", "::1", "localhost"}:
-            return JSONResponse({"error": "loopback_only"}, status_code=403)
-        if not hmac.compare_digest(
-            str(request.headers.get("x-internal-token") or ""),
-            internal_channel.token(),
-        ):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        tenant = registry.for_tenant_id(str(body.get("tenant") or ""))
-        if tenant is None:
-            return JSONResponse({"error": "unknown_tenant"}, status_code=404)
-        from ..application.agent_tools import AgentToolError, call_tool
-
-        try:
-            text = call_tool(
-                tenant.memory,
-                tenant.context,
-                body.get("job_id"),
-                str(body.get("tool") or ""),
-                body.get("arguments") or {},
-            )
-        except AgentToolError as exc:
-            return {"ok": False, "text": f"REFUSED: {exc}"}
-        except Exception as exc:  # noqa: BLE001 - the tool reports its own failure
-            return {"ok": False, "text": f"{type(exc).__name__}: {str(exc)[:400]}"}
-        return {"ok": True, "text": text}
-
     register_workspace_routes(
         app,
         config={},
