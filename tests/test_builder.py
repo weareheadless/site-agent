@@ -1654,3 +1654,35 @@ def test_a_build_that_never_reached_the_builder_can_be_retried_in_the_same_turn(
         assert context.get("_website_change_plan_dispatched") is False
     finally:
         memory.close()
+
+
+def test_a_settled_preview_is_reported_with_its_exact_state():
+    class Deployer:
+        def status(self, job_id):
+            assert job_id == "job-1"
+            return {"status": "ready", "commit": "a" * 40, "preview_url": "https://tenant.test/preview/1"}
+
+    settled = runner._wait_for_preview(Deployer(), "job-1", timeout_seconds=5)
+    assert settled == {
+        "status": "ready",
+        "job_id": "job-1",
+        "head_sha": "a" * 40,
+        "url": "https://tenant.test/preview/1",
+    }
+
+
+def test_a_failed_preview_is_reported_as_blocked_not_ready():
+    class Deployer:
+        def status(self, job_id):
+            return {"status": "failed", "error": "typecheck failed in the candidate"}
+
+    settled = runner._wait_for_preview(Deployer(), "job-1", timeout_seconds=5)
+    assert settled == {
+        "status": "blocked",
+        "job_id": "job-1",
+        "error": "typecheck failed in the candidate",
+    }
+
+
+def test_a_preview_without_a_reader_is_not_claimed_as_ready():
+    assert runner._wait_for_preview(object(), "job-1", timeout_seconds=5) is None

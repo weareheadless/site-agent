@@ -3656,6 +3656,7 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
 
 def stage_build(context: dict[str, Any], message: str, progress=None, media_asset_ids=None) -> dict[str, Any]:
     """Build, prepare the actual owner preview, and create its review draft."""
+    builder = (context.get("config") or {}).get("builder") or {}
     previous = context.get("_media_asset_ids")
     if media_asset_ids is not None:
         context["_media_asset_ids"] = list(media_asset_ids)
@@ -3701,6 +3702,16 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
                         "head_sha": candidate_sha,
                     })
                     change["preview_job_id"] = preview.get("job_id")
+                    # This tool call owns the build, so it waits for the exact
+                    # preview instead of reporting a state it has not seen.
+                    settled = _wait_for_preview(
+                        deployer,
+                        str(preview.get("job_id") or ""),
+                        timeout_seconds=float(builder.get("preview_wait_seconds") or 900),
+                    )
+                    if settled:
+                        preview.update(settled)
+                        change["status"] = "ready_for_review" if preview.get("status") == "ready" else "blocked"
                 except Exception as exc:  # noqa: BLE001 - retain truthful blocked state
                     preview.update({"status": "blocked", "error": str(exc)[:500], "head_sha": candidate_sha})
             else:
@@ -5186,6 +5197,43 @@ def preview_plan_for_paths(changed_paths: Sequence[str]) -> dict[str, Any]:
         "changed_paths": paths,
         "reason": "Rendered source changes need an isolated compiled preview runtime.",
     }
+
+
+def _wait_for_preview(deployer: Any, job_id: str, *, timeout_seconds: float = 900.0) -> dict[str, Any] | None:
+    """Wait for one compiled preview to settle.
+
+    The build tool owns its preview: reporting "building" and returning leaves
+    the owner with a draft that may never resolve if this process ends. The
+    caller bounds the wait; a job that does not settle in time is reported as
+    still building rather than as ready.
+    """
+    import time
+
+    status = getattr(deployer, "status", None)
+    if not job_id or not callable(status):
+        return None
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    while time.monotonic() < deadline:
+        try:
+            job = status(job_id)
+        except Exception:  # noqa: BLE001 - an unreadable job is not a ready preview
+            return None
+        state = str(job.get("status") or "")
+        if state == "ready":
+            return {
+                "status": "ready",
+                "job_id": job_id,
+                "head_sha": str(job.get("commit") or ""),
+                "url": str(job.get("preview_url") or ""),
+            }
+        if state in {"failed", "blocked"}:
+            return {
+                "status": "blocked",
+                "job_id": job_id,
+                "error": str(job.get("error") or "the preview build failed")[:500],
+            }
+        time.sleep(2)
+    return {"status": "building", "job_id": job_id}
 
 
 def _change_state(clone: Path) -> tuple[str, tuple[tuple[str, str], ...]]:

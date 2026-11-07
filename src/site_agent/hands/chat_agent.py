@@ -16,6 +16,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
+from .. import internal_channel
 from ..brain.design_contract import with_design_contract
 
 CHAT_AGENT = "chat"
@@ -138,11 +139,14 @@ def _write_agent_files(
                     # API resolved it; pass that exact binary down so a build
                     # never fails on discovery.
                     "SITE_AGENT_OPENCODE_BIN": _opencode_bin(config),
+                    # Tools that own durable work run in the API, which holds
+                    # the preview queue; this is how the child reaches it.
+                    **internal_channel.environment(),
                 },
                 "enabled": True,
                 # A build runs inside this tool call; the whole turn must not
                 # time out at the MCP request layer.
-                "timeout": 1_800_000,
+                "timeout": 2_700_000,
             }
         },
     }

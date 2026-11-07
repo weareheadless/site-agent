@@ -1109,6 +1109,11 @@ def _cmd_api(args: argparse.Namespace) -> int:
     registration = TenantRegistrationService(config, raw_env, registry=registry)
     bootstrap = WebsiteBootstrapService(config, raw_env, registration=registration, registry=registry)
     api = config.get("workspace_api") or {}
+    host = str(api.get("host") or "127.0.0.1")
+    port = int(api.get("port") or 3014)
+    from . import internal_channel
+
+    internal_channel.configure(host=host, port=port)
     app = create_workspace_api_app(
         registry,
         prefix=str(api.get("prefix") or "/v1/workspace"),
@@ -1116,8 +1121,6 @@ def _cmd_api(args: argparse.Namespace) -> int:
         registration=registration,
         bootstrap=bootstrap,
     )
-    host = str(api.get("host") or "127.0.0.1")
-    port = int(api.get("port") or 3014)
     from .web.diagnostics import install_stall_diagnostics
 
     diagnostics = install_stall_diagnostics(
