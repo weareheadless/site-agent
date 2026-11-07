@@ -51,6 +51,11 @@ def _authoring_contract(context: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _prepared_context(memory: Any, context: Mapping[str, Any], job_id: int | None) -> TurnState:
+    # A document read and the write that depends on it are separate MCP tool
+    # calls. TurnState copies the base mapping shallowly, so one shared dict lets
+    # the exact read survive to the next call in the same turn.
+    if isinstance(context, dict):
+        context.setdefault("_payload_read_documents", {})
     state = TurnState(memory, job_id, context)
     contract = _authoring_contract(state)
     if contract is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from typing import Any
 
 from ..hands.base import AdapterError, SiteAdapter
@@ -558,6 +559,60 @@ def _guard_payload_growth_revision_tool(context: dict[str, Any], name: str, args
     if name in {"get_growth", "get_metrics", "list_drafts"}:
         return None
     return "a Payload Growth revision permits only review reads, its exact document read, a bounded plan, and one exact document update"
+
+
+def _payload_media_references(data: Any, path: str = "") -> list[tuple[str, int]]:
+    """Every upload id in a Payload write, with the field path that names it."""
+    found: list[tuple[str, int]] = []
+    if isinstance(data, Mapping):
+        for key, value in data.items():
+            name = str(key)
+            where = f"{path}.{name}" if path else name
+            if name in {"featuredImage", "image", "gallery"}:
+                values = value if isinstance(value, (list, tuple)) else [value]
+                for index, item in enumerate(values):
+                    if isinstance(item, bool) or item is None:
+                        continue
+                    try:
+                        asset_id = int(item)
+                    except (TypeError, ValueError):
+                        continue
+                    if asset_id > 0:
+                        field = f"{where}[{index}]" if isinstance(value, (list, tuple)) else where
+                        found.append((field, asset_id))
+            else:
+                found.extend(_payload_media_references(value, where))
+    elif isinstance(data, (list, tuple)):
+        for index, item in enumerate(data):
+            found.extend(_payload_media_references(item, f"{path}[{index}]"))
+    return found
+
+
+def _validate_payload_media_references(context: dict[str, Any], data: Any) -> None:
+    """Refuse a missing upload before the write can leave a half-created row.
+
+    Payload writes the collection row first and the localized/relationship rows
+    after it. A foreign key to a media id that does not exist fails that second
+    step, leaving an empty document and an unverified write lease.
+    """
+    references = _payload_media_references(data)
+    if not references:
+        return
+    payload = _payload_gateway(context)
+    if payload is None:
+        return
+    missing: list[tuple[str, int]] = []
+    for field, asset_id in references:
+        try:
+            payload.read_media(str(asset_id), identifier_kind="id", draft=True)
+        except Exception:  # noqa: BLE001 — a missing asset is the expected failure
+            missing.append((field, asset_id))
+    if missing:
+        detail = ", ".join(f"#{asset_id} at {field}" for field, asset_id in missing[:6])
+        raise ValueError(
+            "these image references do not exist in this website's Library: "
+            f"{detail}. Search the Library again and use an existing asset id."
+        )
 
 
 def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1290,6 +1345,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             if name == "create_payload_draft":
                 effect = _plan_effect_for_tool(context, name, args)
                 write_kwargs = {"locale": locale}
+                _validate_payload_media_references(context, args.get("data") or {})
                 _mark_website_change_dispatched(context, effect=effect)
                 data = args.get("data") if isinstance(args.get("data"), dict) else {}
                 document = payload.create(str(args.get("collection") or ""), data, **write_kwargs)
@@ -1320,6 +1376,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     ):
                         raise ValueError("the published Payload base changed after this Growth proposal was reviewed")
                 write_kwargs = {"locale": locale}
+                _validate_payload_media_references(context, args.get("data") or {})
                 _mark_website_change_dispatched(context, effect=effect)
                 document = payload.update(
                     str(args.get("collection") or ""),
