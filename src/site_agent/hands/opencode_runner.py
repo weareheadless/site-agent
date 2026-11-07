@@ -4620,6 +4620,24 @@ def stage_infusion(
         shutil.rmtree(worktree, ignore_errors=True)
 
 
+CREDIT_MARKERS = (
+    "exceed your available credits",
+    "insufficient credits",
+    "insufficient balance",
+    "credit balance",
+    "payment required",
+    "quota exceeded",
+)
+
+
+def _provider_rejection(lines: Sequence[str]) -> str:
+    """Turn a provider refusal into one sentence the owner can act on."""
+    joined = "\n".join(str(line) for line in lines).lower()
+    if any(marker in joined for marker in CREDIT_MARKERS):
+        return "the model provider rejected the request: the account has no credit left"
+    return ""
+
+
 def _retryable_provider_rejection(result: Mapping[str, Any]) -> str:
     """Only a structured rejection before any model work is safe to replay."""
     if result.get("tool_calls") or result.get("native_tool_calls"):
@@ -4969,6 +4987,9 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             result=partial_result(),
         )
     if proc.returncode != 0:
+        provider_rejection = _provider_rejection(transcript_lines)
+        if provider_rejection:
+            raise RunnerError(provider_rejection, result=partial_result())
         detail = chr(10).join(tail[-8:])
         raise RunnerError(
             f"opencode exited {proc.returncode}: {detail[:400]}",

@@ -74,3 +74,21 @@ def test_readable_text_keeps_block_structure_and_drops_scripts():
 def test_the_character_set_is_taken_from_the_response():
     assert web_read._decode("café".encode("latin-1"), "text/html; charset=latin-1") == "café"
     assert web_read._decode(b"plain", "text/html") == "plain"
+
+
+def test_a_provider_credit_refusal_becomes_an_actionable_error():
+    from site_agent.hands.opencode_runner import _provider_rejection
+
+    lines = [
+        'timestamp=2026-11-07T03:20:03.124Z level=ERROR run=1 message="Failed to drain Session" '
+        'cause="AI.Error: This request would exceed your available credits given your current '
+        'in-flight requests."',
+    ]
+    assert _provider_rejection(lines) == (
+        "the model provider rejected the request: the account has no credit left")
+
+
+def test_a_normal_failure_is_not_reported_as_a_credit_problem():
+    from site_agent.hands.opencode_runner import _provider_rejection
+
+    assert _provider_rejection(["timestamp=x level=INFO message=watcher stopped"]) == ""

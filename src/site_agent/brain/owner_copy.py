@@ -103,9 +103,26 @@ def owner_message_without_unstarted_build(message: str, *, action_started: bool)
     return remainder
 
 
+_CREDIT_MARKERS = (
+    "no credit left",
+    "exceed your available credits",
+    "insufficient credits",
+    "insufficient balance",
+    "credit balance",
+    "payment required",
+    "quota exceeded",
+)
+
+
 def owner_safe_failure(error: str) -> str:
     """Turn an internal job failure into a useful, non-technical owner status."""
     lowered = str(error or "").lower()
+    if any(marker in lowered for marker in _CREDIT_MARKERS):
+        return (
+            "The model provider rejected this request because the account has run out of "
+            "credit, so I stopped. Nothing was changed or published. The account needs "
+            "topping up before I can try again."
+        )
     if any(marker in lowered for marker in ("github", "git fetch", "repository", "source file", "remote")):
         return "I couldn't reach the site's source files for this check. Nothing was changed. Please try again."
     if any(marker in lowered for marker in ("builder", "build", "preview", "deploy")):

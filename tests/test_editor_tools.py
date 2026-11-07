@@ -930,3 +930,13 @@ def test_a_normal_build_summary_is_not_prefixed_with_planning_narration(env, mon
     ])
     result = handle_message({**context, "llm": llm}, Adapter(), "add the footer")
     assert result["reply"].startswith("The footer is now on every journal page")
+
+
+def test_an_exhausted_provider_account_is_reported_as_such():
+    from site_agent.brain.owner_copy import owner_safe_failure
+
+    message = owner_safe_failure(
+        "opencode exited 1: This request would exceed your available credits given your current in-flight requests.")
+    assert "out of credit" in message
+    assert "Nothing was changed or published" in message
+    assert "try again" not in message.split("before I can try again")[0]
