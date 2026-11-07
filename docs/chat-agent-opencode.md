@@ -19,6 +19,7 @@ The turn now runs as an opencode agent:
 | Agent loop, tool selection, final message | opencode (`--agent chat`) |
 | Repository reads | opencode, natively, in a read-only checkout |
 | Content, metrics, Growth, plan, build | `application/agent_tools.py` over MCP |
+| A page the owner links | `hands/web_read.py` (`read_web_page`) |
 | Tool contract and validators | `brain/editor.py` (`_tools_spec`, `_execute_tool`) |
 | Per-turn tool state | `brain/turn_state.py`, stored against the chat job |
 | Message delivery | `core/chat_jobs.py`, stored unchanged |
@@ -37,6 +38,11 @@ what opencode wrote. It does not filter, prefix or replace that message.
   exact package the API is running through `PYTHONPATH`.
 - `spawn_build` remains the only way to start a build, and it still requires a
   validated plan and completed Payload receipts. The model cannot talk past it.
+- `read_web_page` is the only way out to the web. opencode's own `webfetch` and
+  `websearch` are denied. The policy is http/https only, no credentials in the
+  URL, every redirect hop re-validated, every resolved address must be public,
+  text content only, and bounded size and time, because the agent runs beside
+  the workspace API and the host's credentials.
 - The opencode session id is stored per conversation, so a follow-up continues
   the same turn history. The first turn passes the recent conversation instead.
   Verified across a process restart: a follow-up answered from a new process
