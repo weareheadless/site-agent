@@ -644,14 +644,14 @@ export async function POST(request: Request, { params }: RouteProps) {
     try {
       await prepareOperation(operationKey, intent)
       operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
-      // The write guard serializes every writer (native admin/REST, the
-      // gateway and this publish path) against one tenant-wide D1 receipt.
+      // The write guard serializes writers of this exact document against the
+      // native admin/REST writers; it is not a tenant-wide lock.
       const result = await withPayloadWriteGuard(auth.req as { context?: Record<string, unknown> }, async () => {
         await auth.payload.update({ collection: collection as CollectionSlug, data: draftData as never, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user })
         const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
         if (await hashJson(withoutPayloadMetadata(published)) !== draftHash) throw new Error('The published document does not match the exact reviewed draft')
         return { ok: true, published: [{ collection, documentId: id }], draftHash, frontendGitSha: frontendGitSha() || null, approvedBy: text(auth.user.id) }
-      })
+      }, { collection, id })
       await completeOperation(operationKey, result)
       return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
     } catch (cause) {

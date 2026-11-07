@@ -94,7 +94,7 @@ const harness = async (t) => {
   return { mf, ROUTE_POST }
 }
 
-test('owner publication acquires the shared all-writer guard and records exact receipts', async (t) => {
+test('owner publication acquires the document write guard and records exact receipts', async (t) => {
   const { mf, ROUTE_POST } = await harness(t)
   const db = await mf.getD1Database('D1')
   await db.prepare(`CREATE TABLE helloada_growth_operations (

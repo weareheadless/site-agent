@@ -185,7 +185,7 @@ test('a stranded lease is released only when its recorded intent proves no effec
   const { guard, db, hash } = await loadGuard(t)
   await db.prepare(`INSERT INTO helloada_growth_operations
     (operation_key,document_key,tenant_id,package_hash,state,result_json,created_at,updated_at)
-    VALUES ('stranded','payload:content','tenant-a','pkg','writing',?1,'now','now')`)
+    VALUES ('stranded','pages:1','tenant-a','pkg','writing',?1,'now','now')`)
     .bind(JSON.stringify({ state: 'write-intent', collection: 'pages', id: '1', locale: 'en', expectedHash: await hash({ title: 'Before' }) })).run()
   const unchanged = { id: 1, title: 'Before' }
   const matching = { findByID: async () => unchanged, findGlobal: async () => unchanged }
@@ -198,7 +198,7 @@ test('a stranded lease is released only when its recorded intent proves no effec
   await db.prepare('DELETE FROM helloada_growth_operations').run()
   await db.prepare(`INSERT INTO helloada_growth_operations
     (operation_key,document_key,tenant_id,package_hash,state,result_json,created_at,updated_at)
-    VALUES ('stranded','payload:content','tenant-a','pkg','writing',?1,'now','now')`)
+    VALUES ('stranded','pages:1','tenant-a','pkg','writing',?1,'now','now')`)
     .bind(JSON.stringify({ state: 'write-intent', collection: 'pages', id: '1', locale: 'en', expectedHash: await hash({ title: 'Before' }) })).run()
   const changed = { findByID: async () => ({ id: 1, title: 'Something else' }), findGlobal: async () => ({ id: 1, title: 'Something else' }) }
   await assert.rejects(

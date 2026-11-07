@@ -73,6 +73,31 @@ test('all native Payload writers participate in the existing D1 write guard', as
       await guard('pages', undefined, request, 'failed')
       await assert.rejects(guard('pages', '1', { context: {} }, 'update', {}), blocked)
     })
+
+    await t.test('a stranded write on one page never blocks another page or the menu', async () => {
+      await db.prepare(`INSERT INTO helloada_growth_operations
+        (operation_key,document_key,tenant_id,package_hash,state,created_at,updated_at)
+        VALUES ('ada:stuck','pages:1','tenant-a','package','uncertain','now','now')`).run()
+      const other = { context: {} }
+      await guard('pages', '2', other, 'update', {})
+      await guard('pages', undefined, other, 'complete')
+      const menu = { context: {} }
+      await guard('global:navigation', 'navigation', menu, 'update', {})
+      await guard('global:navigation', undefined, menu, 'complete')
+      // The stranded page still refuses its own next write.
+      await assert.rejects(guard('pages', '1', { context: {} }, 'update', {}), blocked)
+    })
+
+    await t.test('a failed page create leaves no lease behind', async () => {
+      const request = { context: {} }
+      await guard('pages', undefined, request, 'create', {})
+      await guard('pages', undefined, request, 'failed')
+      const rows = await db.prepare('SELECT COUNT(*) AS total FROM helloada_growth_operations').first()
+      assert.equal(Number(rows.total), 0)
+      const update = { context: {} }
+      await guard('pages', '1', update, 'update', {})
+      await guard('pages', undefined, update, 'complete')
+    })
   } finally {
     delete globalThis.__nativeGuardD1
     await mf.dispose()
