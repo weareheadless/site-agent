@@ -126,9 +126,17 @@ export async function GET(request: Request) {
     try {
       // A draft is allowed to be incomplete: a locale can be authored before it
       // has a route slug, so draft reads stay raw instead of failing the route.
+      // Payload's published read still returns a draft-status row from the main
+      // table (an interrupted create leaves one with no locale or version row),
+      // and such a row has no public route. It is not a published document, so
+      // it is omitted instead of failing every reader of the collection. Catalog
+      // children and taxonomy have no route slug and are returned unchanged.
+      const routable = !isCatalogChildCollection(collection) && collection !== 'productCategories'
       const documents = draft
         ? result.docs.map(document => document as unknown as Record<string, unknown>)
-        : result.docs.map(document => contentDocument(collection, document as unknown as Record<string, unknown>))
+        : result.docs
+            .filter(document => !routable || String((document as unknown as Record<string, unknown>).slug || '').trim())
+            .map(document => contentDocument(collection, document as unknown as Record<string, unknown>))
       return NextResponse.json({ collection, documents }, { headers: { 'Cache-Control': 'no-store' } })
     } catch (error) {
       return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)

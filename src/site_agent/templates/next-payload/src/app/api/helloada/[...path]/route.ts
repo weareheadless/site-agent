@@ -209,7 +209,14 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
           page = nextPage
         }
       }
-      const [published, draft] = await Promise.all([readAll(false), readAll(true)])
+      const [publishedRows, draft] = await Promise.all([readAll(false), readAll(true)])
+      // Payload's published read returns main-table rows that are still drafts,
+      // including an interrupted create with no locale or version row. Such a
+      // row is not a published document and must not enter the editable list.
+      const published = publishedRows.filter((document) => {
+        const status = text((document as Record<string, unknown>)._status)
+        return !status || status === 'published'
+      })
       const documents = mergeEditableDocuments(published, draft)
       return {
         collection,
@@ -243,12 +250,14 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
 
 const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
   const documents = await readEditableDocuments(payload)
-  const routes = documents.map((document) => ({
+  // An incomplete draft legitimately has no route slug yet. It stays editable
+  // in the workspace, but it contributes no public route.
+  const routes = documents.flatMap((document) => document.slug ? [{
     path: pathForDocument(document.collection, document.slug),
     kind: document.collection === 'posts' ? 'post' : document.collection === 'products' ? 'product' : 'page',
     collection: document.collection,
     sourceId: document.sourceId,
-  }))
+  }] : [])
   if (documents.some((document) => document.collection === 'posts')) {
     routes.push({ path: articleIndexPath(), kind: 'post_index', collection: 'posts', sourceId: '' })
   }
