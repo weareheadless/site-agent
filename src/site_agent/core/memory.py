@@ -7353,6 +7353,24 @@ class Memory:
         return cur.lastrowid
 
     @_locked
+    def get_message(self, message_id: int) -> dict[str, Any] | None:
+        """Return one exact stored message, including its attachment references."""
+        row = self.conn.execute(
+            "SELECT id, ts, role, text, attachments_json FROM chat_messages WHERE id = ?",
+            (int(message_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["attachments"] = json.loads(result.pop("attachments_json") or "[]")
+            if not isinstance(result["attachments"], list):
+                result["attachments"] = []
+        except (json.JSONDecodeError, TypeError):
+            result["attachments"] = []
+        return result
+
+    @_locked
     def get_messages(self, conversation_id: int, limit: int = 200) -> list[dict[str, Any]]:
         rows = [
             dict(r)

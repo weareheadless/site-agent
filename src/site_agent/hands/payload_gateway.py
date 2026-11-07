@@ -1130,6 +1130,23 @@ class PayloadMediaService:
         document = self.payload.read_media(str(asset_id), identifier_kind="id", draft=True)
         return self._asset(document)
 
+    def search(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Search the tenant's Payload media library, never a local mirror."""
+        terms = [part.lower() for part in re.findall(r"[\w'-]+", str(query)) if len(part) > 1]
+        if not terms:
+            return []
+        matches: list[tuple[int, dict[str, Any]]] = []
+        for document in self.payload.list_media(draft=True, limit=100):
+            asset = self._asset(document)
+            haystack = " ".join([
+                asset.original_name, asset.description, asset.ocr_text, *asset.tags,
+                *[str(value) for value in (asset.analysis.get("suggested_uses") or [])],
+            ]).lower()
+            score = sum(term in haystack for term in terms)
+            if score:
+                matches.append((score, self.serialize(asset)))
+        return [item for _, item in sorted(matches, key=lambda pair: (-pair[0], pair[1]["id"]))[:max(1, min(limit, 50))]]
+
     def serialize(self, asset: PayloadMediaAsset | Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(asset, Mapping):
             asset = self._asset(asset)

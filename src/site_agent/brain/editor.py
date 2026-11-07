@@ -1181,17 +1181,11 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if service is None:
             return "The media Library is not enabled."
         query = str(args.get("query") or "").strip()
-        terms = set(query.lower().split())
-        rows = []
-        for asset in memory.list_media_assets(status="ready", media_kind="image", limit=500):
-            haystack = " ".join([asset.original_name, asset.description, asset.ocr_text, *asset.tags,
-                                  *[str(x) for x in (asset.analysis.get("suggested_uses") or [])]]).lower()
-            score = sum(term in haystack for term in terms)
-            if score:
-                rows.append((score, {"asset_id": asset.asset_id, "name": asset.original_name,
-                                     "description": asset.description[:400], "width": asset.width,
-                                     "height": asset.height, "media_kind": asset.media_kind.value}))
-        return json.dumps([item for _, item in sorted(rows, key=lambda x: -x[0])[:int(args.get("limit", 8))]])
+        try:
+            rows = service.search(query, limit=int(args.get("limit", 8)))
+        except Exception as exc:  # noqa: BLE001 — explain provider failures to Ada
+            return f"media search failed: {exc}"
+        return json.dumps(rows)
     booking_tool_names = {
         "read_booking_configuration", "read_booking_availability", "create_booking_type",
         "update_booking_type", "deactivate_booking_type", "update_booking_settings",
