@@ -233,7 +233,7 @@ def test_status_keeps_retained_candidate_visible_after_checks_need_attention(tmp
         memory.close()
 
 
-def test_confirmed_failed_candidate_routes_owner_turn_to_intake_advisor(tmp_path):
+def test_a_failed_candidate_does_not_divert_the_owner_turn_to_intake(tmp_path):
     memory = Memory(tmp_path / "routing.db")
     _run(memory, status="failed")
     session = {"session_id": "intake-a", "conversation_id": memory.create_conversation(),
@@ -243,7 +243,7 @@ def test_confirmed_failed_candidate_routes_owner_turn_to_intake_advisor(tmp_path
         def _session(self, _conversation_id=None): return session
         def send_message(self, message, **kwargs):
             self.sent.append((message, kwargs))
-            return {"job_id": 17, "conversation_id": session["conversation_id"], "session_id": "intake-a"}
+            raise AssertionError("a failed candidate must not divert the owner turn to intake")
     coordinator = Coordinator()
     tenant = Tenant("tenant-a", {}, memory, SimpleNamespace(close=lambda: None),
                     {"llm": object(), "journey": Journey(False, False), "intake_coordinator": coordinator}, "token")
@@ -251,8 +251,8 @@ def test_confirmed_failed_candidate_routes_owner_turn_to_intake_advisor(tmp_path
     try:
         result = ChatService(registry=registry).enqueue(
             {"message": "go", "conversation_id": session["conversation_id"]}, tenant=tenant)
-        assert result["job_id"] == 17
-        assert coordinator.sent[0][0] == "go"
+        assert result["mode"] == "workspace"
+        assert coordinator.sent == []
         assert session["status"] == "confirmed" and session["confirmed_revision"] == 4
     finally:
         registry.close()
@@ -282,7 +282,7 @@ def test_confirmed_successful_candidate_routes_owner_turn_to_workspace(tmp_path)
         registry.close()
 
 
-def test_unconfirmed_intake_message_still_routes_to_advisor(tmp_path):
+def test_an_unconfirmed_intake_never_absorbs_the_owner_turn(tmp_path):
     memory = Memory(tmp_path / "routing-unconfirmed.db")
     session = {"session_id": "intake-a", "conversation_id": memory.create_conversation(),
                "status": "collecting", "confirmed_revision_id": None, "confirmed_revision": None}
@@ -291,7 +291,7 @@ def test_unconfirmed_intake_message_still_routes_to_advisor(tmp_path):
         def _session(self, _conversation_id=None): return session
         def send_message(self, message, **kwargs):
             self.sent.append(message)
-            return {"job_id": 19, "conversation_id": session["conversation_id"], "session_id": "intake-a"}
+            raise AssertionError("an unconfirmed intake must not absorb the owner turn")
     coordinator = Coordinator()
     tenant = Tenant("tenant-a", {}, memory, SimpleNamespace(close=lambda: None),
                     {"llm": object(), "journey": Journey(False, False), "intake_coordinator": coordinator}, "token")
@@ -299,8 +299,8 @@ def test_unconfirmed_intake_message_still_routes_to_advisor(tmp_path):
     try:
         result = ChatService(registry=registry).enqueue(
             {"message": "more details", "conversation_id": session["conversation_id"]}, tenant=tenant)
-        assert result["job_id"] == 19
-        assert coordinator.sent == ["more details"]
+        assert result["mode"] == "workspace"
+        assert coordinator.sent == []
     finally:
         registry.close()
 

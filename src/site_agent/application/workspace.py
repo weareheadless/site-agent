@@ -1931,34 +1931,9 @@ class ChatService:
             except (TypeError, ValueError) as exc:
                 raise BridgeError("conversation_id must be an integer") from exc
 
-        if tenant is not None:
-            intake = tenant.context.get("intake_coordinator")
-            if intake is not None and intake.needs_intake(conversation_id):
-                try:
-                    intake_kwargs = {
-                        "conversation_id": conversation_id,
-                        "idempotency_key": body.get("idempotency_key"),
-                    }
-                    if attachments:
-                        intake_kwargs["attachments"] = [item["asset_id"] for item in attachments]
-                    if owner_context:
-                        intake_kwargs["owner_context"] = owner_context
-                    result = intake.send_message(message, **intake_kwargs)
-                except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
-                    raise BridgeError(str(exc)[:500]) from exc
-                response = {
-                    "job_id": int(result["job_id"]),
-                    "conversation_id": int(result["conversation_id"]),
-                    "intake_session_id": str(result.get("session_id") or ""),
-                    "mode": self._intake_mode(tenant),
-                }
-                if journey := self._journey(tenant):
-                    response.update({
-                        "phase": journey.initial_phase,
-                        "website_present": journey.website_present,
-                        "incubation_needed": journey.incubation_needed,
-                    })
-                return response
+        # The owner's turn always belongs to the workspace. An unconfirmed
+        # intake session is not a reason to divert the conversation into an
+        # advisor the owner never asked for.
         conversations = {item["id"] for item in memory.list_conversations(limit=200)}
         if not conversation_id or conversation_id not in conversations:
             conversation_id = memory.create_conversation(title=message[:80])
@@ -2052,9 +2027,9 @@ class ChatService:
     def status(self, conversation_id: Any = None, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return the tenant-scoped chat phase without starting website work.
 
-        Intake owns the phase decision.  The browser may use this to keep the
-        page selector and website target dormant until the owner has accepted
-        the working brief; it must not try to infer readiness from Payload.
+        The owner is always in the workspace. The browser may still read the
+        brief and build state, but the phase never depends on published Payload
+        content or on an intake session.
         """
         memory, _llm, tenant_id = self._scope(tenant)
         normalized_id: int | None = None

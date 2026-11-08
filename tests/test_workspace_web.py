@@ -666,46 +666,36 @@ def test_intake_requires_explicit_owner_acceptance(tmp_path):
     memory.close()
 
 
-def test_ready_intake_owner_turn_enqueues_advice_job(tmp_path):
+def test_owner_turn_never_routes_through_intake(tmp_path):
+    class Intake:
+        def __init__(self):
+            self.calls = []
+
+        def needs_intake(self, conversation_id):
+            self.calls.append(("needs", conversation_id))
+            return True
+
+        def status(self, conversation_id=None):
+            self.calls.append(("status", conversation_id))
+            return {"confirmed": False}
+
+        def send_message(self, *args, **kwargs):
+            self.calls.append(("send",))
+            raise AssertionError("intake must not receive an owner turn")
+
     memory = Memory(tmp_path / "memory.db")
-    coordinator = IntakeCoordinator(
-        memory,
-        config={"intake": {"database_only": True, "research": {"enabled": False}}},
-        llm=object(),
-    )
-    ready = DesignIntakeDraft.from_site_intake(SiteIntake.from_dict({
-        "schema_version": 1,
-        "business": {"name": "North Star", "offer_summary": "Strategy services", "primary_services": ["Strategy"], "location": "North Shore"},
-        "audience": {"primary": "Independent owners"},
-        "conversion": {"primary_action": "Book a call", "not_available": True},
-        "brand": {"voice": "Clear"}, "site": {"required_pages": ["index.html"]},
-    }))
-    session = coordinator.intake_service.create_session(draft=ready)
+    intake = Intake()
     tenant = Tenant("demo", {"site": {"website_present": False}}, memory, SimpleNamespace(),
-                    {"llm": object(), "intake_coordinator": coordinator}, "token")
+                    {"llm": object(), "intake_coordinator": intake}, "token")
     registry = TenantRegistry({"demo": tenant})
     service = ChatService(registry=registry)
     try:
-        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
-        response = service.enqueue({"message": "go", "conversation_id": session["conversation_id"]}, tenant=tenant)
+        response = service.enqueue({"message": "go"}, tenant=tenant)
         job = memory.get_chat_job(response["job_id"])
-        assert job["operation_kind"] == "design_intake_advice"
-        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
-        coordinator.confirm(
-            session["conversation_id"], revision=session["revision"], draft_hash=session["draft_hash"],
-            confirmation_text="I accept this brief.",
-        )
-        confirmed = memory.get_design_intake_session(session["session_id"])
-        assert confirmed["status"] == "confirmed"
-        assert confirmed["confirmed_revision"]
-        assert confirmed["confirmed_hash"]
-        assert confirmed["confirmed_ts"]
-        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
-        workspace_response = service.enqueue(
-            {"message": "next step?", "conversation_id": session["conversation_id"]}, tenant=tenant
-        )
-        workspace_job = memory.get_chat_job(workspace_response["job_id"])
-        assert workspace_job["operation_kind"] != "design_intake_advice"
+        assert job["operation_kind"] != "design_intake_advice"
+        assert all(kind == "status" for kind, *_ in intake.calls)
+        status = service.status(response["conversation_id"], tenant=tenant)
+        assert status["phase"] == "workspace"
     finally:
         memory.close()
 
@@ -870,7 +860,7 @@ def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
     registry.tenants["workspace-one"].memory.close()
 
 
-def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_path):
+def test_shared_api_does_not_route_new_tenant_conversations_through_intake(tmp_path):
     class Intake:
         def __init__(self):
             self.calls = []
@@ -922,20 +912,15 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
         )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "job_id": 44,
-        "conversation_id": 9,
-        "intake_session_id": "intake-test",
-        "mode": "intake",
-    }
-    assert tenant.context["intake_coordinator"].calls == [
-        ("needs", None),
-        ("send", "Je veux créer une page", None, "turn-1"),
-    ]
+    body = response.json()
+    assert body["phase"] == "workspace"
+    assert body["mode"] == "workspace"
+    assert tenant.memory.get_chat_job(body["job_id"])["operation_kind"] != "design_intake_advice"
+    assert tenant.context["intake_coordinator"].calls == []
     tenant.memory.close()
 
 
-def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
+def test_shared_api_stamps_the_workspace_journey_without_intake(tmp_path):
     class Intake:
         def __init__(self):
             self.contexts = []
@@ -988,11 +973,8 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
     assert response.status_code == 200
     assert response.json()["phase"] == "workspace"
     assert response.json()["website_present"] is True
-    assert tenant.context["intake_coordinator"].contexts == [{
-        "website_present": True,
-        "incubation_needed": True,
-        "journey": "workspace",
-    }]
+    assert tenant.context["intake_coordinator"].contexts == []
+    assert tenant.memory.get_chat_job(response.json()["job_id"])["operation_kind"] != "design_intake_advice"
     tenant.memory.close()
 
 
