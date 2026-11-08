@@ -115,6 +115,11 @@ to Payload is repaired by the same agent that wrote it. If one bounded repair
 does not clear the violations, the turn fails and names them instead of handing
 the owner an unreviewable draft.
 
+A preview is only called ready once every page the candidate saved actually
+renders in it: the service requests each authored page and fails the candidate
+on a non-success response, so a page that compiles but throws while rendering
+is reported as a failure rather than shown to the owner as ready.
+
 There is no second agent, no build tool and no channel between processes: the
 agent that talks to the owner is the agent that does the work. The legacy
 in-process chat engine keeps its own build tool until it is retired; it runs

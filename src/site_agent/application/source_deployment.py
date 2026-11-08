@@ -27,7 +27,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..credentials import credential_environment, cloudflare_env_names, github_api_token, github_ssh_command
 from ..hands.github_static import GithubStatic
@@ -1109,6 +1109,14 @@ class SourceDeploymentService:
             str(expected_commit or job.get("commit") or ""),
             label="compiled preview",
         )
+        try:
+            rendered = self._verify_preview_routes(
+                f"http://127.0.0.1:{port}{base_path}",
+                list(job.get("preview_routes") or []),
+            )
+        except SourceDeploymentError:
+            self._stop_runtime(str(job["id"]))
+            raise
         return {
             "status": "ready",
             "mode": _COMPILED_PREVIEW,
@@ -1117,7 +1125,36 @@ class SourceDeploymentService:
             "deployment_mode": "isolated_host_runtime",
             "runtime_port": port,
             "revision_verification": revision,
+            "rendered_routes": rendered,
         }
+
+    def _verify_preview_routes(self, base: str, routes: Sequence[str]) -> list[str]:
+        """Every page this candidate authored must render in its own preview.
+
+        A build that compiles is not a page. A component can throw while
+        rendering, and without this the owner is handed a "ready" draft whose
+        page is a 500. The route list comes from the exact Payload documents
+        this candidate saved, so it checks what the owner asked for rather than
+        every route on the site.
+        """
+        verified: list[str] = []
+        for route in routes:
+            url = base.rstrip("/") + (route if route != "/" else "/")
+            try:
+                with urllib.request.urlopen(url, timeout=20) as response:
+                    status = int(response.status)
+            except urllib.error.HTTPError as exc:
+                status = int(exc.code)
+            except (OSError, urllib.error.URLError) as exc:
+                raise SourceDeploymentError(
+                    f"compiled preview route {route} could not be requested: {str(exc)[:200]}"
+                ) from exc
+            if not 200 <= status < 300:
+                raise SourceDeploymentError(
+                    f"compiled preview route {route} returned {status}; the candidate does not render"
+                )
+            verified.append(route)
+        return verified
 
     def _content_inventory(self, checkout: Path, worktree: Path, timeout: int,
                            preview_secret: str) -> dict[str, Any]:
@@ -1162,6 +1199,7 @@ class SourceDeploymentService:
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(snapshot, stream)
+            job["preview_routes"] = list(snapshot.get("routes") or [])
             checks = [self._check([npm, "run", "payload", "--", "migrate"], worktree,
                        "preview_schema", timeout, preview_secret=preview_secret, local_payload=True)]
             script = Path(__file__).with_name("seed_compiled_preview.mjs")

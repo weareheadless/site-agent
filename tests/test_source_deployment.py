@@ -825,3 +825,60 @@ def test_a_preview_is_not_reused_across_different_payload_revisions(tmp_path):
                            "payload_revision_set_hash": "b" * 64})
     finally:
         service.close()
+
+
+def test_the_preview_snapshot_names_the_route_of_every_page_the_candidate_saved():
+    from site_agent.application.compiled_preview_content import canonical_preview_snapshot
+
+    revision = "sha256:" + "a" * 64
+
+    class Gateway:
+        def require_authoring_contract(self):
+            return {"locales": ["en"], "defaultLocale": "en", "enabled": {"collections": ["pages"]}}
+
+        def list(self, collection, **kwargs):
+            return [{"id": "2"}]
+
+        def read(self, collection, identifier, **kwargs):
+            return {"id": "2", "slug": "about", "_status": "published", "_helloadaRevision": revision}
+
+        def read_global(self, slug, **kwargs):
+            return {}
+
+        def list_media(self, **kwargs):
+            return []
+
+    snapshot = canonical_preview_snapshot(Gateway(), [{
+        "kind": "collection", "operation": "update", "target": "pages", "document_id": "2",
+        "revision": revision, "locale": "en",
+    }])
+
+    assert snapshot["routes"] == ["/about"]
+
+
+def test_a_preview_route_that_does_not_render_fails_the_candidate(tmp_path):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler
+            code = 200 if self.path.endswith("/ok") else 500
+            self.send_response(code)
+            self.end_headers()
+            self.wfile.write(b"ok" if code == 200 else b"error")
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        assert service._verify_preview_routes(base, ["/ok"]) == ["/ok"]
+        with pytest.raises(source_deployment.SourceDeploymentError, match="route /about returned 500"):
+            service._verify_preview_routes(base, ["/ok", "/about"])
+    finally:
+        service.close()
+        server.shutdown()

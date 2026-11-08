@@ -6,6 +6,7 @@ fallback. Authentication, owner records and application stores are not copied.
 from __future__ import annotations
 
 import base64
+import urllib.parse
 from collections.abc import Mapping
 from typing import Any
 
@@ -104,6 +105,26 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
                 media_ids.add(identifier)
     except Exception:  # noqa: BLE001 - referenced media still copies if listing is unavailable
         pass
+    # The public route of every page this candidate saved. The preview runtime
+    # must render each of them before the draft is called ready; a page that
+    # compiles but throws while rendering is not a preview.
+    routes: list[str] = []
+    for effect in effects:
+        if effect.get("kind") != "collection" or effect.get("target") != "pages":
+            continue
+        entry = documents.get(("pages", str(effect.get("document_id") or "")))
+        if not entry:
+            continue
+        document = entry["locales"].get(default_locale) or next(iter(entry["locales"].values()), {})
+        slug = str(document.get("slug") or "").strip().strip("/")
+        if not slug:
+            continue
+        path = "/" if slug in {"home", "index"} else "/" + "/".join(
+            urllib.parse.quote(segment) for segment in slug.split("/")
+        )
+        if path not in routes:
+            routes.append(path)
+
     service = PayloadMediaService(gateway)
     media = []
     for identifier in sorted(media_ids):
@@ -112,4 +133,4 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
         media.append({"document": dict(row), "bytes": base64.b64encode(data).decode("ascii"),
                       "contentType": content_type})
     return {"schema": 1, "defaultLocale": default_locale, "documents": list(documents.values()),
-            "globals": list(globals_.values()), "media": media}
+            "globals": list(globals_.values()), "media": media, "routes": routes}
