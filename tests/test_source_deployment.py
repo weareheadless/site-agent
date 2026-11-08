@@ -964,3 +964,13 @@ def test_the_preview_boundary_still_refuses_platform_files(tmp_path):
             service.close()
     finally:
         memory.close()
+
+
+def test_segment_metadata_assets_are_tenant_presentation():
+    from site_agent.frontend_ownership import is_frontend_owned_path
+
+    assert is_frontend_owned_path("src/app/(frontend)/icon.png")
+    assert is_frontend_owned_path("src/app/(frontend)/apple-icon.png")
+    # The route and layout remain platform-owned.
+    assert not is_frontend_owned_path("src/app/(frontend)/page.tsx")
+    assert not is_frontend_owned_path("src/app/(frontend)/layout.tsx")
