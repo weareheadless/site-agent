@@ -1,33 +1,33 @@
 {
   "releases": {
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "id": "runtime-20261108202240-14572744",
+      "sha": "14572744b21f97fb4ed59c60860d8f9efe7030c4",
+      "sharedRuntimeFingerprint": "954064e2f7452b6af4b9ff045591adbd78a009c89d2cc36ceebae5f0c5b6599b"
+    },
+    "casamigo": {
+      "id": "runtime-20261108202240-9be79e70",
+      "sha": "9be79e70e4dd43c4a736dc8a600684560dbdf9c0",
+      "sharedRuntimeFingerprint": "954064e2f7452b6af4b9ff045591adbd78a009c89d2cc36ceebae5f0c5b6599b"
+    },
+    "oceanicvibes": {
+      "id": "runtime-20261108202240-470300f8",
+      "sha": "470300f8f31a814c6ce6acac63c16286629b757b",
+      "sharedRuntimeFingerprint": "954064e2f7452b6af4b9ff045591adbd78a009c89d2cc36ceebae5f0c5b6599b"
+    },
     "atelier-harmonie": {
       "id": "rel-20261103222247-2ef7ad10",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
       "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
     },
-    "casamigo": {
-      "id": "rel-20261108175031-99be4fe9",
-      "sha": "9be79e70e4dd43c4a736dc8a600684560dbdf9c0",
-      "sharedRuntimeFingerprint": "4d813de38657a433de0f1231003e2ebf030c9312e4fe166e636d8ac890e56c8b"
-    },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
-    },
-    "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261108175031-121fe6e3",
-      "sha": "14572744b21f97fb4ed59c60860d8f9efe7030c4",
-      "sharedRuntimeFingerprint": "4d813de38657a433de0f1231003e2ebf030c9312e4fe166e636d8ac890e56c8b"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261103223219-bf91af50",
       "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
       "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
-    },
-    "oceanicvibes": {
-      "id": "rel-20261108175031-8e260247",
-      "sha": "470300f8f31a814c6ce6acac63c16286629b757b",
-      "sharedRuntimeFingerprint": "4d813de38657a433de0f1231003e2ebf030c9312e4fe166e636d8ac890e56c8b"
     },
     "site-5fe73d3d38ff6f77": {
       "id": "rel-20261103222325-4d1982f6",
