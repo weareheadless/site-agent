@@ -34,9 +34,9 @@
       "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d"
     },
     "site-ff8e9af06f56201f": {
-      "id": "rel-20261108175031-e874c489",
+      "id": "runtime-20261103223219-0209c03d",
       "sha": "03bb50ac36cd7b9ac2020da24d598eba2f2133cf",
-      "sharedRuntimeFingerprint": "4d813de38657a433de0f1231003e2ebf030c9312e4fe166e636d8ac890e56c8b"
+      "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
     }
   },
   "schema": 1
