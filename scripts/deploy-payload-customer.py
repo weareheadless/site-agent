@@ -1068,6 +1068,70 @@ def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_confi
         config_path.unlink(missing_ok=True)
 
 
+def validate_presentation_inventory(customer: dict[str, Any], inventory: Any) -> dict[str, Any]:
+    """Prove the built site has an owner-visible route list and preview mount.
+
+    The workspace is the owner's only way into a site. A release that ships
+    without routes or without a rendering preview would produce an account, a
+    Worker and no website, so the generated inventory is a release fact, not a
+    UI detail.
+    """
+    if not isinstance(inventory, dict):
+        raise RuntimeError("release has no generated presentation inventory")
+    mount = inventory.get("previewMount")
+    if not isinstance(mount, str) or not mount.startswith("/") or mount == "/" or mount.endswith("/"):
+        raise RuntimeError("generated presentation inventory has no valid workspace preview mount")
+    declared = inventory.get("routes")
+    if not isinstance(declared, list):
+        raise RuntimeError("generated presentation inventory has no route list")
+    routes: list[str] = []
+    for entry in declared:
+        value = entry.get("path") if isinstance(entry, dict) else entry
+        if not isinstance(value, str) or not value.startswith("/") or value.startswith("//"):
+            raise RuntimeError("generated presentation inventory contains an invalid route")
+        normalized = "/" + "/".join(part for part in value.split("/") if part) if value != "/" else "/"
+        if normalized not in routes:
+            routes.append(normalized)
+    profile = customer.get("presentationProfile", "payload")
+    if profile == "payload" and customer.get("websitePresent") is not True and "/" not in routes:
+        raise RuntimeError(
+            "a Payload-profile site without published Payload content must declare committed "
+            "presentation routes including its home page")
+    return {"profile": profile, "previewMount": mount, "routes": routes}
+
+
+def preview_page_status(url: str) -> int:
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "text/html", "Cache-Control": "no-cache", "User-Agent": "HelloAda-Release/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return int(getattr(response, "status", 200))
+    except urllib.error.HTTPError as error:
+        return int(error.code)
+
+
+def verify_preview_routes(customer: dict[str, Any], presentation: dict[str, Any], sha: str) -> list[str]:
+    """Prove the promoted Worker serves the owner-visible site and its pages."""
+    health = urllib.parse.urlsplit(customer["health"])
+    origin = f"{health.scheme}://{health.netloc}"
+    mount = str(presentation.get("previewMount") or "")
+    routes = [route for route in presentation.get("routes") or [] if isinstance(route, str)]
+    checked: list[str] = []
+    failures: list[str] = []
+    for route in ["/"] + [route for route in routes if route != "/"]:
+        suffix = "/" if route == "/" else route
+        url = f"{origin}{mount}{suffix}?release={sha}"
+        status = preview_page_status(url)
+        checked.append(url)
+        if status != 200:
+            failures.append(f"{route} returned HTTP {status}")
+    if failures:
+        raise RuntimeError("workspace preview does not render the owner site: " + "; ".join(failures))
+    return checked
+
+
 def validate_presentation_source(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any]) -> dict[str, Any]:
     """Source admission is mandatory for bootstrap as well as ordinary releases."""
     profile = customer.get("presentationProfile", "payload")
@@ -1795,6 +1859,14 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             if all(health_present):
                 for field in locale_fields:
                     receipt[field] = receipt["health"][field]
+            presentation = receipt.get("presentation")
+            if isinstance(presentation, dict):
+                stage("verify-preview")
+                receipt["preview"] = {
+                    "mount": presentation.get("previewMount"),
+                    "routes": presentation.get("routes"),
+                    "checked": verify_preview_routes(customer, presentation, receipt["sourceSha"]),
+                }
             stage("verify-connection")
             activation_token = control_plane_token(gate["envFile"], base)
             activation = (
@@ -2258,6 +2330,9 @@ def main() -> int:
         run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, contract_env)
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
         generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
+        generated_presentation = json.loads(
+            (checkout / "src/generated/helloada-presentation.json").read_text(encoding="utf-8"))
+        receipt["presentation"] = validate_presentation_inventory(customer, generated_presentation)
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
         if not all(field in customer for field in ("configurationIdentity", "locales", "defaultLocale")):
             raise RuntimeError("generated candidate has no complete locale configuration identity")

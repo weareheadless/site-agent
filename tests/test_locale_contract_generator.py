@@ -13,6 +13,8 @@ def test_generated_locale_identity_comes_from_worker_config_not_stale_template_m
     (control / 'scripts').mkdir(parents=True)
     generator = control / 'scripts/generate-payload-contract.mjs'
     shutil.copyfile(ROOT / 'scripts/generate-payload-contract.mjs', generator)
+    shutil.copyfile(ROOT / 'scripts/presentation-inventory.mjs',
+                    control / 'scripts/presentation-inventory.mjs')
     core_version = json.loads(
         (ROOT / 'packages/helloada-payload-core/package.json').read_text()
     )['version']
@@ -21,7 +23,9 @@ def test_generated_locale_identity_comes_from_worker_config_not_stale_template_m
     site = tmp_path / 'site'
     shutil.copytree(ROOT / 'src/site_agent/templates/next-payload', site,
                     ignore=shutil.ignore_patterns('node_modules', '.next', '.open-next', '.wrangler', '*.tsbuildinfo'))
-    (site / 'src/helloada.config.ts').write_text("export const helloAdaSite = {locales: ['es', 'en'], defaultLocale: 'es'}\n")
+    (site / 'src/helloada.config.ts').write_text(
+        "export const helloAdaSite = {locales: ['es', 'en'], defaultLocale: 'es', "
+        "routes: {workspaceApi: '/api/helloada', liveSite: '/', preview: '/site-preview'}}\n")
     manifest_path = site / 'template-manifest.json'
     manifest = json.loads(manifest_path.read_text())
     manifest.update(locales=['en'], defaultLocale='en')

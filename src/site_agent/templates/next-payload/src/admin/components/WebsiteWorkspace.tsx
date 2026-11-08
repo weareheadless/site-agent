@@ -787,7 +787,7 @@ function ReviewWorkspace() {
 
   const canEditPage = Boolean(
     adaPhase === 'workspace'
-      && workspace && !sourceReview,
+      && workspace && selectedDocument && !sourceReview,
   )
 
   const candidatePreviewReady = exactCandidatePreviewReady(designBuild)

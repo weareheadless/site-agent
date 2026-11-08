@@ -203,6 +203,8 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     (control / "scripts").mkdir()
     shutil.copyfile(ROOT / "scripts/generate-payload-contract.mjs",
                     control / "scripts/generate-payload-contract.mjs")
+    shutil.copyfile(ROOT / "scripts/presentation-inventory.mjs",
+                    control / "scripts/presentation-inventory.mjs")
     (control / "pyproject.toml").write_text('[project]\\nversion = "0.0.0"\\n')
 
     template = control / "src/site_agent/templates/next-payload"

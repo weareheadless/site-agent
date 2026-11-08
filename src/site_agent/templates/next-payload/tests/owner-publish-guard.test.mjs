@@ -56,6 +56,7 @@ const harness = async (t) => {
     export const helloAdaSite = { defaultLocale: 'es', locales: ['es','en'], routes: {} }
     export const articleIndexPath = () => '/blog'
     export const pathForDocument = () => '/'
+    export const presentationRoutes = () => []
     export const hashJson = async (v) => (globalThis.__hashJson)(v)
     export const stableJson = (v) => JSON.stringify(v)
     export const withoutPayloadMetadata = (v) => { const r = { ...v }; for (const k of ['id','updatedAt','createdAt','_status','globalType']) delete r[k]; return r }

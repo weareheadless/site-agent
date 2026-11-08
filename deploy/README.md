@@ -163,6 +163,13 @@ then validates the immutable customer source with the shared runtime overlay.
 Only initial workspace bootstrap supplies an explicit, validated scaffold
 registration and migration chain.
 
+The generated presentation inventory is a release fact. `generate-payload-contract`
+derives the committed route list from the tenant app tree and records it in the
+receipt. `verify-payload-contract` rejects a Payload-profile site that has no
+published Payload content and no committed home page, and the post-promotion
+live gate requests the workspace preview mount plus every declared route and
+requires HTTP 200 before `verify-connection` runs.
+
 The application saves the exact approved merge/release request with its decision
 before calling GitHub. If queueing fails before a release receipt exists,
 retrying approval reuses that saved source SHA and decision; it does not merge

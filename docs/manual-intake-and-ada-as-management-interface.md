@@ -86,6 +86,29 @@ What this removes from Ada: page authoring, section-composition planning,
 content-document creation, preview-candidate generation and the repair loops
 around them. What remains is provisioning, measurement, release and reporting.
 
+## Integration is a release fact
+
+A HelloAda website is a workspace with a site in it, not a Worker that happens
+to answer on a hostname. Every build therefore derives an owner-visible route
+inventory from the committed Next app tree
+(`scripts/presentation-inventory.mjs` →
+`src/generated/helloada-presentation.json`) and records it in the release
+receipt. The workspace snapshot merges those committed routes with the routes
+of published Payload documents, so the owner always sees every real page.
+
+The release gate enforces the same fact from both sides:
+
+- A Payload-profile site with no published Payload content must declare
+  committed presentation routes including its home page. `websitePresent:false`
+  alone is no longer a releasable owner site.
+- After promotion, the exact deployed Worker must return the preview mount and
+  every declared route with HTTP 200 before the release can be reported live.
+
+The admin never falls back to a chat-only pane: the site pane, page selector and
+preview are always present. A site whose pages live in Payload and a site whose
+pages are committed source both use this one contract; they differ in where the
+HTML comes from, not in whether the owner has a website.
+
 ## Division of responsibility
 
 | Concern | Owner + coding agent | Ada |

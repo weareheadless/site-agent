@@ -25,7 +25,7 @@ def repository(tmp_path):
     git("config", "user.name", "Test")
     git("remote", "add", "origin", "https://github.com/weareheadless/site-agent.git")
     checkout = Path(__file__).resolve().parents[1]
-    for path in ("deploy/shared-runtime-overlay.json", "src/site_agent/application/shared_runtime.py", "scripts/generate-payload-contract.mjs", "src/site_agent/templates/next-payload", "packages/helloada-mailflare", "packages/helloada-payload-core/src"):
+    for path in ("deploy/shared-runtime-overlay.json", "src/site_agent/application/shared_runtime.py", "scripts/generate-payload-contract.mjs", "scripts/presentation-inventory.mjs", "src/site_agent/templates/next-payload", "packages/helloada-mailflare", "packages/helloada-payload-core/src"):
         source = checkout / path
         target = repo / path
         if source.is_dir():

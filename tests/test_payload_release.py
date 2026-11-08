@@ -55,6 +55,45 @@ def test_static_source_admission_is_required_for_every_release_purpose(tmp_path)
     page.write_text('<html lang="es"><head></head><body>Unrecorded change</body></html>')
     with pytest.raises(ValueError, match='differs'):
         release.validate_presentation_source(tmp_path, customer, worker)
+def test_presentation_inventory_is_a_release_fact_not_a_ui_detail():
+    inventory = {'schema': 1, 'previewMount': '/tenant-preview',
+                 'routes': [{'path': '/'}, {'path': '/courses'}, {'path': '/courses/'}]}
+    proof = release.validate_presentation_inventory({'websitePresent': False}, inventory)
+    assert proof == {'profile': 'payload', 'previewMount': '/tenant-preview', 'routes': ['/', '/courses']}
+    with pytest.raises(RuntimeError, match='home page'):
+        release.validate_presentation_inventory(
+            {'websitePresent': False}, {'previewMount': '/tenant-preview', 'routes': [{'path': '/courses'}]})
+    with pytest.raises(RuntimeError, match='home page'):
+        release.validate_presentation_inventory(
+            {'websitePresent': False}, {'previewMount': '/tenant-preview', 'routes': []})
+    with pytest.raises(RuntimeError, match='preview mount'):
+        release.validate_presentation_inventory(
+            {'websitePresent': False}, {'previewMount': '/', 'routes': [{'path': '/'}]})
+    with pytest.raises(RuntimeError, match='invalid route'):
+        release.validate_presentation_inventory(
+            {'websitePresent': False}, {'previewMount': '/tenant-preview', 'routes': [{'path': 'courses'}]})
+    # Published Payload content is its own route source; an empty committed
+    # inventory is valid only there.
+    assert release.validate_presentation_inventory(
+        {'websitePresent': True}, {'previewMount': '/tenant-preview', 'routes': []}
+    )['routes'] == []
+
+
+def test_preview_gate_renders_the_home_and_every_declared_page(monkeypatch):
+    customer = {'health': 'https://tenant.example/api/health'}
+    presentation = {'previewMount': '/tenant-preview', 'routes': ['/', '/courses']}
+    checked = []
+    monkeypatch.setattr(release, 'preview_page_status', lambda url: checked.append(url) or 200)
+    urls = release.verify_preview_routes(customer, presentation, 'a' * 40)
+    assert len(checked) == 2 and urls == checked
+    assert checked[0] == f'https://tenant.example/tenant-preview/?release={"a" * 40}'
+    assert checked[1] == f'https://tenant.example/tenant-preview/courses?release={"a" * 40}'
+
+    monkeypatch.setattr(release, 'preview_page_status', lambda url: 404 if url.endswith('/courses?release=' + 'a' * 40) else 200)
+    with pytest.raises(RuntimeError, match='does not render the owner site'):
+        release.verify_preview_routes(customer, presentation, 'a' * 40)
+
+
 CUSTOMER = {
     **REGISTRY["customers"]["oceanicvibes"],
     "sharedRuntimeFingerprint": TEMPLATE_MANIFEST["sharedRuntimeFingerprint"],

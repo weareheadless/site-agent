@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { CollectionSlug } from 'payload'
 
 process.env.PAYLOAD_CLI = '1'
@@ -28,6 +30,32 @@ const websitePresent = websitePresentValue === 'true'
 // checks below still run; only the source-owned homepage/chrome differ.
 const presentationProfile = process.env.HELLOADA_PRESENTATION_PROFILE || 'payload'
 if (!['payload', 'static'].includes(presentationProfile)) throw new Error('Unsupported presentation profile')
+
+// The release generator derives this inventory from the committed Next app
+// tree. It is the owner-visible route list for pages that no Payload document
+// backs, so a site can never be released with a workspace that has nothing to
+// show.
+const presentationInventory = (() => {
+  const file = path.join(process.cwd(), 'src/generated/helloada-presentation.json')
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as { previewMount?: unknown; routes?: unknown }
+  } catch (cause) {
+    throw new Error(`The generated presentation inventory is missing or invalid at ${file}: ${cause instanceof Error ? cause.message : String(cause)}`)
+  }
+})()
+const previewMount = String(presentationInventory.previewMount ?? '')
+if (!previewMount.startsWith('/') || previewMount === '/' || previewMount.endsWith('/')) {
+  throw new Error('The generated presentation inventory has no valid workspace preview mount.')
+}
+const committedRoutes = Array.isArray(presentationInventory.routes)
+  ? presentationInventory.routes.flatMap((entry) => {
+      const value = entry && typeof entry === 'object' ? (entry as { path?: unknown }).path : entry
+      return typeof value === 'string' && value.startsWith('/') ? [value] : []
+    })
+  : []
+if (presentationProfile === 'payload' && !websitePresent && !committedRoutes.includes('/')) {
+  throw new Error('A Payload-profile site without published Payload content must declare committed presentation routes including its home page; otherwise the release has no owner-visible website.')
+}
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
   activeCheck = label
@@ -116,7 +144,7 @@ try {
   } else {
     console.log(presentationProfile === 'static'
       ? '[payload-contract] public presentation is the explicitly validated static source; CMS collections remain independent'
-      : '[payload-contract] published business content checks skipped: intake site is explicitly empty')
+      : `[payload-contract] committed presentation routes: ${committedRoutes.join(', ')}`)
   }
 
   await check('media read', () => payload.find({ collection: 'media', depth: 0, limit: 1, pagination: false, overrideAccess: true }))
@@ -125,7 +153,7 @@ try {
 
   console.log(websitePresent
     ? '[payload-contract] schema, shared chrome, published homepage, drafts, versions, and media reads passed'
-    : '[payload-contract] schema, empty-intake state, drafts, versions, and media reads passed')
+    : `[payload-contract] schema, committed presentation (${committedRoutes.length} routes), drafts, versions, and media reads passed`)
 } finally {
   activeCheck = 'Payload cleanup'
   await payload.destroy()

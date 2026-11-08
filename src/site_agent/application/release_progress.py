@@ -39,6 +39,7 @@ _STAGE_PROGRESS: tuple[tuple[str, float], ...] = (
     ("reconcile-queue-consumers", 0.87),
     ("verify-deployment", 0.90),
     ("enable-workers-dev", 0.92),
+    ("verify-preview", 0.93),
     ("verify-connection", 0.95),
     ("awaiting-browser-verification", 0.98),
 )
@@ -79,7 +80,7 @@ _PHASES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     (
         "verifying",
         "Verifying the live site",
-        ("verify-deployment", "enable-workers-dev", "verify-connection"),
+        ("verify-deployment", "enable-workers-dev", "verify-preview", "verify-connection"),
     ),
 )
 
@@ -114,6 +115,7 @@ _STAGE_LABELS = {
     "reconcile-queue-consumers": "Registering message consumers",
     "verify-deployment": "Verifying the deployment",
     "enable-workers-dev": "Enabling the preview origin",
+    "verify-preview": "Verifying the owner-visible pages",
     "verify-connection": "Verifying the workspace connection",
     "awaiting-browser-verification": "Waiting for the owner-visible check",
 }

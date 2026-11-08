@@ -16,7 +16,7 @@ import {
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
 import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/admin/server/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
-import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
+import { articleIndexPath, pathForDocument, presentationRoutes } from '@/lib/content-routes'
 import { createHelloAdaPreviewToken, helloAdaPreviewLifetime } from '@/lib/helloada-preview'
 import { latestCollectionVersionId, latestGlobalVersionId } from '@/lib/payload-versions'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
@@ -254,7 +254,7 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
   const documents = await readEditableDocuments(payload)
   // An incomplete draft legitimately has no route slug yet. It stays editable
   // in the workspace, but it contributes no public route.
-  const routes = documents.flatMap((document) => document.slug ? [{
+  const routes: Array<{ path: string; kind: string; collection: string; sourceId: string }> = documents.flatMap((document) => document.slug ? [{
     path: pathForDocument(document.collection, document.slug),
     kind: document.collection === 'posts' ? 'post' : document.collection === 'products' ? 'product' : 'page',
     collection: document.collection,
@@ -262,6 +262,13 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
   }] : [])
   if (documents.some((document) => document.collection === 'posts')) {
     routes.push({ path: articleIndexPath(), kind: 'post_index', collection: 'posts', sourceId: '' })
+  }
+  // Committed Next pages have no Payload document. The build writes this
+  // inventory from the app tree so the owner workspace lists every real route
+  // whether its HTML comes from Payload or from committed source.
+  for (const declared of presentationRoutes()) {
+    if (routes.some((route) => route.path === declared)) continue
+    routes.push({ path: declared, kind: 'page', collection: '', sourceId: '' })
   }
   return {
     site: { name: process.env.HELLOADA_SITE_NAME || 'Your website', url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin },

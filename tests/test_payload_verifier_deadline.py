@@ -10,7 +10,7 @@ def test_remote_verifier_deadline_precedes_initialization_and_fails_closed():
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const source = fs.readFileSync(process.argv[1], 'utf8')
-const prefix = source.split("const { getPayload }")[0].replace(/^import type .*\n/m, '')
+const prefix = source.split("const { getPayload }")[0].replace(/^import\s+[^\n]*\n/gm, '')
 let callback, milliseconds, unref = false, exit, diagnostic
 new Function('setTimeout', 'process', 'console', prefix)(
   (fn, ms) => {callback = fn; milliseconds = ms; return {unref() {unref = true}}},

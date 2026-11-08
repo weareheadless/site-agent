@@ -77,16 +77,10 @@ export default async function PublicRoute({ params }: Props) {
     } catch {
       home = undefined
     }
-    if (!home) {
-      return (
-        <main style={{ minHeight: '70vh', display: 'grid', placeItems: 'center', padding: '4rem 1.5rem', textAlign: 'center' }}>
-          <div>
-            <h1 style={{ fontFamily: 'Georgia, serif', fontSize: 'clamp(2rem, 6vw, 4rem)', margin: 0 }}>HelloAda site</h1>
-            <p style={{ marginTop: '1rem', opacity: 0.7 }}>This site is being prepared.</p>
-          </div>
-        </main>
-      )
-    }
+    // A Payload site without a published home is not a website. Never render
+    // replacement copy: the release gate requires real published content, and
+    // a missing page fails closed like any other missing document.
+    if (!home) notFound()
   }
   if (postRoute?.kind === 'index') {
     const [posts, settings] = await Promise.all([getPublishedPosts(), getSiteSettings()])

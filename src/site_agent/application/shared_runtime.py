@@ -159,6 +159,7 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         (str(_MANIFEST_PATH), raw_manifest),
         ("src/site_agent/application/shared_runtime.py", (root / "src/site_agent/application/shared_runtime.py").read_bytes()),
         ("scripts/generate-payload-contract.mjs", (root / "scripts/generate-payload-contract.mjs").read_bytes()),
+        ("scripts/presentation-inventory.mjs", (root / "scripts/presentation-inventory.mjs").read_bytes()),
     ]
     template = root / _TEMPLATE_PATH
     for relative in sorted(str(item) for item in manifest["copy"]) + _tree_paths(template, manifest["copyTrees"]):
@@ -627,6 +628,8 @@ def apply_shared_runtime_overlay(
         "changedPaths": sorted(set(manifest["copy"]) | set(tree_files) | set(manifest["remove"]) | set(migrated) | {
             "wrangler.jsonc", "package.json", "package-lock.json",
             "template-manifest.json", "helloada-content-contract.json",
+            # Derived from the tenant app tree by generate-payload-contract.
+            "src/generated/helloada-presentation.json",
         }),
         "sharedRuntimeFingerprint": runtime_fingerprint,
         "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
