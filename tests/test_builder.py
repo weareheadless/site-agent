@@ -1892,3 +1892,55 @@ def test_the_turn_pins_the_content_revisions_its_tools_saved(monkeypatch, tmp_pa
     # Without these the compiled preview seeds published content only and the
     # page the agent just wrote is missing from the preview.
     assert captured["effects"] == effects
+
+
+def _effect(kind, target, document_id, revision):
+    return {
+        "kind": kind, "operation": "update", "target": target,
+        "document_id": document_id, "revision": "sha256:" + revision * 64,
+        "locale": "en", "fields": ["items"],
+    }
+
+
+def test_revising_an_open_review_keeps_the_content_it_already_pinned():
+    page = _effect("collection", "pages", "2", "a")
+    nav = _effect("global", "navigation", "navigation", "b")
+
+    class Memory:
+        def get_draft(self, draft_id):
+            assert draft_id == 69
+            return {"id": 69, "meta": {"payload_effects": [page]}}
+
+    context = {"_revised_pending_draft_id": 69, "_completed_payload_effects": [nav]}
+    effects, digest = runner._payload_manifest_for_review(context, Memory())
+
+    # Without the page the preview seeds published content only and the page
+    # the review is about renders as a 404.
+    assert {item["target"] for item in effects} == {"pages", "navigation"}
+    assert digest
+
+
+def test_a_new_write_for_the_same_document_wins_over_the_pinned_revision():
+    old_page = _effect("collection", "pages", "2", "a")
+    new_page = _effect("collection", "pages", "2", "c")
+
+    class Memory:
+        def get_draft(self, draft_id):
+            return {"id": 69, "meta": {"payload_effects": [old_page]}}
+
+    context = {"_revised_pending_draft_id": 69, "_completed_payload_effects": [new_page]}
+    effects, _ = runner._payload_manifest_for_review(context, Memory())
+
+    assert [item["revision"] for item in effects if item["target"] == "pages"] == [new_page["revision"]]
+
+
+def test_a_first_turn_pins_only_its_own_content():
+    nav = _effect("global", "navigation", "navigation", "b")
+
+    class Memory:
+        def get_draft(self, draft_id):
+            raise AssertionError("a first turn has no earlier review to read")
+
+    effects, _ = runner._payload_manifest_for_review({"_completed_payload_effects": [nav]}, Memory())
+
+    assert effects == [{**nav, "summary": ""}]

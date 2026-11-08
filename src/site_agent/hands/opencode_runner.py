@@ -3451,6 +3451,43 @@ def _payload_revision_manifest(context: Mapping[str, Any]) -> tuple[list[dict[st
         raise RunnerError(str(exc)) from exc
 
 
+def _payload_manifest_for_review(context: Mapping[str, Any], memory: Any,
+                                 ) -> tuple[list[dict[str, Any]], str]:
+    """The exact content revisions this review depends on.
+
+    A follow-up turn revises an open review in place. If it changes only
+    presentation, replacing the review's dependency set with this turn's would
+    drop the page revision the review already pinned, so the compiled preview
+    would seed published content only and the page the review is about would
+    render as a 404. Carrying the pinned revisions forward keeps one decision
+    over the same content.
+    """
+    from ..core.payload_receipts import payload_revision_manifest
+
+    effects, _ = _payload_revision_manifest(context)
+    previous_id = context.get("_revised_pending_draft_id")
+    if not previous_id:
+        revision = context.get("_growth_task_revision")
+        if isinstance(revision, Mapping):
+            previous_id = revision.get("previousDraftId")
+    previous = memory.get_draft(int(previous_id)) if (memory is not None and previous_id) else None
+    meta = previous.get("meta") if isinstance(previous, Mapping) else None
+    carried = meta.get("payload_effects") if isinstance(meta, Mapping) else None
+    if isinstance(carried, list) and carried:
+        def identity(item: Mapping[str, Any]) -> tuple[str, str, str, str]:
+            return (
+                str(item.get("kind")), str(item.get("target")),
+                str(item.get("document_id")), str(item.get("locale")),
+            )
+
+        merged = {identity(item): dict(item) for item in carried if isinstance(item, Mapping)}
+        for item in effects:
+            # This turn's write is newer than the one the review pinned.
+            merged[identity(item)] = dict(item)
+        effects = list(merged.values())
+    return payload_revision_manifest(effects)
+
+
 def _draft_candidate_sha(draft: Mapping[str, Any]) -> str:
     """The exact candidate a review draft points at, when it has one."""
     meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
@@ -3586,7 +3623,7 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         base_sha = str(outcome.get("base_sha") or "").strip().lower()
     if candidate_sha:
         preview["head_sha"] = candidate_sha
-    payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
+    payload_effects, payload_revision_set_hash = _payload_manifest_for_review(context, memory)
     if payload_effects:
         preview["payload_revision_set_hash"] = payload_revision_set_hash
     meta = {
@@ -3670,6 +3707,7 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
 def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any], progress=None) -> dict[str, Any]:
     """Create the owner review draft and its compiled preview for one finished change."""
     builder = (context.get("config") or {}).get("builder") or {}
+    memory = context.get("memory")
     reply = (outcome.get("output") or "").strip()
     merge_draft_id = None
     preview = outcome.get("preview") if isinstance(outcome.get("preview"), Mapping) else None
@@ -3683,7 +3721,7 @@ def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any],
         revised_pending = bool(context.get("_revised_pending_draft_id"))
         preview = dict(preview or preview_plan_for_paths([]))
         candidate_sha = _candidate_sha(context, outcome, str(outcome.get("branch") or PREVIEW_BRANCH))
-        payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
+        payload_effects, payload_revision_set_hash = _payload_manifest_for_review(context, memory)
         if preview.get("requires_build"):
             deployer = context.get("source_deployment")
             start = getattr(deployer, "start", None)

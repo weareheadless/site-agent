@@ -118,7 +118,10 @@ the owner an unreviewable draft.
 A preview is only called ready once every page the candidate saved actually
 renders in it: the service requests each authored page and fails the candidate
 on a non-success response, so a page that compiles but throws while rendering
-is reported as a failure rather than shown to the owner as ready.
+is reported as a failure rather than shown to the owner as ready. A follow-up
+turn that revises an open review keeps the content revisions that review
+already pinned, so an update that only changes presentation still previews —
+and publishes — the page the review is about.
 
 There is no second agent, no build tool and no channel between processes: the
 agent that talks to the owner is the agent that does the work. The legacy
