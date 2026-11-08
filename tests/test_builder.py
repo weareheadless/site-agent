@@ -1794,3 +1794,69 @@ def test_the_design_standard_states_that_visible_copy_comes_from_payload():
     assert "Content authority" in DESIGN_AND_CONTENT_CONTRACT
     assert "never from a literal in the component" in DESIGN_AND_CONTENT_CONTRACT
     assert "Do not ship fallback copy" in DESIGN_AND_CONTENT_CONTRACT
+
+
+def test_a_rejected_preview_is_repaired_and_the_same_draft_is_rebuilt(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+    monkeypatch.setattr(owner_runner, "_content_gate_violations", lambda context, clone: [])
+    monkeypatch.setattr(owner_runner, "stage_review", lambda *a, **k: {
+        "reply": "staged", "changed": True, "merge_draft_id": 9,
+        "preview": {
+            "status": "blocked",
+            "error": "AboutPage.tsx(131,74): error TS2345: Argument of type ... is not assignable",
+        },
+        "change": {},
+    })
+    shas = iter(["a" * 40, "b" * 40])
+    monkeypatch.setattr(owner_runner, "_finish_builder", lambda *a, **k: {
+        "changed": True, "output": "", "candidate_sha": next(shas),
+        "changed_paths": ["src/page.tsx"], "branch": "preview",
+        "preview": {"requires_build": True, "status": "blocked"},
+    })
+    restarted: list[tuple[int, str]] = []
+
+    def restart(context, draft_id, outcome, progress=None):
+        restarted.append((draft_id, outcome["candidate_sha"]))
+        return {"status": "ready", "head_sha": outcome["candidate_sha"]}
+
+    monkeypatch.setattr(owner_runner, "_restart_preview_for_draft", restart)
+    replies = iter(["I rebuilt the page.", "I fixed the type error."])
+    prompts: list[str] = []
+
+    def turn(*args, **kwargs):
+        prompts.append(args[1])
+        return {"reply": next(replies), "session_id": "session-1"}
+
+    monkeypatch.setattr(owner_runner, "run_opencode_turn", turn)
+
+    result = owner_runner.run_owner_turn({"config": {}}, 1, "rebuild the about page")
+
+    assert "TS2345" in prompts[1]
+    assert restarted == [(9, "b" * 40)]
+    assert result["preview"]["status"] == "ready"
+    assert result["reply"] == "I fixed the type error."
+
+
+def test_a_repair_that_changes_nothing_does_not_rebuild_the_same_failure(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+    monkeypatch.setattr(owner_runner, "_content_gate_violations", lambda context, clone: [])
+    monkeypatch.setattr(owner_runner, "stage_review", lambda *a, **k: {
+        "reply": "staged", "changed": True, "merge_draft_id": 9,
+        "preview": {"status": "blocked", "error": "error TS2345: bad type"}, "change": {},
+    })
+    monkeypatch.setattr(owner_runner, "_finish_builder", lambda *a, **k: {
+        "changed": True, "output": "", "candidate_sha": "a" * 40,
+        "changed_paths": ["src/page.tsx"], "branch": "preview",
+        "preview": {"requires_build": True, "status": "blocked"},
+    })
+    restarted: list[object] = []
+    monkeypatch.setattr(
+        owner_runner, "_restart_preview_for_draft",
+        lambda *a, **k: restarted.append(a) or {"status": "ready"},
+    )
+
+    with pytest.raises(owner_runner.RunnerError, match="no new candidate"):
+        owner_runner.run_owner_turn({"config": {}}, 1, "rebuild the about page")
+
+    assert restarted == []
+    assert seen["removed"] is True

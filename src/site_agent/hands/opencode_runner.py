@@ -5256,7 +5256,9 @@ def _wait_for_preview(deployer: Any, job_id: str, *, timeout_seconds: float = 90
             return {
                 "status": "blocked",
                 "job_id": job_id,
-                "error": str(job.get("error") or "the preview build failed")[:500],
+                # The full command failure, not a summary: the turn hands this
+                # back to the agent that wrote the candidate.
+                "error": str(job.get("error") or "the preview build failed")[:4_000],
             }
         time.sleep(2)
     return {"status": "building", "job_id": job_id}
@@ -5853,6 +5855,60 @@ def _content_repair_brief(violations: Sequence[Mapping[str, Any]]) -> str:
     )
 
 
+def _preview_repair_brief(diagnostic: str) -> str:
+    """Hand the preview's own rejection back to the agent that caused it."""
+    return (
+        "The compiled preview rejected this change, so it cannot be reviewed yet. "
+        "Fix exactly the failure below in the working tree and stop: keep the page, "
+        "composition and copy you already wrote, and do not start a second concept "
+        "or restate the request.\n\n" + diagnostic.strip()
+    )
+
+
+def _restart_preview_for_draft(
+    context: dict[str, Any],
+    draft_id: int,
+    outcome: Mapping[str, Any],
+    progress=None,
+) -> dict[str, Any]:
+    """Ask the same preview gate again for the owner's one review draft.
+
+    A repaired candidate is a new commit for the same decision, so it re-runs
+    the compiled preview against the draft the owner already has. The preview
+    service writes its result back to that draft; no second draft or approval
+    is created.
+    """
+    deployer = context.get("source_deployment")
+    start = getattr(deployer, "start", None)
+    if not callable(start):
+        raise RunnerError("the compiled preview service is unavailable")
+    candidate = str(outcome.get("candidate_sha") or "").strip().lower()
+    branch = str(outcome.get("branch") or PREVIEW_BRANCH)
+    job = start({"branch": branch, "commit": candidate, "draft_id": int(draft_id)})
+    builder = (context.get("config") or {}).get("builder") or {}
+    settled = _wait_for_preview(
+        deployer,
+        str(job.get("id") or ""),
+        timeout_seconds=float(builder.get("preview_wait_seconds") or 900),
+    )
+    preview = dict(settled or {"status": "building", "job_id": job.get("id")})
+    preview["head_sha"] = candidate
+    change = {
+        "status": (
+            "ready_for_review" if preview.get("status") == "ready"
+            else "preparing_preview" if preview.get("status") == "building"
+            else "blocked"
+        ),
+        "draft_id": int(draft_id),
+        "candidate_sha": candidate,
+        "preview": preview,
+    }
+    context["_last_merge_draft_id"] = int(draft_id)
+    context["_last_preview"] = preview
+    context["_last_change"] = change
+    return preview
+
+
 def run_owner_turn(
     context: dict[str, Any],
     job_id: int,
@@ -5937,6 +5993,45 @@ def run_owner_turn(
                 )
         outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
         staged = stage_review(context, subject, outcome, progress)
+        preview = staged.get("preview") if isinstance(staged.get("preview"), Mapping) else {}
+        diagnostic = str(preview.get("error") or "").strip()
+        if preview.get("status") == "blocked" and diagnostic:
+            # The preview is the authority on whether this candidate can exist.
+            # One bounded repair, in the session that wrote it, then the same
+            # gate again for the same review draft.
+            if progress:
+                progress("repairing what the compiled preview rejected")
+            first_candidate = str(outcome.get("candidate_sha") or "")
+            repaired = run_opencode_turn(
+                clone, _preview_repair_brief(diagnostic), config,
+                progress=progress,
+                session_id=new_session or None,
+                memory=memory,
+                agent_name="build",
+                reply_mode="final_message",
+            )
+            new_session = str(repaired.get("session_id") or new_session)
+            repair_reply = str(repaired.get("reply") or "").strip()
+            if repair_reply:
+                reply = repair_reply
+            _validate_preview(config, clone, base_ref)
+            _bump_asset_versions(clone)
+            _validate_preview(config, clone, base_ref)
+            outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
+            if str(outcome.get("candidate_sha") or "") == first_candidate:
+                raise RunnerError(
+                    "the preview rejected this change and the repair produced no new "
+                    "candidate: " + diagnostic[:600]
+                )
+            preview = _restart_preview_for_draft(
+                context, int(staged["merge_draft_id"]), outcome, progress,
+            )
+            staged = {**staged, "preview": preview, "change": context.get("_last_change")}
+            if preview.get("status") == "blocked":
+                raise RunnerError(
+                    "the change still does not build, so its preview stays blocked: "
+                    + str(preview.get("error") or "")[:600]
+                )
         # The owner reads the agent's own message; the host only attaches the
         # exact draft and preview state it produced.
         return {**staged, "reply": reply, "session_id": new_session}
