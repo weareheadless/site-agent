@@ -616,9 +616,7 @@ function ReviewWorkspace() {
   const { language, t } = useHelloAdaTranslations()
   const site = useHelloAdaSite()
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
-  const [websitePresent, setWebsitePresent] = useState(true)
   const [designBuild, setDesignBuild] = useState<DesignBuild | null>(null)
-  const [buildClock, setBuildClock] = useState(() => Date.now())
   const [selectedRoute, setSelectedRoute] = useState('/')
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>('desktop')
   const [mobilePane, setMobilePane] = useState<'ada' | 'website'>('ada')
@@ -648,6 +646,7 @@ function ReviewWorkspace() {
   const [pendingAdaJob, setPendingAdaJob] = useState<PendingAdaJob>()
   const [adaSteps, setAdaSteps] = useState<AdaJobStep[]>([])
   const [adaPhase, setAdaPhase] = useState<AdaPhase>('unknown')
+  const [buildClock, setBuildClock] = useState(() => Date.now())
   const [messages, setMessages] = useState(initialMessages)
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
@@ -787,8 +786,7 @@ function ReviewWorkspace() {
   }, [draftPreviewKey, selectedDocument])
 
   const canEditPage = Boolean(
-    websitePresent
-      && adaPhase === 'workspace'
+    adaPhase === 'workspace'
       && workspace && !sourceReview,
   )
 
@@ -796,8 +794,7 @@ function ReviewWorkspace() {
   const candidatePreviewIdentity = `${designBuild?.preview?.job_id || ''}:${designBuild?.preview?.candidate_sha || ''}`
   const candidateFrameReady = candidatePreviewReady && loadedCandidatePreview === candidatePreviewIdentity && failedCandidatePreview !== candidatePreviewIdentity
   const candidateReviewLinked = Boolean(
-    websitePresent
-      && sourceReview
+    sourceReview
       && designBuild?.draft_id
       && sourceReview.draftId === designBuild.draft_id
       && sourceReview.sha.toLowerCase() === String(designBuild.candidate_sha || '').toLowerCase()
@@ -809,7 +806,7 @@ function ReviewWorkspace() {
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
     if (designBuild?.preview?.preview_url && candidatePreviewReady
-      && ((!websitePresent) || candidateReviewPreviewReady)) {
+      && candidateReviewPreviewReady) {
       const base = designBuild.preview.preview_url
       const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
       return `${window.location.origin}${base}${path}`
@@ -824,7 +821,7 @@ function ReviewWorkspace() {
       : `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewRevision, selectedRoute, site.routes.preview, sourceReview, websitePresent])
+  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewRevision, selectedRoute, site.routes.preview, sourceReview])
 
   const syncRouteFromPreview = useCallback(() => {
     // Browsing inside the preview and the page selector must agree: a nav link
@@ -880,7 +877,7 @@ function ReviewWorkspace() {
         : ''
 
   const selectedTarget = useMemo(() => {
-    if (!websitePresent || adaPhase === 'unknown') return undefined
+    if (adaPhase === 'unknown') return undefined
     const targetMode = 'workspace'
     return {
       mode: targetMode,
@@ -920,7 +917,7 @@ function ReviewWorkspace() {
           }
         : null,
     }
-  }, [adaPhase, draftPreview, draftPreviewKey, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.routes.preview, site.siteName, websitePresent, workspace])
+  }, [adaPhase, draftPreview, draftPreviewKey, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.routes.preview, site.siteName, workspace])
 
   const loadEditorMedia = useCallback(async (page: number, append: boolean, search: string) => {
     setEditorMediaLoading(true)
@@ -1307,21 +1304,7 @@ function ReviewWorkspace() {
         // The workspace is the only owner-facing phase. A site exists as
         // deployed source, so the server never asks for intake here.
         setAdaPhase('workspace')
-        if (body.build?.draft_available) {
-          setWebsitePresent(true)
-          loadWorkspace(background)
-        } else if (typeof body.website_present === 'boolean') {
-          setWebsitePresent(body.website_present)
-          if (!body.website_present) {
-            setWorkspace(undefined)
-            setError('')
-            setLoading(false)
-          } else if (refreshWorkspace) {
-            loadWorkspace(background)
-          }
-        } else if (refreshWorkspace) {
-          loadWorkspace(background)
-        }
+        if (refreshWorkspace) loadWorkspace(background)
         setDesignBuild(body.build || null)
         if (body.conversation_id) setConversationId(body.conversation_id)
         if (body.active_job?.id && body.active_job.conversation_id) {
@@ -1521,6 +1504,13 @@ function ReviewWorkspace() {
 
   const buildRunning = designBuild?.state === 'queued' || designBuild?.state === 'running'
   const candidatePreviewRunning = designBuild?.preview?.status === 'queued' || designBuild?.preview?.status === 'running'
+  const buildSurfaceVisible = adaPhase === 'workspace' && Boolean(designBuild) && (
+    buildRunning
+      || designBuild?.state === 'failed'
+      || candidatePreviewRunning
+      || candidatePreviewReady
+      || designBuild?.preview?.status === 'failed'
+  )
 
   useEffect(() => {
     // Poll on a fixed cadence while a build runs. The ref keeps the interval
@@ -1531,14 +1521,6 @@ function ReviewWorkspace() {
     }, buildRunning || candidatePreviewRunning ? 2_000 : 30_000)
     return () => window.clearInterval(timer)
   }, [conversationId, buildRunning, candidatePreviewRunning])
-
-  const buildSurfaceVisible = !websitePresent && adaPhase === 'workspace' && Boolean(designBuild) && (
-    buildRunning
-      || designBuild?.state === 'failed'
-      || candidatePreviewRunning
-      || candidatePreviewReady
-      || designBuild?.preview?.status === 'failed'
-  )
 
   useEffect(() => {
     if (!buildSurfaceVisible) return
@@ -1741,7 +1723,6 @@ function ReviewWorkspace() {
       setPendingAttachments([])
       setMessages((current) => [...current, { role: 'user', text, attachments }])
       setAdaPhase('workspace')
-      if (typeof body.website_present === 'boolean') setWebsitePresent(body.website_present)
       rememberPendingAdaJob({ jobId: body.job_id, conversationId: activeConversationId })
     } catch (cause) {
       const detail = cause instanceof Error ? cause.message : t('error.adaReceive')
@@ -2217,12 +2198,12 @@ function ReviewWorkspace() {
   return (
     <main className={`helloada-workspace helloada-owner-workspace shows-${mobilePane}`}>
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
-      {websitePresent || buildSurfaceVisible ? <div className="helloada-pane-switch" role="group" aria-label={t('owner.workspace')}>
+      <div className="helloada-pane-switch" role="group" aria-label={t('owner.workspace')}>
         <button type="button" id="helloada-ada-tab" aria-controls="helloada-ada-pane" aria-pressed={mobilePane === 'ada'} onClick={() => setMobilePane('ada')}>{t('workspace.askAda')}</button>
         <button type="button" id="helloada-website-tab" aria-controls="helloada-website-pane" aria-pressed={mobilePane === 'website'} onClick={() => setMobilePane('website')}>{t('owner.website')}{hasDraft ? <i aria-label={t('owner.readyReview')} /> : null}</button>
-      </div> : null}
-        <div className={`helloada-workspace-grid ${websitePresent || buildSurfaceVisible ? '' : 'is-chat-only'} ${buildSurfaceVisible ? 'has-build-surface' : ''}`}>
-         {websitePresent ? <section id="helloada-website-pane" className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
+      </div>
+        <div className={`helloada-workspace-grid ${buildSurfaceVisible ? 'has-build-surface' : ''}`}>
+         {!buildSurfaceVisible ? <section id="helloada-website-pane" className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
           <div className="helloada-review-toolbar">
             <div className="helloada-window-dots" aria-hidden="true">
               <span />

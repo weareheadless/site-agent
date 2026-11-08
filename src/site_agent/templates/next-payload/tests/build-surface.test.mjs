@@ -12,9 +12,9 @@ test('candidate preview replaces the large build panel with a compact progress s
   assert.match(workspace, /<details className="helloada-build-details"/);
   assert.match(workspace, /onLoad=\{handlePreviewLoad\}/);
   assert.doesNotMatch(workspace, /helloada-early-candidate-preview/);
-  assert.match(workspace, /websitePresent \|\| buildSurfaceVisible \? '' : 'is-chat-only'/);
+  assert.doesNotMatch(workspace, /is-chat-only/);
   assert.match(styles, /helloada-build-canvas[^}]*flex:\s*1[^}]*min-height:\s*0/);
-  assert.match(workspace, /websitePresent \|\| buildSurfaceVisible \? <div className="helloada-pane-switch"/);
+  assert.match(workspace, /<div className="helloada-pane-switch"/);
   assert.match(styles, /shows-ada \.helloada-build-surface[^}]*display: none/);
 });
 

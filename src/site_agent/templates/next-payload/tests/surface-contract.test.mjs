@@ -76,6 +76,14 @@ test('the owner workspace has no intake brief, onboarding strip or phase gate', 
   assert.doesNotMatch(workspace, /tellAdaIntake|workspace\.briefTitle/);
 });
 
+test('the owner workspace always renders the site pane and never a chat-only fallback', () => {
+  assert.doesNotMatch(workspace, /is-chat-only/);
+  assert.doesNotMatch(workspace, /websitePresent/);
+  assert.match(workspace, /helloada-pane-switch/);
+  assert.match(workspace, /site\.routes\.preview/);
+  assert.match(workspace, /helloada-workspace-grid/);
+});
+
 test('chat remains the only design-start path and no first-page CTA exists', () => {
   assert.doesNotMatch(workspace, /startFirstPage|canStartFirstPage|workspace\.startFirstPage|workspace\.starting/);
   assert.match(workspace, /const sendMessage = async/);
