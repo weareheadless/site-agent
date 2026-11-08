@@ -12,11 +12,9 @@ from pathlib import PurePosixPath
 
 FRONTEND_OWNED_PATTERNS: tuple[str, ...] = (
     "src/app/(frontend)/*.css",
-    # Document metadata assets belong to the tenant's brand presentation. Next
-    # emits them for every route in the segment, which a link rendered by one
-    # page's chrome cannot do.
-    "src/app/(frontend)/icon.*",
-    "src/app/(frontend)/apple-icon.*",
+    # The tab icon is a brand asset served at the site root, where every browser
+    # and every route finds it without a link from a particular page's chrome.
+    "public/favicon.ico",
     "src/components/site/presentation/**",
     "src/components/site/TenantChrome.tsx",
     "public/site/**",

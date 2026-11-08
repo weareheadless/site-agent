@@ -966,11 +966,10 @@ def test_the_preview_boundary_still_refuses_platform_files(tmp_path):
         memory.close()
 
 
-def test_segment_metadata_assets_are_tenant_presentation():
+def test_the_tab_icon_is_a_tenant_brand_asset():
     from site_agent.frontend_ownership import is_frontend_owned_path
 
-    assert is_frontend_owned_path("src/app/(frontend)/icon.png")
-    assert is_frontend_owned_path("src/app/(frontend)/apple-icon.png")
+    assert is_frontend_owned_path("public/favicon.ico")
     # The route and layout remain platform-owned.
     assert not is_frontend_owned_path("src/app/(frontend)/page.tsx")
     assert not is_frontend_owned_path("src/app/(frontend)/layout.tsx")
