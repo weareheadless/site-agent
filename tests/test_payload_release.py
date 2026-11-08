@@ -96,7 +96,7 @@ def test_preview_gate_renders_the_home_and_every_declared_page(monkeypatch):
     monkeypatch.setattr(release, 'preview_page_status', lambda url: checked.append(url) or 200)
     urls = release.verify_preview_routes(customer, presentation, 'a' * 40)
     assert len(checked) == 2 and urls == checked
-    assert checked[0] == f'https://tenant.example/tenant-preview/?release={"a" * 40}'
+    assert checked[0] == f'https://tenant.example/tenant-preview?release={"a" * 40}'
     assert checked[1] == f'https://tenant.example/tenant-preview/courses?release={"a" * 40}'
 
     monkeypatch.setattr(release, 'preview_page_status', lambda url: 404 if url.endswith('/courses?release=' + 'a' * 40) else 200)

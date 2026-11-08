@@ -1121,7 +1121,9 @@ def verify_preview_routes(customer: dict[str, Any], presentation: dict[str, Any]
     checked: list[str] = []
     failures: list[str] = []
     for route in ["/"] + [route for route in routes if route != "/"]:
-        suffix = "/" if route == "/" else route
+        # The mounted home is the mount itself; a trailing slash is a 308
+        # canonical redirect and is not the rendering proof.
+        suffix = "" if route == "/" else route
         url = f"{origin}{mount}{suffix}?release={sha}"
         status = preview_page_status(url)
         checked.append(url)
