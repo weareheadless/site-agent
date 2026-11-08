@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261108210012-api-intake-cleanup",
-    "sha": "f47f4a7d71059277eaa388dcc9a8b62f37c9ca9a"
+    "id": "20261108222735-api-integration-gate",
+    "sha": "ab0eff42afe15b6472b1c558b1a68366159f0d82"
   }
 }
