@@ -18,8 +18,6 @@ export function helloAdaWorkspacePath(path: string, method: string, search = "")
     const jobId = new URLSearchParams(search).get("job_id");
     return jobId ? `/workspace/chat/jobs/${encodeURIComponent(jobId)}` : `/workspace/chat/status${search}`;
   }
-  if (suffix === "/intake/confirm" && method === "POST") return `/workspace/chat/intake/confirm${search}`;
-  if (suffix === "/design/start" && method === "POST") return `/workspace/chat/design/start${search}`;
   if (suffix === "/conversations" && ["GET", "POST"].includes(method)) return `/workspace/chat/conversations${search}`;
   const historyReport = suffix.match(/^\/history\/(drafts|seo-reports)\/([0-9]+)$/);
   if (historyReport && method === "GET") return `/workspace/history/${historyReport[1]}/${historyReport[2]}${search}`;

@@ -1289,13 +1289,6 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             schedule.get("seo_outcomes", _JOB_DEFAULTS["seo_outcomes"]),
             lambda: _seo_outcomes_cycle(context),
         )
-    intake = context.get("intake_coordinator")
-    if intake is not None and bool(getattr(intake, "research_enabled", False)):
-        scheduler.job(
-            "research_recovery",
-            schedule.get("research_recovery", {"every": "daily", "at": "08:40"}),
-            intake.recover_research_after_restart,
-        )
     if context.get("llm") and bool(settings.get("weekly_report", False)):
         scheduler.job("weekly_report", schedule.get("weekly_report", {"every": "weekly", "weekday": "monday", "at": "09:00"}), lambda: _with_persona(context, brain_report.weekly_report, "strategy"))
     scheduler.job("health_check", schedule.get("health_check", {"every": "daily", "at": "12:00"}), lambda: maintenance.health_check(context))

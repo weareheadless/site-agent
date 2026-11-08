@@ -705,33 +705,3 @@ def test_temporal_evidence_hashes_local_frame_manifest_only():
         TemporalExperienceEvidence.from_dict({**raw, "frames": [{"phase": "before", "path": "https://example.com/frame.png"}]})
 
 
-def test_ui_action_parsing_is_lenient():
-    from site_agent.core.design_intake_contracts import IntakeTurnResult
-
-    turn = IntakeTurnResult.from_dict({
-        "schema_version": 1,
-        "assistant_message": "Show the refined version.",
-        "ui_action": {"action": "open_preview", "run_id": "intake-lab-deadbeef"},
-    })
-    assert turn.ui_action == {"action": "open_preview", "run_id": "intake-lab-deadbeef"}
-    assert turn.to_dict()["ui_action"] == turn.ui_action
-
-    fresh = IntakeTurnResult.from_dict({
-        "schema_version": 1,
-        "assistant_message": "Rebuilding now.",
-        "ui_action": {"action": "start_build", "fresh": True},
-    })
-    assert fresh.ui_action == {"action": "start_build", "fresh": True}
-
-    dropped = IntakeTurnResult.from_dict({
-        "schema_version": 1,
-        "assistant_message": "Notes here.",
-        "ui_action": {"action": "explode", "run_id": "x"},
-    })
-    assert dropped.ui_action == {}
-
-    missing = IntakeTurnResult.from_dict({
-        "schema_version": 1,
-        "assistant_message": "No action planned.",
-    })
-    assert missing.ui_action == {}

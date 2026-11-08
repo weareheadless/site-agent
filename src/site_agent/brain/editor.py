@@ -1621,14 +1621,6 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             "\n\nExplicit workspace language setting: " + workspace_language
             + ". Write the owner-facing reply in this language unless the owner explicitly requests a translation."
         )
-    intake = context.get("intake_coordinator")
-    if intake is not None and callable(getattr(intake, "context_prompt", None)):
-        try:
-            intake_context = intake.context_prompt()
-        except Exception:  # noqa: BLE001 — intake context must never break editing
-            intake_context = ""
-        if intake_context:
-            system += "\n\n" + intake_context
     system += _tweakmap_block(context)
     system += _template_tokens_block(context)
     system += _decision_ledger_block(context)

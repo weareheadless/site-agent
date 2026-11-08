@@ -2,7 +2,7 @@
 
 This module intentionally does not share the browser's password session. The
 Payload server calls these endpoints with a dedicated bearer token, while the
-existing admin API and Intake Lab routes keep their current authentication and
+existing admin API routes keep their current authentication and
 behavior.
 The route prefix remains configurable because the first customer still uses
 ``/v1/workspace``.  The implementation itself is not customer-specific.
@@ -231,82 +231,6 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post(f"{prefix}/chat/design/start")
-    async def workspace_design_start(request: Request):
-        tenant = require_service(request)
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 - normalize malformed bridge input
-            raise HTTPException(status_code=400, detail="invalid json")
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="request body must be an object")
-        try:
-            return service.start_first_page(body, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.get(f"{prefix}/design/recommendations")
-    def workspace_design_recommendations(request: Request, limit: int = 50):
-        tenant = require_service(request)
-        try:
-            return service.recommendations(limit=limit, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.post(f"{prefix}/design/direction")
-    async def workspace_design_direction(request: Request):
-        tenant = require_service(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="request body must be an object")
-        try:
-            return service.propose_direction(body, tenant=tenant)
-        except BridgeError as exc:
-            status = 409 if "must be accepted" in str(exc).lower() else 400
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
-
-    @app.post(f"{prefix}/design/recommendations/{{action_id}}/accept")
-    async def workspace_accept_design_recommendation(action_id: int, request: Request):
-        tenant = require_service(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="request body must be an object")
-        try:
-            return service.accept_recommendation(action_id, body, tenant=tenant)
-        except BridgeError as exc:
-            status = 409 if "stale" in str(exc).lower() else 400
-            raise HTTPException(status_code=status, detail=str(exc)) from exc
-
-    @app.post(f"{prefix}/design/recommendations/{{action_id}}/dismiss")
-    def workspace_dismiss_design_recommendation(action_id: int, request: Request):
-        tenant = require_service(request)
-        try:
-            return service.dismiss_recommendation(action_id, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    @app.get(f"{prefix}/design/operations")
-    def workspace_design_operations(request: Request, status: str | None = None, limit: int = 50):
-        tenant = require_service(request)
-        try:
-            return service.operations(status=status, limit=limit, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    @app.get(f"{prefix}/design/operations/{{operation_id}}")
-    def workspace_design_operation(operation_id: int, request: Request):
-        tenant = require_service(request)
-        try:
-            return service.operation(operation_id, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-
     @app.get(f"{prefix}/chat/conversations")
     def workspace_conversations(request: Request, include_archived: bool = False, limit: int = 50):
         tenant = require_service(request)
@@ -532,20 +456,6 @@ def register_workspace_routes(
             return {"run_id": run["run_id"], "candidate_sha": run["candidate_sha"], "status": run["status"]}
         except Exception as exc:
             raise HTTPException(status_code=409, detail=str(exc)[:500]) from exc
-
-    @app.post(f"{prefix}/design/runs/{{run_id}}/retry")
-    async def workspace_design_retry(run_id: str, request: Request):
-        tenant = require_service(request)
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="request body must be an object")
-        try:
-            return service.retry_design_run(run_id, body, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/drafts")
     def workspace_drafts(request: Request, status: str | None = None, limit: int = 50):
@@ -1329,58 +1239,6 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        @app.post(f"{control_prefix}/{{website_id}}/design/direction")
-        async def control_plane_design_direction(website_id: str, request: Request):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            if not isinstance(body, dict):
-                raise HTTPException(status_code=400, detail="request body must be an object")
-            try:
-                return service.propose_direction(body, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        @app.get(f"{control_prefix}/{{website_id}}/design/recommendations")
-        def control_plane_recommendations(website_id: str, request: Request, limit: int = 50):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                return service.recommendations(limit=limit, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        @app.post(f"{control_prefix}/{{website_id}}/design/recommendations/{{action_id}}/accept")
-        async def control_plane_accept_recommendation(website_id: str, action_id: int, request: Request):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            if not isinstance(body, dict):
-                raise HTTPException(status_code=400, detail="request body must be an object")
-            try:
-                return service.accept_recommendation(action_id, body, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        @app.post(f"{control_prefix}/{{website_id}}/design/recommendations/{{action_id}}/dismiss")
-        def control_plane_dismiss_recommendation(website_id: str, action_id: int, request: Request):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                return service.dismiss_recommendation(action_id, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        @app.get(f"{control_prefix}/{{website_id}}/design/operations")
-        def control_plane_operations(website_id: str, request: Request, status: str | None = None, limit: int = 50):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                return service.operations(status=status, limit=limit, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-
         @app.get(f"{control_prefix}/{{website_id}}/history")
         def control_plane_history(website_id: str, request: Request, limit: int = 50):
             tenant = require_control_tenant(request, website_id)
@@ -1388,20 +1246,6 @@ def register_workspace_routes(
                 return service.history(limit=limit, tenant=tenant)
             except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        @app.post(f"{control_prefix}/{{website_id}}/design/runs/{{run_id}}/retry")
-        async def control_plane_design_retry(website_id: str, run_id: str, request: Request):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                body = await request.json()
-            except Exception:
-                body = {}
-            if not isinstance(body, dict):
-                raise HTTPException(status_code=400, detail="request body must be an object")
-            try:
-                return service.retry_design_run(run_id, body, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/versions/{{version_id}}/restore")
         def control_plane_restore_version(website_id: str, version_id: int, request: Request):

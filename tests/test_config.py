@@ -32,14 +32,10 @@ def test_defaults_load_without_instance_file():
     assert sources[0] is not None
 
 
-def test_new_tenant_and_direct_client_defaults_match_the_canonical_intake_model():
-    from importlib.resources import files
-    import yaml
+def test_tenant_and_direct_client_share_the_default_model():
     from site_agent.core.llm import Client
 
     config, _ = load(env={})
-    intake = yaml.safe_load(files("site_agent").joinpath("intake-ada.yaml").read_text())
-    assert config["llm"]["model"] == intake["llm"]["model"]
     assert Client({}, env={}).model == config["llm"]["model"]
 
 

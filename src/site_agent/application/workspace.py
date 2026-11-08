@@ -24,8 +24,7 @@ from urllib.parse import unquote
 
 import yaml
 
-from ..config import ConfigError, CrawlSEOSettings, deep_merge, intake_settings, load
-from .intake_coordinator import IntakeCoordinator
+from ..config import ConfigError, CrawlSEOSettings, deep_merge, load
 from ..core.article_routes import public_article_path
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
@@ -57,19 +56,6 @@ def _owner_preview_job(job: Mapping[str, Any]) -> dict[str, Any]:
         result["diagnostic_id"] = str(result.get("id") or "")
     return result
 
-
-def _iso_age_seconds(value: str) -> int | None:
-    """Seconds between a persisted ISO timestamp and now, or None if unreadable."""
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        moment = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=datetime.timezone.utc)
-    return max(0, int((datetime.datetime.now(datetime.timezone.utc) - moment).total_seconds()))
 
 
 def _canonical_route_inventory(context: Mapping[str, Any]) -> dict[str, Any]:
@@ -177,16 +163,17 @@ _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 @dataclass(frozen=True)
 class Journey:
-    """The two independent facts that decide Ada's owner-facing phase."""
+    """The one fact that decides whether the workspace can edit a site.
+
+    The owner always lands in the workspace. A site exists as deployed source,
+    not as published Payload content, so the phase must not be derived from CMS
+    state or from a conversation phase.
+    """
 
     website_present: bool
-    incubation_needed: bool
 
     @property
     def initial_phase(self) -> str:
-        # The owner always lands in the workspace. A site exists as deployed
-        # source, not as published Payload content, so the phase must not be
-        # derived from CMS state.
         return "workspace"
 
 
@@ -203,191 +190,10 @@ def _journey_for_config(config: Mapping[str, Any]) -> Journey:
         raise ConfigError("website_present must be explicitly configured in site or ada_journey; Payload capability and observed URLs do not prove a launched website")
     if not isinstance(website_present_value, bool):
         raise ConfigError("website_present must be an explicit boolean in site or ada_journey")
-    website_present = website_present_value
-
-    intake = intake_settings(config)
-    if "incubation_needed" in journey:
-        incubation_needed = bool(journey.get("incubation_needed"))
-    elif "incubation_needed" in intake:
-        incubation_needed = bool(intake.get("incubation_needed"))
-    else:
-        # Incubation is a research bridge for a site that already exists. A
-        # new site gets the full intake/build path instead of this shortcut.
-        incubation_needed = website_present and bool(intake.get("enabled", False))
-
-    if not website_present:
-        # A no-site tenant must never be put into the existing-site incubation
-        # path by an old or copied config flag.
-        incubation_needed = False
-    return Journey(website_present=website_present, incubation_needed=incubation_needed)
+    return Journey(website_present=website_present_value)
 
 
-def _fail_unstarted_run(service: Any, run_id: str, exc: BaseException) -> None:
-    """Mark a run that never reached the queue as failed.
 
-    A run left in ``created`` is not buildable, hides the failure from the
-    owner, and makes the next attempt look like an idempotent duplicate. The
-    transition is best-effort: the original exception is what the caller sees.
-    """
-    memory = getattr(service, "memory", None)
-    if memory is None:
-        return
-    from ..core.design_contracts import DesignRunStatus
-
-    try:
-        memory.transition_design_run(
-            run_id, DesignRunStatus.FAILED.value, error=str(exc)[:500],
-        )
-        memory.add_design_run_event(
-            run_id, "failed", "The design build could not be started.",
-        )
-    except Exception:  # noqa: BLE001 - never mask the original failure
-        pass
-
-
-class DesignBuildHandoff:
-    """Bridge confirmed no-site intake into the normal typed design worker."""
-
-    def __init__(self, context: dict[str, Any]) -> None:
-        self.context = context
-
-    def get_run(self, run_id: str) -> dict[str, Any]:
-        """Return the persisted run for a handoff caller.
-
-        The intake service treats the handoff as the design facade: it asks for
-        an existing run when a reservation is a duplicate or a same-run
-        recovery. Without this the request failed with an AttributeError only
-        after a build finally got far enough to need it.
-        """
-        service = self.context.get("design_service")
-        if service is None:
-            raise BridgeError("the full design build service is unavailable")
-        return service.get_run(run_id)
-
-    def submit(
-        self,
-        request: str,
-        intake: Mapping[str, Any],
-        *,
-        run_id: str,
-        conversation_id: int | None,
-        source_message_id: int | None,
-        intake_session_id: str | None,
-        intake_revision_id: int | None,
-        context_extra: Mapping[str, Any] | None = None,
-        shared_intelligence: Any | None = None,
-        resume_run_id: str | None = None,
-    ) -> dict[str, Any]:
-        from ..core.design_contracts import SiteIntake
-
-        service = self.context.get("design_service")
-        executor = self.context.get("design_executor")
-        if service is None or executor is None:
-            raise BridgeError("the full design build service is unavailable")
-        # The tenant's Payload-backed media service is composed later in some
-        # startup orders than the design service. Adopt it here, otherwise the
-        # frozen snapshot records no visual evidence for the owner's selected
-        # images and the creative plan cannot bind them.
-        if getattr(service, "media_service", None) is None:
-            media_service = self.context.get("media_service")
-            if media_service is not None:
-                service.media_service = media_service
-        # Runtime composition owns the tenant config.  Keep a recovered
-        # DesignService instance from an older process/config snapshot from
-        # losing the newly provisioned local clone before resolving its base
-        # SHA.  This is intentionally one-way and only repairs the missing
-        # clone path; it never overwrites a configured customer target.
-        runtime_config = self.context.get("config")
-        service_config = getattr(service, "config", None)
-        runtime_site = runtime_config.get("site") if isinstance(runtime_config, Mapping) else {}
-        service_site = service_config.get("site") if isinstance(service_config, Mapping) else {}
-        if (
-            isinstance(runtime_site, Mapping)
-            and str(runtime_site.get("clone_path") or "").strip()
-            and not str(service_site.get("clone_path") or "").strip()
-        ):
-            service.config = {
-                **dict(service_config or {}),
-                "site": {**dict(service_site or {}), **dict(runtime_site)},
-            }
-        site_intake = SiteIntake.from_dict(dict(intake))
-        if resume_run_id:
-            recovery_owner_request = str(request)
-            if str(resume_run_id) != str(run_id):
-                raise BridgeError("same-run recovery ID does not match the confirmed intake run")
-            retained = service.get_run(str(resume_run_id))
-            planning = retained.get("planning_json") if isinstance(retained, Mapping) else None
-            if not isinstance(planning, Mapping):
-                raise BridgeError("same-run recovery has no persisted planning payload")
-            try:
-                from ..core.design_contracts import BuildTarget, PageBuildRequest
-
-                build_request = PageBuildRequest.from_dict(planning.get("build_request") or {})
-                target = BuildTarget.from_dict(planning.get("build_target") or {})
-                admission = service.recover_prebuild_run(
-                    str(resume_run_id), request=build_request, target=target,
-                    intake_session_id=str(intake_session_id or ""),
-                    intake_revision_id=int(intake_revision_id or 0),
-                    owner_request=recovery_owner_request,
-                    context_extra=context_extra,
-                    shared_intelligence=shared_intelligence,
-                )
-            except Exception as exc:
-                raise BridgeError(f"same-run recovery rejected: {str(exc)[:400]}") from exc
-            if admission.get("admitted"):
-                executor.enqueue(str(resume_run_id))
-            return service.get_run(str(resume_run_id))
-        base_sha = service.resolve_base_sha()
-        run = service.create_run(
-            site_intake,
-            mode="production_candidate",
-            base_sha=base_sha,
-            candidate_ref=f"refs/ada-design/{run_id}",
-            publishable=True,
-            run_id=run_id,
-            owner_request=request,
-            conversation_id=conversation_id,
-            source_message_id=source_message_id,
-            chat_job_id=None,
-            intake_session_id=intake_session_id,
-            intake_revision_id=intake_revision_id,
-        )
-        try:
-            service.capture_context_snapshot(
-                run["run_id"],
-                owner_request=request,
-                conversation_id=conversation_id,
-                source_message_id=source_message_id,
-                chat_job_id=None,
-                context_extra=context_extra,
-                shared_intelligence=shared_intelligence,
-            )
-            build_request = service.prepare_initial_request(run["run_id"])
-            target = service.build_target_for_run(run["run_id"])
-            from ..core.design_contracts import canonical_hash
-            from .designs import DesignSharedIntelligence
-
-            planning = dict((service.get_run(run["run_id"]) or {}).get("planning_json") or {})
-            planning["same_run_recovery_identity"] = {
-                "schema_version": 1,
-                "owner_request_hash": canonical_hash(request),
-                "context_extra_hash": canonical_hash(dict(context_extra or {})),
-                "shared_intelligence_hash": canonical_hash(
-                    shared_intelligence.to_dict() if shared_intelligence is not None
-                    else DesignSharedIntelligence.unavailable().to_dict()
-                ),
-            }
-            if getattr(service, "memory", None) is not None:
-                service.memory.update_design_run(run["run_id"], planning_json=planning)
-            service.queue_build(run["run_id"], build_request, target)
-            executor.enqueue(run["run_id"])
-        except Exception as exc:
-            # A run that never reached the queue must not stay "created": it is
-            # not buildable, it hides the failure from the owner, and the next
-            # attempt reports it as an idempotent duplicate instead of starting.
-            _fail_unstarted_run(service, run["run_id"], exc)
-            raise
-        return service.get_run(run["run_id"])
 
 
 @dataclass
@@ -404,7 +210,6 @@ class Tenant:
     api_token_env: str = ""
     executor: Any = None
     design_executor: Any = None
-    intake_coordinator: IntakeCoordinator | None = None
     scheduler_thread: threading.Thread | None = None
     scheduler_stop: threading.Event | None = None
 
@@ -640,14 +445,6 @@ class TenantRegistry:
                     "connector_site_id": str(((seo_state.get("crawlseo") or {}).get("site_id")) if isinstance(seo_state.get("crawlseo"), Mapping) else ""),
                     "google_platform": google_platform,
                 })
-                from .design_operations import DesignOperationService
-
-                # The operation service is tenant-scoped and provider-neutral;
-                # both HelloAda and the full workspace use this same instance.
-                context["design_operations"] = DesignOperationService(
-                    memory,
-                    website_id=tenant_id,
-                )
                 from .source_editor import SourceEditorService
                 from .source_deployment import SourceDeploymentService
                 from ..hands.base import get_adapter
@@ -753,42 +550,6 @@ class TenantRegistry:
                     except Exception as exc:  # noqa: BLE001 — fail closed when approval cannot be safe
                         raise ConfigError(f"design approval adapter is unavailable: {exc}") from exc
                     context["design_adapter"] = design_adapter
-                intake_options = intake_settings(tenant_config)
-                intake_enabled = bool(intake_options.get("enabled", False)) or journey.incubation_needed
-                if not journey.website_present and not journey.incubation_needed:
-                    # New-site tenants still need the typed full-intake front
-                    # door even when they do not carry the incubation block in
-                    # their config.
-                    intake_options = dict(intake_options)
-                    intake_options["enabled"] = True
-                    intake_options["database_only"] = False
-                    research_options = intake_options.get("research")
-                    research_options = dict(research_options) if isinstance(research_options, Mapping) else {}
-                    research_options["enabled"] = False
-                    intake_options["research"] = research_options
-                    tenant_config = dict(tenant_config)
-                    tenant_config["intake"] = intake_options
-                    intake_enabled = True
-                intake_coordinator = None
-                if intake_enabled:
-                    intake_coordinator = IntakeCoordinator(
-                        memory,
-                        config=tenant_config,
-                        llm=context.get("llm"),
-                        media_service=context.get("media_service"),
-                        payload_client=payload_client,
-                    )
-                    context.update({
-                        "intake_coordinator": intake_coordinator,
-                        "design_intake_service": intake_coordinator.intake_service,
-                    })
-                    from .design_direction import DesignDirectionService
-
-                    context["design_direction"] = DesignDirectionService(
-                        memory,
-                        intake_coordinator.intake_service,
-                        context["design_operations"],
-                    )
                 tenants[tenant_id] = Tenant(
                     tenant_id=tenant_id,
                     config=tenant_config,
@@ -798,7 +559,6 @@ class TenantRegistry:
                     api_token=api_token,
                     config_path=str(config_path),
                     api_token_env=token_env,
-                    intake_coordinator=intake_coordinator,
                 )
         except Exception:
             for tenant in tenants.values():
@@ -852,20 +612,11 @@ class TenantRegistry:
         tenant.runtime.start()
         tenant.memory.interrupt_running_chat_jobs()
         tenant.memory.interrupt_running_design_runs()
-        if tenant.intake_coordinator is not None:
-            tenant.intake_coordinator.start()
         tenant.design_executor = DesignJobExecutor(
             tenant.context,
             tenant.context["design_service"],
         )
         tenant.context["design_executor"] = tenant.design_executor
-        journey = self._tenant_journey(tenant)
-        if journey is not None and not journey.website_present:
-            intake_service = tenant.context.get("design_intake_service")
-            if intake_service is not None:
-                handoff = DesignBuildHandoff(tenant.context)
-                intake_service.lab_service = handoff
-                tenant.context["design_intake_build_service"] = handoff
         tenant.design_executor.start()
         self._start_scheduler(tenant)
         tenant.executor = ChatJobExecutor(
@@ -1224,12 +975,8 @@ class TenantRegistry:
         if tenant.design_executor is not None:
             tenant.design_executor.stop()
             tenant.design_executor.join(timeout=10)
-        if tenant.intake_coordinator is not None:
-            tenant.intake_coordinator.stop()
         if tenant.design_executor is not None:
             workers.append(("design executor", tenant.design_executor))
-        if tenant.intake_coordinator is not None:
-            workers.append(("intake research executor", getattr(tenant.intake_coordinator, "research_executor", None)))
         still_running = []
         for name, worker in workers:
             thread = worker if callable(getattr(worker, "is_alive", None)) else getattr(worker, "_thread", None)
@@ -1242,7 +989,6 @@ class TenantRegistry:
         tenant.scheduler_stop = None
         tenant.executor = None
         tenant.design_executor = None
-        tenant.intake_coordinator = None
         source_deployment = tenant.context.pop("source_deployment", None)
         close_source_deployment = getattr(source_deployment, "close", None)
         if callable(close_source_deployment):
@@ -1359,216 +1105,9 @@ class ChatService:
             raise BridgeError("Ada returned a reply that needs to be prepared again")
         return {"tenant": tenant_id, "draft": draft}
 
-    def design_operations(self, *, tenant: Tenant | None = None):
-        """Return the tenant-scoped shared owner-operation service."""
-        if self.registry is not None:
-            if tenant is None or tenant.tenant_id not in self.registry.tenants:
-                raise BridgeError("tenant is not authorized")
-            service = tenant.context.get("design_operations")
-            if service is None:
-                raise BridgeError("design operations are unavailable")
-            return service
-        if self.memory is None:
-            raise BridgeError("design operations are unavailable")
-        from .design_operations import DesignOperationService
 
-        return DesignOperationService(self.memory, website_id="legacy")
 
-    def recommendations(self, *, limit: int = 50, tenant: Tenant | None = None) -> dict[str, Any]:
-        return {
-            "recommendations": self.design_operations(tenant=tenant).list_recommendations(limit=limit),
-        }
 
-    def propose_direction(
-        self,
-        body: Mapping[str, Any],
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        """Run the read-only direction step and wait with a build recommendation."""
-        if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise BridgeError("tenant intake is not enabled")
-        direction = tenant.context.get("design_direction")
-        if direction is None:
-            raise BridgeError("design direction is unavailable")
-        conversation_id = body.get("conversation_id")
-        if conversation_id is not None:
-            try:
-                conversation_id = int(conversation_id)
-            except (TypeError, ValueError) as exc:
-                raise BridgeError("conversation_id must be an integer") from exc
-        coordinator = tenant.context["intake_coordinator"]
-        status = coordinator.status(conversation_id)
-        if not status.get("confirmed"):
-            raise BridgeError("the working brief must be accepted before proposing a direction")
-        confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision")
-        try:
-            confirmed_revision = int(confirmed_revision)
-        except (TypeError, ValueError) as exc:
-            raise BridgeError("confirmed_revision must be an integer") from exc
-        try:
-            return direction.propose(
-                str(status.get("session_id") or ""),
-                confirmed_revision=confirmed_revision,
-                conversation_id=conversation_id,
-            )
-        except Exception as exc:  # noqa: BLE001 - normalize the application boundary
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def accept_recommendation(
-        self,
-        action_id: int,
-        body: Mapping[str, Any] | None = None,
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        body = dict(body or {})
-        current_state = body.get("current_state")
-        if current_state is not None and not isinstance(current_state, Mapping):
-            raise BridgeError("current_state must be an object")
-        conversation_id = body.get("conversation_id")
-        if conversation_id is not None:
-            try:
-                conversation_id = int(conversation_id)
-            except (TypeError, ValueError) as exc:
-                raise BridgeError("conversation_id must be an integer") from exc
-        try:
-            operation_service = self.design_operations(tenant=tenant)
-            if current_state is None and tenant is not None:
-                action = operation_service.recommendation(action_id)
-                bound = action.payload.get("bound_state") if isinstance(action.payload, Mapping) else {}
-                bound = bound if isinstance(bound, Mapping) else {}
-                coordinator = tenant.context.get("intake_coordinator")
-                if coordinator is not None and "intake_revision" in bound:
-                    intake_status = coordinator.status(conversation_id or action.conversation_id)
-                    # The server knows the current confirmed revision; the
-                    # browser should not have to copy a hidden hash into an
-                    # approval request.  Direction hashes remain bound to the
-                    # recommendation and are checked by the operation gate.
-                    current_state = {
-                        "intake_revision": intake_status.get("confirmed_revision"),
-                    }
-                    if "direction_hash" in bound:
-                        current_state["direction_hash"] = bound.get("direction_hash")
-            operation = operation_service.accept(
-                action_id,
-                current_state=current_state,
-                conversation_id=conversation_id,
-            )
-            operation = self._execute_operation(operation, tenant=tenant)
-            action = operation_service.recommendation(action_id)
-            return {
-                "recommendation": operation_service.recommendation_view(action),
-                "operation": operation.to_dict(),
-            }
-        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def _execute_operation(self, operation, *, tenant: Tenant | None = None):
-        """Execute the first real tool while keeping operation state durable.
-
-        Direction is completed by ``DesignDirectionService``. The initial build
-        remains an asynchronous design job, so this method only reserves the
-        existing intake build and records the resulting run as the operation
-        outcome; it does not duplicate the design executor.
-        """
-        if operation.tool != "design.build" or tenant is None:
-            return operation
-        intake_service = tenant.context.get("design_intake_service")
-        coordinator = tenant.context.get("intake_coordinator")
-        if intake_service is None or coordinator is None:
-            return operation
-        if operation.status.value == "done":
-            return operation
-        if operation.status.value != "queued":
-            return operation
-        operation_service = self.design_operations(tenant=tenant)
-        scope = operation.payload.get("scope") if isinstance(operation.payload, Mapping) else {}
-        scope = scope if isinstance(scope, Mapping) else {}
-        session_id = str(scope.get("session_id") or "").strip()
-        if not session_id:
-            return operation_service.fail(
-                operation.id or 0,
-                error_code="missing_intake_session",
-                reason="design.build requires an intake session",
-            )
-        try:
-            running = operation_service.start(operation.id or 0)
-            try:
-                retry_count = int(operation.payload.get("retry_count") or 0)
-            except (AttributeError, TypeError, ValueError):
-                retry_count = 0
-            build = intake_service.build(
-                session_id,
-                confirmed_revision=int(scope.get("confirmed_revision") or 0),
-                owner_request=str(scope.get("owner_request") or "Start the homepage design from the approved direction."),
-                idempotency_key=f"design-operation:{operation.id}:{retry_count}",
-                force_new=retry_count > 0,
-                context_extra={
-                    "operation_id": operation.id,
-                    "approved_direction_hash": str(scope.get("direction_hash") or ""),
-                    "direction_artifact_id": scope.get("direction_artifact_id"),
-                    "page": str(scope.get("page") or "index.html"),
-                },
-            )
-            run = build.get("run") if isinstance(build, Mapping) else None
-            run_id = str(run.get("run_id") or "") if isinstance(run, Mapping) else ""
-            return operation_service.complete(
-                running.id or 0,
-                outcome={
-                    "run": self._public_design_run(run) if isinstance(run, Mapping) else None,
-                    "build_pending": bool(build.get("build_pending")) if isinstance(build, Mapping) else False,
-                },
-                revision_id=run_id or None,
-            )
-        except Exception as exc:  # noqa: BLE001 - retain failure and expose a bounded message
-            try:
-                return operation_service.fail(
-                    operation.id or 0,
-                    error_code="design_build_submission_failed",
-                    reason=str(exc)[:500],
-                )
-            except Exception:
-                raise
-
-    def dismiss_recommendation(
-        self,
-        action_id: int,
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        try:
-            operation_service = self.design_operations(tenant=tenant)
-            action = operation_service.dismiss(action_id)
-            return {"recommendation": operation_service.recommendation_view(action)}
-        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def operations(
-        self,
-        *,
-        limit: int = 50,
-        status: str | None = None,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        try:
-            return {
-                "operations": [
-                    operation.to_dict()
-                    for operation in self.design_operations(tenant=tenant).list(
-                        status=status,
-                        limit=limit,
-                    )
-                ],
-            }
-        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def operation(self, operation_id: int, *, tenant: Tenant | None = None) -> dict[str, Any]:
-        try:
-            return self.design_operations(tenant=tenant).get(operation_id).to_dict()
-        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise BridgeError(str(exc)[:500]) from exc
 
     def _publish_reviewed_payload_effects(
         self,
@@ -1738,10 +1277,6 @@ class ChatService:
         value = tenant.context.get("journey") if tenant is not None else None
         return value if isinstance(value, Journey) else None
 
-    @classmethod
-    def _intake_mode(cls, tenant: Tenant | None) -> str:
-        journey = cls._journey(tenant)
-        return journey.initial_phase if journey is not None else "intake"
 
     def enqueue(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         context = body.get("context") if isinstance(body, Mapping) else None
@@ -1913,14 +1448,13 @@ class ChatService:
         if not message:
             message = "Please review the attached images."
 
-        # The tenant journey is authoritative. Preserve it in the intake
-        # context instead of asking the advisor to infer an existing site from
-        # the owner's wording or from a page label.
+        # The tenant journey is authoritative. Preserve it in the turn context
+        # instead of asking the model to infer an existing site from the
+        # owner's wording or from a page label.
         journey = self._journey(tenant)
         if journey is not None:
             owner_context.update({
                 "website_present": journey.website_present,
-                "incubation_needed": journey.incubation_needed,
                 "journey": journey.initial_phase,
             })
 
@@ -1931,9 +1465,7 @@ class ChatService:
             except (TypeError, ValueError) as exc:
                 raise BridgeError("conversation_id must be an integer") from exc
 
-        # The owner's turn always belongs to the workspace. An unconfirmed
-        # intake session is not a reason to divert the conversation into an
-        # advisor the owner never asked for.
+        # The owner's turn always belongs to the workspace.
         conversations = {item["id"] for item in memory.list_conversations(limit=200)}
         if not conversation_id or conversation_id not in conversations:
             conversation_id = memory.create_conversation(title=message[:80])
@@ -1942,7 +1474,6 @@ class ChatService:
         context["site"] = tenant_id
         if journey is not None:
             context["website_present"] = journey.website_present
-            context["incubation_needed"] = journey.incubation_needed
             context["journey"] = "workspace"
         media_service = tenant.context.get("media_service") if tenant is not None else None
         if attachments and media_service is None:
@@ -2018,18 +1549,14 @@ class ChatService:
             "phase": "workspace",
         }
         if journey is not None:
-            response.update({
-                "website_present": journey.website_present,
-                "incubation_needed": journey.incubation_needed,
-            })
+            response.update({"website_present": journey.website_present})
         return response
 
     def status(self, conversation_id: Any = None, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return the tenant-scoped chat phase without starting website work.
 
-        The owner is always in the workspace. The browser may still read the
-        brief and build state, but the phase never depends on published Payload
-        content or on an intake session.
+        The owner is always in the workspace. The phase never depends on
+        published Payload content or on a conversation phase.
         """
         memory, _llm, tenant_id = self._scope(tenant)
         normalized_id: int | None = None
@@ -2040,112 +1567,17 @@ class ChatService:
                 raise BridgeError("conversation_id must be an integer") from exc
 
         journey = self._journey(tenant)
-        intake_enabled = bool(tenant is not None and tenant.context.get("intake_coordinator") is not None)
-        needs_intake = False
-        intake_status: dict[str, Any] = {}
-        if intake_enabled:
-            try:
-                coordinator = tenant.context["intake_coordinator"]
-                intake_status = coordinator.status(normalized_id)
-                needs_intake = not bool(intake_status.get("confirmed"))
-            except Exception as exc:  # noqa: BLE001 — keep status errors bounded
-                raise BridgeError(str(exc)[:500]) from exc
-        mode = "workspace"
-        website_present = journey.website_present if journey is not None else mode == "workspace"
-        incubation_needed = journey.incubation_needed if journey is not None else intake_enabled
+        website_present = journey.website_present if journey is not None else True
         active_jobs = memory.list_active_chat_jobs(conversation_id=normalized_id, limit=1)
         active_job = active_jobs[0] if active_jobs else None
-        build = None
-        if tenant is not None and intake_status.get("confirmed"):
-            revision = intake_status.get("confirmed_revision_id") or intake_status.get("confirmed_revision")
-            session_id = str(intake_status.get("session_id") or "")
-            run = memory.latest_design_run_for_intake(session_id, revision)
-            earlier_brief = False
-            if run is None and session_id:
-                retained = memory.latest_design_run_for_intake(session_id, None)
-                if retained is not None and retained.get("candidate_sha"):
-                    run = retained
-                    earlier_brief = True
-            if run is not None:
-                run = self._displayed_design_run(memory, run)
-            if run is not None:
-                events = memory.list_design_run_events(str(run["run_id"]), limit=500)
-                order = ("queued", "planning", "generating", "building", "validating", "rendering")
-                by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
-                run_status = str(run.get("status") or "")
-                terminal = run_status in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                failed = earlier_brief or run_status in {"failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
-                ready = run_status == "ready_for_review" and not earlier_brief
-                stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
-                stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
-                labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
-                current_i = order.index(stopped_at)
-                stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
-                started_ts = str(run.get("created_ts") or "")
-                elapsed = _iso_age_seconds(started_ts) or 0
-                state = "failed" if failed else "ready" if ready else "queued" if stage == "queued" else "running"
-                build = {
-                    "state": state, "status": run_status, "run_id": str(run["run_id"]),
-                    "candidate_sha": str(run.get("candidate_sha") or "").lower(),
-                    "draft_id": run.get("draft_id"), "stage": stage, "stages": stages,
-                    "started_ts": started_ts, "elapsed_seconds": elapsed,
-                    # A live or discarded decision is no longer reviewable;
-                    # only a pending (or retryable failed) draft is offered.
-                    "draft_available": bool(run.get("draft_id") and ready and (
-                        next((row.get("status") for row in memory.list_drafts(limit=500)
-                              if int(row.get("id") or 0) == int(run.get("draft_id") or 0)), None)
-                        in {"pending", "publish_failed"}
-                    )),
-                }
-                preview = self._candidate_preview(tenant, run)
-                if preview:
-                    build["preview"] = preview
-                if run_status in {"needs_repair", "incomplete"}:
-                    build["unverified"] = True
-                # Liveness: the build surface must be able to say what Ada is
-                # doing right now and when she last said it. Only owner-copy
-                # events feed the surface; internal worker stages stay out.
-                updates = [
-                    {"stage": str(event.get("stage") or ""), "message": str(event["message"])[:240], "ts": str(event.get("created_ts") or "")}
-                    for event in events
-                    if event.get("stage") in {*order, "progress"} and str(event.get("message") or "").strip()
-                ][-5:]
-                last_event_ts = updates[-1]["ts"] if updates else ""
-                last_event_age = _iso_age_seconds(last_event_ts) if last_event_ts else None
-                build["updates"] = updates
-                build["update"] = updates[-1]["message"] if updates else None
-                build["update_ts"] = last_event_ts or None
-                build["last_event_ts"] = last_event_ts or None
-                build["last_event_age_seconds"] = last_event_age
-                # The runner emits a heartbeat every minute while a long turn
-                # is genuinely in flight, so this only fires when the build
-                # stopped reporting altogether.
-                build["stall_threshold_seconds"] = 600
-                build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 600)
-                if failed:
-                    attention_messages = {
-                        "needs_repair": "The retained candidate needs a bounded repair before review.",
-                        "incomplete": "The run stopped before required checks completed.",
-                        "interrupted": "The run was interrupted; its retained candidate remains available.",
-                        "cancelled": "The run was cancelled; its retained candidate remains available.",
-                    }
-                    build["error"] = str(run.get("error") or attention_messages.get(run_status) or "The design build needs attention.")
-                if earlier_brief:
-                    build["unverified"] = True
-                    build["error"] = "This retained preview belongs to your earlier brief. It does not yet implement the revised requirements."
-        onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
-            "mode": mode,
-            "phase": mode,
-            "website_context_enabled": website_present and mode == "workspace",
+            "mode": "workspace",
+            "phase": "workspace",
+            "website_context_enabled": website_present,
             "website_present": website_present,
-            "incubation_needed": incubation_needed,
-            "journey": "incubation" if mode == "incubation" else "full_intake" if mode == "intake" else "workspace",
-            "intake_enabled": intake_enabled,
-            "onboarding": onboarding,
-            "conversation_id": normalized_id or intake_status.get("conversation_id"),
-            "intake": intake_status,
+            "journey": "workspace",
+            "conversation_id": normalized_id,
             "active_job": {
                 "id": int(active_job["id"]),
                 "conversation_id": int(active_job["conversation_id"]),
@@ -2153,272 +1585,8 @@ class ChatService:
                 "created_ts": active_job.get("created_ts"),
                 "updated_ts": active_job.get("updated_ts"),
             } if active_job else None,
-            "build": build,
+            "build": None,
         }
-
-    @staticmethod
-    def _displayed_design_run(memory: Memory, run: Mapping[str, Any]) -> Mapping[str, Any]:
-        """Show the run the owner can actually look at.
-
-        A follow-up operation that failed before producing any candidate has no
-        website to show. Its parent still holds the reviewable candidate, so the
-        workspace keeps presenting that instead of an error for a site that
-        already exists. A run that produced its own candidate is never replaced,
-        so a failed owner-requested change still reports its own failure.
-        """
-        if run.get("candidate_sha"):
-            return run
-        parent_id = str(run.get("parent_run_id") or "").strip()
-        if not parent_id:
-            return run
-        parent = memory.get_design_run(parent_id)
-        if (
-            isinstance(parent, Mapping)
-            and parent.get("candidate_sha")
-            and str(parent.get("status") or "") == "ready_for_review"
-            and parent.get("draft_id")
-        ):
-            return parent
-        return run
-
-    @staticmethod
-    def _candidate_preview(tenant: Tenant | None, run: Mapping[str, Any]) -> dict[str, Any]:
-        """Expose the exact compiled candidate that already exists for this run.
-
-        The owner should see what Ada produced as soon as it is compiled, not
-        only after every gate finishes. The preview stays bound to the run's
-        immutable candidate SHA, is marked unapproved until the run reaches
-        owner review, and grants nothing: publication still requires the exact
-        validated review draft and an explicit owner approval.
-        """
-        deployer = tenant.context.get("source_deployment") if tenant is not None else None
-        lookup = getattr(deployer, "preview_for_candidate", None)
-        if not callable(lookup):
-            return {}
-        candidate_sha = str(run.get("candidate_sha") or "").strip().lower()
-        run_id = str(run.get("run_id") or "").strip()
-        try:
-            job = lookup(run_id, candidate_sha)
-        except Exception:  # noqa: BLE001 - a preview lookup never blocks the workspace
-            return {}
-        if not isinstance(job, Mapping) or not job.get("id"):
-            return {}
-        if str(job.get("design_run_id") or "") != run_id or str(job.get("commit") or "").lower() != candidate_sha:
-            return {}
-        job = _owner_preview_job(job)
-        reviewable = str(run.get("status") or "") == "ready_for_review" and bool(run.get("draft_id"))
-        status = str(job.get("status") or "")
-        revision = (job.get("revision_verification") or {}).get("commit") or ""
-        if status == "ready" and str(revision or "").lower() != candidate_sha:
-            # Only ever expose a preview that serves this exact candidate.
-            return {}
-        # The owner embeds the canonical Worker bridge, never an internal API
-        # mount. The verified job ID already identifies the exact runtime.
-        preview_url = (
-            f"/api/helloada/source/preview/{quote(str(job['id']), safe='')}/runtime/"
-            if status == "ready" and job.get("preview_url") else None
-        )
-        return {
-            "state": "reviewable" if reviewable else "in_progress",
-            "job_id": str(job["id"]),
-            "run_id": run_id,
-            "candidate_sha": candidate_sha,
-            "approved": False,
-            "status": status,
-            "preview_url": preview_url or None,
-            "error": str(job.get("error") or "")[:1_000] or None,
-        }
-
-    @staticmethod
-    def _new_site_onboarding(
-        memory: Memory,
-        intake_status: Mapping[str, Any],
-        tenant: Tenant | None,
-    ) -> dict[str, Any] | None:
-        """Project the new-site milestones from its brief, run, and report records."""
-        journey = tenant.context.get("journey") if tenant is not None else None
-        if not isinstance(journey, Journey) and tenant is not None:
-            journey = _journey_for_config(tenant.config)
-        if journey is None or journey.website_present or tenant is None:
-            return None
-
-        confirmed = bool(intake_status.get("confirmed"))
-        session_id = str(intake_status.get("session_id") or "")
-        revision_id = intake_status.get("confirmed_revision_id")
-        initial_run = None
-        if confirmed and session_id and revision_id:
-            try:
-                revision_id = int(revision_id)
-            except (TypeError, ValueError):
-                revision_id = None
-            if revision_id is not None:
-                initial_run = memory.latest_design_run_for_intake(session_id, revision_id, initial_only=True)
-
-        candidate_ready = False
-        report_state = "not_started"
-        report = None
-        if initial_run is not None:
-            from ..core.design_contracts import MAX_QUALITY_REPORT_BYTES, canonical_hash
-            from .designs import owner_review_requirements_met
-
-            candidate_ready = owner_review_requirements_met(initial_run)
-            quality = initial_run.get("quality_report_json") if isinstance(initial_run.get("quality_report_json"), Mapping) else {}
-            quality_hash = canonical_hash(dict(quality), max_bytes=MAX_QUALITY_REPORT_BYTES)
-            context_hash = str(initial_run.get("context_snapshot_hash") or "").strip().lower()
-            expected_variant = "-".join((
-                str(initial_run.get("candidate_sha") or "")[:12],
-                str(initial_run.get("intake_hash") or "")[:12],
-                quality_hash[:12],
-                context_hash[:12] or "no-context",
-            ))
-            phases = memory.list_design_phase_artifacts(
-                str(initial_run["run_id"]),
-                phase="onboarding_report",
-            )
-            matching = [
-                phase for phase in phases
-                if phase.get("variant_key") == expected_variant
-                and phase.get("base_sha") == initial_run.get("candidate_sha")
-                and phase.get("status") == "completed"
-                and isinstance(phase.get("payload"), Mapping)
-                and phase["payload"].get("brief_hash") == initial_run.get("intake_hash")
-                and phase["payload"].get("candidate_sha") == initial_run.get("candidate_sha")
-                and phase["payload"].get("quality_evidence_hash") == quality_hash
-                and phase["payload"].get("context_snapshot_hash") == context_hash
-            ]
-            if matching and candidate_ready:
-                phase = matching[-1]
-                report_state = "ready"
-                report = dict(phase["payload"])
-                artifact_id = phase.get("artifact_id")
-                artifact = memory.get_artifact(artifact_id) if isinstance(artifact_id, int) and artifact_id > 0 else None
-                if (
-                    artifact is None
-                    or artifact.content_hash != phase.get("output_hash")
-                    or canonical_hash(report) != phase.get("output_hash")
-                ):
-                    report_state = "failed"
-                    report = None
-            elif any(phase.get("variant_key") == expected_variant and phase.get("status") == "failed" for phase in phases):
-                report_state = "failed"
-            elif candidate_ready or any(phase.get("variant_key") == expected_variant and phase.get("status") == "running" for phase in phases):
-                report_state = "preparing"
-
-        follow_on_started = bool(
-            initial_run
-            and memory.list_design_run_children(str(initial_run["run_id"]), limit=1)
-        )
-        if follow_on_started:
-            return None
-
-        completed = []
-        if confirmed:
-            completed.append(1)
-        if candidate_ready:
-            completed.append(2)
-        if report_state == "ready":
-            completed.append(3)
-        current_stage = 1 if not confirmed else 2 if not candidate_ready else 3 if report_state != "ready" else 4
-        return {
-            "enabled": True,
-            "current_stage": current_stage,
-            "completed_stages": completed,
-            "report_state": report_state,
-            "report": report,
-        }
-
-    def confirm_intake(
-        self,
-        body: Mapping[str, Any],
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        """Accept intake without starting a design run."""
-        _memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise BridgeError("tenant intake is not enabled")
-        coordinator = tenant.context["intake_coordinator"]
-        conversation_id = body.get("conversation_id")
-        if conversation_id is not None:
-            try:
-                conversation_id = int(conversation_id)
-            except (TypeError, ValueError) as exc:
-                raise BridgeError("conversation_id must be an integer") from exc
-        try:
-            revision = int(body.get("revision"))
-        except (TypeError, ValueError) as exc:
-                raise BridgeError("revision must be an integer") from exc
-        draft_hash = str(body.get("draft_hash") or "").strip().lower()
-        confirmation_text = str(body.get("confirmation_text") or "Accept this working brief").strip()
-        if not draft_hash:
-                raise BridgeError("draft_hash is required")
-        if not confirmation_text or len(confirmation_text) > 2_000:
-                raise BridgeError("confirmation_text is invalid")
-        try:
-            result = coordinator.confirm(
-                conversation_id,
-                revision=revision,
-                draft_hash=draft_hash,
-                confirmation_text=confirmation_text,
-                idempotency_key=body.get("idempotency_key"),
-            )
-            return result
-        except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def start_first_page(
-        self,
-        body: Mapping[str, Any],
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        """Start the first page only through an explicit post-intake action."""
-        _memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise BridgeError("tenant intake is not enabled")
-        journey = self._journey(tenant)
-        if journey is not None and journey.website_present:
-            raise BridgeError("an existing website needs an explicit page target")
-        # Real tenants have the shared operation spine. The compatibility
-        # fallback below remains for the legacy single-instance test adapter;
-        # it is not used by TenantRegistry-created websites.
-        coordinator = tenant.context["intake_coordinator"]
-        intake_service = tenant.context.get("design_intake_service")
-        if intake_service is None or getattr(intake_service, "lab_service", None) is None:
-            raise BridgeError("the full design build service is unavailable")
-        conversation_id = body.get("conversation_id")
-        if conversation_id is not None:
-            try:
-                conversation_id = int(conversation_id)
-            except (TypeError, ValueError) as exc:
-                raise BridgeError("conversation_id must be an integer") from exc
-        status = coordinator.status(conversation_id)
-        if not status.get("confirmed"):
-            raise BridgeError("the working brief must be accepted before starting a page")
-        session_id = str(status.get("session_id") or "")
-        confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision_id") or status.get("confirmed_revision")
-        try:
-            confirmed_revision = int(confirmed_revision)
-        except (TypeError, ValueError) as exc:
-            raise BridgeError("confirmed_revision must be an integer") from exc
-        try:
-            build = intake_service.build(
-                session_id,
-                confirmed_revision=confirmed_revision,
-                owner_request=str(body.get("owner_request") or "Start the first page design from the confirmed working brief."),
-                idempotency_key=body.get("idempotency_key"),
-                context_extra={"operation": "first_page_design", "page": "index.html"},
-            )
-        except Exception as exc:  # noqa: BLE001 — normalize bridge errors
-            raise BridgeError(str(exc)[:500]) from exc
-        response = {
-            key: build[key]
-            for key in ("idempotency_key", "build_pending", "idempotent", "recovered")
-            if key in build
-        }
-        if isinstance(build.get("run"), Mapping):
-            response["run"] = self._public_design_run(build["run"])
-        return response
 
     def conversations(
         self,
@@ -2884,92 +2052,6 @@ class ChatService:
             raise BridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
 
-    def retry_design_run(
-        self,
-        run_id: str,
-        body: Mapping[str, Any] | None = None,
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        """Regenerate a failed native candidate from the same confirmed intake.
-
-        A failed provider/build turn must not be repaired by mutating its
-        immutable run. Instead, reserve a fresh intake build with the same
-        confirmed revision and preserve the approved direction binding.
-        """
-        memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None:
-            raise BridgeError("tenant-scoped design retry is unavailable")
-        safe_run_id = str(run_id or "").strip()
-        source_run = memory.get_design_run(safe_run_id)
-        if source_run is None:
-            raise BridgeError("no such design run")
-        if str(source_run.get("status") or "") not in {"failed", "incomplete", "interrupted"}:
-            raise BridgeError("only failed design runs can be retried")
-        if source_run.get("candidate_sha"):
-            raise BridgeError("a retained candidate must be revalidated or repaired, not retried")
-
-        intake_service = tenant.context.get("design_intake_service")
-        coordinator = tenant.context.get("intake_coordinator")
-        if intake_service is None or coordinator is None:
-            raise BridgeError("the full design build service is unavailable")
-        session_id = str(source_run.get("intake_session_id") or "").strip()
-        if not session_id:
-            raise BridgeError("failed design run is not bound to an intake session")
-
-        request_body = dict(body or {})
-        intake_status = coordinator.status(source_run.get("conversation_id"))
-        confirmed_revision = request_body.get("confirmed_revision")
-        if confirmed_revision is None:
-            confirmed_revision = (
-                intake_status.get("confirmed_revision")
-                or intake_status.get("confirmed_revision_id")
-                or source_run.get("intake_revision_id")
-            )
-        try:
-            confirmed_revision = int(confirmed_revision)
-        except (TypeError, ValueError) as exc:
-            raise BridgeError("confirmed_revision is invalid") from exc
-        try:
-            intake_service.confirmed_intake(session_id, revision=confirmed_revision)
-        except Exception as exc:  # noqa: BLE001 - keep the retry boundary bounded
-            raise BridgeError(str(exc)[:500]) from exc
-
-        snapshot = source_run.get("context_snapshot")
-        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
-        context_extra = {
-            "operation": "design_retry",
-            "page": str(request_body.get("page") or snapshot.get("page") or "index.html"),
-            "retry_source_run_id": safe_run_id,
-            "approved_direction_hash": str(snapshot.get("approved_direction_hash") or ""),
-            "direction_artifact_id": snapshot.get("direction_artifact_id"),
-        }
-        retry_key = str(request_body.get("idempotency_key") or f"design-retry:{safe_run_id}").strip()
-        owner_request = str(
-            request_body.get("owner_request")
-            or source_run.get("owner_request")
-            or "Start the homepage design from the approved direction."
-        ).strip()
-        try:
-            build = intake_service.build(
-                session_id,
-                confirmed_revision=confirmed_revision,
-                owner_request=owner_request,
-                idempotency_key=retry_key,
-                force_new=True,
-                context_extra=context_extra,
-            )
-        except Exception as exc:  # noqa: BLE001 - normalize the bridge boundary
-            raise BridgeError(str(exc)[:500]) from exc
-        retry_run = build.get("run") if isinstance(build, Mapping) else None
-        if not isinstance(retry_run, Mapping):
-            raise BridgeError("design retry did not return a run")
-        return {
-            "source_run_id": safe_run_id,
-            "idempotency_key": str(build.get("idempotency_key") or retry_key),
-            "recovered": bool(build.get("recovered")),
-            "run": self._public_design_run(retry_run),
-        }
 
     def create_design_review(self, run_id: str, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Link a passed candidate to the owner approval lane."""
@@ -2983,7 +2065,7 @@ class ChatService:
         return {"run": self._public_design_run(run, include_evidence=True)}
 
     def connection(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
-        """Authenticate scope without running intake, jobs, or model requests."""
+        """Authenticate scope without starting jobs or model requests."""
         if self.registry is not None and (tenant is None or tenant.tenant_id not in self.registry.tenants):
             raise BridgeError("tenant is not authorized")
         llm = tenant.context.get("llm") if tenant else self.llm
@@ -6304,7 +5386,7 @@ class ChatService:
             key: str(context.get(key) or "")[:300]
             for key in (
                 "site", "language", "route", "collection", "document", "document_id", "slug", "state",
-                "mode", "phase", "scope", "website_present", "incubation_needed", "journey",
+                "mode", "phase", "scope", "website_present", "journey",
             )
             if context.get(key) is not None
         }
@@ -6348,7 +5430,6 @@ class ChatService:
 __all__ = [
     "BridgeError",
     "ChatService",
-    "DesignBuildHandoff",
     "Journey",
     "SourceConflict",
     "Tenant",

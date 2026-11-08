@@ -15,17 +15,14 @@ import pytest
 
 from site_agent.application.workspace import (
     ChatService,
-    DesignBuildHandoff,
     Journey,
     Tenant,
     TenantRegistry,
     _journey_for_config,
 )
-from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
 from site_agent.core.design_contracts import SiteIntake
-from site_agent.core.design_intake_contracts import DesignIntakeDraft
 from site_agent.config import ConfigError
 from site_agent.hands.payload_gateway import (
     PayloadContract,
@@ -367,40 +364,6 @@ def test_workspace_bridge_enqueues_contextual_chat(tmp_path):
     memory.close()
 
 
-def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
-    class _Payload:
-        def read(self, collection, *, identifier, identifier_kind, draft):
-            assert (collection, identifier, identifier_kind, draft) == ("pages", "home-source", "sourceId", True)
-            return {
-                "sourceId": "home-source",
-                "slug": "home",
-                "title": "Workspace Harmonie",
-                "content": {"heading": "Une maison douce", "body": "Book a consultation."},
-            }
-
-        def read_global(self, slug, *, draft):
-            assert (slug, draft) == ("navigation", True)
-            return {"items": [{"label": "Menu", "path": "/menu"}]}
-
-    memory = Memory(tmp_path / "memory.db")
-    coordinator = IntakeCoordinator(
-        memory,
-        config={"intake": {"database_only": True}},
-        llm=None,
-        payload_client=_Payload(),
-    )
-    snapshot = coordinator._existing_site_snapshot({
-        "route": "/",
-        "collection": "pages",
-        "target": {"route": {"path": "/", "kind": "page", "sourceId": "home-source"}},
-    })
-
-    assert snapshot["status"] == "existing_live_website"
-    assert snapshot["page"]["title"] == "Workspace Harmonie"
-    assert snapshot["navigation"]["items"][0]["label"] == "Menu"
-    memory.close()
-
-
 def test_workspace_bridge_reports_workspace_phase_without_intake(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     app = FastAPI()
@@ -628,76 +591,8 @@ def test_activity_execution_log_shows_safe_failure_and_owner_detail(tmp_path):
     memory.close()
 
 
-def test_intake_requires_explicit_owner_acceptance(tmp_path):
-    memory = Memory(tmp_path / "memory.db")
-    intake = IntakeCoordinator(
-        memory,
-        config={"intake": {"database_only": True, "research": {"enabled": False}}},
-        llm=object(),
-    )
-    site_intake = SiteIntake.from_dict({
-        "schema_version": 1,
-        "business": {
-            "name": "North Star Studio",
-            "offer_summary": "Brand strategy for independent businesses.",
-            "primary_services": ["Brand strategy"],
-            "location": "North Shore",
-        },
-        "audience": {"primary": "Independent business owners"},
-        "conversion": {"primary_action": "Book a consultation", "not_available": True},
-        "brand": {"voice": "Clear, thoughtful, and warm."},
-        "site": {"required_pages": ["index.html"]},
-    })
-    session = intake.intake_service.create_session(draft=DesignIntakeDraft.from_site_intake(site_intake))
-    before = intake.status(session["conversation_id"])
-    assert intake.needs_intake(session["conversation_id"]) is True
-    accepted = intake.confirm(
-        session["conversation_id"],
-        revision=session["revision"],
-        draft_hash=session["draft_hash"],
-        confirmation_text="I accept this working brief.",
-        idempotency_key="accept-workspace-brief",
-    )
-
-    assert before["confirmed"] is False
-    assert before["readiness"]["state"] == "ready_to_build"
-    assert accepted["confirmed"] is True
-    assert intake.needs_intake(session["conversation_id"]) is False
-    memory.close()
 
 
-def test_owner_turn_never_routes_through_intake(tmp_path):
-    class Intake:
-        def __init__(self):
-            self.calls = []
-
-        def needs_intake(self, conversation_id):
-            self.calls.append(("needs", conversation_id))
-            return True
-
-        def status(self, conversation_id=None):
-            self.calls.append(("status", conversation_id))
-            return {"confirmed": False}
-
-        def send_message(self, *args, **kwargs):
-            self.calls.append(("send",))
-            raise AssertionError("intake must not receive an owner turn")
-
-    memory = Memory(tmp_path / "memory.db")
-    intake = Intake()
-    tenant = Tenant("demo", {"site": {"website_present": False}}, memory, SimpleNamespace(),
-                    {"llm": object(), "intake_coordinator": intake}, "token")
-    registry = TenantRegistry({"demo": tenant})
-    service = ChatService(registry=registry)
-    try:
-        response = service.enqueue({"message": "go"}, tenant=tenant)
-        job = memory.get_chat_job(response["job_id"])
-        assert job["operation_kind"] != "design_intake_advice"
-        assert all(kind == "status" for kind, *_ in intake.calls)
-        status = service.status(response["conversation_id"], tenant=tenant)
-        assert status["phase"] == "workspace"
-    finally:
-        memory.close()
 
 
 def test_payload_gateway_client_is_server_configured_and_schema_bounded():
@@ -860,34 +755,18 @@ def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
     registry.tenants["workspace-one"].memory.close()
 
 
-def test_shared_api_does_not_route_new_tenant_conversations_through_intake(tmp_path):
-    class Intake:
-        def __init__(self):
-            self.calls = []
-
-        def needs_intake(self, conversation_id):
-            self.calls.append(("needs", conversation_id))
-            return True
-
-        def send_message(self, message, *, conversation_id=None, idempotency_key=None):
-            self.calls.append(("send", message, conversation_id, idempotency_key))
-            return {
-                "job_id": 44,
-                "conversation_id": conversation_id or 9,
-                "session_id": "intake-test",
-            }
-
+def test_shared_api_enqueues_new_tenant_conversations_in_the_workspace(tmp_path):
     class Tenant:
         def __init__(self):
-            self.tenant_id = "workspace-intake"
-            self.api_token = "intake-token"
-            self.memory = Memory(tmp_path / "workspace-intake" / "memory.db")
-            self.context = {"llm": object(), "intake_coordinator": Intake()}
+            self.tenant_id = "workspace-new"
+            self.api_token = "workspace-token"
+            self.memory = Memory(tmp_path / "workspace-new" / "memory.db")
+            self.context = {"llm": object()}
 
     tenant = Tenant()
 
     class Registry:
-        tenants = {"workspace-intake": tenant}
+        tenants = {"workspace-new": tenant}
 
         @staticmethod
         def for_token(token):
@@ -907,7 +786,7 @@ def test_shared_api_does_not_route_new_tenant_conversations_through_intake(tmp_p
     with TestClient(app) as client:
         response = client.post(
             "/v1/workspace/chat",
-            headers={"Authorization": "Bearer intake-token"},
+            headers={"Authorization": "Bearer workspace-token"},
             json={"message": "Je veux créer une page", "idempotency_key": "turn-1"},
         )
 
@@ -915,23 +794,11 @@ def test_shared_api_does_not_route_new_tenant_conversations_through_intake(tmp_p
     body = response.json()
     assert body["phase"] == "workspace"
     assert body["mode"] == "workspace"
-    assert tenant.memory.get_chat_job(body["job_id"])["operation_kind"] != "design_intake_advice"
-    assert tenant.context["intake_coordinator"].calls == []
+    assert tenant.memory.get_chat_job(body["job_id"])["operation_kind"] == "owner_chat"
     tenant.memory.close()
 
 
-def test_shared_api_stamps_the_workspace_journey_without_intake(tmp_path):
-    class Intake:
-        def __init__(self):
-            self.contexts = []
-
-        def needs_intake(self, conversation_id):
-            return True
-
-        def send_message(self, message, *, conversation_id=None, owner_context=None, idempotency_key=None):
-            self.contexts.append(dict(owner_context or {}))
-            return {"job_id": 45, "conversation_id": conversation_id or 10, "session_id": "intake-existing"}
-
+def test_shared_api_stamps_the_workspace_journey(tmp_path):
     class Tenant:
         def __init__(self):
             self.tenant_id = "workspace-existing"
@@ -939,8 +806,7 @@ def test_shared_api_stamps_the_workspace_journey_without_intake(tmp_path):
             self.memory = Memory(tmp_path / "workspace-existing" / "memory.db")
             self.context = {
                 "llm": object(),
-                "intake_coordinator": Intake(),
-                "journey": Journey(website_present=True, incubation_needed=True),
+                "journey": Journey(website_present=True),
             }
 
     tenant = Tenant()
@@ -973,8 +839,10 @@ def test_shared_api_stamps_the_workspace_journey_without_intake(tmp_path):
     assert response.status_code == 200
     assert response.json()["phase"] == "workspace"
     assert response.json()["website_present"] is True
-    assert tenant.context["intake_coordinator"].contexts == []
-    assert tenant.memory.get_chat_job(response.json()["job_id"])["operation_kind"] != "design_intake_advice"
+    job = tenant.memory.get_chat_job(response.json()["job_id"])
+    assert job["operation_kind"] == "owner_chat"
+    assert '"website_present": "True"' in job["message"]
+    assert '"journey": "workspace"' in job["message"]
     tenant.memory.close()
 
 
@@ -1045,104 +913,8 @@ def test_message_reply_draft_uses_only_selected_thread_and_cannot_send_or_use_to
     tenant.memory.close()
 
 
-def test_workspace_journey_separates_existing_site_incubation_from_new_site_intake():
-    existing = _journey_for_config({
-        "site": {"website_present": True, "payload": {"enabled": True}},
-        "intake": {"enabled": True},
-    })
-    new_site = _journey_for_config({
-        "site": {"adapter": "github_static", "website_present": False},
-    })
-
-    assert existing == Journey(website_present=True, incubation_needed=True)
-    assert existing.initial_phase == "workspace"
-    assert new_site == Journey(website_present=False, incubation_needed=False)
-    assert new_site.initial_phase == "workspace"
-
-    with pytest.raises(ConfigError, match="website_present must be explicitly configured"):
-        _journey_for_config({
-            "site": {"adapter": "github_static", "payload": {"enabled": True}},
-            "customer_profile": {"business": {"observed_site_settings": {"website_url": "https://example.test"}}},
-            "intake": {"enabled": True},
-        })
-    forced_no_site = _journey_for_config({
-        "ada_journey": {"website_present": False, "incubation_needed": True},
-        "intake": {"enabled": True},
-    })
-    assert forced_no_site == Journey(website_present=False, incubation_needed=False)
 
 
-def test_no_site_build_handoff_uses_the_normal_design_worker():
-    class Design:
-        def __init__(self):
-            self.calls = []
-            self.run = {"run_id": "run-first-site", "status": "queued"}
-
-        def resolve_base_sha(self):
-            self.calls.append(("resolve_base_sha",))
-            return "base-sha"
-
-        def create_run(self, intake, **kwargs):
-            assert isinstance(intake, SiteIntake)
-            self.calls.append(("create_run", kwargs))
-            return self.run
-
-        def capture_context_snapshot(self, run_id, **kwargs):
-            self.calls.append(("capture_context_snapshot", run_id, kwargs))
-
-        def prepare_initial_request(self, run_id):
-            self.calls.append(("prepare_initial_request", run_id))
-            return "typed-build-request"
-
-        def build_target_for_run(self, run_id):
-            self.calls.append(("build_target_for_run", run_id))
-            return {"branch": "ada-design"}
-
-        def queue_build(self, run_id, request, target):
-            self.calls.append(("queue_build", run_id, request, target))
-
-        def get_run(self, run_id):
-            assert run_id == "run-first-site"
-            return self.run
-
-    class Executor:
-        def __init__(self):
-            self.enqueued = []
-
-        def enqueue(self, run_id):
-            self.enqueued.append(run_id)
-
-    design = Design()
-    executor = Executor()
-    handoff = DesignBuildHandoff({"design_service": design, "design_executor": executor})
-    intake = SiteIntake.from_dict({
-        "schema_version": 1,
-        "business": {
-            "name": "North Star Studio",
-            "offer_summary": "Brand strategy for independent businesses.",
-            "primary_services": ["Brand strategy"],
-            "location": "North Shore",
-        },
-        "audience": {"primary": "Independent business owners"},
-        "conversion": {"primary_action": "Book a consultation", "not_available": True},
-        "brand": {"voice": "Clear, thoughtful, and warm."},
-        "site": {"required_pages": ["index.html"]},
-    })
-
-    result = handoff.submit(
-        "Build the first website.",
-        intake.to_dict(),
-        run_id="run-first-site",
-        conversation_id=12,
-        source_message_id=13,
-        intake_session_id="intake-first-site",
-        intake_revision_id=14,
-        context_extra={"journey": "full_intake"},
-    )
-
-    assert result == {"run_id": "run-first-site", "status": "queued"}
-    assert executor.enqueued == ["run-first-site"]
-    assert any(call[0] == "queue_build" for call in design.calls)
 
 
 def test_shared_api_persists_conversation_image_attachments(tmp_path):
@@ -1160,7 +932,7 @@ def test_shared_api_persists_conversation_image_attachments(tmp_path):
         context={
             "llm": object(),
             "media_service": Media(),
-            "journey": Journey(website_present=True, incubation_needed=True),
+            "journey": Journey(website_present=True),
         },
         api_token="attachments-token",
     )
@@ -1187,7 +959,6 @@ def test_shared_api_persists_conversation_image_attachments(tmp_path):
     assert job["conversation_id"] == response.json()["conversation_id"]
     assert memory.get_messages(job["conversation_id"])[-1]["attachments"] == [{"asset_id": 7, "position": 0}]
     assert response.json()["website_present"] is True
-    assert response.json()["incubation_needed"] is True
     memory.close()
 
 
@@ -1220,18 +991,6 @@ def test_payload_media_service_resolves_chat_attachments():
     assert resolved[0]["analysis_error"] is None
 
 
-def test_intake_confirmation_route_is_retired(tmp_path):
-    memory = Memory(tmp_path / "retired-intake" / "memory.db")
-    tenant = Tenant(tenant_id="retired-intake", config={}, memory=memory, runtime=None,
-                    context={"llm": object()}, api_token="retired-token")
-    registry = TenantRegistry({tenant.tenant_id: tenant})
-    app = FastAPI()
-    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry),
-                              registry=registry, prefix="/v1/workspace")
-    with TestClient(app) as client:
-        response = client.post("/v1/workspace/chat/intake/confirm",
-                               headers={"Authorization": "Bearer retired-token"}, json={})
-    assert response.status_code == 404
 
 def test_shared_api_exposes_media_library_and_analysis(tmp_path):
     class Payload:
@@ -2619,82 +2378,8 @@ def test_tenant_reload_waits_for_all_old_workers_before_closing_memory_or_starti
     registry._started = False
 
 
-def test_workspace_exposes_an_unapproved_candidate_preview_before_review():
-    """#570: an existing candidate must not be hidden behind a later gate."""
-    sha = "b" * 40
-    run = {"run_id": "intake-lab-retained", "status": "validating", "candidate_sha": sha}
-
-    class Deployer:
-        def __init__(self, revision=sha):
-            self.revision = revision
-            self.calls = []
-
-        def preview_for_candidate(self, run_id, candidate_sha):
-            self.calls.append((run_id, candidate_sha))
-            if candidate_sha != sha:
-                return {}
-            return {
-                "id": "job-1",
-                "design_run_id": run_id,
-                "status": "ready",
-                "commit": sha,
-                "revision_verification": {"ok": True, "commit": self.revision},
-            }
-
-    deployer = Deployer()
-    tenant = Tenant("tenant-a", {}, Memory(":memory:"), SimpleNamespace(close=lambda: None),
-                    {"source_deployment": deployer}, "api-token")
-
-    preview = ChatService._candidate_preview(tenant, run)
-
-    assert deployer.calls == [("intake-lab-retained", sha)]
-    assert preview == {
-        "state": "in_progress", "job_id": "job-1", "candidate_sha": sha, "approved": False,
-        "run_id": run["run_id"], "status": "ready", "preview_url": None, "error": None,
-    }
-
-    reviewable = ChatService._candidate_preview(tenant, {**run, "status": "ready_for_review", "draft_id": 7})
-    assert reviewable["state"] == "reviewable"
-    assert reviewable["approved"] is False
-
-    # A preview serving any other commit is never surfaced for this candidate.
-    assert ChatService._candidate_preview(Tenant("t", {}, Memory(":memory:"),
-        SimpleNamespace(close=lambda: None), {"source_deployment": Deployer("c" * 40)}, "token"), run) == {}
-    # No deployer, or no candidate identity, yields no preview at all.
-    assert ChatService._candidate_preview(None, run) == {}
-    assert ChatService._candidate_preview(tenant, {**run, "candidate_sha": ""}) == {}
-    tenant.memory.close()
 
 
-def test_workspace_shows_the_reviewable_parent_instead_of_a_failed_empty_follow_up():
-    """#573: a failed follow-up with no candidate must not hide the real site."""
-    parent = {"run_id": "parent", "status": "ready_for_review",
-              "candidate_sha": "a" * 40, "draft_id": 4}
-    empty_child = {"run_id": "child", "status": "failed", "parent_run_id": "parent",
-                   "candidate_sha": "", "draft_id": None}
-    with_candidate = {"run_id": "child2", "status": "failed", "parent_run_id": "parent",
-                      "candidate_sha": "b" * 40, "draft_id": None}
-
-    class Runs:
-        def __init__(self, runs):
-            self.runs = runs
-
-        def get_design_run(self, run_id):
-            return self.runs.get(run_id)
-
-    runs = Runs({"parent": parent})
-
-    # A follow-up that produced nothing defers to the reviewable parent.
-    assert ChatService._displayed_design_run(runs, empty_child) is parent
-    # A follow-up with its own candidate keeps reporting its own outcome.
-    assert ChatService._displayed_design_run(runs, with_candidate) is with_candidate
-    # The parent itself is returned unchanged.
-    assert ChatService._displayed_design_run(runs, parent) is parent
-    # A parent that is not actually reviewable is not substituted.
-    runs.runs["parent"] = {**parent, "status": "needs_repair"}
-    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
-    runs.runs["parent"] = {**parent, "draft_id": None}
-    assert ChatService._displayed_design_run(runs, empty_child) is empty_child
 
 
 def test_tenant_reload_keeps_the_shared_frontend_toolchain_contract(tmp_path, monkeypatch):
@@ -3773,158 +3458,10 @@ def test_payload_tenant_starts_shared_growth_jobs_without_legacy_scheduler_opt_i
     memory.close()
 
 
-def test_design_handoff_adopts_the_tenants_media_service():
-    """The build snapshot must be able to read the owner's selected images.
-
-    Startup order can compose the Payload media service after the design
-    service. Without adopting it here the frozen snapshot records no visual
-    evidence and the creative plan cannot bind the owner's images.
-    """
-    media = object()
-
-    class Service:
-        media_service = None
-        config = {}
-
-        def resolve_base_sha(self):
-            return "a" * 40
-
-        def create_run(self, intake, **kwargs):
-            return {"run_id": kwargs["run_id"]}
-
-        def capture_context_snapshot(self, run_id, **kwargs):
-            return {"run_id": run_id}
-
-        def prepare_initial_request(self, run_id):
-            return "request"
-
-        def build_target_for_run(self, run_id):
-            return {"branch": "ada-design"}
-
-        def queue_build(self, run_id, request, target):
-            return None
-
-        def get_run(self, run_id):
-            return {"run_id": run_id}
-
-    class Executor:
-        def enqueue(self, run_id):
-            return None
-
-    service = Service()
-    handoff = DesignBuildHandoff({
-        "design_service": service,
-        "design_executor": Executor(),
-        "media_service": media,
-    })
-    intake = SiteIntake.from_dict({
-        "schema_version": 1,
-        "business": {
-            "name": "North Star Studio",
-            "offer_summary": "Brand strategy for independent businesses.",
-            "primary_services": ["Brand strategy"],
-            "location": "North Shore",
-        },
-        "audience": {"primary": "Independent business owners"},
-        "conversion": {"primary_action": "Book a consultation", "not_available": True},
-        "brand": {"voice": "Clear, thoughtful, and warm."},
-        "site": {"required_pages": ["index.html"]},
-    })
-
-    handoff.submit(
-        "Build the first website.",
-        intake.to_dict(),
-        run_id="run-media-service",
-        conversation_id=1,
-        source_message_id=2,
-        intake_session_id="intake-media",
-        intake_revision_id=3,
-    )
-
-    assert service.media_service is media
 
 
-def test_design_handoff_exposes_the_persisted_run():
-    """The intake service asks the handoff for an existing run on a duplicate."""
-    class Service:
-        def get_run(self, run_id):
-            return {"run_id": run_id, "status": "building"}
-
-    handoff = DesignBuildHandoff({"design_service": Service()})
-
-    assert handoff.get_run("run-1") == {"run_id": "run-1", "status": "building"}
 
 
-def test_handoff_failure_marks_the_run_failed_instead_of_leaving_it_created():
-    """A run that never reached the queue must not survive as `created`.
-
-    A stranded `created` run hid the handoff failure from the owner and made
-    the next attempt report an idempotent duplicate instead of building.
-    """
-    from site_agent.core.design_contracts import DesignRunStatus
-
-    class Memory:
-        def __init__(self):
-            self.status = None
-            self.error = None
-            self.events = []
-
-        def transition_design_run(self, run_id, status, *, error=None):
-            self.status = status
-            self.error = error
-            return {"run_id": run_id, "status": status}
-
-        def add_design_run_event(self, run_id, stage, message):
-            self.events.append((run_id, stage, message))
-
-    class Service:
-        media_service = None
-        config = {}
-
-        def __init__(self):
-            self.memory = Memory()
-
-        def resolve_base_sha(self):
-            return "a" * 40
-
-        def create_run(self, intake, **kwargs):
-            return {"run_id": kwargs["run_id"]}
-
-        def capture_context_snapshot(self, run_id, **kwargs):
-            raise RuntimeError("media evidence could not be captured")
-
-    service = Service()
-    handoff = DesignBuildHandoff({"design_service": service, "design_executor": object()})
-    intake = SiteIntake.from_dict({
-        "schema_version": 1,
-        "business": {
-            "name": "North Star Studio",
-            "offer_summary": "Brand strategy for independent businesses.",
-            "primary_services": ["Brand strategy"],
-            "location": "North Shore",
-        },
-        "audience": {"primary": "Independent business owners"},
-        "conversion": {"primary_action": "Book a consultation", "not_available": True},
-        "brand": {"voice": "Clear, thoughtful, and warm."},
-        "site": {"required_pages": ["index.html"]},
-    })
-
-    with pytest.raises(RuntimeError, match="media evidence could not be captured"):
-        handoff.submit(
-            "Build the first website.",
-            intake.to_dict(),
-            run_id="run-stranded",
-            conversation_id=1,
-            source_message_id=2,
-            intake_session_id="intake-stranded",
-            intake_revision_id=3,
-        )
-
-    assert service.memory.status == DesignRunStatus.FAILED.value
-    assert "media evidence could not be captured" in service.memory.error
-    assert service.memory.events == [
-        ("run-stranded", "failed", "The design build could not be started."),
-    ]
 
 
 def test_design_approval_retries_after_a_failed_publication(tmp_path):

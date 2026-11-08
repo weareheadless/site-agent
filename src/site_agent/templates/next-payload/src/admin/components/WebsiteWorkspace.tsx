@@ -262,73 +262,6 @@ type PreviewPlan = {
 type PreviewUiStatus = 'idle' | 'refreshing' | 'ready' | 'build-required' | 'error'
 type PreviewViewport = 'desktop' | 'tablet' | 'mobile'
 
-type IntakeResearchStatus = {
-  status?: string
-  error?: string
-  updated_at?: string | null
-  themes?: string[]
-  audience_needs?: string[]
-  trends?: string[]
-  latest_learning?: string
-  insights?: Array<{
-    kind?: string
-    summary?: string
-    confidence?: number | null
-    sources?: Array<{ title?: string; url?: string }>
-  }>
-  findings?: Array<{
-    summary?: string
-    source?: { title?: string; url?: string }
-  }>
-}
-
-type IntakeStatus = {
-  session_id?: string
-  conversation_id?: number
-  status?: string
-  revision?: number
-  draft_hash?: string
-  confirmed?: boolean
-  confirmed_revision?: number
-  confirmed_revision_id?: number
-  readiness?: { state?: string; unresolved_core_paths?: string[] }
-  summary?: {
-    confirmed?: Record<string, unknown>
-    advised?: Record<string, unknown>
-    assumed?: unknown[]
-    deferred?: unknown[]
-    contradictions?: unknown[]
-    open_topics?: string[]
-  }
-  research?: IntakeResearchStatus
-}
-
-type OnboardingStepKey = 'launch_after_review' | 'complete_site_pages' | 'establish_growth_baseline' | 'plan_content_from_real_search_data'
-
-type OnboardingReport = {
-  candidate_sha?: string
-  title?: string
-  summary?: string
-  business?: { name?: string; offer?: string; audience?: string; primary_action?: string; brand_voice?: string }
-  first_page?: { route?: string; status?: string; passed_checks?: string[] }
-  planned_pages?: string[]
-  next_steps?: Array<{ key?: OnboardingStepKey; pages?: string[] }>
-  evidence?: {
-    research_available?: boolean
-    research?: Array<{ summary?: string; source?: string; title?: string; url?: string }>
-    unknowns?: string[]
-  }
-  limits?: { live_metrics_available?: boolean; explanation?: string }
-}
-
-type OnboardingStatus = {
-  enabled?: boolean
-  current_stage?: number
-  completed_stages?: number[]
-  report_state?: 'not_started' | 'preparing' | 'ready' | 'failed'
-  report?: OnboardingReport | null
-}
-
 type PendingAdaJob = {
   jobId: number
   conversationId: number
@@ -665,90 +598,6 @@ const displayEditorLabel = (entry: EditablePageEntry, entries: EditablePageEntry
   return `${entry.label} ${occurrence}`
 }
 
-type BriefEntry = {
-  path: string
-  value: unknown
-  note?: string
-}
-
-const briefEntriesFrom = (value: unknown): BriefEntry[] => {
-  if (Array.isArray(value)) {
-    return value.map((item, index) => {
-      if (item && typeof item === 'object') {
-        const row = item as Record<string, unknown>
-        return {
-          path: String(row.path || `item-${index + 1}`),
-          value: row.value,
-          note: row.note ? String(row.note) : undefined,
-        }
-      }
-      return { path: `item-${index + 1}`, value: item }
-    })
-  }
-  if (!value || typeof value !== 'object') return []
-  return Object.entries(value as Record<string, unknown>).map(([path, item]) => ({ path, value: item }))
-}
-
-const briefPathLabel = (path: string) => {
-  const value = path.split('.').pop() || path
-  return value
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/[-_]+/g, ' ')
-    .replace(/^./, (character) => character.toUpperCase())
-}
-
-const briefValueLabel = (value: unknown): string => {
-  if (value === undefined || value === null || value === '') return '—'
-  if (Array.isArray(value)) return value.map((item) => briefValueLabel(item)).join(', ')
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value)
-    } catch {
-      return '—'
-    }
-  }
-  return String(value)
-}
-
-const researchEntriesFrom = (research: IntakeResearchStatus | undefined): BriefEntry[] => {
-  if (!research) return []
-  const entries: BriefEntry[] = []
-  if (research.status && research.status !== 'not_started') {
-    entries.push({ path: 'research.status', value: research.status, note: research.error || undefined })
-  }
-  for (const [index, value] of (research.audience_needs || []).entries()) {
-    entries.push({ path: `audience_needs.${index + 1}`, value })
-  }
-  for (const [index, value] of (research.trends || []).entries()) {
-    entries.push({ path: `trends.${index + 1}`, value })
-  }
-  for (const [index, insight] of (research.insights || []).entries()) {
-    const sources = (insight.sources || [])
-      .map((source) => source.title || source.url)
-      .filter(Boolean)
-      .join(', ')
-    entries.push({
-      path: `research.${insight.kind || `signal-${index + 1}`}`,
-      value: insight.summary || '—',
-      note: sources ? `Evidence: ${sources}` : 'Evidence-linked inference',
-    })
-  }
-  if (!entries.length) {
-    for (const [index, finding] of (research.findings || []).slice(0, 4).entries()) {
-      const source = finding.source?.title || finding.source?.url
-      entries.push({
-        path: `research.finding-${index + 1}`,
-        value: finding.summary || '—',
-        note: source ? `Source: ${source}` : undefined,
-      })
-    }
-  }
-  if (!entries.length && research.latest_learning) {
-    entries.push({ path: 'research.latest_learning', value: research.latest_learning })
-  }
-  return entries
-}
-
 export function WebsiteWorkspace() {
   const searchParams = useSearchParams()
   const site = useHelloAdaSite()
@@ -799,9 +648,6 @@ function ReviewWorkspace() {
   const [pendingAdaJob, setPendingAdaJob] = useState<PendingAdaJob>()
   const [adaSteps, setAdaSteps] = useState<AdaJobStep[]>([])
   const [adaPhase, setAdaPhase] = useState<AdaPhase>('unknown')
-  const [intakeStatus, setIntakeStatus] = useState<IntakeStatus>()
-  const [onboarding, setOnboarding] = useState<OnboardingStatus>()
-  const [onboardingReportOpen, setOnboardingReportOpen] = useState(false)
   const [messages, setMessages] = useState(initialMessages)
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
@@ -820,8 +666,6 @@ function ReviewWorkspace() {
   useEffect(() => () => {
     for (const url of uploadPreviewUrls.current) URL.revokeObjectURL(url)
   }, [])
-  const [briefOpen, setBriefOpen] = useState(false)
-  const [briefCorrection, setBriefCorrection] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
   const [editorLoading, setEditorLoading] = useState(false)
   const [editorSaving, setEditorSaving] = useState(false)
@@ -871,10 +715,6 @@ function ReviewWorkspace() {
   const activeAdaPollRef = useRef<number | undefined>(undefined)
   const transientFailures = useRef({ workspace: 0, status: 0 })
   const chatWorking = sending || Boolean(pendingAdaJob)
-
-  useEffect(() => {
-    if (onboarding?.report) setOnboardingReportOpen(true)
-  }, [onboarding?.report?.candidate_sha])
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const element = chatLogRef.current
@@ -1454,8 +1294,6 @@ function ReviewWorkspace() {
           phase?: AdaPhase
           conversation_id?: number
           website_present?: boolean
-          intake?: IntakeStatus
-          onboarding?: OnboardingStatus | null
           build?: DesignBuild | null
           active_job?: {
             id?: number
@@ -1484,8 +1322,6 @@ function ReviewWorkspace() {
         } else if (refreshWorkspace) {
           loadWorkspace(background)
         }
-        setIntakeStatus(body.intake)
-        setOnboarding(body.onboarding || undefined)
         setDesignBuild(body.build || null)
         if (body.conversation_id) setConversationId(body.conversation_id)
         if (body.active_job?.id && body.active_job.conversation_id) {
@@ -1914,30 +1750,6 @@ function ReviewWorkspace() {
     }
   }
 
-  const sendBriefCorrection = () => {
-    const correction = briefCorrection.trim()
-    if (!correction || chatWorking) return
-    setBriefCorrection('')
-    setBriefOpen(false)
-    void sendMessage(correction)
-  }
-
-  const briefSections = useMemo(() => {
-    const summary = intakeStatus?.summary
-    if (!summary) return []
-    const sections: Array<{ key: string; title: string; entries: BriefEntry[] }> = [
-      { key: 'confirmed', title: t('workspace.briefConfirmed'), entries: briefEntriesFrom(summary.confirmed) },
-      { key: 'advised', title: t('workspace.briefAdvised'), entries: briefEntriesFrom(summary.advised) },
-      { key: 'research', title: t('workspace.briefResearch'), entries: researchEntriesFrom(intakeStatus?.research) },
-      { key: 'assumed', title: t('workspace.briefAssumptions'), entries: briefEntriesFrom(summary.assumed) },
-      { key: 'open', title: t('workspace.briefOpen'), entries: [
-        ...briefEntriesFrom(summary.deferred),
-        ...(summary.open_topics || []).map((topic, index): BriefEntry => ({ path: `topic-${index + 1}`, value: topic })),
-      ] },
-    ]
-    return sections.filter((section) => section.entries.length > 0)
-  }, [intakeStatus?.research, intakeStatus?.summary, t])
-
   const editorGroups = useMemo(() => {
     const groups = new Map<string, EditablePageEntry[]>()
     for (const entry of editorEntries) {
@@ -2360,14 +2172,10 @@ function ReviewWorkspace() {
     ? t('workspace.phaseWorkspace')
     : adaUnavailable ? t('owner.connection.unavailable') : t('workspace.phaseConnecting')
   const phaseNote = adaPhase === 'workspace'
-    ? websitePresent
-      ? t('workspace.phaseNoteWorkspace')
-      : t('workspace.phaseNoteNoWebsite')
+    ? t('workspace.phaseNoteWorkspace')
     : t('workspace.phaseNoteConnecting')
   const phaseSummary = adaPhase === 'workspace'
-    ? websitePresent
-      ? t('workspace.phaseSummaryWorkspace')
-      : t('workspace.phaseSummaryNoWebsite')
+    ? t('workspace.phaseSummaryWorkspace')
     : adaUnavailable ? t('owner.reconnectNote') : t('workspace.phaseSummaryConnecting')
   const shortcuts = [
     [t('owner.improvePage'), t('owner.improvePrompt')],
@@ -2375,7 +2183,6 @@ function ReviewWorkspace() {
     [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
     [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
   ]
-  const hasBrief = briefSections.length > 0
   const adaProgressSteps = (() => {
     const seen = new Set<string>()
     const steps: AdaJobStep[] = []
@@ -2407,19 +2214,6 @@ function ReviewWorkspace() {
     || (buildRunning && buildUpdateAge !== null && buildUpdateAge > (designBuild?.stall_threshold_seconds || 600))
   )
   const recentBuildUpdates = (designBuild?.updates || []).slice(-4).reverse()
-  const onboardingStages = [
-    t('workspace.onboardingBusiness'),
-    t('workspace.onboardingFirstPage'),
-    t('workspace.onboardingPlan'),
-    t('workspace.onboardingGrow'),
-  ]
-  const onboardingCurrentStage = Math.min(4, Math.max(1, onboarding?.current_stage || 1))
-  const onboardingNextStepText: Record<OnboardingStepKey, string> = {
-    launch_after_review: t('workspace.onboardingLaunch'),
-    complete_site_pages: t('workspace.onboardingPages'),
-    establish_growth_baseline: t('workspace.onboardingMeasurement'),
-    plan_content_from_real_search_data: t('workspace.onboardingContent'),
-  }
   return (
     <main className={`helloada-workspace helloada-owner-workspace shows-${mobilePane}`}>
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
@@ -2680,168 +2474,22 @@ function ReviewWorkspace() {
           <div className="helloada-chat-context">
              <span>{t('workspace.workingOn')}</span>
             <strong>{currentRouteLabel}</strong>
-             {hasBrief ? <button className="helloada-context-button" type="button" aria-expanded={briefOpen} aria-controls="helloada-working-brief" onClick={() => setBriefOpen((current) => !current)}>{t('owner.businessContext')}</button> : null}
           </div>
 
-           {adaPhase !== 'workspace' || !websitePresent ? <div className={`helloada-phase-bar is-${adaPhase}`} role="status">
+           {adaPhase !== 'workspace' ? <div className={`helloada-phase-bar is-${adaPhase}`} role="status">
              <span className="helloada-phase-mark" aria-hidden="true" />
              <div className="helloada-phase-copy">
                <strong>{phaseLabel}</strong>
                <span>{phaseSummary}</span>
                <span className="helloada-sr-only">{phaseNote}</span>
              </div>
-             {!websitePresent && onboarding?.enabled ? (
-               <ol className="helloada-onboarding-steps" aria-label={t('workspace.onboardingJourney')}>
-                 {onboardingStages.map((label, index) => {
-                   const stage = index + 1
-                   const completed = onboarding.completed_stages?.includes(stage) || false
-                   const current = onboardingCurrentStage === stage
-                   return (
-                     <li className={completed ? 'is-complete' : current ? 'is-current' : 'is-upcoming'} aria-current={current ? 'step' : undefined} key={stage}>
-                       <span className="helloada-onboarding-number">{completed ? '✓' : stage}</span>
-                       <span>{label}</span>
-                     </li>
-                   )
-                 })}
-               </ol>
-             ) : null}
              <div className="helloada-phase-actions">
-               {hasBrief && adaPhase !== 'workspace' ? (
-                 <button
-                   className="helloada-phase-action"
-                   type="button"
-                   aria-expanded={briefOpen}
-                   aria-controls="helloada-working-brief"
-                   onClick={() => setBriefOpen((current) => !current)}
-                 >
-                   {briefOpen ? t('workspace.closeBrief') : t('workspace.viewBrief')}
-                 </button>
-               ) : null}
                {adaUnavailable ? <button className="helloada-phase-action" type="button" onClick={() => loadAdaStatus(conversationId)}>{t('owner.retry')}</button> : null}
              </div>
            </div> : null}
 
-           {!websitePresent && onboarding?.report_state === 'preparing' ? (
-             <p className="helloada-onboarding-report-state" role="status">{t('workspace.onboardingPlanPreparing')}</p>
-           ) : null}
-           {!websitePresent && onboarding?.report_state === 'failed' ? (
-             <p className="helloada-onboarding-report-state is-error" role="status">{t('workspace.onboardingPlanFailed')}</p>
-           ) : null}
-           {!websitePresent && onboarding?.report ? (
-             <details className="helloada-onboarding-report" open={onboardingReportOpen} onToggle={(event) => setOnboardingReportOpen(event.currentTarget.open)}>
-               <summary>{t('workspace.onboardingReportOpen')}</summary>
-               <div className="helloada-onboarding-report-content">
-                 <h2>{t('workspace.onboardingReportTitle')}</h2>
-                 {onboarding.report.summary ? <p className="helloada-onboarding-report-summary">{onboarding.report.summary}</p> : null}
-                 <section>
-                   <h3>{t('workspace.onboardingBusiness')}</h3>
-                   <dl>
-                     {onboarding.report.business?.name ? <div><dt>{t('workspace.onboardingName')}</dt><dd>{onboarding.report.business.name}</dd></div> : null}
-                     {onboarding.report.business?.offer ? <div><dt>{t('workspace.onboardingOffer')}</dt><dd>{onboarding.report.business.offer}</dd></div> : null}
-                     {onboarding.report.business?.audience ? <div><dt>{t('workspace.onboardingAudience')}</dt><dd>{onboarding.report.business.audience}</dd></div> : null}
-                     {onboarding.report.business?.primary_action ? <div><dt>{t('workspace.onboardingAction')}</dt><dd>{onboarding.report.business.primary_action}</dd></div> : null}
-                   </dl>
-                 </section>
-                 <section>
-                   <h3>{t('workspace.onboardingFirstPage')}</h3>
-                   <p>{t('workspace.onboardingPageVerified').replace('{route}', onboarding.report.first_page?.route || '/')}</p>
-                   {onboarding.report.first_page?.passed_checks?.length ? <p className="helloada-onboarding-report-evidence">{t('workspace.onboardingChecks').replace('{count}', String(onboarding.report.first_page.passed_checks.length))}</p> : null}
-                 </section>
-                 <section>
-                   <h3>{t('workspace.onboardingResearch')}</h3>
-                   {onboarding.report.evidence?.research?.length ? (
-                     <ul className="helloada-onboarding-research">
-                       {onboarding.report.evidence.research.map((item, index) => (
-                         <li key={`${item.source || 'research'}-${index}`}>
-                           <span>{item.summary}</span>
-                           {item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title || t('workspace.onboardingResearchSource')} ↗</a> : item.title ? <small>{item.title}</small> : null}
-                         </li>
-                       ))}
-                     </ul>
-                   ) : <p>{t('workspace.onboardingResearchPending')}</p>}
-                   {onboarding.report.evidence?.unknowns?.length ? (
-                     <details className="helloada-onboarding-unknowns">
-                       <summary>{t('workspace.onboardingUnknowns')}</summary>
-                       <ul>{onboarding.report.evidence.unknowns.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>
-                     </details>
-                   ) : null}
-                 </section>
-                 {onboarding.report.planned_pages?.length ? (
-                   <section>
-                     <h3>{t('workspace.onboardingPlannedPages')}</h3>
-                     <ul>{onboarding.report.planned_pages.map((page) => <li key={page}>{page}</li>)}</ul>
-                   </section>
-                 ) : null}
-                 <section>
-                   <h3>{t('workspace.onboardingNextSteps')}</h3>
-                   <ol>
-                     {onboarding.report.next_steps?.map((step) => step.key ? (
-                       <li key={step.key}>
-                         <strong>{onboardingNextStepText[step.key]}</strong>
-                         {step.pages?.length ? <span> — {step.pages.join(', ')}</span> : null}
-                       </li>
-                     ) : null)}
-                   </ol>
-                   <p className="helloada-onboarding-report-evidence">{t('workspace.onboardingNoLiveMetrics')}</p>
-                 </section>
-                 <a className="helloada-phase-action is-primary" href="/admin?view=growth">{t('workspace.onboardingReviewNextSteps')}</a>
-               </div>
-             </details>
-           ) : null}
-
-           {briefOpen && hasBrief ? (
-             <section className="helloada-brief-inspector" id="helloada-working-brief" aria-label={t('workspace.briefTitle')}>
-               <div className="helloada-brief-inspector-header">
-                 <div>
-                   <p className="helloada-eyebrow">{t('workspace.briefLabel')}</p>
-                   <strong>{t('workspace.briefTitle')}</strong>
-                 </div>
-                 <button type="button" aria-label={t('workspace.closeBrief')} onClick={() => setBriefOpen(false)}>×</button>
-               </div>
-               <p className="helloada-brief-intro">{t('workspace.briefIntro')}</p>
-               <div className="helloada-brief-sections">
-                 {briefSections.map((section) => (
-                   <section className="helloada-brief-section" key={section.key}>
-                     <h3>{section.title}</h3>
-                     <div className="helloada-brief-entries">
-                       {section.entries.map((entry) => (
-                         <div className="helloada-brief-entry" key={`${section.key}-${entry.path}`}>
-                           <div>
-                             <strong>{briefPathLabel(entry.path)}</strong>
-                             {entry.note ? <small>{entry.note}</small> : null}
-                           </div>
-                           <span>{briefValueLabel(entry.value)}</span>
-                         </div>
-                       ))}
-                     </div>
-                   </section>
-                 ))}
-               </div>
-          <form
-                 className="helloada-brief-correction"
-                 onSubmit={(event) => {
-                   event.preventDefault()
-                   sendBriefCorrection()
-                 }}
-               >
-                 <label htmlFor="helloada-brief-correction">{t('workspace.briefCorrection')}</label>
-                 <textarea
-                   id="helloada-brief-correction"
-                   value={briefCorrection}
-                   onChange={(event) => setBriefCorrection(event.target.value)}
-                   placeholder={t('workspace.briefCorrectionPlaceholder')}
-                   rows={2}
-                    disabled={chatWorking}
-                 />
-                  <button type="submit" disabled={chatWorking || !briefCorrection.trim()}>
-                   {t('workspace.sendCorrection')}
-                 </button>
-               </form>
-             </section>
-           ) : null}
-
            <div className="helloada-chat-log" ref={chatLogRef} onScroll={handleChatScroll} aria-live="polite">
-             {!messages.length ? <div className="helloada-owner-welcome"><HelloAdaMark size={54} /><h2>{websitePresent ? t('owner.welcome') : t('owner.welcomeNew')}</h2><p>{websitePresent ? t('owner.welcomeNote') : t('workspace.tellAdaIntake')}</p></div> : null}
+             {!messages.length ? <div className="helloada-owner-welcome"><HelloAdaMark size={54} /><h2>{t('owner.welcome')}</h2><p>{t('owner.welcomeNote')}</p></div> : null}
             {messages.map((item, index) => (
               <div className={`helloada-chat-message is-${item.role}`} key={`${item.role}-${index}`}>
                  <span>{item.role === 'assistant' ? t('workspace.roleAda') : item.role === 'user' ? t('workspace.roleYou') : t('workspace.roleStudio')}</span>

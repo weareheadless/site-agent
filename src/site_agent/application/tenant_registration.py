@@ -633,12 +633,11 @@ class TenantRegistrationService:
         data_dir.mkdir(parents=True, exist_ok=True)
         new_config = _new_site_config(normalized, data_dir, display_name, tenant_dir / "site")
         new_config["provisioning_source"] = {
-            "kind": "github_static" if github_repository else "intake",
+            "kind": "github_static" if github_repository else "new_repository",
             "repository": github_repository or "",
             "branch": "main",
         }
         if github_repository:
-            new_config["intake"]["enabled"] = False
             new_config["design_engine"]["enabled"] = False
         created = self._write_config(config_path, new_config)
         memory = Memory(data_dir / "memory.db")
@@ -751,11 +750,6 @@ def _new_site_config(
         "instance_name": str(tenant_id),
         "data_dir": str(data_dir),
         "display_name": str(display_name or tenant_id)[:200],
-        "intake": {
-            "enabled": True,
-            "database_only": False,
-            "research": {"enabled": False},
-        },
         "site": {
             "adapter": "payload_gateway",
             "repository": "",

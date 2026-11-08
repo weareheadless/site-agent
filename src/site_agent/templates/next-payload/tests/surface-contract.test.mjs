@@ -69,18 +69,18 @@ test('charts and status text use surface-aware accents rather than pale dark-onl
   assert.match(growth, /color: var\(--helloada-positive\);/);
   assert.doesNotMatch(growth, /#ff9989|#ffa69a|#b4d990|#ffdc91/);
 });
-test('new-site onboarding steps reflect the confirmed brief and stay out of established sites', () => {
-  assert.match(workspace, /!websitePresent && onboarding\?\.enabled \? \(\s*<ol className="helloada-onboarding-steps"/);
-  assert.match(workspace, /onboarding\.completed_stages\?\.includes\(stage\)/);
-  assert.match(workspace, /onboardingCurrentStage === stage/);
-  assert.match(workspace, /onboarding\?\.report\?\.candidate_sha/);
-  assert.doesNotMatch(workspace, /helloada-onboarding-steps[^]*?\d+%/);
+test('the owner workspace has no intake brief, onboarding strip or phase gate', () => {
+  assert.doesNotMatch(workspace, /onboarding/);
+  assert.doesNotMatch(workspace, /briefSections|briefOpen|briefCorrection/);
+  assert.doesNotMatch(workspace, /intakeStatus|IntakeStatus/);
+  assert.doesNotMatch(workspace, /tellAdaIntake|workspace\.briefTitle/);
 });
 
-test('intake has no manual first-page design CTA and chat remains the design-start path', () => {
+test('chat remains the only design-start path and no first-page CTA exists', () => {
   assert.doesNotMatch(workspace, /startFirstPage|canStartFirstPage|workspace\.startFirstPage|workspace\.starting/);
   assert.match(workspace, /const sendMessage = async/);
   assert.match(workspace, /fetchHelloAda\('\/api\/helloada\/ada/);
   assert.match(workspace, /void sendMessage\(\)/);
   assert.doesNotMatch(workspace, /\/api\/helloada\/design\/start/);
+  assert.doesNotMatch(workspace, /\/api\/helloada\/intake\/confirm/);
 });

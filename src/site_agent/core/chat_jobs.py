@@ -62,9 +62,9 @@ def _with_attachment_context(
 def _owner_action_started(result: dict[str, Any], context: dict[str, Any] | None = None) -> bool:
     """Return whether this job actually started or completed owner-visible work.
 
-    An intake advisor's ``ui_action`` is only a model suggestion; it is not
-    evidence that a build or preview happened. Concrete handoffs, follow-up
-    build results, and verified Payload-write receipts count here.
+    A model's ``ui_action`` is only a suggestion; it is not evidence that a
+    build or preview happened. Concrete handoffs, follow-up build results, and
+    verified Payload-write receipts count here.
     """
     if result.get("merge_draft_id") or result.get("design_run_id"):
         return True
@@ -267,17 +267,7 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         message = _with_attachment_context(memory, media, message_id, message, context)
         context["persona_prompt"] = context.get("persona_prompt") or ""
 
-        if job.get("operation_kind") == "design_intake_advice":
-            intake_service = context.get("design_intake_service")
-            if intake_service is None:
-                raise RuntimeError("design intake service is unavailable")
-            result = intake_service.handle_advice_job(context, job, progress)
-            after_turn = context.get("on_intake_advice_complete")
-            if callable(after_turn):
-                followup = after_turn(job, result)
-                if isinstance(followup, dict):
-                    result["build_followup"] = followup
-        elif _chat_engine(context) == "opencode":
+        if _chat_engine(context) == "opencode":
             from ..application import agent_tools
             from ..hands import chat_agent
 

@@ -1489,8 +1489,7 @@ class WebsiteBootstrapService:
             site["presentation_profile"] = "static"
             site["website_present"] = True
             raw["design_engine"] = {**_mapping(raw.get("design_engine")), "enabled": False}
-            raw["ada_journey"] = {**_mapping(raw.get("ada_journey")), "website_present": True, "incubation_needed": False}
-            raw["intake"] = {**_mapping(raw.get("intake")), "enabled": False}
+            raw["ada_journey"] = {**_mapping(raw.get("ada_journey")), "website_present": True}
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
         messages = _mapping(raw.get("messages"))
         email_settings = _mapping(messages.get("email"))

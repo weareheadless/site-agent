@@ -1,7 +1,6 @@
 import pytest
 
 from site_agent.brain.design_guidance import DesignGuidanceError, load_design_skills
-from site_agent.core.design_intake_contracts import CreativeInsight, DesignIntakeDraft, IntakeTurnResult, merge_intake_turn
 from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot, IncubatedCreativeContext, PageBuildRequest
 from site_agent.hands import opencode_runner as runner
 
@@ -31,29 +30,6 @@ def test_design_skill_loader_fails_when_a_required_skill_is_missing(tmp_path):
 
     with pytest.raises(DesignGuidanceError, match="frontend-design.md"):
         load_design_skills(tmp_path)
-
-
-def test_creative_insights_are_typed_bounded_and_do_not_update_owner_facts():
-    insight = CreativeInsight.from_dict({
-        "kind": "creative_implication",
-        "summary": "A quieter opening may make the technical offer easier to trust.",
-        "basis": "recommendation",
-        "related_intake_paths": ["brand.voice", "audience.concerns"],
-        "related_asset_ids": [7],
-        "confidence": 0.6,
-    })
-    turn = IntakeTurnResult.from_dict({
-        "schema_version": 1,
-        "assistant_message": "I would make the opening quieter.",
-        "creative_insights": [insight.to_dict()],
-    })
-
-    assert turn.creative_insights == (insight,)
-    assert merge_intake_turn(
-        DesignIntakeDraft.empty(),
-        turn,
-        source_message_id=1,
-    ).fields == {}
 
 
 def test_context_snapshot_round_trips_the_skill_receipt():

@@ -34,13 +34,6 @@ design_engine:
   base_url: ""
   api_key_env: ""
   orchestration: legacy
-  # Intake turns need enough room for the typed JSON contract. Keep this
-  # separate from the much larger visual-builder budget so a newly registered
-  # HelloAda tenant does not truncate its first advisor response at 1200 tokens.
-  intake_advisor:
-    timeout_seconds: 90
-    max_retries: 1
-    max_tokens: 4096
   specialist_timeout_seconds: 1800
   # One bounded Ada repair per initial build. Host evidence (rendered behavior
   # or content-authority findings) otherwise strands a candidate in
@@ -75,24 +68,10 @@ persona:
   taboo: []
   lures: []       # legacy location; prefer dream.lures
 
-# Optional bootstrap facts for a tenant that has not completed Intake Ada.
+# Optional bootstrap facts for a registered tenant.
 # Keep this bounded and mark public-site observations as needing owner review;
 # the editor prompt will refuse to invent missing business facts.
 customer_profile: {}
-
-intake:
-  enabled: false
-  database_only: true
-  research:
-    enabled: true
-    max_sources_per_pass: 8
-    max_items_per_source: 15
-    max_passes_before_owner_turn: 1
-    planner:
-      max_tokens: 1200
-      enable_thinking: false
-    synthesizer:
-      max_tokens: 300
 
 scheduler:
   enabled: false

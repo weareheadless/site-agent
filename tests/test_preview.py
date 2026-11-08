@@ -4,7 +4,6 @@ from pathlib import Path
 from site_agent.web import preview
 from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult, SiteOutputArtifactStore
 from site_agent.web.preview import (
-    LivePreviewStore,
     PreviewAccess,
     PreviewBuildCache,
     rewrite_preview_css,
@@ -67,7 +66,7 @@ def test_rewrite_preview_html_keeps_next_hydration_modules_inside_the_preview_sc
     assert b'src="./_next/static/chunks/react.js?preview_token=token&variant=candidate"' in rendered
 
 
-def test_rewrite_preview_html_accepts_an_explicit_intake_lab_root():
+def test_rewrite_preview_html_accepts_an_explicit_preview_root():
     html = b'<head></head><a href="/articles.html">Articles</a>'
 
     rendered = rewrite_preview_html(
@@ -122,79 +121,6 @@ def test_preview_access_is_scoped_and_expires(monkeypatch):
     assert not access.valid(token, ("review", 8))
     clock[0] = 160.0
     assert not access.valid(token, ("review", 7))
-
-
-def test_live_preview_store_publishes_an_immutable_checkpoint_and_skips_tooling_dirs(tmp_path):
-    source = tmp_path / "worktree"
-    source.mkdir()
-    (source / "index.html").write_text("<main>checkpoint one</main>\n", encoding="utf-8")
-    (source / ".git").mkdir()
-    (source / ".git" / "private").write_text("not served", encoding="utf-8")
-    (source / "node_modules").mkdir()
-    (source / "node_modules" / "secret.js").write_text("not served", encoding="utf-8")
-
-    store = LivePreviewStore(tmp_path / "live-previews", retention=2)
-    result = store.checkpoint("design-" + "a" * 32, source, label="Ada saved checkpoint one")
-
-    snapshot, repository = store.latest("design-" + "a" * 32)
-    assert snapshot.to_dict() == result["snapshot"]
-    assert snapshot.variant == "live"
-    assert len(snapshot.commit_sha) == 40
-    assert (repository / "index.html").read_text(encoding="utf-8") == "<main>checkpoint one</main>\n"
-    assert not (repository / ".git" / "private").exists()
-    assert not (repository / "node_modules").exists()
-    assert subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", snapshot.commit_sha],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() == snapshot.commit_sha
-
-
-def test_live_preview_store_skips_a_worktree_git_file(tmp_path):
-    source = tmp_path / "worktree"
-    source.mkdir()
-    (source / ".git").write_text(
-        "gitdir: /tmp/disposable-worktree/.git/worktrees/build\n",
-        encoding="utf-8",
-    )
-    (source / "index.html").write_text("<main>worktree file</main>\n", encoding="utf-8")
-
-    store = LivePreviewStore(tmp_path / "live-previews")
-    result = store.checkpoint("design-" + "c" * 32, source, label="Worktree file")
-
-    snapshot, repository = store.latest("design-" + "c" * 32)
-    assert snapshot.to_dict() == result["snapshot"]
-    assert (repository / "index.html").read_text(encoding="utf-8") == "<main>worktree file</main>\n"
-    assert (repository / ".git").is_dir()
-    assert not (repository / ".git").is_file()
-
-
-def test_live_preview_store_keeps_the_last_known_good_snapshot_when_checkpoint_fails(tmp_path):
-    source = tmp_path / "worktree"
-    source.mkdir()
-    (source / "index.html").write_text("<main>known good</main>\n", encoding="utf-8")
-    store = LivePreviewStore(tmp_path / "live-previews")
-    store.checkpoint("design-" + "b" * 32, source, label="Known good")
-    before = store.latest("design-" + "b" * 32)
-    assert before is not None
-
-    source.unlink() if source.is_file() else None
-    for path in source.iterdir():
-        if path.is_file():
-            path.unlink()
-    source.rmdir()
-    try:
-        store.checkpoint("design-" + "b" * 32, source, label="Broken")
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError("an unavailable worktree must not publish a checkpoint")
-
-    after = store.latest("design-" + "b" * 32)
-    assert after is not None
-    assert after[0].snapshot_id == before[0].snapshot_id
-    assert (after[1] / "index.html").read_text(encoding="utf-8") == "<main>known good</main>\n"
 
 
 def test_site_output_artifact_store_keeps_one_content_addressed_build(tmp_path):
