@@ -28,8 +28,8 @@ the CMS underneath, not the vocabulary or navigation the owner has to learn.
 
 ## Brand and release boundary
 
-`packages/helloada-payload-admin/src/brand/helloada-mark.svg` is the unchanged
-homepage asset. `HelloAdaMark` renders its exact geometry. A contract test locks
+`src/site_agent/templates/next-payload/src/admin/brand/helloada-mark.svg` is
+the unchanged homepage asset. `HelloAdaMark` renders its exact geometry. A contract test locks
 the approved asset digest.
 
 The reusable source lives only in site-agent. Customer repositories retain thin

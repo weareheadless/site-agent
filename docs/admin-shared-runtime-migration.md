@@ -359,11 +359,13 @@ Landed on `main`:
   rebases the preview branch onto current main, rebuilds, and updates the
   draft's base and head, instead of requiring an operator.
 
-- [ ] Step 6 — delete the packaging flow. `packages/helloada-payload-admin`
-  and `.github/workflows/release-payload-admin.yml` still exist and are now dead
-  weight: nothing pins or imports the package in a tenant build. Deleting them
-  is the next commit, and until then the directory is a duplicate source tree
-  that must not be edited.
+- [x] Step 6 — delete the packaging flow. `packages/helloada-payload-admin`,
+  `.github/workflows/release-payload-admin.yml` and
+  `scripts/package-payload-admin-release.mjs` are gone. The admin tests moved
+  into `src/site_agent/templates/next-payload/tests` and now read the live
+  `src/admin` source; package-only checks (artifact identity, template pin,
+  package exports) were removed with the artifact. Nothing pins, imports or
+  publishes the retired package.
 - [ ] Step 7 — generated project map.
 
 Code checkpoints already exist: History lists published versions and a restore

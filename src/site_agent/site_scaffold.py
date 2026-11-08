@@ -124,7 +124,7 @@ def _package_manifest(name: str) -> dict[str, object]:
         "@opennextjs/cloudflare", "@payloadcms/db-d1-sqlite", "@payloadcms/next",
         "@payloadcms/richtext-lexical", "@payloadcms/storage-r2", "@payloadcms/ui",
         "cross-env", "graphql", "next", "payload", "react", "react-dom",
-        "@weareheadless/helloada-payload-admin", "@weareheadless/helloada-payload-core",
+        "@weareheadless/helloada-payload-core",
         "cli-color", "postal-mime",
     }
     return {

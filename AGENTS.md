@@ -186,9 +186,12 @@ Cloudflare's deprecated Email Routing subdomain DNS query as a fallback.
 ### No parallel architecture or silent recovery path
 
 - Every managed or publishable new site starts from
-  `src/site_agent/templates/next-payload` and imports the version-pinned shared
-  Payload admin/core packages. The isolated blank toolchain is an experiment
-  only; it cannot be adopted, provisioned, or deployed as a customer site.
+  `src/site_agent/templates/next-payload`, imports the version-pinned shared
+  Payload core package, and receives the admin from that template's shared
+  runtime source through the release overlay. There is no admin package, admin
+  release asset or tenant admin pin. The isolated blank toolchain is an
+  experiment only; it cannot be adopted, provisioned, or deployed as a customer
+  site.
 - Payload owns collections and schema: articles, products, listings, media and
   their relations, plus owner auth and admin. Presentation pages are committed
   source served by the static presentation profile, and Payload serves only the

@@ -74,7 +74,7 @@ jobs:
       - name: Verify locked shared package release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m site_agent.application.release_dependencies --package @weareheadless/helloada-payload-core --package @weareheadless/helloada-payload-admin
+        run: python -m site_agent.application.release_dependencies --package @weareheadless/helloada-payload-core
 
   next-payload-template:
     runs-on: ubuntu-latest
@@ -96,6 +96,28 @@ jobs:
       - name: Test Resend and Mailflare Worker contracts
         working-directory: src/site_agent/templates/next-payload
         run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/mailflare-runtime.test.mjs tests/mailflare-inbox.test.mjs tests/mailflare-owner-gate.test.mjs tests/growth-recovery.test.mjs tests/growth-retirement.test.mjs tests/growth-projection.test.mjs tests/growth-owner-identity.test.mjs tests/public-revision.test.mjs tests/payload-field-match.test.mjs tests/section-library.test.mjs
+
+  payload-admin-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+          cache: npm
+          cache-dependency-path: src/site_agent/templates/next-payload/package-lock.json
+      - name: Pin the production npm toolchain
+        run: npm install --global npm@11.13.0
+      - run: test "$(npm --version)" = "11.13.0"
+      - name: Install the canonical template dependencies
+        working-directory: src/site_agent/templates/next-payload
+        run: npm ci --ignore-scripts
+      - name: Test and typecheck the shared admin source
+        working-directory: src/site_agent/templates/next-payload
+        run: |
+          npm test
+          npx tsc --noEmit
 
   mailflare-integration:
     runs-on: ubuntu-latest
@@ -129,28 +151,21 @@ jobs:
   shared-payload-packages:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [helloada-payload-core, helloada-payload-admin]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.3'
           cache: npm
-          cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
+          cache-dependency-path: packages/helloada-payload-core/package-lock.json
       - name: Pin the production npm toolchain
         run: npm install --global npm@11.13.0
       - run: test "$(npm --version)" = "11.13.0"
       - name: Install locked package dependencies
-        working-directory: packages/${{ matrix.package }}
+        working-directory: packages/helloada-payload-core
         run: npm ci --ignore-scripts
-      - name: Test and typecheck shared package
-        working-directory: packages/${{ matrix.package }}
+      - name: Test and typecheck the shared core package
+        working-directory: packages/helloada-payload-core
         run: |
           npm test
           npm run typecheck
-      - name: Rebuild and inspect the locked Payload admin candidate
-        if: matrix.package == 'helloada-payload-admin'
-        run: node scripts/package-payload-admin-release.mjs --candidate

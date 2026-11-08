@@ -438,7 +438,7 @@ def test_actual_serialized_model_passes_shared_admin_typescript_contract():
 
     root = Path(__file__).resolve().parents[1]
     script = """
-import { isGrowthServiceModel } from './packages/helloada-payload-admin/src/lib/growth-data.ts';
+import { isGrowthServiceModel } from './src/site_agent/templates/next-payload/src/admin/lib/growth-data.ts';
 let input = '';
 for await (const chunk of process.stdin) input += chunk;
 process.stdout.write(String(isGrowthServiceModel(JSON.parse(input))));

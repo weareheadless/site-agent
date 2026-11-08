@@ -13,12 +13,14 @@ This is the current Payload/Next.js release path. The older worked example in
 2. Shared Python API: exact `site-agent` commit, full tests and isolated wheel
    smoke check through `deploy/desired-api-release.json`; immutable package
    slot, restart, `/healthz`, and rollback receipt are handled by the VPS timer.
-3. Shared Payload admin: tested immutable `payload-admin-vX.Y.Z` GitHub release
-   asset from `packages/helloada-payload-admin`. New-site template pins the same
-   release. Never overwrite a released tarball.
-4. Customer Workers: each frontend repository pins that release in both
-   `package.json` and the lockfile; the Wrangler version marker must match.
-   One shared source does **not** mean a package publication redeploys consumers.
+3. Shared Payload admin: shared runtime source, not a package. It lives in
+   `src/site_agent/templates/next-payload/src/admin` and `src/components/admin`;
+   there is no admin release asset and no tenant pin to bump. A change lands on
+   official `main` and is identified by `sharedRuntimeFingerprint`.
+4. Customer Workers: the release runner overlays the shared runtime into a
+   disposable workspace and never rewrites the tenant repository. A central
+   admin change reaches tenants through the fingerprint fan-out (canary first,
+   then batches), so do not add tenant pin commits or Wrangler releases.
 5. Owner verification: authenticated connection, Growth, chat and preview on
    each deployed tenant. Browser checks remain a distinct stage, not an
    implication of successful builds or public health responses.
