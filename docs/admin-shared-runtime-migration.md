@@ -366,6 +366,14 @@ Landed on `main`:
   `src/admin` source; package-only checks (artifact identity, template pin,
   package exports) were removed with the artifact. Nothing pins, imports or
   publishes the retired package.
+
+  The overlay now owns the whole retirement. Tenant-owned files it does not
+  replace (`src/helloada.config.ts`, a legacy helper) can still name the old
+  package; `_migrate_tenant_admin_source` rewrites every specifier with an
+  exact shared-runtime target, drops the retired `transpilePackages` entry, and
+  fails closed on a subpath the shared runtime does not provide. A tenant with
+  two legacy `@weareheadless/helloada-payload-admin/server` imports failed its
+  first release without that migration.
 - [ ] Step 7 — generated project map.
 
 Code checkpoints already exist: History lists published versions and a restore

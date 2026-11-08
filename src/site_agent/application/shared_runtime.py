@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
 import shutil
 from pathlib import Path
@@ -20,7 +21,9 @@ _TEMPLATE_PATH = Path("src/site_agent/templates/next-payload")
 _PACKAGE_NAMES = ("@weareheadless/helloada-payload-core",)
 # The admin used to ship as a versioned package. Its source is shared runtime
 # now, so a tenant that still declares the dependency loses it at overlay time
-# instead of pinning a second copy of the admin.
+# instead of pinning a second copy of the admin. Surviving tenant source that
+# still names the package is migrated to the shared path by
+# _migrate_tenant_admin_source; the build fails closed on an unknown subpath.
 _RETIRED_PACKAGE_NAMES = ("@weareheadless/helloada-payload-admin",)
 _CENTRAL_VAR_NAMES = {
     "HELLOADA_TEMPLATE_SCHEMA",
@@ -416,27 +419,73 @@ def _tree_paths(template_root: Path, trees: list[str]) -> list[str]:
 _SITE_CONFIG_PATH = Path("src/helloada.config.ts")
 _RETIRED_SITE_CONFIG_IMPORT = "from '@weareheadless/helloada-payload-admin/config'"
 _SITE_CONFIG_IMPORT = "from '@/admin/config/site'"
+_RETIRED_ADMIN_PREFIX = "@weareheadless/helloada-payload-admin"
+_RETIRED_ADMIN_IMPORTS = {
+    f"{_RETIRED_ADMIN_PREFIX}/styles/admin.scss": "@/admin/styles/admin.scss",
+    f"{_RETIRED_ADMIN_PREFIX}/server": "@/admin/server/runtime-env",
+    f"{_RETIRED_ADMIN_PREFIX}/config": "@/admin/config/site",
+    _RETIRED_ADMIN_PREFIX: "@/admin",
+}
+_RETIRED_ADMIN_IMPORT = re.compile(
+    r"""(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]"""
+    + re.escape(_RETIRED_ADMIN_PREFIX)
+    + r"""[^'"]*['"]"""
+)
+_RETIRED_TRANSPILE_ENTRY = re.compile(
+    r"""\s*['"]""" + re.escape(_RETIRED_ADMIN_PREFIX) + r"""['"]\s*,?"""
+    r"""|,\s*['"]""" + re.escape(_RETIRED_ADMIN_PREFIX) + r"""['"]"""
+)
+_TENANT_SOURCE_SUFFIXES = {".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".scss", ".css"}
+_TENANT_SOURCE_EXCLUDED = {"node_modules", ".git", ".next", ".open-next", ".wrangler", ".mailflare", "public"}
 
 
-def _migrate_tenant_site_config(tenant_root: Path) -> bool:
-    """Point the tenant's site configuration at the shared admin source.
+def _tenant_source_files(tenant_root: Path) -> list[Path]:
+    """Yield tenant source files without descending into build or module trees."""
+    for current, dirnames, filenames in os.walk(tenant_root):
+        dirnames[:] = sorted(name for name in dirnames if name not in _TENANT_SOURCE_EXCLUDED)
+        base = Path(current)
+        for name in sorted(filenames):
+            path = base / name
+            if path.is_symlink() or path.suffix not in _TENANT_SOURCE_SUFFIXES:
+                continue
+            yield path
 
-    ``src/helloada.config.ts`` is tenant-owned because it carries the tenant's
-    name, locales and features, so the overlay cannot replace it. The one
-    platform-owned line in it is the import of the site-config factory, which
-    used to come from the retired admin package. Rewrite that line only and
-    fail closed on a missing file or a contradictory import.
+
+def _migrate_tenant_admin_source(tenant_root: Path) -> list[str]:
+    """Point tenant-owned platform imports at the shared admin source.
+
+    The retired admin package is removed from the tenant lockfile and modules,
+    but tenant-owned files the overlay does not replace (the site configuration,
+    a legacy helper) can still import it. Rewrite only specifiers with an exact
+    shared-runtime target, drop the retired transpile entry, and fail closed on
+    a subpath the shared runtime does not provide.
     """
-    path = tenant_root / _SITE_CONFIG_PATH
-    if path.is_symlink() or not path.is_file():
+    site_config = tenant_root / _SITE_CONFIG_PATH
+    if site_config.is_symlink() or not site_config.is_file():
         raise SharedRuntimeError("tenant site configuration is missing or unsafe")
-    text = path.read_text(encoding="utf-8")
-    if _RETIRED_SITE_CONFIG_IMPORT not in text:
-        return False
-    if _SITE_CONFIG_IMPORT in text:
+    site_text = site_config.read_text(encoding="utf-8")
+    if _RETIRED_SITE_CONFIG_IMPORT in site_text and _SITE_CONFIG_IMPORT in site_text:
         raise SharedRuntimeError("tenant site configuration mixes both site-config imports")
-    path.write_text(text.replace(_RETIRED_SITE_CONFIG_IMPORT, _SITE_CONFIG_IMPORT), encoding="utf-8")
-    return True
+
+    retired = sorted(_RETIRED_ADMIN_IMPORTS, key=len, reverse=True)
+    migrated: list[str] = []
+    for path in _tenant_source_files(tenant_root):
+        text = path.read_text(encoding="utf-8")
+        updated = _RETIRED_TRANSPILE_ENTRY.sub("", text) if path.name.startswith("next.config.") else text
+        for specifier in retired:
+            updated = re.sub(
+                re.escape(specifier) + r"(?=['\"])",
+                _RETIRED_ADMIN_IMPORTS[specifier],
+                updated,
+            )
+        if _RETIRED_ADMIN_IMPORT.search(updated):
+            relative = path.relative_to(tenant_root).as_posix()
+            raise SharedRuntimeError(f"tenant source imports a retired admin subpath: {relative}")
+        if updated == text:
+            continue
+        path.write_text(updated, encoding="utf-8")
+        migrated.append(path.relative_to(tenant_root).as_posix())
+    return migrated
 
 
 def _stamp_preview_runtime_identity(worktree: Path, fingerprint: str) -> bool:
@@ -501,7 +550,7 @@ def apply_preview_runtime_overlay(
             target.unlink()
             removed.append(str(relative))
     _update_shared_packages(worktree, template_root)
-    migrated = [str(_SITE_CONFIG_PATH)] if _migrate_tenant_site_config(worktree) else []
+    migrated = _migrate_tenant_admin_source(worktree)
     if _stamp_preview_runtime_identity(worktree, runtime_fingerprint):
         migrated.append("template-manifest.json")
     return {
@@ -563,7 +612,7 @@ def apply_shared_runtime_overlay(
             raise SharedRuntimeError(f"retired tenant runtime path is not a regular file: {raw_path}")
 
     _update_shared_packages(tenant_root, template_root)
-    migrated = [str(_SITE_CONFIG_PATH)] if _migrate_tenant_site_config(tenant_root) else []
+    migrated = _migrate_tenant_admin_source(tenant_root)
     tenant_config_path.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
     config_hash = hashlib.sha256(tenant_config_path.read_bytes()).hexdigest()
     package = json.loads((template_root / "package.json").read_text(encoding="utf-8"))

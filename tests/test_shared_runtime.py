@@ -450,3 +450,39 @@ def test_preview_overlay_rejects_a_symlink_inside_a_copied_tree(tmp_path: Path):
 
     with pytest.raises(SharedRuntimeError, match="symlink"):
         apply_preview_runtime_overlay(worktree, package_root=package, runtime_fingerprint="f" * 64)
+
+
+def test_tenant_admin_imports_are_migrated_and_unknown_subpaths_fail_closed(tmp_path: Path):
+    """Tenant-owned files may still name the retired admin package.
+
+    The overlay replaces its own runtime files but cannot replace a tenant's
+    legacy helper or site configuration. A known specifier is rewritten to the
+    exact shared path; a specifier the shared runtime does not provide fails the
+    build with the file that still names it, instead of a bare TS2307 later.
+    """
+    from site_agent.application.shared_runtime import _migrate_tenant_admin_source
+
+    tenant = tmp_path / "tenant"
+    (tenant / "src/lib/legacy").mkdir(parents=True)
+    (tenant / "src/helloada.config.ts").write_text(
+        "import { defineHelloAdaSite } from '@weareheadless/helloada-payload-admin/config'\n"
+    )
+    legacy = tenant / "src/lib/legacy/upstream.ts"
+    legacy.write_text("import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'\n")
+    config = tenant / "next.config.mjs"
+    config.write_text(
+        "export default { transpilePackages: ['@weareheadless/helloada-payload-admin', '@weareheadless/helloada-payload-core'] }\n"
+    )
+
+    migrated = _migrate_tenant_admin_source(tenant)
+
+    assert migrated == ["next.config.mjs", "src/helloada.config.ts", "src/lib/legacy/upstream.ts"]
+    assert "from '@/admin/server/runtime-env'" in legacy.read_text()
+    assert "from '@/admin/config/site'" in (tenant / "src/helloada.config.ts").read_text()
+    assert "@weareheadless/helloada-payload-admin" not in config.read_text()
+    assert "@weareheadless/helloada-payload-core" in config.read_text()
+
+    retired = tenant / "src/lib/legacy/version.ts"
+    retired.write_text("import { HELLOADA_PAYLOAD_ADMIN_VERSION } from '@weareheadless/helloada-payload-admin/version'\n")
+    with pytest.raises(SharedRuntimeError, match="src/lib/legacy/version.ts"):
+        _migrate_tenant_admin_source(tenant)
