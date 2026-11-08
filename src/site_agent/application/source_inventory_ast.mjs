@@ -4,6 +4,17 @@ import { pathToFileURL } from 'node:url'
 
 const hasWords = (value) => /[\p{L}\p{N}]/u.test(String(value || ''))
 
+// A script or style body is executable text, not copy the owner reads. Its
+// child expression is never a visible business string, so the content gate
+// must not ask for a Payload binding for it.
+const NON_VISIBLE_CONTAINERS = new Set(['script', 'style'])
+const rendersNoVisibleText = (element, ts) => {
+  if (!element) return false
+  const opening = ts.isJsxElement(element) ? element.openingElement : element
+  if (!opening || !opening.tagName) return false
+  return NON_VISIBLE_CONTAINERS.has(opening.tagName.getText().toLowerCase())
+}
+
 const stringValue = (node, ts) => {
   if (!node) return undefined
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
@@ -232,7 +243,8 @@ export function scanPresentation(root, ts) {
       if (enforcePayloadCopy && ts.isJsxText(node) && hasWords(node.text)) {
         addViolation(violations, sourceFile, node, 'visible_copy_must_come_from_payload')
       }
-      if (enforcePayloadCopy && ts.isJsxExpression(node) && node.expression && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))) {
+      if (enforcePayloadCopy && ts.isJsxExpression(node) && node.expression && (ts.isJsxElement(node.parent) || ts.isJsxFragment(node.parent))
+        && !rendersNoVisibleText(node.parent, ts)) {
         if (renderedText(node.expression, declarations, ts).some(hasWords)) {
           addViolation(violations, sourceFile, node, 'visible_copy_must_come_from_payload')
         }
@@ -254,8 +266,13 @@ export function scanPresentation(root, ts) {
             const descriptor = bindingDescriptor(expression, declarations, ts)
             // A computed marker (for example a mapped entry marker) cannot be
             // resolved statically; it is accepted because this file owns the
-            // shared helper. A resolvable descriptor must match the contract.
-            if (descriptor && !bindingMatchesContract(descriptor, contract)) {
+            // shared helper. The same holds for a wrapper that forwards its
+            // target through a spread: the collection resolves, the field does
+            // not, and the field still travels through the shared helper.
+            // Only a field the analyzer actually read is checked against the
+            // contract, so a resolvable-but-wrong field still fails.
+            const resolvedField = descriptor && typeof descriptor.field === 'string' && descriptor.field
+            if (resolvedField && !bindingMatchesContract(descriptor, contract)) {
               addViolation(violations, sourceFile, node, 'editable_field_is_outside_the_shared_schema')
             }
             bindings.push({

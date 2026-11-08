@@ -769,3 +769,40 @@ def test_no_completed_answer_returns_empty_so_the_caller_can_fall_back():
     from site_agent.hands.opencode_runner import _final_message_reply
 
     assert _final_message_reply({"m1": {"texts": ["working"], "tools": 3}}) == ""
+
+
+def test_a_worktree_reuses_the_installed_tree_for_its_exact_lockfile(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "package.json").write_text('{"name": "site"}', encoding="utf-8")
+    (worktree / "package-lock.json").write_text('{"lockfileVersion": 3}', encoding="utf-8")
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(checkout)}})
+    linked: list[str] = []
+    try:
+        monkeypatch.setattr(service, "_verify_toolchain", lambda cwd: "/usr/bin/npm")
+        monkeypatch.setattr(
+            source_deployment, "github_api_token", lambda *args, **kwargs: "token",
+        )
+        monkeypatch.setattr(
+            "site_agent.application.release_dependencies.prepare_release_dependencies",
+            lambda *args, **kwargs: [{"package": "@weareheadless/helloada-payload-core"}],
+        )
+        monkeypatch.setattr(
+            service, "_link_cached_node_modules",
+            lambda wt, key: linked.append(key) or True,
+        )
+        monkeypatch.setattr(
+            service, "_check",
+            lambda *args, **kwargs: pytest.fail("a warm cache must not install again"),
+        )
+
+        checks = service.ensure_dependencies(worktree, timeout=60, npm="/usr/bin/npm")
+
+        assert checks == [
+            {"name": "dependencies", "ok": True, "cached": True},
+        ]
+        assert linked == [service._node_modules_key(worktree)]
+    finally:
+        service.close()

@@ -1715,3 +1715,82 @@ def test_an_owner_turn_that_changes_nothing_stages_nothing(monkeypatch, tmp_path
     assert result["reply"] == "I rebuilt the page."
     assert "validated" not in seen
     assert seen["removed"] is True
+
+
+def test_a_rejected_candidate_is_repaired_in_the_same_turn_before_staging(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+    gate = [
+        [{"path": "/w/AboutPage.tsx", "line": 213, "reason": "visible_copy_must_come_from_payload"}],
+        [],
+    ]
+    monkeypatch.setattr(owner_runner, "_content_gate_violations", lambda context, clone: gate.pop(0))
+    replies = iter(["I rebuilt the page.", "I bound the rejected lines to Payload."])
+    calls: list[dict[str, object]] = []
+
+    def turn(*args, **kwargs):
+        calls.append({"prompt": args[1], **kwargs})
+        return {"reply": next(replies), "session_id": "session-1"}
+
+    monkeypatch.setattr(owner_runner, "run_opencode_turn", turn)
+
+    result = owner_runner.run_owner_turn({"config": {}}, 1, "rebuild the about page")
+
+    assert len(calls) == 2
+    assert "AboutPage.tsx:213" in calls[1]["prompt"]
+    assert "visible_copy_must_come_from_payload" in calls[1]["prompt"]
+    # The repair continues the same agent session, not a fresh one.
+    assert calls[1]["session_id"] == "session-1"
+    # The owner reads what the agent said after repairing.
+    assert result["reply"] == "I bound the rejected lines to Payload."
+    assert result["merge_draft_id"] == 9
+    assert seen["removed"] is True
+
+
+def test_a_candidate_that_still_violates_the_contract_stages_no_preview(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+    violations = [{"path": "/w/AboutPage.tsx", "line": 220, "reason": "editable_field_is_outside_the_shared_schema"}]
+    monkeypatch.setattr(owner_runner, "_content_gate_violations", lambda context, clone: list(violations))
+    staged: list[object] = []
+    monkeypatch.setattr(owner_runner, "_finish_builder", lambda *a, **k: staged.append(a))
+    monkeypatch.setattr(owner_runner, "stage_review", lambda *a, **k: staged.append(a))
+
+    with pytest.raises(owner_runner.RunnerError, match="AboutPage.tsx:220"):
+        owner_runner.run_owner_turn({"config": {}}, 1, "rebuild the about page")
+
+    assert staged == []
+    assert seen["removed"] is True
+
+
+def test_the_turn_gate_uses_the_preview_services_own_dependencies_and_inventory(monkeypatch, tmp_path):
+    from site_agent.application import source_inventory
+
+    prepared: list[object] = []
+
+    class Deployer:
+        def ensure_dependencies(self, worktree, *, timeout, preview_secret=""):
+            prepared.append((worktree, timeout))
+            return []
+
+    monkeypatch.setattr(source_inventory, "inventory", lambda root: {
+        "violations": [{"path": str(root / "AboutPage.tsx"), "line": 3, "reason": "visible_copy_must_come_from_payload"}],
+    })
+    context = {"source_deployment": Deployer(), "config": {"source_deployment": {"build_timeout_seconds": 90}}}
+    clone = tmp_path / "worktree"
+    clone.mkdir()
+
+    violations = runner._content_gate_violations(context, clone)
+
+    assert prepared == [(clone, 90)]
+    assert violations[0]["reason"] == "visible_copy_must_come_from_payload"
+
+
+def test_the_turn_gate_is_absent_when_the_tenant_has_no_compiled_preview(tmp_path):
+    assert runner._content_gate_violations({"config": {}}, tmp_path) == []
+
+
+def test_the_design_standard_states_that_visible_copy_comes_from_payload():
+    from site_agent.brain.design_contract import DESIGN_AND_CONTENT_CONTRACT
+
+    assert "Content authority" in DESIGN_AND_CONTENT_CONTRACT
+    assert "never from a literal in the component" in DESIGN_AND_CONTENT_CONTRACT
+    assert "Do not ship fallback copy" in DESIGN_AND_CONTENT_CONTRACT

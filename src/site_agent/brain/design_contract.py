@@ -39,6 +39,11 @@ Search and copy:
 - Copy in the owner's voice and the site's tone: concrete, specific and free of filler. Use only facts the owner supplied or the site already states; never invent credentials, prices, dates, testimonials or claims.
 - Every section must earn its place. If a section only restates the previous one, cut it. Read the existing copy on the site first, then match its level of specificity.
 
+Content authority:
+- Every visible business string, link and image on an authored page comes from the Payload document, never from a literal in the component. Mark each editable element with the shared binding helper and bind its text, `alt`, `href` and image source to a field the shared content contract declares.
+- Do not ship fallback copy for a missing value. Read the value and throw when it is absent, so a broken document fails loudly instead of rendering invented text.
+- A script or style body is code, not copy; keep business text out of it.
+
 Delivery:
 - Verify what you can: the composition in the source, the type and spacing values, the responsive breakpoints, and the built output. Name what you checked. The owner judges the rendered page, and if the composition still reads as a generic document, it is not done.
 """

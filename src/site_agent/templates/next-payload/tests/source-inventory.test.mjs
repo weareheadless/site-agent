@@ -117,3 +117,56 @@ test('a section template may receive a marker prop bound by the composing file',
   const outside = scanPresentation(root, ts)
   assert.ok(outside.violations.some((item) => item.reason === 'editable_field_is_outside_the_shared_schema'))
 })
+
+
+test('an inline script body is code, not owner-visible copy', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-source-inventory-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const presentation = path.join(root, 'src/components/site/presentation')
+  fs.mkdirSync(presentation, { recursive: true })
+  fs.writeFileSync(path.join(root, 'helloada-content-contract.json'), JSON.stringify({
+    collections: { pages: ['title', 'sections'] },
+    globals: {},
+  }))
+  fs.writeFileSync(path.join(presentation, 'Motion.tsx'), `import Script from 'next/script'
+const motionScript = 'gsap.from(".reveal", { y: 30, opacity: 0 })'
+export default function Motion() {
+  return <><Script id="motion" strategy="afterInteractive">{motionScript}</Script><style>{\`.reveal { opacity: 1 }\`}</style></>
+}
+`)
+  const result = scanPresentation(root, ts)
+  assert.deepEqual(result.violations, [])
+})
+
+test('a wrapper that forwards its binding target through a spread is still a shared binding', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-source-inventory-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const presentation = path.join(root, 'src/components/site/presentation')
+  fs.mkdirSync(presentation, { recursive: true })
+  fs.writeFileSync(path.join(root, 'helloada-content-contract.json'), JSON.stringify({
+    collections: { pages: ['title', 'summary', 'featuredImage', 'sections'] },
+    globals: {},
+  }))
+  const component = path.join(presentation, 'Page.tsx')
+  fs.writeFileSync(component, `import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
+  type Target = { field?: string; property?: string }
+  export default function Page({ page }: { page: { id: number; title: string; summary: string } }) {
+    const bind = (target: Target) => helloAdaBindingId('pages', String(page.id), { collection: 'pages', documentId: String(page.id), ...target })
+    return <main>
+      <h1 data-helloada-field={bind({ field: 'title' })}>{page.title}</h1>
+      <p data-helloada-field={bind({ field: 'summary' })}>{page.summary}</p>
+    </main>
+  }
+`)
+  const result = scanPresentation(root, ts)
+  assert.deepEqual(result.violations, [])
+  assert.equal(result.bindingCount, 2)
+
+  // A field the analyzer can read is still checked against the contract.
+  fs.writeFileSync(component, `import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
+  export default function Page({ page }: { page: { id: number; title: string } }) {
+    return <h1 data-helloada-field={helloAdaBindingId('pages', String(page.id), { collection: 'pages', documentId: String(page.id), field: 'inventedField' })}>{page.title}</h1>
+  }
+`)
+  assert.ok(scanPresentation(root, ts).violations.some((item) => item.reason === 'editable_field_is_outside_the_shared_schema'))
+})

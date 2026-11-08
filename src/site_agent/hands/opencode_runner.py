@@ -3989,7 +3989,10 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
     try:
         exclude_path = (clone / _git(clone, "rev-parse", "--git-path", "info/exclude").strip()).resolve()
         content = exclude_path.read_text() if exclude_path.exists() else ""
-        for entry in (".opencode/", ".agent-home/", "opencode.json"):
+        # node_modules is the turn's installed toolchain, never a candidate
+        # change; excluding it keeps a tenant without its own .gitignore entry
+        # from staging a dependency tree.
+        for entry in (".opencode/", ".agent-home/", "opencode.json", "node_modules/"):
             if entry not in content:
                 content = content.rstrip() + "\n" + entry + "\n"
         if content != (exclude_path.read_text() if exclude_path.exists() else ""):
@@ -5776,6 +5779,80 @@ def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str,
         _remove_builder_worktree(site_clone, clone)
 
 
+# What a content-authority violation means for the agent, in words it can act
+# on. The reason codes come from the host inventory; this is the same gate the
+# compiled preview applies, stated once for the turn's repair.
+_CONTENT_VIOLATION_REQUIREMENTS = {
+    "visible_copy_must_come_from_payload": (
+        "visible text and literal alt/title/placeholder values must come from the "
+        "Payload document through the shared binding helper"
+    ),
+    "editable_field_needs_a_shared_binding": (
+        "data-helloada-field must be a marker created by the shared binding helper, "
+        "never a string or a local constant"
+    ),
+    "editable_field_is_outside_the_shared_schema": (
+        "the bound field must exist for its collection or global in helloada-content-contract.json"
+    ),
+    "business_image_needs_a_shared_payload_binding": (
+        "every business image needs a shared Payload binding marker"
+    ),
+    "raw_html_is_not_an_editable_content_binding": (
+        "do not inject editable content with dangerouslySetInnerHTML"
+    ),
+    "invalid_presentation_syntax": "the presentation file must parse as TSX",
+}
+
+
+def _content_gate_violations(context: dict[str, Any], clone: Path) -> list[dict[str, Any]]:
+    """Run the exact content gate the compiled preview will apply.
+
+    The compiled preview is the authority on whether a candidate may exist: it
+    rejects visible copy that is not bound to Payload. The turn used to hand the
+    candidate over and learn about the rejection only after the owner had a
+    blocked draft, so the agent could not repair what it never saw. Running the
+    same host inventory here, in the worktree the agent can still edit, makes
+    the turn's acceptance and the preview's acceptance one decision.
+    """
+    deployer = context.get("source_deployment")
+    if deployer is None:
+        # This tenant has no compiled preview, so there is no preview gate for
+        # the turn to agree with.
+        return []
+    prepare = getattr(deployer, "ensure_dependencies", None)
+    if not callable(prepare):
+        raise RunnerError("the compiled preview service cannot prepare the content gate")
+    config = context.get("config") or {}
+    settings = config.get("source_deployment") if isinstance(config.get("source_deployment"), Mapping) else {}
+    prepare(clone, timeout=int(settings.get("build_timeout_seconds") or 1_800))
+    from ..application.source_inventory import inventory
+
+    try:
+        report = inventory(clone)
+    except ValueError as exc:
+        raise RunnerError(f"the content-binding contract could not be checked: {exc}") from exc
+    return [dict(item) for item in (report.get("violations") or []) if isinstance(item, Mapping)]
+
+
+def _content_repair_brief(violations: Sequence[Mapping[str, Any]]) -> str:
+    """Name the exact rejected lines so the repair is bounded, not a rewrite."""
+    lines = []
+    for item in violations[:40]:
+        reason = str(item.get("reason") or "content_authority")
+        requirement = _CONTENT_VIOLATION_REQUIREMENTS.get(
+            reason, "bind the element to the shared Payload content contract",
+        )
+        lines.append(
+            f"- {item.get('path')}:{item.get('line')} ({reason}): {requirement}"
+        )
+    return (
+        "The host content gate rejected this change, so it cannot become a review "
+        "preview. Fix exactly these violations in the working tree and stop: keep the "
+        "page, composition and copy you already wrote, and do not start a second "
+        "concept or restate the request.\n" + "\n".join(lines)
+    )
+
+
 def run_owner_turn(
     context: dict[str, Any],
     job_id: int,
@@ -5828,6 +5905,36 @@ def run_owner_turn(
         _validate_preview(config, clone, base_ref)
         _bump_asset_versions(clone)
         _validate_preview(config, clone, base_ref)
+        violations = _content_gate_violations(context, clone)
+        if violations:
+            # One bounded repair inside the same session: the agent that wrote
+            # the page sees the exact lines the preview would reject.
+            if progress:
+                progress("repairing the content bindings the preview gate rejected")
+            repaired = run_opencode_turn(
+                clone, _content_repair_brief(violations), config,
+                progress=progress,
+                session_id=new_session or None,
+                memory=memory,
+                agent_name="build",
+                reply_mode="final_message",
+            )
+            new_session = str(repaired.get("session_id") or new_session)
+            repair_reply = str(repaired.get("reply") or "").strip()
+            if repair_reply:
+                reply = repair_reply
+            _validate_preview(config, clone, base_ref)
+            _bump_asset_versions(clone)
+            _validate_preview(config, clone, base_ref)
+            violations = _content_gate_violations(context, clone)
+            if violations:
+                raise RunnerError(
+                    "the change does not satisfy the content-binding contract, so no "
+                    "preview was staged: " + "; ".join(
+                        f"{Path(str(item.get('path') or '')).name}:{item.get('line')} {item.get('reason')}"
+                        for item in violations[:8]
+                    )
+                )
         outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
         staged = stage_review(context, subject, outcome, progress)
         # The owner reads the agent's own message; the host only attaches the

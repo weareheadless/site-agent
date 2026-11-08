@@ -109,6 +109,12 @@ the repository; when the turn ends the host validates the exact working tree,
 commits it to the preview branch and stages the review draft. Publication is
 still the owner's approval.
 
+The content-binding gate that the compiled preview applies also runs inside the
+turn, before anything is staged, so a candidate whose visible copy is not bound
+to Payload is repaired by the same agent that wrote it. If one bounded repair
+does not clear the violations, the turn fails and names them instead of handing
+the owner an unreviewable draft.
+
 There is no second agent, no build tool and no channel between processes: the
 agent that talks to the owner is the agent that does the work. The legacy
 in-process chat engine keeps its own build tool until it is retired; it runs

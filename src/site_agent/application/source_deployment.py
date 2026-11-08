@@ -629,6 +629,46 @@ class SourceDeploymentService:
             current["updated_at"] = _now()
             self._persist()
 
+    def ensure_dependencies(self, worktree: Path, *, timeout: int,
+                            preview_secret: str = "", npm: str | None = None,
+                            ) -> list[dict[str, Any]]:
+        """Install one worktree's exact locked dependencies through the cache.
+
+        The compiled preview and the owner turn both run tenant code in an
+        isolated worktree, and both need the tenant's real toolchain. They share
+        one cache keyed by the lockfile, so whichever runs second hard-links an
+        already-installed tree instead of installing a second copy.
+        """
+        checks: list[dict[str, Any]] = []
+        npm = npm or self._verify_toolchain(worktree)
+        from .release_dependencies import prepare_release_dependencies
+
+        def seed_private_package(command: list[str], directory: Path) -> None:
+            checks.append(self._check(
+                command, directory, "private_package_cache", timeout,
+                preview_secret=preview_secret,
+            ))
+
+        assets = prepare_release_dependencies(
+            worktree,
+            github_api_token(self.config, self._resolved_env()),
+            npm,
+            self._preview_home / "tmp",
+            seed_private_package,
+        )
+        dependency_key = self._node_modules_key(worktree)
+        if self._link_cached_node_modules(worktree, dependency_key):
+            checks.append({"name": "dependencies", "ok": True, "cached": True})
+        else:
+            checks.append(self._check(
+                [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
+                worktree, "dependencies", timeout, preview_secret=preview_secret,
+            ))
+            self._store_node_modules(worktree, dependency_key)
+        if not assets:
+            raise SourceDeploymentError("candidate source did not resolve the locked shared package")
+        return checks
+
     def _node_modules_root(self) -> Path | None:
         configured = str(self.settings.get("worktree_root") or "").strip()
         root = Path(configured).expanduser().resolve() if configured else self._local_checkout().parent
@@ -1265,33 +1305,10 @@ class SourceDeploymentService:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 stream.write("PAYLOAD_SECRET=" + json.dumps(preview_secret) + "\n")
             npm = self._verify_toolchain(worktree)
-            from .release_dependencies import prepare_release_dependencies
-
-            def seed_private_package(command: list[str], directory: Path) -> None:
-                checks.append(self._check(
-                    command, directory, "private_package_cache", timeout,
-                    preview_secret=preview_secret,
-                ))
-
             self._mark_step(job, "dependencies")
-            assets = prepare_release_dependencies(
-                worktree,
-                github_api_token(self.config, self._resolved_env()),
-                npm,
-                self._preview_home / "tmp",
-                seed_private_package,
-            )
-            dependency_key = self._node_modules_key(worktree)
-            if self._link_cached_node_modules(worktree, dependency_key):
-                checks.append({"name": "dependencies", "ok": True, "cached": True})
-            else:
-                checks.append(self._check(
-                    [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
-                    worktree, "dependencies", timeout, preview_secret=preview_secret,
-                ))
-                self._store_node_modules(worktree, dependency_key)
-            if not assets:
-                raise SourceDeploymentError("candidate source did not resolve the locked shared package")
+            checks.extend(self.ensure_dependencies(
+                worktree, timeout=timeout, preview_secret=preview_secret, npm=npm,
+            ))
             if self.payload_gateway is not None:
                 self._mark_step(job, "content")
                 checks.extend(self._seed_canonical_preview(worktree, job, npm, timeout, preview_secret))
