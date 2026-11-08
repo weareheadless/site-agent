@@ -58,19 +58,6 @@ def _material(memory: Any, research_report: dict[str, Any] | None = None) -> dic
                 "url": link,
                 "observed_at": row.get("ts", ""),
             })
-    research_signals = []
-    try:
-        research_signals = [
-            {
-                "kind": str(item.get("kind") or ""),
-                "summary": str(item.get("summary") or "")[:700],
-                "confidence": item.get("confidence"),
-            }
-            for item in memory.list_incubation_insights(limit=8)
-            if str(item.get("summary") or "").strip()
-        ]
-    except Exception:  # noqa: BLE001 - article drafting remains useful without incubation tables
-        research_signals = []
     return {
         "themes": themes,
         "audience_needs": audience_needs if isinstance(audience_needs, list) else [],
@@ -82,7 +69,6 @@ def _material(memory: Any, research_report: dict[str, Any] | None = None) -> dic
         "past_articles": past_articles[-8:],
         "feedback": feedback,
         "news": news[:12],
-        "research_signals": research_signals,
         "seo_research": (research_report or {}) if not article_research else {},
         "article_research": article_research,
         "context": memory_context(memory),
@@ -158,15 +144,6 @@ def _write_prompt(persona: str, topic: dict[str, Any], material: dict[str, Any])
         + "\n\n"
         if material.get("news") else ""
     )
-    signal_block = (
-        "Evidence-linked research signals (inferred, not owner-confirmed facts):\n"
-        + "\n".join(
-            f"- [{item.get('kind', 'signal')}] {item.get('summary', '')}"
-            for item in material.get("research_signals", [])[:8]
-        )
-        + "\n\n"
-        if material.get("research_signals") else ""
-    )
     seo_block = (
         "SEO research evidence:\n" + json.dumps(material.get("seo_research") or {}, default=str)[:8000] + "\n\n"
         if material.get("seo_research") else ""
@@ -204,7 +181,7 @@ def _write_prompt(persona: str, topic: dict[str, Any], material: dict[str, Any])
         "What you have on your mind from this week (use what's useful, ignore the rest):\n"
         f"{material['context'][:2000]}\n\n"
     )
-    user = base + feedback_block + news_block + signal_block + seo_block + research_note_block + (
+    user = base + feedback_block + news_block + seo_block + research_note_block + (
         "Write for the stated reader question, situation, and thesis. Use research terminology only when natural; "
         "translate between reader and professional vocabulary when needed, do not force the seed into the title "
         "or headings, and do not use keyword density targets.\n\n"

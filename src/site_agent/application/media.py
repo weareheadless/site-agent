@@ -146,55 +146,7 @@ class MediaService:
             raise MediaServiceError("media asset not found")
         return asset
 
-    def export_asset(self, asset_id: int) -> tuple[MediaAsset, dict[str, bytes]]:
-        """Read an approved asset through the configured media provider."""
-        asset = self.get(asset_id)
-        if asset.status is not MediaStatus.READY or not asset.original_key:
-            raise MediaServiceError("media asset is not ready for transfer")
-        keys = [asset.original_key, asset.normalized_key, asset.thumbnail_key, *asset.page_keys]
-        try:
-            objects = {key: self.store.get(key) for key in dict.fromkeys(key for key in keys if key)}
-        except Exception as exc:
-            raise MediaServiceError("media asset content is unavailable") from exc
-        return asset, objects
 
-    def import_asset(
-        self,
-        asset: MediaAsset,
-        objects: Mapping[str, bytes],
-        *,
-        source_kind: str = "incubation_import",
-    ) -> MediaAsset:
-        """Store a provider-neutral asset in this service's media boundary."""
-        if not isinstance(asset, MediaAsset) or not isinstance(objects, Mapping):
-            raise MediaServiceError("media asset transfer is invalid")
-        duplicate = self.memory.find_media_asset_by_hash(asset.original_sha256)
-        if duplicate is not None:
-            return duplicate
-        required = [asset.original_key, asset.normalized_key, asset.thumbnail_key, *asset.page_keys]
-        if any(key and key not in objects for key in required):
-            raise MediaServiceError("media asset transfer is incomplete")
-        written: list[str] = []
-        try:
-            for key in dict.fromkeys(key for key in required if key):
-                data = objects[key]
-                if not isinstance(data, bytes):
-                    raise MediaServiceError("media asset transfer contains invalid content")
-                self.store.put(key, data, asset.content_type)
-                written.append(key)
-            imported = replace(asset, asset_id=0, source_kind=source_kind, created_ts=utc_now(), updated_ts=utc_now())
-            asset_id = self.memory.create_media_asset(imported)
-        except Exception:
-            for key in reversed(written):
-                try:
-                    self.store.delete(key)
-                except Exception:
-                    pass
-            raise
-        result = self.memory.get_media_asset(asset_id)
-        if result is None:
-            raise MediaServiceError("imported media asset could not be read back")
-        return result
 
     def read_object(self, key: str) -> tuple[bytes, str]:
         """Read one object only through the configured media store."""

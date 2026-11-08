@@ -342,26 +342,6 @@ def test_materialize_media_requires_a_configured_destination(tmp_path):
     memory.close()
 
 
-def test_media_service_transfers_ready_asset_through_provider_boundary(tmp_path):
-    output = io.BytesIO()
-    Image.new("RGB", (20, 10), "blue").save(output, format="JPEG")
-    source_memory = Memory(tmp_path / "source.db")
-    source_store = FakeStore()
-    source = MediaService(source_memory, source_store, {"site": {"media": {"enabled": True}}})
-    uploaded = source.upload("blue.jpg", output.getvalue())
-    MediaWorker({"memory": source_memory, "media_store": source_store, "media_service": source}).process_one()
-
-    target_memory = Memory(tmp_path / "target.db")
-    target_store = FakeStore()
-    target = MediaService(target_memory, target_store, {"site": {"media": {"enabled": False}}})
-    source_asset, objects = source.export_asset(uploaded["asset"]["id"])
-    imported = target.import_asset(source_asset, objects)
-
-    assert imported.original_sha256 == source_asset.original_sha256
-    assert target_memory.get_media_asset(imported.asset_id).status.value == "ready"
-    assert {key: value[0] for key, value in target_store.objects.items()} == objects
-    source_memory.close()
-    target_memory.close()
 
 
 class _PayloadLibrary:
