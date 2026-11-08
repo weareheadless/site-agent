@@ -245,7 +245,7 @@ type ChatAttachment = {
 
 type UploadEntry = { id: string; filename: string; status: 'uploading' | 'failed' | 'unsupported'; reason?: string; progress?: number; previewUrl?: string }
 
-type AdaPhase = 'unknown' | 'intake' | 'incubation' | 'workspace'
+type AdaPhase = 'unknown' | 'workspace'
 
 type PreviewPlan = {
   mode?: 'overlay' | 'compile'
@@ -977,8 +977,8 @@ function ReviewWorkspace() {
         : ''
 
   const selectedTarget = useMemo(() => {
-    if (!websitePresent || adaPhase === 'unknown' || adaPhase === 'intake') return undefined
-    const targetMode = adaPhase === 'workspace' ? 'workspace' : 'incubation'
+    if (!websitePresent || adaPhase === 'unknown') return undefined
+    const targetMode = 'workspace'
     return {
       mode: targetMode,
       scope: targetMode === 'workspace' ? 'selected_page' : 'selected_page_reference',
@@ -1401,8 +1401,8 @@ function ReviewWorkspace() {
         if (!response.ok) throw new Error(t('error.adaPhase'))
         transientFailures.current.status = 0
         setAdaUnavailable(false)
-        const phase = body.phase || body.mode
-        setAdaPhase(phase === 'intake' || phase === 'incubation' || phase === 'workspace' ? phase : 'workspace')
+        // The workspace is the only owner-facing phase. Intake no longer exists.
+        setAdaPhase('workspace')
         if (body.build?.draft_available) {
           setWebsitePresent(true)
           loadWorkspace(background)
@@ -1431,10 +1431,8 @@ function ReviewWorkspace() {
         }
       })
       .catch(() => {
-        // Do not guess that intake is complete. Website context stays dormant
-        // until the server proves the explicit acceptance transition. A single
-        // dropped request on a slow connection must not blank the composer or
-        // discard the conversation the owner is already reading.
+        // A single dropped request on a slow connection must not blank the
+        // composer or discard the conversation the owner is already reading.
         transientFailures.current.status += 1
         if (transientFailures.current.status >= 3) {
           setAdaPhase('unknown')
@@ -1812,9 +1810,9 @@ function ReviewWorkspace() {
             document_id: selectedDocument?.id || '',
             slug: selectedDocument?.slug || '',
              state: 'draft',
-            mode: adaPhase === 'workspace' ? 'workspace' : adaPhase === 'incubation' ? 'incubation' : 'intake',
-            phase: adaPhase === 'workspace' ? 'workspace' : adaPhase === 'incubation' ? 'incubation' : 'intake',
-            scope: adaPhase === 'workspace' ? 'selected_page' : adaPhase === 'incubation' ? 'selected_page_reference' : 'intake',
+            mode: 'workspace',
+            phase: 'workspace',
+            scope: 'selected_page',
             ...(selectedTarget ? { target: selectedTarget } : {}),
           },
         }),
@@ -1840,11 +1838,7 @@ function ReviewWorkspace() {
       setMessage('')
       setPendingAttachments([])
       setMessages((current) => [...current, { role: 'user', text, attachments }])
-      if (body.phase === 'intake' || body.phase === 'incubation' || body.phase === 'workspace') {
-        setAdaPhase(body.phase)
-      } else if (body.mode === 'intake' || body.mode === 'incubation' || body.mode === 'workspace') {
-        setAdaPhase(body.mode)
-      }
+      setAdaPhase('workspace')
       if (typeof body.website_present === 'boolean') setWebsitePresent(body.website_present)
       rememberPendingAdaJob({ jobId: body.job_id, conversationId: activeConversationId })
     } catch (cause) {
@@ -2295,38 +2289,24 @@ function ReviewWorkspace() {
   }
 
   const currentRouteLabel = routeLabel(selectedRouteData, t('workspace.home'))
-  const phaseLabel = adaPhase === 'incubation'
-    ? t('workspace.phaseIncubation')
-    : adaPhase === 'intake'
-      ? t('workspace.phaseIntake')
-    : adaPhase === 'workspace'
-      ? t('workspace.phaseWorkspace')
-      : adaUnavailable ? t('owner.connection.unavailable') : t('workspace.phaseConnecting')
-  const phaseNote = adaPhase === 'incubation'
-    ? t('workspace.phaseNoteIncubation')
-    : adaPhase === 'intake'
-      ? t('workspace.phaseNoteIntake')
-    : adaPhase === 'workspace'
-      ? websitePresent
-        ? t('workspace.phaseNoteWorkspace')
-        : t('workspace.phaseNoteNoWebsite')
-      : t('workspace.phaseNoteConnecting')
-  const phaseSummary = adaPhase === 'incubation'
-    ? t('workspace.phaseSummaryIncubation')
-    : adaPhase === 'intake'
-      ? t('workspace.phaseSummaryIntake')
-    : adaPhase === 'workspace'
-      ? websitePresent
-        ? t('workspace.phaseSummaryWorkspace')
-        : t('workspace.phaseSummaryNoWebsite')
-      : adaUnavailable ? t('owner.reconnectNote') : t('workspace.phaseSummaryConnecting')
-  const shortcuts = adaPhase === 'intake' || adaPhase === 'incubation'
-    ? [[t('workspace.shortClarify'), t('workspace.shortClarifyPrompt')]]
-    : [
-        [t('owner.improvePage'), t('owner.improvePrompt')],
-        [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
-        [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
-      ]
+  const phaseLabel = adaPhase === 'workspace'
+    ? t('workspace.phaseWorkspace')
+    : adaUnavailable ? t('owner.connection.unavailable') : t('workspace.phaseConnecting')
+  const phaseNote = adaPhase === 'workspace'
+    ? websitePresent
+      ? t('workspace.phaseNoteWorkspace')
+      : t('workspace.phaseNoteNoWebsite')
+    : t('workspace.phaseNoteConnecting')
+  const phaseSummary = adaPhase === 'workspace'
+    ? websitePresent
+      ? t('workspace.phaseSummaryWorkspace')
+      : t('workspace.phaseSummaryNoWebsite')
+    : adaUnavailable ? t('owner.reconnectNote') : t('workspace.phaseSummaryConnecting')
+  const shortcuts = [
+    [t('owner.improvePage'), t('owner.improvePrompt')],
+    [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
+    [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
+  ]
   const hasBrief = briefSections.length > 0
   const adaProgressSteps = (() => {
     const seen = new Set<string>()
@@ -2424,7 +2404,7 @@ function ReviewWorkspace() {
             </div>
             <label className="helloada-page-control">
                <span className="helloada-sr-only">{t('workspace.visiblePage')}</span>
-                  <select aria-label={t('workspace.visiblePage')} value={selectedRoute} disabled={adaPhase === 'intake' || adaPhase === 'unknown'} onChange={(event) => {
+                  <select aria-label={t('workspace.visiblePage')} value={selectedRoute} disabled={adaPhase === 'unknown'} onChange={(event) => {
                     setPreviewStatus('refreshing')
                     setSelectedRoute(event.target.value)
                   }}>
@@ -2892,7 +2872,7 @@ function ReviewWorkspace() {
                      void sendMessage()
                    }
                  }}
-                  placeholder={adaPhase === 'intake' || adaPhase === 'incubation' ? t('workspace.tellAdaIntake') : t('workspace.describeNextChange')}
+                  placeholder={t('workspace.describeNextChange')}
                 rows={2}
                  disabled={chatWorking}
               />

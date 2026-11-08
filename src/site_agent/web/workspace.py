@@ -231,20 +231,6 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    @app.post(f"{prefix}/chat/intake/confirm")
-    async def workspace_intake_confirm(request: Request):
-        tenant = require_service(request)
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 - normalize malformed bridge input
-            raise HTTPException(status_code=400, detail="invalid json")
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="request body must be an object")
-        try:
-            return service.confirm_intake(body, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
     @app.post(f"{prefix}/chat/design/start")
     async def workspace_design_start(request: Request):
         tenant = require_service(request)
@@ -1340,20 +1326,6 @@ def register_workspace_routes(
             tenant = require_control_tenant(request, website_id)
             try:
                 return service.status(conversation_id, tenant=tenant)
-            except BridgeError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        @app.post(f"{control_prefix}/{{website_id}}/intake/confirm")
-        async def control_plane_intake_confirm(website_id: str, request: Request):
-            tenant = require_control_tenant(request, website_id)
-            try:
-                body = await request.json()
-            except Exception:
-                raise HTTPException(status_code=400, detail="invalid json")
-            if not isinstance(body, dict):
-                raise HTTPException(status_code=400, detail="request body must be an object")
-            try:
-                return service.confirm_intake(body, tenant=tenant)
             except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -686,11 +686,11 @@ def test_ready_intake_owner_turn_enqueues_advice_job(tmp_path):
     registry = TenantRegistry({"demo": tenant})
     service = ChatService(registry=registry)
     try:
-        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "intake"
+        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
         response = service.enqueue({"message": "go", "conversation_id": session["conversation_id"]}, tenant=tenant)
         job = memory.get_chat_job(response["job_id"])
         assert job["operation_kind"] == "design_intake_advice"
-        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "intake"
+        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
         coordinator.confirm(
             session["conversation_id"], revision=session["revision"], draft_hash=session["draft_hash"],
             confirmation_text="I accept this brief.",
@@ -986,12 +986,12 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
         )
 
     assert response.status_code == 200
-    assert response.json()["phase"] == "incubation"
+    assert response.json()["phase"] == "workspace"
     assert response.json()["website_present"] is True
     assert tenant.context["intake_coordinator"].contexts == [{
         "website_present": True,
         "incubation_needed": True,
-        "journey": "incubation",
+        "journey": "workspace",
     }]
     tenant.memory.close()
 
@@ -1073,9 +1073,9 @@ def test_workspace_journey_separates_existing_site_incubation_from_new_site_inta
     })
 
     assert existing == Journey(website_present=True, incubation_needed=True)
-    assert existing.initial_phase == "incubation"
+    assert existing.initial_phase == "workspace"
     assert new_site == Journey(website_present=False, incubation_needed=False)
-    assert new_site.initial_phase == "intake"
+    assert new_site.initial_phase == "workspace"
 
     with pytest.raises(ConfigError, match="website_present must be explicitly configured"):
         _journey_for_config({
@@ -1238,81 +1238,18 @@ def test_payload_media_service_resolves_chat_attachments():
     assert resolved[0]["analysis_error"] is None
 
 
-def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
-    class Intake:
-        def confirm(self, conversation_id, **kwargs):
-            assert conversation_id == 12
-            assert kwargs["revision"] == 2
-            return {
-                "session_id": "intake-new-site",
-                "conversation_id": 12,
-                "revision": 2,
-                "confirmed_revision": 2,
-                "confirmed_revision_id": 22,
-                "confirmed": True,
-            }
-
-        def status(self, conversation_id):
-            assert conversation_id == 12
-            return {
-                "session_id": "intake-new-site",
-                "conversation_id": 12,
-                "confirmed_revision": 2,
-                "confirmed_revision_id": 22,
-                "confirmed": True,
-            }
-
-    class DesignIntake:
-        lab_service = object()
-
-        def build(self, session_id, **kwargs):
-            assert session_id == "intake-new-site"
-            assert kwargs["confirmed_revision"] == 22
-            return {"run": {"run_id": "design-first-site", "status": "building"}}
-
-    memory = Memory(tmp_path / "workspace-new-site" / "memory.db")
-    tenant = Tenant(
-        tenant_id="workspace-new-site",
-        config={},
-        memory=memory,
-        runtime=None,
-        context={
-            "llm": object(),
-            "intake_coordinator": Intake(),
-            "design_intake_service": DesignIntake(),
-            "journey": Journey(website_present=False, incubation_needed=False),
-        },
-        api_token="new-site-token",
-    )
+def test_intake_confirmation_route_is_retired(tmp_path):
+    memory = Memory(tmp_path / "retired-intake" / "memory.db")
+    tenant = Tenant(tenant_id="retired-intake", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="retired-token")
     registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_workspace_routes(
-        app,
-        config={},
-        env={},
-        service=ChatService(registry=registry),
-        registry=registry,
-        prefix="/v1/workspace",
-    )
-
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry),
+                              registry=registry, prefix="/v1/workspace")
     with TestClient(app) as client:
-        response = client.post(
-            "/v1/workspace/chat/intake/confirm",
-            headers={"Authorization": "Bearer new-site-token"},
-            json={"conversation_id": 12, "revision": 2, "draft_hash": "abc"},
-        )
-        start_response = client.post(
-            "/v1/workspace/chat/design/start",
-            headers={"Authorization": "Bearer new-site-token"},
-            json={"conversation_id": 12, "confirmed_revision": 22},
-        )
-
-    assert response.status_code == 200
-    assert "build" not in response.json()
-    assert start_response.status_code == 200
-    assert start_response.json()["run"]["run_id"] == "design-first-site"
-    memory.close()
-
+        response = client.post("/v1/workspace/chat/intake/confirm",
+                               headers={"Authorization": "Bearer retired-token"}, json={})
+    assert response.status_code == 404
 
 def test_shared_api_exposes_media_library_and_analysis(tmp_path):
     class Payload:

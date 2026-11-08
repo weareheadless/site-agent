@@ -184,10 +184,9 @@ class Journey:
 
     @property
     def initial_phase(self) -> str:
-        if self.website_present and self.incubation_needed:
-            return "incubation"
-        if not self.website_present:
-            return "intake"
+        # The owner always lands in the workspace. A site exists as deployed
+        # source, not as published Payload content, so the phase must not be
+        # derived from CMS state.
         return "workspace"
 
 
@@ -2076,12 +2075,7 @@ class ChatService:
                 needs_intake = not bool(intake_status.get("confirmed"))
             except Exception as exc:  # noqa: BLE001 — keep status errors bounded
                 raise BridgeError(str(exc)[:500]) from exc
-        if journey is None:
-            mode = "intake" if needs_intake else "workspace"
-        elif needs_intake:
-            mode = journey.initial_phase
-        else:
-            mode = "workspace"
+        mode = "workspace"
         website_present = journey.website_present if journey is not None else mode == "workspace"
         incubation_needed = journey.incubation_needed if journey is not None else intake_enabled
         active_jobs = memory.list_active_chat_jobs(conversation_id=normalized_id, limit=1)
