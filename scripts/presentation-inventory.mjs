@@ -3,7 +3,7 @@ import path from 'node:path'
 
 const PAGE_FILES = new Set(['page.tsx', 'page.ts', 'page.jsx', 'page.js'])
 // Directories that never publish an owner-facing page.
-const PRIVATE_DIRECTORIES = new Set(['api', 'admin', 'helloada-preview', 'node_modules'])
+const PRIVATE_DIRECTORIES = new Set(['api', 'admin', 'helloada-preview', 'preview', 'node_modules'])
 
 /**
  * Enumerate the public routes rendered by committed Next source.

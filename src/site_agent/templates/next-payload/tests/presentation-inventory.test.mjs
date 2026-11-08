@@ -27,6 +27,7 @@ test('committed pages become the owner-visible route inventory', async (t) => {
   await page(app, 'api/health')
   await page(app, '(payload)/admin/[[...segments]]')
   await page(app, 'helloada-preview/[token]')
+  await page(app, 'preview/listing/[slug]')
   await page(app, '_components/widget')
 
   assert.deepEqual(discoverPresentationRoutes(app), ['/', '/about/team', '/courses'])
