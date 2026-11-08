@@ -1944,3 +1944,36 @@ def test_a_first_turn_pins_only_its_own_content():
     effects, _ = runner._payload_manifest_for_review({"_completed_payload_effects": [nav]}, Memory())
 
     assert effects == [{**nav, "summary": ""}]
+
+
+def test_a_repaired_candidate_is_recorded_on_the_draft_before_its_preview():
+    class Memory:
+        def __init__(self):
+            self.meta = {"head_sha": "a" * 40, "preview": {"status": "blocked"}}
+
+        def list_drafts(self, limit=200):
+            return [{"id": 9, "title": "t", "body": "", "kind": "merge", "meta": dict(self.meta)}]
+
+        def update_draft_meta(self, draft_id, meta):
+            assert draft_id == 9
+            self.meta = dict(meta)
+
+    memory = Memory()
+    seen: dict[str, object] = {}
+
+    class Deployer:
+        def start(self, body):
+            # The preview service refuses a commit the draft does not identify.
+            seen["head_sha"] = memory.meta.get("head_sha")
+            return {"id": "job-1"}
+
+        def status(self, job_id):
+            return {"status": "ready", "commit": "b" * 40, "preview_url": "/p"}
+
+    context = {"memory": memory, "source_deployment": Deployer(), "config": {}}
+    preview = runner._restart_preview_for_draft(
+        context, 9, {"candidate_sha": "b" * 40, "branch": "preview"},
+    )
+
+    assert seen["head_sha"] == "b" * 40
+    assert preview["status"] == "ready"

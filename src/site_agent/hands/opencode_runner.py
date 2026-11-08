@@ -5938,6 +5938,10 @@ def _restart_preview_for_draft(
         raise RunnerError("the compiled preview service is unavailable")
     candidate = str(outcome.get("candidate_sha") or "").strip().lower()
     branch = str(outcome.get("branch") or PREVIEW_BRANCH)
+    # The preview service requires the draft to identify the exact commit it is
+    # asked to build. A repair produces a new commit, so record it on the draft
+    # before asking, or the restart is refused as a different candidate.
+    _update_staged_draft_meta(context, int(draft_id), {"head_sha": candidate})
     job = start({"branch": branch, "commit": candidate, "draft_id": int(draft_id)})
     builder = (context.get("config") or {}).get("builder") or {}
     settled = _wait_for_preview(

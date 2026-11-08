@@ -882,3 +882,85 @@ def test_a_preview_route_that_does_not_render_fails_the_candidate(tmp_path):
     finally:
         service.close()
         server.shutdown()
+
+
+def _git_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        "PATH": __import__("os").environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": str(tmp_path),
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def run(*args):
+        subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True, env=env)
+
+    def head():
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, check=True,
+            capture_output=True, text=True, env=env,
+        ).stdout.strip()
+
+    run("init", "-q")
+    (repo / "src/app").mkdir(parents=True)
+    (repo / "src/components/site/presentation").mkdir(parents=True)
+    (repo / "src/app/sitemap.ts").write_text("export default function sitemap() { return [] }\n")
+    (repo / "src/components/site/presentation/Hero.tsx").write_text("export default function Hero() { return null }\n")
+    (repo / "package.json").write_text('{"name": "site"}\n')
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    return repo, head(), run, head
+
+
+def test_the_preview_boundary_accepts_the_crawl_files_authoring_allows(tmp_path):
+    repo, base, run, head = _git_repo(tmp_path)
+    (repo / "src/app/sitemap.ts").write_text("export default function sitemap() { return ['/blog'] }\n")
+    (repo / "src/components/site/presentation/Hero.tsx").write_text("export default function Hero() { return null as never }\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "candidate")
+    candidate = head()
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        draft = memory.save_draft("About", "", kind="merge", meta={
+            "base_sha": base, "head_sha": candidate,
+        })
+        service = source_deployment.SourceDeploymentService({
+            "site": {"clone_path": str(repo)},
+            "design_engine": {"build_profile": "next_react"},
+        }, env={}, memory=memory)
+        try:
+            check = service._verify_candidate_source_boundary(repo, candidate, draft)
+            assert check["ok"] is True
+            assert check["changed_files"] == 2
+        finally:
+            service.close()
+    finally:
+        memory.close()
+
+
+def test_the_preview_boundary_still_refuses_platform_files(tmp_path):
+    repo, base, run, head = _git_repo(tmp_path)
+    (repo / "package.json").write_text('{"name": "site", "scripts": {}}\n')
+    run("add", "-A")
+    run("commit", "-q", "-m", "candidate")
+    candidate = head()
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        draft = memory.save_draft("About", "", kind="merge", meta={
+            "base_sha": base, "head_sha": candidate,
+        })
+        service = source_deployment.SourceDeploymentService({
+            "site": {"clone_path": str(repo)},
+            "design_engine": {"build_profile": "next_react"},
+        }, env={}, memory=memory)
+        try:
+            with pytest.raises(source_deployment.SourceDeploymentError, match="package.json"):
+                service._verify_candidate_source_boundary(repo, candidate, draft)
+        finally:
+            service.close()
+    finally:
+        memory.close()
