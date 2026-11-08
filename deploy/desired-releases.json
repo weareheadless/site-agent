@@ -1,9 +1,8 @@
 {
   "releases": {
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261108230201-2c7f65c3",
-      "sha": "14572744b21f97fb4ed59c60860d8f9efe7030c4",
-      "sharedRuntimeFingerprint": "2c7f65c36066a9f5406b1fcb98b330a05f8ece4f2d95fb4abf4b2082c346c3ed"
+      "id": "rel-20261108231814-af0b7b95",
+      "sha": "f9038f3471bafe9ebb508aaa17cb1c69f792b0d3"
     },
     "casamigo": {
       "id": "runtime-20261108202240-9be79e70",
