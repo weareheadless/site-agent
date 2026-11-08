@@ -1860,3 +1860,35 @@ def test_a_repair_that_changes_nothing_does_not_rebuild_the_same_failure(monkeyp
 
     assert restarted == []
     assert seen["removed"] is True
+
+
+def test_the_turn_pins_the_content_revisions_its_tools_saved(monkeypatch, tmp_path):
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
+    effects = [{
+        "kind": "collection", "operation": "update", "target": "pages",
+        "document_id": "2", "revision": "sha256:" + "a" * 64, "locale": "en",
+        "fields": ["sections", "title"],
+    }]
+
+    class Memory:
+        def kv_get(self, key, default=None):
+            assert key == "chat_turn:7"
+            return {"_completed_payload_effects": effects}
+
+    captured: dict[str, object] = {}
+
+    def finish(context, *args, **kwargs):
+        captured["effects"] = context.get("_completed_payload_effects")
+        return {
+            "changed": True, "output": "", "candidate_sha": "a" * 40,
+            "changed_paths": ["src/page.tsx"], "branch": "preview",
+            "preview": {"requires_build": True, "status": "ready"},
+        }
+
+    monkeypatch.setattr(owner_runner, "_finish_builder", finish)
+
+    owner_runner.run_owner_turn({"config": {}, "memory": Memory()}, 7, "rebuild the about page")
+
+    # Without these the compiled preview seeds published content only and the
+    # page the agent just wrote is missing from the preview.
+    assert captured["effects"] == effects

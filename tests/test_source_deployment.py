@@ -806,3 +806,22 @@ def test_a_worktree_reuses_the_installed_tree_for_its_exact_lockfile(tmp_path, m
         assert linked == [service._node_modules_key(worktree)]
     finally:
         service.close()
+
+
+def test_a_preview_is_not_reused_across_different_payload_revisions(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    (checkout / ".git").mkdir()
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(checkout)}})
+    try:
+        service._jobs["preview-a"] = {
+            "id": "preview-a", "branch": "preview", "commit": "a" * 40,
+            "mode": "compiled_preview", "draft_id": 69, "design_run_id": "",
+            "payload_revision_set_hash": "", "status": "ready",
+        }
+        service._start_locked = lambda *args, **kwargs: pytest.fail("a new content set must not reuse the old preview")
+        with pytest.raises(pytest.fail.Exception):
+            service.start({"branch": "preview", "commit": "a" * 40, "draft_id": 69,
+                           "payload_revision_set_hash": "b" * 64})
+    finally:
+        service.close()

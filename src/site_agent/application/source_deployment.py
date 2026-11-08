@@ -1568,6 +1568,9 @@ class SourceDeploymentService:
                     and existing.get("mode") == mode
                     and existing.get("draft_id") == draft_id
                     and existing.get("design_run_id", "") == design_run_id
+                    # The same source commit against different Payload revisions
+                    # is a different preview: it renders different content.
+                    and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
                     and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
                 ):
                     return dict(existing)

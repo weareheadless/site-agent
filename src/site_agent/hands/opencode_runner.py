@@ -5806,6 +5806,22 @@ _CONTENT_VIOLATION_REQUIREMENTS = {
 }
 
 
+def _turn_payload_effects(memory: Any, job_id: Any) -> list[dict[str, Any]]:
+    """The exact Payload revisions this turn saved, from its durable state.
+
+    The workspace tools run in their own process and record each save on the
+    chat job's turn state, which is the only thing that survives that process.
+    Staging reads the same state, so a page the agent wrote is pinned into the
+    review draft and its preview instead of staying an unpublished document the
+    preview never sees.
+    """
+    if memory is None or job_id in (None, "", 0):
+        return []
+    stored = memory.kv_get(f"chat_turn:{int(job_id)}", {})
+    effects = stored.get("_completed_payload_effects") if isinstance(stored, Mapping) else None
+    return [dict(item) for item in effects or [] if isinstance(item, Mapping)]
+
+
 def _content_gate_violations(context: dict[str, Any], clone: Path) -> list[dict[str, Any]]:
     """Run the exact content gate the compiled preview will apply.
 
@@ -5991,6 +6007,11 @@ def run_owner_turn(
                         for item in violations[:8]
                     )
                 )
+        # The tool process wrote these to the job; staging must see them or the
+        # preview cannot show the page the agent just saved.
+        effects = _turn_payload_effects(memory, job_id)
+        if effects:
+            context["_completed_payload_effects"] = effects
         outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
         staged = stage_review(context, subject, outcome, progress)
         preview = staged.get("preview") if isinstance(staged.get("preview"), Mapping) else {}
@@ -6017,6 +6038,9 @@ def run_owner_turn(
             _validate_preview(config, clone, base_ref)
             _bump_asset_versions(clone)
             _validate_preview(config, clone, base_ref)
+            effects = _turn_payload_effects(memory, job_id)
+            if effects:
+                context["_completed_payload_effects"] = effects
             outcome = _finish_builder(context, clone, base_ref, subject, reply, progress)
             if str(outcome.get("candidate_sha") or "") == first_candidate:
                 raise RunnerError(
