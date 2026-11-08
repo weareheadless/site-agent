@@ -13,12 +13,8 @@
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261105170851-c4d8f82b",
-      "schemaMigration": {
-        "fromLedgerIdentity": "14736a687a4705c37d7f68373f92cdaf09295632a64eb79f3889ef8503a6fafe",
-        "targetMigrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
-      },
-      "sha": "59ea0fdff6fd31d4f0b2702dcf5045a0cd7c9c72"
+      "id": "rel-20261108161832-e2bcc1c8",
+      "sha": "dab8f0e54b2fe60c5d014b74a2ed49602b8d99b6"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261103223219-bf91af50",
