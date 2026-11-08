@@ -1859,7 +1859,7 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             if all(health_present):
                 for field in locale_fields:
                     receipt[field] = receipt["health"][field]
-            presentation = receipt.get("presentation")
+            presentation = receipt.get("presentationInventory")
             if isinstance(presentation, dict):
                 stage("verify-preview")
                 receipt["preview"] = {
@@ -2332,7 +2332,7 @@ def main() -> int:
         generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
         generated_presentation = json.loads(
             (checkout / "src/generated/helloada-presentation.json").read_text(encoding="utf-8"))
-        receipt["presentation"] = validate_presentation_inventory(customer, generated_presentation)
+        receipt["presentationInventory"] = validate_presentation_inventory(customer, generated_presentation)
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
         if not all(field in customer for field in ("configurationIdentity", "locales", "defaultLocale")):
             raise RuntimeError("generated candidate has no complete locale configuration identity")

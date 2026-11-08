@@ -79,6 +79,16 @@ def test_presentation_inventory_is_a_release_fact_not_a_ui_detail():
     )['routes'] == []
 
 
+def test_generated_inventory_keeps_a_separate_receipt_key_from_source_admission():
+    source = (ROOT / "scripts/deploy-payload-customer.py").read_text()
+    assert 'receipt["presentationInventory"] = validate_presentation_inventory' in source
+    # Source admission also records under `presentation`; the inventory must not
+    # be overwritten by it before the live preview gate reads it.
+    assert 'receipt["presentation"] = validate_presentation_source' in source
+    live = source[source.index("def verify_live("):]
+    assert 'receipt.get("presentationInventory")' in live
+
+
 def test_preview_gate_renders_the_home_and_every_declared_page(monkeypatch):
     customer = {'health': 'https://tenant.example/api/health'}
     presentation = {'previewMount': '/tenant-preview', 'routes': ['/', '/courses']}
