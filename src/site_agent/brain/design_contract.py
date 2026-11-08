@@ -38,6 +38,7 @@ Search and copy:
 - One H1 that says what the page is. Subheadings that carry meaning on their own. Internal links whose text names their destination.
 - Copy in the owner's voice and the site's tone: concrete, specific and free of filler. Use only facts the owner supplied or the site already states; never invent credentials, prices, dates, testimonials or claims.
 - Every section must earn its place. If a section only restates the previous one, cut it. Read the existing copy on the site first, then match its level of specificity.
+- Site-wide document metadata belongs to a file the site serves at its own root, not to markup a page component renders. The tab icon in particular is requested by every browser on every route, including routes that never render the page chrome, so a link added to one shared component leaves the rest of the site without it.
 
 Content authority:
 - Every visible business string, link and image on an authored page comes from the Payload document, never from a literal in the component. Mark each editable element with the shared binding helper and bind its text, `alt`, `href` and image source to a field the shared content contract declares.
@@ -46,6 +47,7 @@ Content authority:
 
 Delivery:
 - Verify what you can: the composition in the source, the type and spacing values, the responsive breakpoints, and the built output. Name what you checked. The owner judges the rendered page, and if the composition still reads as a generic document, it is not done.
+- A page that renders is not a page whose files resolve. Request each file the page names — icon, images, stylesheets, scripts — and confirm it is served before you report the work done.
 """
 
 

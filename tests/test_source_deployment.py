@@ -973,3 +973,114 @@ def test_the_tab_icon_is_a_tenant_brand_asset():
     # The route and layout remain platform-owned.
     assert not is_frontend_owned_path("src/app/(frontend)/page.tsx")
     assert not is_frontend_owned_path("src/app/(frontend)/layout.tsx")
+
+
+def _preview_server(pages, files=None):
+    """Serve exact documents and files, so a gate can be asked real questions."""
+    import http.server
+    import threading
+
+    files = dict(files or {})
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler
+            path = self.path.split("?")[0]
+            if path in pages:
+                body = pages[path].encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+            elif path in files:
+                body = files[path]
+                self.send_response(200)
+                self.send_header("Content-Type", "image/x-icon")
+            else:
+                body = b"missing"
+                self.send_response(404)
+                self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_a_page_that_names_a_file_it_cannot_serve_fails_the_render_gate(tmp_path):
+    # The tab icon case: the document renders, the file it names 404s. A gate
+    # that only checks the document status calls this candidate ready.
+    server = _preview_server({
+        "/": '<html><head><link rel="icon" href="/icon-1g134v.png"></head><body>ok</body></html>',
+    }, {"/icon-4usi79.png": b"icon"})
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(source_deployment.SourceDeploymentError, match="icon-1g134v.png"):
+            service._verify_preview_routes(base, ["/"])
+    finally:
+        service.close()
+        server.shutdown()
+
+
+def test_a_page_whose_assets_all_resolve_passes_the_render_gate(tmp_path):
+    server = _preview_server({
+        "/": '<html><head><link rel="icon" href="/favicon.ico"></head>'
+             '<body><img src="/hero.jpg" srcset="/hero.jpg 1x, /hero@2x.jpg 2x"></body></html>',
+    }, {"/favicon.ico": b"icon", "/hero.jpg": b"jpg", "/hero@2x.jpg": b"jpg2"})
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        assert service._verify_preview_routes(base, ["/"]) == ["/"]
+    finally:
+        service.close()
+        server.shutdown()
+
+
+def test_third_party_assets_are_not_this_previews_to_serve(tmp_path):
+    server = _preview_server({
+        "/": '<html><head><link rel="stylesheet" href="https://fonts.invalid/x.css"></head>'
+             '<body>ok</body></html>',
+    })
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        # Nothing on the local server would answer that URL, so passing means
+        # the cross-origin reference was recognised and left alone.
+        assert service._verify_preview_routes(base, ["/"]) == ["/"]
+    finally:
+        service.close()
+        server.shutdown()
+
+
+def test_the_home_page_is_always_part_of_the_render_gate(tmp_path):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        assert service._required_preview_routes(["/about"]) == ["/", "/about"]
+        assert service._required_preview_routes(["/", "/about"]) == ["/", "/about"]
+        assert service._required_preview_routes([]) == ["/"]
+    finally:
+        service.close()
+
+
+def test_the_preview_mounts_the_candidates_own_media(tmp_path):
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    job = {
+        "runtime_base_path": "/api/helloada/source/preview/j1/runtime",
+        "public_asset_roots": ["/oceanic/"],
+    }
+    try:
+        body = (
+            '<html><head><link rel="preload" as="image" href="/api/media/file/hero.jpg">'
+            '<link rel="stylesheet" href="/api/helloada/source/preview/j1/runtime/app.css">'
+            "</head><body><img src=\"/api/media/file/logo.jpg\"></body></html>"
+        ).encode()
+        out = service._rewrite_runtime_assets(body, "text/html", job, "about").decode()
+        mounted = "/api/helloada/source/preview/j1/runtime"
+        assert out.count(f'{mounted}/api/media/file/') == 2
+        # The platform bridge keeps its own address inside the preview.
+        assert f'{mounted}/api/helloada/source/preview/j1/runtime/app.css' not in out
+    finally:
+        service.close()

@@ -25,6 +25,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -40,6 +41,10 @@ class SourceDeploymentError(RuntimeError):
 
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/robots.txt", "/sitemap.xml")
+# Files the candidate itself serves from its Payload API rather than from
+# `public/`. In production they answer at the site root; inside the preview they
+# must answer through the preview mount like the rest of the candidate.
+_PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
 _PREVIEW_ENV_ALLOWLIST = frozenset({
@@ -55,6 +60,50 @@ def _now() -> str:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+class _DocumentAssets(HTMLParser):
+    """Collect the files a rendered document makes the browser request.
+
+    A page that returns 200 can still be broken: a `<link rel="icon">` pointed
+    at a name the build never emitted 404s in the tab even though the document
+    rendered. The gate requests exactly what the markup names, so an asset the
+    owner would see fail cannot pass as a ready preview.
+    """
+
+    _ELEMENTS: tuple[tuple[str, str], ...] = (
+        ("link", "href"),
+        ("script", "src"),
+        ("img", "src"),
+        ("img", "srcset"),
+        ("source", "src"),
+        ("source", "srcset"),
+        ("video", "src"),
+        ("video", "poster"),
+        ("audio", "src"),
+        ("track", "src"),
+    )
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.urls: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {name: value or "" for name, value in attrs}
+        for element, attribute in self._ELEMENTS:
+            if tag != element:
+                continue
+            value = attributes.get(attribute, "").strip()
+            if not value:
+                continue
+            # srcset is a comma-separated candidate list; only the URL matters.
+            candidates = [value] if attribute != "srcset" else [
+                part.strip().split(" ")[0] for part in value.split(",")
+            ]
+            self.urls.extend(url for url in candidates if url)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
 
 
 class SourceDeploymentService:
@@ -944,7 +993,7 @@ class SourceDeploymentService:
     @staticmethod
     def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any], request_path: str = "") -> bytes:
         base = str(job.get("runtime_base_path") or "")
-        roots = list(job.get("public_asset_roots") or [])
+        roots = list(job.get("public_asset_roots") or []) + list(_PREVIEW_CANDIDATE_ASSET_ROOTS)
         if not base or not any(kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")):
             return body
         # Root-relative public URLs occur in SSR HTML, its RSC payload and the
@@ -1121,9 +1170,15 @@ class SourceDeploymentService:
             label="compiled preview",
         )
         try:
+            # The home page is the site: a candidate that changes shared chrome
+            # or a layout can break it while every authored route still renders,
+            # so it is always part of the render gate even when the change
+            # touched no Payload document on it.
+            required_routes = self._required_preview_routes(job.get("preview_routes") or [])
             rendered = self._verify_preview_routes(
                 f"http://127.0.0.1:{port}{base_path}",
-                list(job.get("preview_routes") or []),
+                required_routes,
+                job,
             )
         except SourceDeploymentError:
             self._stop_runtime(str(job["id"]))
@@ -1139,7 +1194,21 @@ class SourceDeploymentService:
             "rendered_routes": rendered,
         }
 
-    def _verify_preview_routes(self, base: str, routes: Sequence[str]) -> list[str]:
+    def _required_preview_routes(self, routes: Sequence[str]) -> list[str]:
+        """Every authored route, plus the home page.
+
+        The home page is the site. A candidate that changes shared chrome, a
+        layout or a stylesheet can break it while every route it authored still
+        renders, and the owner lands on it first.
+        """
+        required = list(routes)
+        if "/" not in required:
+            required.insert(0, "/")
+        return required
+
+    def _verify_preview_routes(
+        self, base: str, routes: Sequence[str], job: Mapping[str, Any] | None = None,
+    ) -> list[str]:
         """Every page this candidate authored must render in its own preview.
 
         A build that compiles is not a page. A component can throw while
@@ -1147,15 +1216,28 @@ class SourceDeploymentService:
         page is a 500. The route list comes from the exact Payload documents
         this candidate saved, so it checks what the owner asked for rather than
         every route on the site.
+
+        A page that returns 200 is still not evidence that its files exist: the
+        markup names icons, images, stylesheets and chunks, and any of those can
+        404 while the document renders. Each rendered page's same-origin asset
+        references are requested too, so a link to a file the build never
+        emitted fails here instead of in the owner's browser tab.
         """
+        if not base.endswith("/"):
+            base += "/"
         verified: list[str] = []
+        assets: dict[str, str] = {}
         for route in routes:
-            url = base.rstrip("/") + (route if route != "/" else "/")
+            url = urllib.parse.urljoin(base, route.lstrip("/") if route != "/" else ".")
             try:
                 with urllib.request.urlopen(url, timeout=20) as response:
                     status = int(response.status)
+                    content_type = str(response.headers.get("Content-Type") or "")
+                    body = response.read() if "html" in content_type else b""
             except urllib.error.HTTPError as exc:
                 status = int(exc.code)
+                content_type = ""
+                body = b""
             except (OSError, urllib.error.URLError) as exc:
                 raise SourceDeploymentError(
                     f"compiled preview route {route} could not be requested: {str(exc)[:200]}"
@@ -1165,7 +1247,57 @@ class SourceDeploymentService:
                     f"compiled preview route {route} returned {status}; the candidate does not render"
                 )
             verified.append(route)
+            if body and job is not None:
+                # Check the document the browser will actually receive: the
+                # preview mounts the candidate's own asset URLs, and a reference
+                # that only resolves unmounted is not what the owner sees.
+                body = self._rewrite_runtime_assets(body, content_type, job, route.lstrip("/"))
+            for reference in self._document_asset_references(body, url):
+                assets.setdefault(reference, route)
+        for reference, route in assets.items():
+            try:
+                with urllib.request.urlopen(reference, timeout=20) as response:
+                    asset_status = int(response.status)
+            except urllib.error.HTTPError as exc:
+                asset_status = int(exc.code)
+            except (OSError, urllib.error.URLError) as exc:
+                raise SourceDeploymentError(
+                    f"compiled preview page {route} references {reference}, which could not be "
+                    f"requested: {str(exc)[:200]}"
+                ) from exc
+            if not 200 <= asset_status < 300:
+                raise SourceDeploymentError(
+                    f"compiled preview page {route} references {reference}, which returned "
+                    f"{asset_status}; the candidate names a file it cannot serve"
+                )
         return verified
+
+    def _document_asset_references(self, body: bytes, page_url: str) -> list[str]:
+        """Same-origin files this document names, deduplicated and bounded."""
+        if not body:
+            return []
+        parser = _DocumentAssets()
+        try:
+            parser.feed(body.decode("utf-8", "replace"))
+        except Exception:  # A malformed document still returns 200 above.
+            return []
+        page = urllib.parse.urlsplit(page_url)
+        found: list[str] = []
+        for raw in parser.urls:
+            if raw.startswith(("data:", "mailto:", "tel:", "javascript:", "#")):
+                continue
+            absolute = urllib.parse.urljoin(page_url, raw)
+            parts = urllib.parse.urlsplit(absolute)
+            if parts.scheme not in ("http", "https"):
+                continue
+            if (parts.scheme, parts.netloc) != (page.scheme, page.netloc):
+                continue  # Third-party fonts and scripts are not this preview's to serve.
+            if absolute == page_url or absolute in found:
+                continue
+            found.append(absolute)
+            if len(found) >= 80:
+                break
+        return found
 
     def _content_inventory(self, checkout: Path, worktree: Path, timeout: int,
                            preview_secret: str) -> dict[str, Any]:
