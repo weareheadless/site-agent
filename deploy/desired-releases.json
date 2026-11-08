@@ -1,9 +1,9 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "rel-20261108180901-76ca4ca3",
+      "id": "rel-20261103222247-2ef7ad10",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "24076b01dc3037b6b644206a3aa201baafffba54b162c8be86b1f118563dbcb3"
+      "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
     },
     "casamigo": {
       "id": "rel-20261108175031-99be4fe9",
