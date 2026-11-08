@@ -418,7 +418,7 @@ def test_api_restart_broker_accepts_only_fixed_restart_request():
     assert output.getvalue() == b"restarted\n"
     assert calls[0][0] == ["/usr/bin/systemctl", "restart", "site-agent-api.service"]
     assert calls[0][1]["shell"] is False
-    assert calls[0][1]["timeout"] == 120
+    assert calls[0][1]["timeout"] == 300
 
 
 def test_api_restart_broker_rejects_arbitrary_commands_without_execution():
