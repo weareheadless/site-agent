@@ -290,7 +290,7 @@ def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
     response = bytearray()
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-            connection.settimeout(150)
+            connection.settimeout(330)
             connection.connect(socket_path)
             connection.sendall(b"restart\n")
             connection.shutdown(socket.SHUT_WR)

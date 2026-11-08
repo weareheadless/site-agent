@@ -30,7 +30,7 @@ def serve(reader: BinaryIO, writer: BinaryIO, *,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
+            timeout=300,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"fixed API restart failed: {type(exc).__name__}", file=sys.stderr, flush=True)
