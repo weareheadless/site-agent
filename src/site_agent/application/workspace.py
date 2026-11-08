@@ -1601,7 +1601,8 @@ class ChatService:
             memory.update_draft_status(draft_id, "publish_failed")
             memory.record_action("publish_failed", f"#{draft_id}: reviewed Payload revision set does not match its receipt")
             raise BridgeError("the reviewed Payload revision set does not match its recorded receipt")
-        gateway = tenant.context.get("payload_gateway") if tenant is not None else None
+        gateway = (tenant.context.get("payload_gateway") if tenant is not None
+                   else self.context.get("payload_gateway"))
         if gateway is None:
             memory.update_draft_status(draft_id, "publish_failed")
             memory.record_action("publish_failed", f"#{draft_id}: Payload publication is unavailable")
@@ -4946,6 +4947,15 @@ class ChatService:
         elif kind in {"merge", "rollback"}:
             adapter = self._merge_adapter(tenant)
             config = tenant.config if tenant is not None else self.config
+            # A source review carries the exact Payload revisions it was
+            # reviewed with. Publishing them belongs to the same approval:
+            # approving a page that exists only as a draft must not leave it
+            # unpublished and 404 on the live site.
+            published_effects = self._publish_reviewed_payload_effects(
+                memory, normalized_id, draft, tenant,
+            )
+            if published_effects:
+                result["payload_publication"] = dict(published_effects)
             growth_package = meta.get("growth_package") if isinstance(meta.get("growth_package"), Mapping) else None
             growth_source = bool(growth_package and growth_package.get("candidateType") == "source_code")
             growth_initiative = None

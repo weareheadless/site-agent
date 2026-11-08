@@ -48,3 +48,49 @@ def test_managed_decision_cannot_omit_or_replace_the_reviewed_hash(tmp_path, met
         assert memory.list_drafts()[0]["status"] == "pending"
     finally:
         memory.close()
+
+
+def test_approving_a_page_review_publishes_its_content_before_the_merge(tmp_path):
+    from site_agent.core.payload_receipts import payload_revision_manifest
+
+    effects = [{
+        "kind": "collection", "operation": "update", "target": "pages", "document_id": "2",
+        "revision": "sha256:" + "a" * 64, "locale": "en", "fields": ["sections"],
+    }]
+    normalized, digest = payload_revision_manifest(effects)
+    order: list[str] = []
+
+    class Adapter:
+        def merge_preview(self, config, message):
+            order.append("merge")
+            return {"merged": True, "sha": "a" * 40}
+
+    class Tenant:
+        id = "demo"
+        config = {"site": {"branch": "main", "preview_branch": "preview"}}
+        context = {"design_adapter": Adapter()}
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        draft = memory.save_draft("About page", "diff", kind="merge", meta={
+            "head_sha": "a" * 40,
+            "base_sha": "b" * 40,
+            "preview": {"status": "ready", "requires_build": False, "head_sha": "a" * 40},
+            "payload_effects": normalized,
+            "payload_revision_set_hash": digest,
+        })
+        service = ChatService(memory, {})
+
+        def publish(*args, **kwargs):
+            order.append("publish")
+            return {"published": 1, "satisfied": 0}
+
+        service._publish_reviewed_payload_effects = publish
+
+        service.approve_draft(draft, tenant=Tenant())
+
+        # Approving the page must not leave its content a draft: the reviewed
+        # revisions are published as part of the same decision.
+        assert order[:2] == ["publish", "merge"]
+    finally:
+        memory.close()
