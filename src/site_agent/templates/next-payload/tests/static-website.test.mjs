@@ -61,8 +61,8 @@ test('the configured Workspace preview mount serves the same static HTML in both
     assert.equal(response.status, 200)
     assert.match(await response.text(), /Original website/)
     assert.deepEqual(fetched, ['/_helloada/static-manifest.json', path.endsWith('/en/') ? '/en/index.html' : '/index.html'])
-    assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN')
-    assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self'/)
+    assert.equal(response.headers.get('x-frame-options'), null)
+    assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self' https:\/\/helloada\.app/)
     assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')
   }
 })

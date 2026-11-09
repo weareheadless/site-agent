@@ -129,7 +129,8 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   // It is not a publishable page and receives no indexing/tracking injection.
   if (file === '/404.html') {
     const errorHeaders = new Headers(asset.headers)
-    errorHeaders.set('content-security-policy', pagePolicy(manifest, file, measurement))
+    errorHeaders.set('content-security-policy', pagePolicy(manifest, file, measurement, isPreview))
+    if (isPreview) errorHeaders.delete('x-frame-options')
     return new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: errorHeaders })
   }
   if (!file.endsWith('.html')) return request.method === 'HEAD'
@@ -145,11 +146,20 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   headers.delete('etag')
   headers.set('content-type', 'text/html; charset=utf-8')
   headers.set('cache-control', 'no-store')
-  if (isPreview) headers.set('x-robots-tag', 'noindex, nofollow')
-  headers.set('x-frame-options', 'SAMEORIGIN')
-  headers.set('content-security-policy', pagePolicy(manifest, file, measurement))
+  if (isPreview) {
+    headers.set('x-robots-tag', 'noindex, nofollow')
+    // X-Frame-Options cannot name the control-plane origin. The preview is
+    // embedded by the owner workspace; CSP frame-ancestors carries that policy.
+    headers.delete('x-frame-options')
+  } else {
+    headers.set('x-frame-options', 'SAMEORIGIN')
+  }
+  headers.set('content-security-policy', pagePolicy(manifest, file, measurement, isPreview))
   return new Response(request.method === 'HEAD' ? null : html, { status: 200, headers })
 }
+
+/** The standard owner workspace embeds only the tenant preview alias. */
+const CONTROL_PLANE_ORIGIN = 'https://helloada.app'
 
 type PageSecurity = { origins?: Record<string, string[]> }
 
@@ -183,7 +193,7 @@ const MEASUREMENT_IMG = [
  * because the export generates inline code at runtime; external script
  * sources are limited to the declaration.
  */
-function pagePolicy(manifest: StaticManifest, file: string, measurement: string): string {
+function pagePolicy(manifest: StaticManifest, file: string, measurement: string, preview = false): string {
   const declared: PageSecurity = (manifest.security || {})[file] || {}
   // The inventory can declare origins the exported markup cannot reveal, such
   // as images or map tiles fetched at runtime by the site's own scripts.
@@ -209,7 +219,7 @@ function pagePolicy(manifest: StaticManifest, file: string, measurement: string)
     ['frame-src', merge(origins.frame)],
     ['object-src', ["'none'"]],
     ['base-uri', ["'self'"]],
-    ['frame-ancestors', ["'self'"]],
+    ['frame-ancestors', preview ? ["'self'", CONTROL_PLANE_ORIGIN] : ["'self'"]],
   ]
   return directives
     .filter(([, values]) => values.length)
