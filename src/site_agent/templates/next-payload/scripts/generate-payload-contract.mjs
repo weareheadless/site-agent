@@ -107,22 +107,36 @@ manifest.configurationIdentity = contractIdentity.configurationIdentity
 manifest.locales = contractIdentity.locales
 manifest.defaultLocale = contractIdentity.defaultLocale
 
+// The generated identity is this build's output, not a value every tenant
+// repository has to pre-declare. Older tenants and stale draft branches may
+// not have the slots yet; add them to the Worker vars before filling them.
+const generatedSlot = (key, placeholder) =>
+  new RegExp(`("${key}":\\s*")(?:${placeholder}|[0-9a-f]{64})(")`)
+const ensureGeneratedSlot = (source, key, placeholder) => {
+  if (generatedSlot(key, placeholder).test(source)) return source
+  const vars = /"vars"\s*:\s*\{/
+  if (!vars.test(source)) {
+    throw new Error(`Wrangler config has no "vars" object for ${key}.`)
+  }
+  return source.replace(vars, (match) => `${match}\n    "${key}": "${placeholder}",`)
+}
+
 let wrangler = readFileSync(wranglerPath, 'utf8')
-const schemaIdentitySlot = /("HELLOADA_SCHEMA_IDENTITY": ")(?:__HELLOADA_SCHEMA_IDENTITY__|[0-9a-f]{64})(")/
-if (!schemaIdentitySlot.test(wrangler)) {
-  throw new Error('Wrangler config has no generated schema-identity slot.')
-}
-wrangler = wrangler.replace(schemaIdentitySlot, `$1${manifest.schemaIdentity}$2`)
-const sharedRuntimeSlot = /(\"HELLOADA_SHARED_RUNTIME_FINGERPRINT\": \")(?:__HELLOADA_SHARED_RUNTIME_FINGERPRINT__|[0-9a-f]{64})(\")/
-if (!sharedRuntimeSlot.test(wrangler)) {
-  throw new Error('Wrangler config has no generated shared-runtime-fingerprint slot.')
-}
-wrangler = wrangler.replace(sharedRuntimeSlot, `$1${sharedRuntime}$2`)
-const migrationHeadSlot = /(\"HELLOADA_PAYLOAD_MIGRATION_HEAD\": \")(?:__HELLOADA_PAYLOAD_MIGRATION_HEAD__|[0-9a-f]{64})(\")/
-if (!migrationHeadSlot.test(wrangler)) {
-  throw new Error('Wrangler config has no generated Payload-migration-head slot.')
-}
-wrangler = wrangler.replace(migrationHeadSlot, `$1${migrationHead}$2`)
+wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_SCHEMA_IDENTITY', '__HELLOADA_SCHEMA_IDENTITY__')
+wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_SHARED_RUNTIME_FINGERPRINT', '__HELLOADA_SHARED_RUNTIME_FINGERPRINT__')
+wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_PAYLOAD_MIGRATION_HEAD', '__HELLOADA_PAYLOAD_MIGRATION_HEAD__')
+wrangler = wrangler.replace(
+  generatedSlot('HELLOADA_SCHEMA_IDENTITY', '__HELLOADA_SCHEMA_IDENTITY__'),
+  `$1${manifest.schemaIdentity}$2`,
+)
+wrangler = wrangler.replace(
+  generatedSlot('HELLOADA_SHARED_RUNTIME_FINGERPRINT', '__HELLOADA_SHARED_RUNTIME_FINGERPRINT__'),
+  `$1${sharedRuntime}$2`,
+)
+wrangler = wrangler.replace(
+  generatedSlot('HELLOADA_PAYLOAD_MIGRATION_HEAD', '__HELLOADA_PAYLOAD_MIGRATION_HEAD__'),
+  `$1${migrationHead}$2`,
+)
 
 mkdirSync(path.dirname(presentationPath), { recursive: true })
 writeFileSync(presentationPath, `${JSON.stringify(presentation, null, 2)}\n`)

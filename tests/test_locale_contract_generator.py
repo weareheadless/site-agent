@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,6 +23,12 @@ def test_generated_locale_identity_comes_from_worker_config_not_stale_template_m
     manifest = json.loads(manifest_path.read_text())
     manifest.update(locales=['en'], defaultLocale='en')
     manifest_path.write_text(json.dumps(manifest))
+    wrangler_path = site / 'wrangler.jsonc'
+    wrangler = wrangler_path.read_text()
+    for key in ('HELLOADA_SCHEMA_IDENTITY', 'HELLOADA_SHARED_RUNTIME_FINGERPRINT',
+                'HELLOADA_PAYLOAD_MIGRATION_HEAD'):
+        wrangler = '\n'.join(line for line in wrangler.splitlines() if f'"{key}"' not in line)
+    wrangler_path.write_text(wrangler)
     core = tmp_path / 'core/src'
     (core / 'schema').mkdir(parents=True)
     (core.parent / 'package.json').write_text(json.dumps({'version': core_version}))
@@ -48,3 +55,11 @@ export const createHelloAdaContractIdentity = (selection) => ({
     assert generated['locales'] == ['en', 'es']
     assert generated['defaultLocale'] == 'es'
     assert len(generated['configurationIdentity']) == 64
+    # The generator owns these identities: a tenant or draft branch that
+    # predates the slots still gets them written into the Worker vars.
+    written = wrangler_path.read_text()
+    for key in ('HELLOADA_SCHEMA_IDENTITY', 'HELLOADA_SHARED_RUNTIME_FINGERPRINT',
+                'HELLOADA_PAYLOAD_MIGRATION_HEAD'):
+        match = re.search(rf'"{key}": "([0-9a-f]{{64}})"', written)
+        assert match, key
+    assert generated['schemaIdentity'] in written
