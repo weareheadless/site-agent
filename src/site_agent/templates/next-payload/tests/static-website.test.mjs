@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { staticWebsiteResponse } from '../src/lib/static-website.ts'
+import { containPreviewNavigation, staticPresentationRoutes, staticWebsiteResponse } from '../src/lib/static-website.ts'
 
 const security = {
   origins: { script: ['https://cdn.example.com'], img: ['https://img.example.com'], frame: ['https://meet.example.com'] },
@@ -28,7 +28,9 @@ const request = (path = '/', method = 'GET') => new Request('https://tenant.work
 
 test('the tenant Worker passes the configured admin preview mount into static routing', () => {
   const worker = readFileSync(new URL('../worker.ts', import.meta.url), 'utf8')
-  assert.match(worker, /staticWebsiteResponse\(request, env, helloAdaSite\.routes\.preview, managedPaths\)/)
+  assert.match(worker, /const previewMount = helloAdaSite\.routes\.preview/)
+  assert.match(worker, /staticWebsiteResponse\(request, env, previewMount, managedPaths\)/)
+  assert.match(worker, /previewHtmlResponse\(response, previewMount, env\)/)
   assert.match(worker, /managedPaths = \(helloAdaSite\.routes as unknown as \{ managedPaths\?: unknown \}\)\.managedPaths/)
 })
 
@@ -227,4 +229,40 @@ test('a published trailing-slash managed URL is rewritten internally, not redire
   assert.equal(managedPathRewrite('/collections/one', ['/collections']), undefined, 'an already canonical path is untouched')
   assert.equal(managedPathRewrite('/properties/', ['/collections']), undefined, 'other paths keep their own routing')
   assert.equal(managedPathRewrite('/', ['/collections']), undefined)
+})
+
+test('a static site lists its reviewed presentation inventory in the workspace', async () => {
+  assert.deepEqual(await staticPresentationRoutes(env()), ['/', '/en'])
+  assert.deepEqual(await staticPresentationRoutes({ HELLOADA_PRESENTATION_PROFILE: 'payload' }), [])
+})
+
+test('preview navigation containment keeps same-site links under the mount', () => {
+  const mount = '/tenant-preview'
+  const hosts = ['tenant.workers.dev', 'www.example.com', 'example.com']
+  const base = 'https://tenant.workers.dev/tenant-preview/pulse'
+  assert.equal(containPreviewNavigation('/property/one', mount, hosts, base), '/tenant-preview/property/one')
+  assert.equal(containPreviewNavigation('https://www.example.com/about-us', mount, hosts, base), '/tenant-preview/about-us')
+  assert.equal(containPreviewNavigation('https://cdn.example.com/a.js', mount, hosts, base), 'https://cdn.example.com/a.js')
+  assert.equal(containPreviewNavigation('#section', mount, hosts, base), '#section')
+  assert.equal(containPreviewNavigation('mailto:owner@example.com', mount, hosts, base), 'mailto:owner@example.com')
+  assert.equal(containPreviewNavigation('/tenant-preview/pulse', mount, hosts, base), '/tenant-preview/pulse')
+  assert.equal(containPreviewNavigation('/es/tenant-preview/pulse', mount, hosts, base), '/tenant-preview/es/pulse')
+  assert.equal(containPreviewNavigation('/api/health', mount, hosts, base), '/api/health')
+  assert.equal(containPreviewNavigation('https://other.example/x', mount, hosts, base), 'https://other.example/x')
+})
+
+test('preview HTML carries the containment script and preview framing policy', async () => {
+  const mount = '/tenant-preview'
+  const settings = env({ NEXT_PUBLIC_SITE_URL: 'https://www.example.com' })
+  const response = await staticWebsiteResponse(request(`${mount}/`), settings, mount)
+  assert.equal(response.status, 200)
+  const html = await response.text()
+  assert.match(html, /MutationObserver/)
+  assert.match(html, /var mount="\/tenant-preview"/)
+  assert.match(html, /www\.example\.com/)
+  assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self' https:\/\/helloada\.app/)
+  assert.equal(response.headers.get('x-frame-options'), null)
+  assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')
+  const publicResponse = await staticWebsiteResponse(request('/'), settings)
+  assert.doesNotMatch(await publicResponse.text(), /MutationObserver/)
 })

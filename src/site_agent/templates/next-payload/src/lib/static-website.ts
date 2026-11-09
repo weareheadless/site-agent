@@ -5,6 +5,7 @@ export type StaticWebsiteEnv = {
   HELLOADA_PRESENTATION_PROFILE?: string
   GA_MEASUREMENT_ID?: string
   GOOGLE_SITE_VERIFICATION?: string
+  NEXT_PUBLIC_SITE_URL?: string
   ASSETS?: { fetch: (request: Request) => Promise<Response> }
 }
 
@@ -14,6 +15,9 @@ type StaticManifest = {
   files: Record<string, string>
   security?: Record<string, { origins?: Record<string, string[]> }>
 }
+
+/** The standard owner workspace embeds only the tenant preview alias. */
+const CONTROL_PLANE_ORIGIN = 'https://helloada.app'
 
 /**
  * The committed inventory of the imported static site. It ships with the
@@ -43,6 +47,177 @@ function loadStaticManifest(assets: NonNullable<StaticWebsiteEnv['ASSETS']>): Pr
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[character]!)
+
+const normalizeRoutePath = (value: string): string => {
+  if (value === '/') return '/'
+  const path = '/' + value.split('/').filter(Boolean).join('/')
+  return path === '' ? '/' : path
+}
+
+/**
+ * The owner-visible routes of a static presentation.
+ *
+ * A static site has no committed Next page files: its real pages live in the
+ * reviewed `helloada-frontend.json` inventory and ship as Worker assets. The
+ * workspace must list those pages, not only the Payload documents that happen
+ * to be managed by Next, or Home, Pulse and every other presentation page are
+ * unreachable from the owner workspace.
+ */
+export async function staticPresentationRoutes(env: StaticWebsiteEnv): Promise<string[]> {
+  if (env.HELLOADA_PRESENTATION_PROFILE !== 'static') return []
+  if (!env.ASSETS) throw new Error('Static website declaration or asset binding is missing')
+  const manifest = await loadStaticManifest(env.ASSETS)
+  return [...new Set(Object.keys(manifest.routes).map(normalizeRoutePath))].sort((left, right) => {
+    if (left === '/') return -1
+    if (right === '/') return 1
+    return left.localeCompare(right)
+  })
+}
+
+/**
+ * Keep a same-site navigation inside the Workspace preview mount.
+ *
+ * The public presentation is authored for the site root, so its links are
+ * root-absolute or use the live host. The preview is a path alias on the same
+ * Worker, which means those links would otherwise navigate the owner out of
+ * the preview and onto the public site. This function is also serialized into
+ * the preview document, so it must stay self-contained and free of imports.
+ */
+export function containPreviewNavigation(raw: string, mount: string, hosts: string[], baseHref: string): string {
+  if (!raw) return raw
+  const value = String(raw).trim()
+  if (!value || value.charAt(0) === '#' || /^(?:mailto|tel|sms|javascript|data|blob):/i.test(value)) return raw
+  let url: URL
+  try {
+    url = new URL(value, baseHref)
+  } catch {
+    return raw
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return raw
+  if (hosts.indexOf(url.host) === -1) return raw
+  const path = url.pathname
+  if (path === mount || path.indexOf(`${mount}/`) === 0) return raw
+  if (/^\/(?:api|admin|mail|_next|helloada-preview|_helloada)(?:\/|$)/.test(path)) return raw
+  // A site script may build a URL from the mount-prefixed pathname it sees
+  // (for example `/es` + `/tenant-preview/pulse`). Move that locale or prefix
+  // behind the mount instead of nesting the mount inside the page path.
+  const embedded = path.indexOf(`${mount}/`)
+  if (embedded > 0) {
+    const prefix = path.slice(0, embedded).replace(/^\/+|\/+$/g, '')
+    const suffix = path.slice(embedded + mount.length).replace(/^\/+/, '')
+    return `${mount}/${[prefix, suffix].filter(Boolean).join('/')}${url.search}${url.hash}`
+  }
+  return `${mount}${path}${url.search}${url.hash}`
+}
+
+/** Hosts whose pages belong to this tenant, including the live domain. */
+const previewHosts = (env: StaticWebsiteEnv): string[] => {
+  const hosts = new Set<string>()
+  for (const candidate of [env.NEXT_PUBLIC_SITE_URL]) {
+    if (!candidate) continue
+    try {
+      const url = new URL(candidate)
+      if (!url.host) continue
+      hosts.add(url.host)
+      hosts.add(url.host.replace(/^www\./, ''))
+      hosts.add(url.host.startsWith('www.') ? url.host : `www.${url.host}`)
+    } catch {
+      // An optional site URL that is not absolute must not disable previews.
+    }
+  }
+  return [...hosts]
+}
+
+const previewNavigationScript = (mount: string, hosts: string[]): string => `<script>(function(){
+var mount=${JSON.stringify(mount)};
+var hosts=${JSON.stringify(hosts)};
+if(hosts.indexOf(location.host)===-1)hosts.push(location.host);
+var contain=${containPreviewNavigation.toString()};
+function attribute(element){return element&&element.tagName==='FORM'?'action':'href';}
+function fix(element){
+  if(!element||!element.getAttribute)return;
+  var name=attribute(element);
+  var raw=element.getAttribute(name);
+  if(raw===null)return;
+  var next=contain(raw,mount,hosts,location.href);
+  if(next!==raw)element.setAttribute(name,next);
+}
+function fixTree(root){
+  if(!root||!root.querySelectorAll)return;
+  var nodes=root.querySelectorAll('a[href], area[href], form[action]');
+  for(var index=0;index<nodes.length;index++)fix(nodes[index]);
+}
+document.addEventListener('click',function(event){
+  var target=event.target;
+  if(!target||target.nodeType!==1||!target.closest)return;
+  var anchor=target.closest('a[href], area[href]');
+  if(!anchor||anchor.hasAttribute('download'))return;
+  var raw=anchor.getAttribute('href');
+  var next=contain(raw,mount,hosts,location.href);
+  if(next===raw)return;
+  event.preventDefault();
+  if(anchor.target&&anchor.target!=='_self')window.open(next,anchor.target);
+  else location.assign(next);
+},true);
+document.addEventListener('submit',function(event){
+  var form=event.target;
+  if(!form||form.tagName!=='FORM')return;
+  var raw=form.getAttribute('action');
+  if(raw===null)return;
+  var next=contain(raw,mount,hosts,location.href);
+  if(next!==raw)form.setAttribute('action',next);
+},true);
+function start(){
+  fixTree(document);
+  var observer=new MutationObserver(function(records){
+    for(var index=0;index<records.length;index++){
+      var record=records[index];
+      if(record.type==='attributes')fix(record.target);
+      else for(var nodeIndex=0;nodeIndex<record.addedNodes.length;nodeIndex++){
+        var node=record.addedNodes[nodeIndex];
+        if(node.nodeType===1){fix(node);fixTree(node);}
+      }
+    }
+  });
+  observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:['href','action']});
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);
+else start();
+})()<\/script>`
+
+const injectPreviewNavigation = (html: string, mount: string, env: StaticWebsiteEnv): string => {
+  const script = previewNavigationScript(mount, previewHosts(env))
+  return /<\/body\s*>/i.test(html)
+    ? html.replace(/<\/body\s*>/i, `${script}</body>`)
+    : `${html}${script}`
+}
+
+/**
+ * Apply the preview contract to any rendered page, whether it came from the
+ * static inventory or from Next/Payload. The iframe must stay inside the
+ * preview mount and must never be indexed or framed by another site.
+ */
+export async function previewHtmlResponse(response: Response, mount: string, env: StaticWebsiteEnv): Promise<Response> {
+  const headers = new Headers(response.headers)
+  headers.set('x-robots-tag', 'noindex, nofollow')
+  headers.delete('x-frame-options')
+  const frameAncestors = `frame-ancestors 'self' ${CONTROL_PLANE_ORIGIN}`
+  const policy = headers.get('content-security-policy')
+  headers.set('content-security-policy', policy
+    ? /frame-ancestors/i.test(policy)
+      ? policy.replace(/frame-ancestors[^;]*/i, frameAncestors)
+      : `${policy}; ${frameAncestors}`
+    : frameAncestors)
+  const contentType = (headers.get('content-type') || '').toLowerCase()
+  if (!contentType.includes('text/html') || response.body === null) {
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+  }
+  const html = injectPreviewNavigation(await response.text(), mount, env)
+  headers.delete('content-length')
+  headers.delete('content-encoding')
+  headers.delete('etag')
+  return new Response(html, { status: response.status, statusText: response.statusText, headers })
+}
 
 /**
  * Bases the tenant serves from Payload instead of the static inventory.
@@ -110,7 +285,7 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
   if (/^\/(admin|api|mail|_next|blog|_helloada|helloada-preview)(\/|$)/.test(url.pathname)) return null
   const canonicalPath = url.pathname.endsWith('/') ? url.pathname : url.pathname + '/'
   if (!url.pathname.endsWith('/') && Object.hasOwn(manifest.routes, canonicalPath)) {
-    url.pathname = isPreview ? previewMount + canonicalPath : canonicalPath
+    url.pathname = isPreview && previewMount ? previewMount + canonicalPath : canonicalPath
     return new Response(null, { status: 308, headers: {
       location: url.toString(), ...(isPreview ? { 'x-robots-tag': 'noindex, nofollow' } : {}),
     } })
@@ -131,7 +306,8 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
     const errorHeaders = new Headers(asset.headers)
     errorHeaders.set('content-security-policy', pagePolicy(manifest, file, measurement, isPreview))
     if (isPreview) errorHeaders.delete('x-frame-options')
-    return new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: errorHeaders })
+    const errorResponse = new Response(request.method === 'HEAD' ? null : asset.body, { status: 404, headers: errorHeaders })
+    return isPreview && previewMount ? previewHtmlResponse(errorResponse, previewMount, env) : errorResponse
   }
   if (!file.endsWith('.html')) return request.method === 'HEAD'
     ? new Response(null, { status: asset.status, headers: asset.headers }) : asset
@@ -155,11 +331,9 @@ export async function staticWebsiteResponse(request: Request, env: StaticWebsite
     headers.set('x-frame-options', 'SAMEORIGIN')
   }
   headers.set('content-security-policy', pagePolicy(manifest, file, measurement, isPreview))
-  return new Response(request.method === 'HEAD' ? null : html, { status: 200, headers })
+  const response = new Response(request.method === 'HEAD' ? null : html, { status: 200, headers })
+  return isPreview && previewMount ? previewHtmlResponse(response, previewMount, env) : response
 }
-
-/** The standard owner workspace embeds only the tenant preview alias. */
-const CONTROL_PLANE_ORIGIN = 'https://helloada.app'
 
 type PageSecurity = { origins?: Record<string, string[]> }
 

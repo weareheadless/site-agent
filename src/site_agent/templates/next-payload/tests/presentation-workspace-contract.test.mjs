@@ -9,6 +9,7 @@ test('the workspace lists committed pages and the release rejects a site without
   const verifier = read('scripts/verify-payload-contract.ts')
 
   assert.match(route, /presentationRoutes\(\)/)
+  assert.match(route, /staticPresentationRoutes\(staticEnv\)/)
   assert.match(route, /routes\.some\(\(route\) => route\.path === declared\)/)
   assert.match(verifier, /committed presentation routes including its home page/)
   assert.match(verifier, /previewMount/)

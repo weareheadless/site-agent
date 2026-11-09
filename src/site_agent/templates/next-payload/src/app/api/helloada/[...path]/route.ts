@@ -17,6 +17,7 @@ import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/b
 import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/admin/server/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument, presentationRoutes } from '@/lib/content-routes'
+import { staticPresentationRoutes, type StaticWebsiteEnv } from '@/lib/static-website'
 import { createHelloAdaPreviewToken, helloAdaPreviewLifetime } from '@/lib/helloada-preview'
 import { latestCollectionVersionId, latestGlobalVersionId } from '@/lib/payload-versions'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
@@ -291,8 +292,13 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
   }
   // Committed Next pages have no Payload document. The build writes this
   // inventory from the app tree so the owner workspace lists every real route
-  // whether its HTML comes from Payload or from committed source.
-  for (const declared of presentationRoutes()) {
+  // whether its HTML comes from Payload or from committed source. A static
+  // presentation has no committed page files: its reviewed manifest is the
+  // real page inventory, so Home, Pulse and every imported page stay
+  // reachable instead of only the Payload-backed routes.
+  const staticEnv = (await getCloudflareContext({ async: true })).env as StaticWebsiteEnv
+  const presentation = [...presentationRoutes(), ...await staticPresentationRoutes(staticEnv)]
+  for (const declared of presentation) {
     if (routes.some((route) => route.path === declared)) continue
     routes.push({ path: declared, kind: 'page', collection: '', sourceId: '' })
   }

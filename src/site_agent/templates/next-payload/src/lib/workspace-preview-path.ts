@@ -8,7 +8,8 @@ export function workspacePreviewPath(pathname: string, mount: string): string | 
   if (pathname === mount || pathname === `${mount}/`) return '/'
   if (!pathname.startsWith(`${mount}/`)) return undefined
   const path = pathname.slice(mount.length)
-  // The preview alias must not provide a second entry point for platform APIs.
-  if (/^\/(?:api|admin|_next|helloada-preview)(?:\/|$)/.test(path)) return undefined
+  // The preview alias must not provide a second entry point for platform APIs
+  // or the tenant mailbox.
+  if (/^\/(?:api|admin|mail|_next|helloada-preview|_helloada)(?:\/|$)/.test(path)) return undefined
   return path
 }
