@@ -24,6 +24,13 @@ function isWithinBasePath(pathname: string, basePath: string) {
   return pathname === basePath || pathname.startsWith(`${basePath}/`)
 }
 
+type AssetFetcher = { fetch: (request: Request) => Response | Promise<Response> }
+
+/** Mailflare's Next build emits its browser assets under the base path. */
+function isMailflareAsset(pathname: string, basePath: string) {
+  return pathname.startsWith(`${basePath}/_next/`)
+}
+
 function requireMailflareQueues(names: string[]) {
   if (names.length !== 3 || names.some((name) => !name) || new Set(names).size !== names.length) {
     throw new Error('Mailflare must have three distinct configured tenant queues.')
@@ -47,6 +54,13 @@ export function composeTenantWorker<SiteEnv, MailflareEnv, Context = unknown>({
     fetch(request: Request, env: SiteEnv, context: Context) {
       const { pathname } = new URL(request.url)
       if (isWithinBasePath(pathname, basePath)) {
+        // Static-profile tenants set run_worker_first, so the assets binding
+        // never sees Mailflare's build output. Serve it here before the
+        // Mailflare worker can answer its own asset paths with a 404.
+        const assets = (env as { ASSETS?: AssetFetcher }).ASSETS
+        if (assets && isMailflareAsset(pathname, basePath)) {
+          return assets.fetch(request)
+        }
         if (!mailflare.fetch) throw new Error('Mailflare HTTP handler is missing.')
         return mailflareRequest(request, env, context, async (authorizedRequest) =>
           await mailflare.fetch!(authorizedRequest, mailflareEnv(env), context))

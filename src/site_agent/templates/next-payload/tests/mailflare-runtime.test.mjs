@@ -37,8 +37,29 @@ test('HTTP dispatch is isolated to the exact Mailflare base path', async () => {
   assert.deepEqual(calls.map(([name]) => name), ['mail.fetch', 'mail.fetch', 'site.fetch', 'site.fetch'])
 })
 
-test('owner gate dispatch always receives a Promise for synchronous Mailflare handlers', async () => {
-  const worker = composeTenantWorker({
+test('Mailflare browser assets are served before the worker on static-profile tenants', async () => {
+  const { calls, worker } = handlers()
+  const env = {
+    name: 'tenant',
+    ASSETS: {
+      fetch: async (request) => {
+        calls.push(['assets.fetch', new URL(request.url).pathname])
+        return new Response('asset', { headers: { 'content-type': 'text/css' } })
+      },
+    },
+  }
+
+  const response = await worker.fetch(new Request('https://tenant.test/mail/_next/static/css/index.css'), env, {})
+  assert.equal(await response.text(), 'asset')
+  assert.equal(response.headers.get('content-type'), 'text/css')
+  await worker.fetch(new Request('https://tenant.test/mail/inbox'), env, {})
+  assert.deepEqual(calls, [
+    ['assets.fetch', '/mail/_next/static/css/index.css'],
+    ['mail.fetch', '/mail/inbox', 'mailflare-env'],
+  ])
+})
+
+test('owner gate dispatch always receives a Promise for synchronous Mailflare handlers', async () => {  const worker = composeTenantWorker({
     site: { fetch: () => new Response('site') },
     mailflare: { fetch: () => new Response('mail') },
     mailflareEnv: (env) => env,
