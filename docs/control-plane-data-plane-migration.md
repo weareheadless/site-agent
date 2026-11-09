@@ -189,7 +189,9 @@ that tenant's site or a pinned package changes.
 - Phase 2 keeps the tenant `/admin` view in place until the canary passes. The
   control-plane workspace is additive.
 - Phase 3 removes the tenant admin only after the canary and a rollback release
-  are proven.
+  are proven. The rollback path is a control commit whose fingerprint restores
+  the previous runtime plus a new tenant release of the prior source SHA; the
+  queue has no per-tenant runtime pin.
 - No phase changes tenant content, schema, D1, R2 or domains.
 
 ## Risks
@@ -334,6 +336,49 @@ that tenant's site or a pinned package changes.
   `ae9e95da`, version `7b750677`, deployment `98c60b00`) passed health,
   preview and authenticated connection gates; public pages and tenant
   `/admin` are unchanged.
+
+### Phase 3 canary and rollback proof (2026-11-09)
+
+Phase 3 removes the owner workspace from the tenant build and leaves Payload's
+raw admin at the tenant domain.
+
+- Control change `300b3d4d` deletes `src/admin` and `src/components/admin` from
+  the template, empties `copyTrees`, retires the admin overlay copy set, and
+  rewrites surviving retired imports to `@/lib/helloada-runtime` and
+  `@/lib/site-config`. Unknown retired subpaths fail closed. Runtime
+  fingerprint becomes `089acb8c`.
+- Atelier tenant change `4fcdd8c` removes its custom Payload admin views,
+  retired message-service helpers and the retired admin package pin, and
+  imports the shared config/runtime modules directly.
+- Canary `rel-20261109151200-atelier-raw-admin` (source `4fcdd8c`, runtime
+  `089acb8c`, version `3c1733fe`) passed health, preview and authenticated
+  connection gates. In a fresh authenticated browser document, tenant
+  `/admin` is Payload's raw dashboard: Collections (Pages, Posts, categories,
+  products, variants, media, contact forms), Globals (Site Settings,
+  Navigation), locale `fr`, and the Pages list with 54 documents, search,
+  filters and pagination. The control-plane workspace still loads its project
+  snapshot, preview and navigation containment; public home, shop and
+  `a-propos` are unchanged and schema remains revision 13.
+- Rollback proof: control revert `e6737f97` restored the pre-Phase-3 overlay
+  and template, and release `rel-20261109182500-atelier-rollback-proof`
+  (source `6becada`, runtime `ae9e95da`, version `d4d35502`) was queued through
+  the same pipeline. Verified: tenant `/admin` again rendered the HelloAda
+  owner workspace (Workspace/Growth/Messages/Gallery/Activity/Manage, Ask Ada,
+  Website tabs and conversation); the published preview still contained
+  `A PROPOS` under `/atelier-harmonie-preview/a-propos`; public pages were
+  unchanged; schema stayed at 13.
+- The queue passes the current control fingerprint to every release, so a
+  runtime rollback is a control-revert release, not a per-tenant pin. Re-applied
+  Phase 3 as `a5b0379d` and released
+  `rel-20261109183000-atelier-raw-admin-final` (source `4fcdd8c`, runtime
+  `089acb8c`, version `6f364833`). Raw admin, workspace load, preview
+  containment and public pages were verified again after re-promotion.
+
+Remaining rollout: inmersion, casamigo and oceanicvibes each need their own
+admin-removal tenant migration before their Phase 3 runtime release; the
+blocked tenants follow once unblocked. Batch releases only through the
+canonical queue, verify the owner-visible workspace and raw admin per tenant,
+and keep the control revert path available until the batch is complete.
 
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
