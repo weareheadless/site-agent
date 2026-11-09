@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { helloAdaRuntime } from '@/admin/server/runtime-env'
+import { helloAdaRuntime } from '@/lib/helloada-runtime'
 
 export function serviceAuthorized(request: Request) {
   const expected = helloAdaRuntime().token

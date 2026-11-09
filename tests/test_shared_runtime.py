@@ -236,11 +236,11 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     assert shared_runtime_fingerprint(control) != original
 
     schema_source.write_text("schema")
-    admin_source = template / overlay["copyTrees"][0] / "tree-source.tsx"
-    admin_source.write_text("admin changed")
+    runtime_source = template / overlay["copy"][0]
+    runtime_source.write_text("runtime changed")
     assert shared_runtime_fingerprint(control) != original
 
-    admin_source.write_text("admin")
+    runtime_source.write_text("runtime")
     lockfile = template / "package-lock.json"
     lock = json.loads(lockfile.read_text())
     lock["packages"]["node_modules/@weareheadless/helloada-payload-core"]["resolved"] += "?changed"
@@ -354,14 +354,14 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
     template = package / "templates" / "next-payload"
     (template / "src/lib").mkdir(parents=True)
     (template / "src/lib/runtime.ts").write_text("export const runtime = 'canonical'\n")
-    (template / "src/admin/components").mkdir(parents=True)
-    (template / "src/admin/components/Workspace.tsx").write_text("export const Workspace = 'canonical'\n")
+    (template / "src/lib/shared").mkdir(parents=True)
+    (template / "src/lib/shared/runtime.ts").write_text("export const shared = 'canonical'\n")
     (package / "templates").mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema": 3,
         "contract": "helloada-shared-runtime-v3",
         "copy": ["src/lib/runtime.ts"],
-        "copyTrees": ["src/admin"],
+        "copyTrees": ["src/lib/shared"],
         "remove": ["src/lib/retired.ts"],
         "fingerprintTrees": [],
     }
@@ -408,13 +408,13 @@ def test_preview_overlay_copies_and_removes_runtime_files(tmp_path: Path):
 
     result = apply_preview_runtime_overlay(worktree, package_root=package, runtime_fingerprint="f" * 64)
 
-    assert result["copied"] == ["src/lib/runtime.ts", "src/admin/components/Workspace.tsx"]
-    assert (worktree / "src/admin/components/Workspace.tsx").read_text() == "export const Workspace = 'canonical'\n"
+    assert result["copied"] == ["src/lib/runtime.ts", "src/lib/shared/runtime.ts"]
+    assert (worktree / "src/lib/shared/runtime.ts").read_text() == "export const shared = 'canonical'\n"
     assert result["removed"] == ["src/lib/retired.ts"]
     assert result["migrated"] == ["src/helloada.config.ts", "template-manifest.json"]
     stamped = json.loads((worktree / "template-manifest.json").read_text())
     assert stamped["sharedRuntimeFingerprint"] == "f" * 64
-    assert "from '@/admin/config/site'" in (worktree / "src/helloada.config.ts").read_text()
+    assert "from '@/lib/site-config'" in (worktree / "src/helloada.config.ts").read_text()
     assert (worktree / "src/lib/runtime.ts").read_text() == "export const runtime = 'canonical'\n"
     assert not (worktree / "src/lib/retired.ts").exists()
     package_after = json.loads((worktree / "package.json").read_text())
@@ -428,15 +428,15 @@ def test_preview_overlay_rejects_a_symlink_inside_a_copied_tree(tmp_path: Path):
 
     package = tmp_path / "package"
     template = package / "templates" / "next-payload"
-    (template / "src/admin").mkdir(parents=True)
-    (template / "src/admin/real.tsx").write_text("export const real = true\n")
-    (template / "src/admin/link.tsx").symlink_to(template / "src/admin/real.tsx")
+    (template / "src/lib/shared").mkdir(parents=True)
+    (template / "src/lib/shared/real.tsx").write_text("export const real = true\n")
+    (template / "src/lib/shared/link.tsx").symlink_to(template / "src/lib/shared/real.tsx")
     (package / "templates").mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema": 3,
         "contract": "helloada-shared-runtime-v3",
         "copy": [],
-        "copyTrees": ["src/admin"],
+        "copyTrees": ["src/lib/shared"],
         "remove": [],
         "fingerprintTrees": [],
     }
@@ -479,8 +479,8 @@ def test_tenant_admin_imports_are_migrated_and_unknown_subpaths_fail_closed(tmp_
     migrated = _migrate_tenant_admin_source(tenant)
 
     assert migrated == ["next.config.mjs", "src/helloada.config.ts", "src/lib/legacy/upstream.ts"]
-    assert "from '@/admin/server/runtime-env'" in legacy.read_text()
-    assert "from '@/admin/config/site'" in (tenant / "src/helloada.config.ts").read_text()
+    assert "from '@/lib/helloada-runtime'" in legacy.read_text()
+    assert "from '@/lib/site-config'" in (tenant / "src/helloada.config.ts").read_text()
     assert "@weareheadless/helloada-payload-admin" not in config.read_text()
     assert "@weareheadless/helloada-payload-core" in config.read_text()
 
