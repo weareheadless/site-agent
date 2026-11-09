@@ -626,6 +626,7 @@ function ReviewWorkspace() {
   const [previewStep, setPreviewStep] = useState('')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [sourceReview, setSourceReview] = useState<{ draftId: number; sha: string; url: string }>()
+  const externalDraftReview = Boolean(sourceReview && site.routes.manage)
   const [draftPreview, setDraftPreview] = useState<{ key: string; url: string; route: string }>()
   const sourceReviewIdentityRef = useRef('')
   const previewPlanRequestRef = useRef(0)
@@ -819,6 +820,10 @@ function ReviewWorkspace() {
 
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
+    if (externalDraftReview) {
+      const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
+      return `${previewAlias}/${path}`
+    }
     if (designBuild?.preview?.preview_url && candidatePreviewReady
       && candidateReviewPreviewReady) {
       const base = designBuild.preview.preview_url
@@ -835,7 +840,7 @@ function ReviewWorkspace() {
       : `${previewAlias}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewAlias, previewRevision, selectedRoute, siteOrigin, sourceReview])
+  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, externalDraftReview, previewAlias, previewRevision, selectedRoute, siteOrigin, sourceReview])
 
   const syncRouteFromPreview = useCallback(() => {
     // Browsing inside the preview and the page selector must agree: a nav link
@@ -882,7 +887,7 @@ function ReviewWorkspace() {
     return translated === key ? '' : translated
   }
 
-  const previewStatusMessage = previewStatus === 'refreshing'
+  const previewStatusMessage = externalDraftReview ? '' : previewStatus === 'refreshing'
     ? t('workspace.previewRefreshing')
     : previewStatus === 'build-required'
       ? t('workspace.previewBuildRequired')
@@ -2376,6 +2381,12 @@ function ReviewWorkspace() {
                      ? `${t('workspace.candidatePreviewFailed')} ${designBuild.preview.error || ''}`
                      : `${t('workspace.candidatePreviewPreparing')}${previewStepLabel(previewStep) ? ` · ${previewStepLabel(previewStep)}` : ''}`}
                </p>
+             ) : null}
+             {externalDraftReview ? (
+               <div className="helloada-preview-external" role="status">
+                 <span>Exact draft ready. Review it in the tenant admin.</span>
+                 <a href={site.routes.manage} target="_blank" rel="noopener noreferrer">Open Manage content ↗</a>
+               </div>
              ) : null}
              <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
                <iframe
