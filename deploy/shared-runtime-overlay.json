@@ -33,6 +33,7 @@
     "src/lib/helloada-handoff.ts",
     "src/lib/helloada-preview-claims.ts",
     "src/lib/helloada-preview.ts",
+    "src/lib/helloada-runtime.ts",
     "src/lib/helloada-upstream.ts",
     "src/lib/mailflare-inbox.ts",
     "src/lib/mailflare-provisioning-api.ts",
@@ -45,15 +46,19 @@
     "src/lib/public-revision.ts",
     "src/lib/runtime-env.ts",
     "src/lib/service-auth.ts",
+    "src/lib/site-config.ts",
     "src/lib/static-website.ts",
     "worker.ts"
   ],
-  "copyTrees": [
-    "src/admin",
-    "src/components/admin"
-  ],
+  "copyTrees": [],
   "remove": [
     "src/app/api/helloada/bookings/route.ts",
+    "src/components/admin/HelloAdaLoginRedirect.tsx",
+    "src/components/admin/HelloAdaLogo.tsx",
+    "src/components/admin/HelloAdaNav.tsx",
+    "src/components/admin/HelloAdaWorkspace.tsx",
+    "src/lib/atelier/service-auth.ts",
+    "src/lib/atelier/upstream.ts",
     "src/lib/calendar.ts",
     "src/lib/message-notifications.ts",
     "src/lib/message-processing.ts",

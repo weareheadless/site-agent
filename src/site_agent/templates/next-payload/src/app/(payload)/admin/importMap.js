@@ -21,12 +21,7 @@ import { StrikethroughFeatureClient as StrikethroughFeatureClient_e70f5e05f09f93
 import { UnderlineFeatureClient as UnderlineFeatureClient_e70f5e05f09f93e00b997edb1ef0c864 } from '@payloadcms/richtext-lexical/client'
 import { BoldFeatureClient as BoldFeatureClient_e70f5e05f09f93e00b997edb1ef0c864 } from '@payloadcms/richtext-lexical/client'
 import { ItalicFeatureClient as ItalicFeatureClient_e70f5e05f09f93e00b997edb1ef0c864 } from '@payloadcms/richtext-lexical/client'
-import { HelloAdaNav as HelloAdaNav_e112c19a800b81089e416ef14cc563cd } from '@/components/admin/HelloAdaNav'
-import { HelloAdaIcon as HelloAdaIcon_12db80937885df2d06638e2858e5167c } from '@/components/admin/HelloAdaLogo'
-import { HelloAdaLogo as HelloAdaLogo_12db80937885df2d06638e2858e5167c } from '@/components/admin/HelloAdaLogo'
-import { HelloAdaLoginRedirect as HelloAdaLoginRedirect_27ec6084bf63e127c782deae1add16b9 } from '@/components/admin/HelloAdaLoginRedirect'
 import { R2ClientUploadHandler as R2ClientUploadHandler_85cc02ed84006fcc91d3aff39dda669d } from '@payloadcms/storage-r2/client'
-import { WebsiteWorkspace as WebsiteWorkspace_3a8b24ae98e6df0ca05713aba00143b2 } from '@/components/admin/HelloAdaWorkspace'
 import { CollectionCards as CollectionCards_f9c02e79a4aed9a3924487c0cd4cafb1 } from '@payloadcms/next/rsc'
 
 /** @type import('payload').ImportMap */
@@ -54,11 +49,6 @@ export const importMap = {
   "@payloadcms/richtext-lexical/client#UnderlineFeatureClient": UnderlineFeatureClient_e70f5e05f09f93e00b997edb1ef0c864,
   "@payloadcms/richtext-lexical/client#BoldFeatureClient": BoldFeatureClient_e70f5e05f09f93e00b997edb1ef0c864,
   "@payloadcms/richtext-lexical/client#ItalicFeatureClient": ItalicFeatureClient_e70f5e05f09f93e00b997edb1ef0c864,
-  "@/components/admin/HelloAdaNav#HelloAdaNav": HelloAdaNav_e112c19a800b81089e416ef14cc563cd,
-  "@/components/admin/HelloAdaLogo#HelloAdaIcon": HelloAdaIcon_12db80937885df2d06638e2858e5167c,
-  "@/components/admin/HelloAdaLogo#HelloAdaLogo": HelloAdaLogo_12db80937885df2d06638e2858e5167c,
-  "@/components/admin/HelloAdaLoginRedirect#HelloAdaLoginRedirect": HelloAdaLoginRedirect_27ec6084bf63e127c782deae1add16b9,
   "@payloadcms/storage-r2/client#R2ClientUploadHandler": R2ClientUploadHandler_85cc02ed84006fcc91d3aff39dda669d,
-  "@/components/admin/HelloAdaWorkspace#WebsiteWorkspace": WebsiteWorkspace_3a8b24ae98e6df0ca05713aba00143b2,
   "@payloadcms/next/rsc#CollectionCards": CollectionCards_f9c02e79a4aed9a3924487c0cd4cafb1
 }

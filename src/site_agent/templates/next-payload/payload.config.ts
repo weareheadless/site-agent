@@ -40,33 +40,7 @@ export default buildConfig({
       titleSuffix: ' — HelloAda',
       applicationName: 'HelloAda',
       icons: { icon: '/brand/helloada-logo.svg' },
-      description: 'A calm control room for shaping, reviewing, and publishing your website with Ada.',
-    },
-    components: {
-      beforeLogin: ['@/components/admin/HelloAdaLoginRedirect#HelloAdaLoginRedirect'],
-      views: {
-        dashboard: {
-          Component: {
-            exportName: 'WebsiteWorkspace',
-            path: '@/components/admin/HelloAdaWorkspace',
-          },
-          exact: true,
-        },
-      },
-      Nav: {
-        exportName: 'HelloAdaNav',
-        path: '@/components/admin/HelloAdaNav',
-      },
-      graphics: {
-        Icon: {
-          exportName: 'HelloAdaIcon',
-          path: '@/components/admin/HelloAdaLogo',
-        },
-        Logo: {
-          exportName: 'HelloAdaLogo',
-          path: '@/components/admin/HelloAdaLogo',
-        },
-      },
+      description: 'The tenant Payload admin for advanced content and media work.',
     },
   },
   // A reviewed revision is compared against the revision Payload has loaded for
