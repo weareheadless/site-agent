@@ -13,9 +13,12 @@
       "sha": "470300f8f31a814c6ce6acac63c16286629b757b"
     },
     "atelier-harmonie": {
-      "id": "rel-20261103222247-2ef7ad10",
-      "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "52a3ac68abb683a4d1a7ab6c48d47165299122aa4537fd2372a29badaea8c957"
+      "id": "rel-20261109120000-atelier-schema-13",
+      "sha": "b6601ab09cdeaf8fa849afad14876c68f592a7b6",
+      "schemaMigration": {
+        "fromLedgerIdentity": "9d59664e7cd22dee1ff25b6ce8b8b9f091197b37da1893d4c98cbc91c827777f",
+        "targetMigrationHead": "1075e5820db98efdc5d08cd452bad1f23b725fd1ee78db66e8616769646771f4"
+      }
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
       "id": "rel-20261103225111-1c9e29e3",
