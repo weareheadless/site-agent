@@ -19,3 +19,4 @@ coverage.xml
 .opencode/
 packages/helloada-payload-admin/.release/
 packages/helloada-payload-core/.release/
+packages/helloada-mailbox-ui/.release/
