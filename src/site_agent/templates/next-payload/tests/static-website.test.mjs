@@ -260,6 +260,11 @@ test('preview HTML carries the containment script and preview framing policy', a
   assert.match(html, /MutationObserver/)
   assert.match(html, /var mount="\/tenant-preview"/)
   assert.match(html, /www\.example\.com/)
+  // A framework client router also handles the anchor click. Containment must
+  // stop that event, not only the browser default, or the router pushes the
+  // unprefixed live path after the guard has chosen the preview path.
+  assert.match(html, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);/)
+  assert.match(html, /location\.assign\(next\)/)
   assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self' https:\/\/helloada\.app/)
   assert.equal(response.headers.get('x-frame-options'), null)
   assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')

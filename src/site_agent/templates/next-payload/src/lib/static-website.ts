@@ -155,7 +155,11 @@ document.addEventListener('click',function(event){
   var raw=anchor.getAttribute('href');
   var next=contain(raw,mount,hosts,location.href);
   if(next===raw)return;
+  // A framework client router handles the same click on the anchor. The
+  // containment decision is final for this navigation, so stop the event
+  // before that router can push the unprefixed live path.
   event.preventDefault();
+  event.stopPropagation();
   if(anchor.target&&anchor.target!=='_self')window.open(next,anchor.target);
   else location.assign(next);
 },true);
