@@ -265,6 +265,11 @@ test('preview HTML carries the containment script and preview framing policy', a
   // unprefixed live path after the guard has chosen the preview path.
   assert.match(html, /event\.preventDefault\(\);\s*event\.stopPropagation\(\);/)
   assert.match(html, /location\.assign\(next\)/)
+  // Rewriting the DOM href is not enough for a framework router: it keeps its
+  // own live target. The original target must survive in a data attribute so
+  // the click handler still contains the navigation.
+  assert.match(html, /data-helloada-preview-/)
+  assert.match(html, /getAttribute\(sourceName\(attribute\(anchor\)\)\)/)
   assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'self' https:\/\/helloada\.app/)
   assert.equal(response.headers.get('x-frame-options'), null)
   assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow')

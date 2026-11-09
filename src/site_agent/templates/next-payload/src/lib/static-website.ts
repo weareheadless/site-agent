@@ -134,13 +134,24 @@ var hosts=${JSON.stringify(hosts)};
 if(hosts.indexOf(location.host)===-1)hosts.push(location.host);
 var contain=${containPreviewNavigation.toString()};
 function attribute(element){return element&&element.tagName==='FORM'?'action':'href';}
+function sourceName(name){return 'data-helloada-preview-'+name;}
 function fix(element){
   if(!element||!element.getAttribute)return;
   var name=attribute(element);
   var raw=element.getAttribute(name);
   if(raw===null)return;
+  var source=element.getAttribute(sourceName(name));
+  // The framework router keeps its own copy of the live href. Preserve that
+  // original before rewriting the DOM href, and do not mistake our own rewrite
+  // for a new source.
+  if(source!==null&&raw===contain(source,mount,hosts,location.href))return;
   var next=contain(raw,mount,hosts,location.href);
-  if(next!==raw)element.setAttribute(name,next);
+  if(next===raw){
+    if(source!==null)element.removeAttribute(sourceName(name));
+    return;
+  }
+  element.setAttribute(sourceName(name),raw);
+  element.setAttribute(name,next);
 }
 function fixTree(root){
   if(!root||!root.querySelectorAll)return;
@@ -152,7 +163,7 @@ document.addEventListener('click',function(event){
   if(!target||target.nodeType!==1||!target.closest)return;
   var anchor=target.closest('a[href], area[href]');
   if(!anchor||anchor.hasAttribute('download'))return;
-  var raw=anchor.getAttribute('href');
+  var raw=anchor.getAttribute(sourceName(attribute(anchor)))||anchor.getAttribute('href');
   var next=contain(raw,mount,hosts,location.href);
   if(next===raw)return;
   // A framework client router handles the same click on the anchor. The
@@ -166,7 +177,7 @@ document.addEventListener('click',function(event){
 document.addEventListener('submit',function(event){
   var form=event.target;
   if(!form||form.tagName!=='FORM')return;
-  var raw=form.getAttribute('action');
+  var raw=form.getAttribute(sourceName('action'))||form.getAttribute('action');
   if(raw===null)return;
   var next=contain(raw,mount,hosts,location.href);
   if(next!==raw)form.setAttribute('action',next);
