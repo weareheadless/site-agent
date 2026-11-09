@@ -317,10 +317,23 @@ that tenant's site or a pinned package changes.
   shared workspace; `/mail/inbox` loads; and the portfolio card is `LIVE` and
   opens `/websites/11/workspace` (HelloAda app commits `1149758` and
   `ed828ed`). The control-plane workspace loads the atelier page inventory,
-  Growth, Gallery, History and chat, but the cross-origin preview iframe is
-  still blank for atelier even though the tenant preview alias renders
-  directly. That is the same-origin preview bridge gap below, not a release
-  claim.
+  Growth, Gallery, History, chat and the published preview in its cross-origin
+  iframe. The earlier blank frame was the iframe still loading during
+  verification, not a framing failure: the preview alias renders the approved
+  home, and the iframe loads the same alias with
+  `frame-ancestors 'self' https://helloada.app`.
+- Atelier's shared-runtime refresh exposed a containment bug on Next/Payload
+  pages. The preview guard prevented the browser default, but a framework
+  client router still handled the click from its own live href, and rewriting
+  the DOM href made the guard treat the link as already contained. The guard
+  now preserves the original target in `data-helloada-preview-href` and stops
+  propagation before navigating. Verified from the preview: `A PROPOS` stayed
+  at `/atelier-harmonie-preview/a-propos` and `BOUTIQUE` at
+  `/atelier-harmonie-preview/shop`. Release
+  `rel-20261109144300-atelier-preview-source` (`6becada`, runtime
+  `ae9e95da`, version `7b750677`, deployment `98c60b00`) passed health,
+  preview and authenticated connection gates; public pages and tenant
+  `/admin` are unchanged.
 
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
@@ -342,10 +355,12 @@ that tenant's site or a pinned package changes.
   through its own authenticated server route. The ported workspace UI reads the
   tenant's own site configuration from the snapshot (locales, modules, preview
   mount) instead of guessing it.
-- Known limitation of the canary: the preview is a cross-origin iframe of the
-  tenant alias, so direct in-preview element selection cannot read the frame.
-  The panel editor remains available. A same-origin preview bridge is Phase 3
-  work, not a reason to proxy the whole site through the control plane.
+- Known limitation of the canary: the published preview is a cross-origin
+  iframe of the tenant alias, so direct in-preview element selection cannot
+  read the frame. The panel editor remains available. The exact-draft preview
+  is tenant-session scoped and stays in the tenant admin; a same-origin preview
+  bridge for exact drafts is Phase 3 work, not a reason to proxy the whole site
+  through the control plane.
 - Mailflare (Messages, Calendar) keeps its own tenant-origin session. A
   cross-site iframe cannot carry that cookie, so the control plane opens the
   tenant Mailflare surface in a new tab instead of embedding it. Do not weaken
