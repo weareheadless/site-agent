@@ -1,8 +1,8 @@
 {
   "releases": {
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261109025000-control-plane-workspace",
-      "sha": "33f5ec5a57cf2eae521f472b08d9a430d36e75e4"
+      "id": "rel-20261109015137-5164ae59",
+      "sha": "3d615a08020acc88b5ac6a2097e45e59f308aa54"
     },
     "casamigo": {
       "id": "runtime-20261108232700-c7940a05",
