@@ -221,5 +221,9 @@ that tenant's site or a pinned package changes.
   template; preview and release call it; the duplicate root script is removed.
 - Phase 0: contained by Phase 1; the compiled-preview path now generates the
   same inputs as release.
-- Phase 2: next. The control-plane auth path and central site snapshot are the
-  first slice; the workspace route follows.
+- Phase 2 first slice: implemented. The control plane has a trusted workspace
+  gateway (`/v1/control-plane/websites/{tenant}/workspace/...`) that injects the
+  tenant workspace token server-side, and a `workspace/site` snapshot endpoint
+  that reads the Worker's canonical site snapshot. The tenant API keeps its own
+  auth contract; the control token is not a workspace service token.
+- Phase 2 next: the HelloAda `/websites/<id>/workspace` route and the UI port.

@@ -3721,3 +3721,82 @@ def test_checkpoint_restore_explains_a_checkpoint_that_matches_live(tmp_path):
     assert response.json()["detail"] == "This checkpoint already matches the live website, so there is nothing to restore."
     assert memory.list_drafts(limit=10) == []
     memory.close()
+
+
+def test_control_plane_gateway_injects_the_tenant_workspace_identity(tmp_path, monkeypatch):
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    monkeypatch.setattr(service, "site_snapshot", lambda *, tenant=None: {
+        "site": {"name": "Tenant"}, "routes": [{"path": "/"}], "documents": [],
+    })
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/v1/control-plane/websites", control_token="control-secret",
+    )
+    url = f"/v1/control-plane/websites/{tenant.tenant_id}/workspace/chat/status"
+    with TestClient(app) as client:
+        denied = client.get(url)
+        allowed = client.get(url, headers={"Authorization": "Bearer control-secret"})
+        unknown = client.get(
+            "/v1/control-plane/websites/missing/workspace/chat/status",
+            headers={"Authorization": "Bearer control-secret"},
+        )
+        # The tenant API keeps its own auth contract: the control token is not
+        # a workspace service token.
+        site = client.get(
+            f"/v1/control-plane/websites/{tenant.tenant_id}/workspace/site",
+            headers={"Authorization": "Bearer control-secret"},
+        )
+        direct = client.get("/api/workspace/chat/status",
+                            headers={"Authorization": "Bearer control-secret"})
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert site.status_code == 200 and site.json()["site"]["name"] == "Tenant"
+    assert unknown.status_code == 404
+    assert direct.status_code == 401
+    memory.close()
+
+
+def test_site_snapshot_reads_the_worker_with_the_tenant_workspace_token(monkeypatch):
+    from site_agent.application.workspace import BridgeError, ChatService
+
+    class Gateway:
+        base_url = "https://tenant.example"
+        token = "tenant-workspace-token"
+
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"site":{"name":"Tenant"},"routes":[{"path":"/"}],"documents":[]}'
+
+    def open_url(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.get_header("Authorization")
+        captured["timeout"] = timeout
+        return Response()
+
+    service = object.__new__(ChatService)
+    service.context = {"payload_gateway": Gateway()}
+    monkeypatch.setattr("site_agent.application.workspace.urllib.request.urlopen", open_url)
+    snapshot = ChatService.site_snapshot(service)
+    assert snapshot["site"]["name"] == "Tenant"
+    assert captured["url"] == "https://tenant.example/api/helloada/workspace"
+    assert captured["authorization"] == "Bearer tenant-workspace-token"
+
+    class Invalid(Response):
+        def read(self):
+            return b'{"routes":"not-a-list"}'
+
+    monkeypatch.setattr("site_agent.application.workspace.urllib.request.urlopen",
+                        lambda request, timeout: Invalid())
+    with pytest.raises(BridgeError, match="invalid"):
+        ChatService.site_snapshot(service)

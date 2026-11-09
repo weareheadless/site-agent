@@ -278,9 +278,27 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
   }
 }
 
+const workspaceSnapshotResponse = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
+  try {
+    return NextResponse.json(await siteSnapshot(request, payload), { headers: { 'Cache-Control': 'private, no-store' } })
+  } catch (cause) {
+    const collection = cause instanceof PayloadWorkspaceQueryError ? cause.collection : undefined
+    return NextResponse.json({
+      error: 'payload_workspace_unavailable',
+      message: collection ? `Payload collection "${collection}" could not be read.` : 'Payload workspace could not be read.',
+      collection,
+    }, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
+  }
+}
+
 export async function GET(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
   if (path.startsWith('/internal/mailflare/')) return internalMailflareRoute(request, path)
+  if (path === '/workspace' && serviceAuthorized(request)) {
+    // The control plane reads the same snapshot with the tenant workspace
+    // token. This is a server-to-server read; the browser never holds it.
+    return workspaceSnapshotResponse(request, await getPayload({ config }))
+  }
   if (path === '/growth/contract' || path === '/growth/candidate') {
     const growthAuth = await authenticateHelloAdaRequest(request)
     if (!growthAuth) return errorResponse('authentication_required', 401)
@@ -293,18 +311,7 @@ export async function GET(request: Request, { params }: RouteProps) {
     const result = helloAdaConnection(helloAdaSite.tenantId, upstream ? { status: upstream.status, body: await upstream.json().catch(() => ({})) } : undefined)
     return NextResponse.json(result.body, { status: result.status, headers: { 'Cache-Control': 'private, no-store' } })
   }
-  if (path === '/workspace') {
-    try {
-      return NextResponse.json(await siteSnapshot(request, auth.payload), { headers: { 'Cache-Control': 'private, no-store' } })
-    } catch (cause) {
-      const collection = cause instanceof PayloadWorkspaceQueryError ? cause.collection : undefined
-      return NextResponse.json({
-        error: 'payload_workspace_unavailable',
-        message: collection ? `Payload collection "${collection}" could not be read.` : 'Payload workspace could not be read.',
-        collection,
-      }, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
-    }
-  }
+  if (path === '/workspace') return workspaceSnapshotResponse(request, auth.payload)
   if (path === '/page-fields') {
     const query = new URL(request.url).searchParams
     const route = contentRoute(query.get('route') || '/')

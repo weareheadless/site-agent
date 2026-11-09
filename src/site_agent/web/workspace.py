@@ -223,6 +223,14 @@ def register_workspace_routes(
             status = 413 if "too long" in message else 503 if "LLM not configured" in message or "right now" in message else 400
             raise HTTPException(status_code=status, detail=message) from exc
 
+    @app.get(f"{prefix}/site")
+    def workspace_site(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.site_snapshot(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/chat/status")
     def workspace_chat_status(request: Request, conversation_id: int | None = None):
         tenant = require_service(request)
@@ -1262,6 +1270,37 @@ def register_workspace_routes(
                 return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"), owner_actor_id=authenticated_owner_actor(request, tenant))
             except (BridgeError, GrowthDeliveryError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        # One trusted gateway for the owner workspace. The browser talks to the
+        # HelloAda control plane; that server authenticates with its own token
+        # and names the tenant. This gateway injects the tenant's workspace
+        # token for the canonical API, so the tenant token never reaches a
+        # browser and the normal /api/workspace auth contract is unchanged.
+        gateway_prefix = control_prefix.rstrip("/") + "/"
+
+        @app.middleware("http")
+        async def control_plane_workspace_gateway(request: Request, call_next):
+            path = request.url.path
+            if not path.startswith(gateway_prefix):
+                return await call_next(request)
+            website_id, separator, suffix = path[len(gateway_prefix):].partition("/workspace/")
+            if not separator or not website_id or not suffix:
+                return await call_next(request)
+            try:
+                require_control_plane(request)
+            except HTTPException as exc:
+                return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+            if registry is None:
+                return JSONResponse({"detail": "tenant registry is unavailable"}, status_code=503)
+            tenant = registry.for_tenant_id(website_id)
+            if tenant is None:
+                return JSONResponse({"detail": "website was not found"}, status_code=404)
+            request.scope["path"] = f"{prefix}/{suffix}"
+            headers = [(name, value) for name, value in request.scope["headers"]
+                       if name.lower() != b"authorization"]
+            headers.append((b"authorization", f"Bearer {tenant.api_token}".encode()))
+            request.scope["headers"] = headers
+            return await call_next(request)
 
 
 def create_workspace_api_app(
