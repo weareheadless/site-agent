@@ -5,9 +5,8 @@
       "sha": "72dc12afc8e727456804569adbbf22e21492882b"
     },
     "casamigo": {
-      "id": "runtime-20261108232700-c7940a05",
-      "sha": "9be79e70e4dd43c4a736dc8a600684560dbdf9c0",
-      "sharedRuntimeFingerprint": "c7940a057a07f9f38bbd88888e40b308e46dcac2937b4e3171c2918bb8db6bc5"
+      "id": "rel-20261109040500-casamigo-workspace",
+      "sha": "9be79e70e4dd43c4a736dc8a600684560dbdf9c0"
     },
     "oceanicvibes": {
       "id": "rel-20261109024500-oceanicvibes-workspace",
