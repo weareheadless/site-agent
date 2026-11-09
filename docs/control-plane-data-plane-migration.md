@@ -406,6 +406,23 @@ own cause is resolved. Batch releases only through the canonical queue, verify
 the owner-visible workspace and raw admin per tenant, and keep the control
 revert path available until the batch is complete.
 
+### Owner site URLs (2026-11-09)
+
+Owner-facing URLs no longer use the numeric Payload record id. The canonical
+address is `/<slug>/workspace`, and `/<slug>` is the site entry. The slug is a
+readable label derived from the website name (`Atelier de l'Harmonie` →
+`atelier-harmonie`), allocated once at creation, globally unique, and never the
+runtime identity: `tenantId` still names the Worker, D1 and mailbox.
+
+- Legacy `/websites/<id>` and `/websites/<id>/workspace` resolve the record and
+  redirect to the slug URL, preserving `?view=`.
+- Any non-slug alias that reaches a workspace route redirects to the canonical
+  slug URL, so a site never renders at two addresses.
+- Reserved first segments (`api`, `admin`, `admin-entry`, `login`, `signup`,
+  `portfolio`, `websites`, …) are never issued as slugs; a reserved or taken
+  label gets a numeric suffix.
+- The mailbox mount follows the same rule: `/<slug>/mail/<path>`.
+
 ### Mailbox UI port
 
 The integrated Messages view above is the interim surface. The complete mailbox
