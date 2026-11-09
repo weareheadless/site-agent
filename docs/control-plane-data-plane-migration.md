@@ -406,6 +406,13 @@ own cause is resolved. Batch releases only through the canonical queue, verify
 the owner-visible workspace and raw admin per tenant, and keep the control
 revert path available until the batch is complete.
 
+### Mailbox UI port
+
+The integrated Messages view above is the interim surface. The complete mailbox
+replaces it by mounting the real Mailflare dashboard in the control plane; the
+package, adaptations and staged plan are in
+`docs/control-plane-mailbox-ui-port.md`.
+
 ### Integrated Messages (2026-11-09)
 
 Phase 3 removed the tenant-hosted workspace and, with it, the embedded
