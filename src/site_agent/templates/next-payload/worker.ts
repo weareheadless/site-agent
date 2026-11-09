@@ -70,8 +70,8 @@ const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
     const { pathname } = new URL(request.url)
     if (pathname === "/api/helloada/mail" || pathname.startsWith("/api/helloada/mail/")) {
       if (!mailflare.fetch) throw new Error("Mailflare HTTP handler is missing.")
-      return mailflareMailBridge(request, env, context, (authorizedRequest) =>
-        mailflare.fetch!(authorizedRequest, mailflareEnv(env), context))
+      return mailflareMailBridge(request, env, context, async (authorizedRequest) =>
+        await mailflare.fetch!(authorizedRequest, mailflareEnv(env), context))
     }
     if ((request.method === "GET" || request.method === "HEAD") && (pathname === "/admin/login" || pathname === "/admin/login/")) {
       return Promise.resolve(helloAdaAdminEntry(env.HELLOADA_HANDOFF_ISSUER, env.HELLOADA_TENANT_ID))
