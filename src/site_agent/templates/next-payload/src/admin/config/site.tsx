@@ -19,6 +19,8 @@ export type HelloAdaSiteConfig = {
     posts: boolean
     social: boolean
     bookings?: boolean
+    /** In-preview editing requires the preview document to be same-origin. */
+    inlineEditing?: boolean
   }
 }
 
@@ -34,7 +36,7 @@ const defaultHelloAdaSite: HelloAdaSiteConfig = {
   locales: ['en'],
   routes: { workspaceApi: '/api/helloada', liveSite: '/', preview: '/helloada-preview' },
   content: { primaryCollections: ['pages', 'posts', 'products', 'media'], settingsGlobals: ['siteSettings', 'navigation'] },
-  features: { commerce: false, posts: true, social: false, bookings: false },
+  features: { commerce: false, posts: true, social: false, bookings: false, inlineEditing: true },
 }
 
 let activeHelloAdaSite = defaultHelloAdaSite

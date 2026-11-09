@@ -787,7 +787,8 @@ function ReviewWorkspace() {
   }, [draftPreviewKey, selectedDocument])
 
   const canEditPage = Boolean(
-    adaPhase === 'workspace'
+    site.features.inlineEditing !== false
+      && adaPhase === 'workspace'
       && workspace && selectedDocument && !sourceReview,
   )
 
