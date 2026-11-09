@@ -1,7 +1,7 @@
 // The customer site, Payload and Mailflare share this single tenant Worker.
 import { composeTenantWorker, type WorkerHandlerSet } from "./mailflare-runtime"
 import { asMailflareEnv } from "./mailflare-bindings"
-import { createPayloadOwnerGate } from "./mailflare-owner-gate"
+import { createMailflareMailBridge, createPayloadOwnerGate } from "./mailflare-owner-gate"
 import type { MailflareD1 } from "./mailflare-provisioning"
 import { helloAdaSite } from "./src/helloada.config"
 import { helloAdaAdminEntry } from "./src/lib/helloada-admin-entry"
@@ -27,6 +27,7 @@ type PrivateEmailBucket = {
 type TenantEnv = StaticWebsiteEnv & {
   HELLOADA_TENANT_ID: string
   HELLOADA_HANDOFF_ISSUER: string
+  HELLOADA_SITE_AGENT_TOKEN: string
   D1: MailflareD1
   HELLOADA_TURNSTILE_SECRET_KEY?: string
   HELLOADA_TURNSTILE_SITE_KEY: string
@@ -55,9 +56,23 @@ type MailflareBindings = Record<string, unknown>
 type WorkerContext = { waitUntil: (promise: Promise<unknown>) => void }
 type MailflareWorker = WorkerHandlerSet<MailflareBindings, WorkerContext>
 
+const mailflareEnv = (env: TenantEnv) => asMailflareEnv(env) as MailflareBindings
+
+const mailflare = mailflareWorker as unknown as MailflareWorker
+
+const mailflareMailBridge = createMailflareMailBridge<TenantEnv, WorkerContext>({
+  basePath: "/mail",
+  defaultLocale: helloAdaSite.defaultLocale,
+})
+
 const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
   async fetch(request, env, context) {
-    const pathname = new URL(request.url).pathname
+    const { pathname } = new URL(request.url)
+    if (pathname === "/api/helloada/mail" || pathname.startsWith("/api/helloada/mail/")) {
+      if (!mailflare.fetch) throw new Error("Mailflare HTTP handler is missing.")
+      return mailflareMailBridge(request, env, context, (authorizedRequest) =>
+        mailflare.fetch!(authorizedRequest, mailflareEnv(env), context))
+    }
     if ((request.method === "GET" || request.method === "HEAD") && (pathname === "/admin/login" || pathname === "/admin/login/")) {
       return Promise.resolve(helloAdaAdminEntry(env.HELLOADA_HANDOFF_ISSUER, env.HELLOADA_TENANT_ID))
     }
@@ -90,10 +105,6 @@ const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
       : response
   },
 }
-
-const mailflareEnv = (env: TenantEnv) => asMailflareEnv(env) as MailflareBindings
-
-const mailflare = mailflareWorker as unknown as MailflareWorker
 
 const mailflareOwnerGate = createPayloadOwnerGate<TenantEnv, WorkerContext>({
   basePath: "/mail",

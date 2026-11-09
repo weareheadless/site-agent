@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
-import { createPayloadOwnerGate } from '../mailflare-owner-gate.ts'
+import { createMailflareMailBridge, createPayloadOwnerGate } from '../mailflare-owner-gate.ts'
 import { provisionTenantMailflareMailbox } from '../mailflare-provisioning.ts'
 
 function database() {
@@ -376,4 +376,61 @@ test('redirects the Mailflare favicon to the shared HelloAda mark without an own
   assert.equal(favicon.headers.get('location'), 'https://tenant.test/brand/helloada-logo.svg')
   assert.equal(dispatched, 0)
   assert.equal(identities, 0)
+})
+
+test('bridges control-plane mail requests with a temporary owner session', async () => {
+  const db = database()
+  await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  const bridge = createMailflareMailBridge({ basePath: '/mail', defaultLocale: 'en' })
+  const envWithToken = { ...env(db.binding), HELLOADA_SITE_AGENT_TOKEN: 'tenant-workspace-token' }
+  let dispatched
+  const dispatch = async (request) => {
+    dispatched = request
+    return new Response(JSON.stringify({ messages: [] }), { headers: { 'content-type': 'application/json' } })
+  }
+
+  const unauthorized = await bridge(new Request('https://tenant.test/api/helloada/mail/messages'), envWithToken, {}, dispatch)
+  assert.equal(unauthorized.status, 401)
+
+  const missingSubject = await bridge(new Request('https://tenant.test/api/helloada/mail/messages', {
+    headers: { authorization: 'Bearer tenant-workspace-token' },
+  }), envWithToken, {}, dispatch)
+  assert.equal(missingSubject.status, 400)
+
+  const response = await bridge(new Request('https://tenant.test/api/helloada/mail/messages?folder=inbox', {
+    method: 'POST',
+    headers: {
+      authorization: 'Bearer tenant-workspace-token',
+      'x-helloada-owner-subject': 'owner-8',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ query: 'hello' }),
+  }), envWithToken, {}, dispatch)
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('cache-control'), 'private, no-store')
+  assert.equal(dispatched.url, 'https://tenant.test/mail/api/messages?folder=inbox')
+  assert.equal(dispatched.method, 'POST')
+  assert.equal(await dispatched.text(), JSON.stringify({ query: 'hello' }))
+  assert.equal(dispatched.headers.get('authorization'), null)
+  assert.equal(dispatched.headers.get('x-helloada-owner-subject'), null)
+  assert.match(dispatched.headers.get('cookie') || '', /^ep_session=[0-9a-f]{64}$/)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM sessions').get().count, 0)
+})
+
+test('rejects a bridge request inside the mail app namespace only', async () => {
+  const db = database()
+  await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  const bridge = createMailflareMailBridge({ basePath: '/mail', defaultLocale: 'en' })
+  await assert.rejects(
+    bridge(new Request('https://tenant.test/api/helloada/workspace'), {
+      ...env(db.binding), HELLOADA_SITE_AGENT_TOKEN: 'tenant-workspace-token',
+    }, {}, async () => new Response('unexpected')),
+    /outside its namespace/,
+  )
 })

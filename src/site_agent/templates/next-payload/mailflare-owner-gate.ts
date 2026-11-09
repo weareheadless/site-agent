@@ -15,6 +15,7 @@ export type PayloadOwnerIdentity = { subject: string }
 type MailflareEnv = PayloadMailboxMigrationEnv & {
   MAILFLARE_DB: D1Binding
   HELLOADA_TENANT_ID: string
+  HELLOADA_SITE_AGENT_TOKEN: string
   MAILFLARE_ADDRESS: string
   MAILFLARE_ZONE_ID: string
   MAILFLARE_ROUTING_STATUS: string
@@ -157,13 +158,7 @@ async function registerTenantBookingOwner(database: D1Binding, tenantId: string,
   ).bind(userId, now).run()
 }
 
-async function provisionOwnerSession(
-  request: Request,
-  env: MailflareEnv,
-  defaultLocale: string,
-): Promise<{ state: 'ready'; token: string; created: boolean } | { state: 'migration_in_progress' }> {
-  // Payload authenticates the person; mailbox/calendar data belongs to the
-  // tenant workspace. Its persisted owner survives login/subject changes.
+async function ownerUserId(env: MailflareEnv): Promise<string> {
   const registeredOwner = await env.MAILFLARE_DB.prepare(
     'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
   ).bind(env.HELLOADA_TENANT_ID).first<{ owner_user_id: string }>()
@@ -178,21 +173,15 @@ async function provisionOwnerSession(
       throw new Error('Mailflare registered workspace owner is invalid')
     }
   }
-  const existingToken = cookieValue(request, SESSION_COOKIE)
-  if (existingToken) {
-    const tokenHash = await digest(existingToken)
-    const session = await env.MAILFLARE_DB.prepare(
-      'SELECT users.id AS user_id FROM sessions INNER JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.id = ? AND users.disabled = 0 LIMIT 1',
-    ).bind(tokenHash, Date.now(), userId).first<{ user_id: string }>()
-    if (session?.user_id === userId) {
-      const mailbox = await provisionTenantMailflareMailbox({ database: env.MAILFLARE_DB, tenantId: env.HELLOADA_TENANT_ID, address: env.MAILFLARE_ADDRESS, zoneId: env.MAILFLARE_ZONE_ID, routingStatus: env.MAILFLARE_ROUTING_STATUS })
-      const migration = await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })
-      if (migration.state === 'in_progress') return { state: 'migration_in_progress' }
-      await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
-      return { state: 'ready', token: existingToken, created: false }
-    }
-  }
+  return userId
+}
 
+type OwnerSession =
+  | { state: 'ready'; token: string; created: boolean; sessionId?: string }
+  | { state: 'migration_in_progress' }
+
+async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Promise<OwnerSession> {
+  const userId = await ownerUserId(env)
   const current = await env.MAILFLARE_DB.prepare(
     'SELECT id, disabled FROM users WHERE id = ? LIMIT 1',
   ).bind(userId).first<{ id: string; disabled: number }>()
@@ -237,10 +226,109 @@ async function provisionOwnerSession(
   await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
 
   const token = randomHex(32)
+  const sessionId = `ha_sess_${randomHex(16)}`
   await env.MAILFLARE_DB.prepare(
     'INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).bind(`ha_sess_${randomHex(16)}`, userId, await digest(token), Date.now() + SESSION_MS, Date.now()).run()
-  return { state: 'ready', token, created: true }
+  ).bind(sessionId, userId, await digest(token), Date.now() + SESSION_MS, Date.now()).run()
+  return { state: 'ready', token, created: true, sessionId }
+}
+
+async function provisionOwnerSession(
+  request: Request,
+  env: MailflareEnv,
+  defaultLocale: string,
+): Promise<OwnerSession> {
+  // Payload authenticates the person; mailbox/calendar data belongs to the
+  // tenant workspace. Its persisted owner survives login/subject changes.
+  const userId = await ownerUserId(env)
+  const existingToken = cookieValue(request, SESSION_COOKIE)
+  if (existingToken) {
+    const tokenHash = await digest(existingToken)
+    const session = await env.MAILFLARE_DB.prepare(
+      'SELECT users.id AS user_id FROM sessions INNER JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.id = ? AND users.disabled = 0 LIMIT 1',
+    ).bind(tokenHash, Date.now(), userId).first<{ user_id: string }>()
+    if (session?.user_id === userId) {
+      const mailbox = await provisionTenantMailflareMailbox({ database: env.MAILFLARE_DB, tenantId: env.HELLOADA_TENANT_ID, address: env.MAILFLARE_ADDRESS, zoneId: env.MAILFLARE_ZONE_ID, routingStatus: env.MAILFLARE_ROUTING_STATUS })
+      const migration = await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })
+      if (migration.state === 'in_progress') return { state: 'migration_in_progress' }
+      await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
+      return { state: 'ready', token: existingToken, created: false }
+    }
+  }
+  return ensureOwnerSession(env, defaultLocale)
+}
+
+const secureEqual = (left: string, right: string) => {
+  if (left.length !== right.length) return false
+  let difference = 0
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index)
+  }
+  return difference === 0
+}
+
+/**
+ * Server-to-server bridge for the HelloAda control plane.
+ *
+ * The control plane has already authenticated the owner and scoped the website;
+ * it presents the tenant workspace token plus the owner subject. This bridge
+ * provisions the same tenant mailbox owner session the browser gate uses and
+ * dispatches JSON requests into the Mailflare API without a cross-site cookie.
+ */
+export function createMailflareMailBridge<Env extends MailflareEnv, Context>({
+  basePath,
+  defaultLocale,
+}: {
+  basePath: string
+  defaultLocale: string
+}) {
+  if (!basePath.startsWith('/') || basePath === '/' || basePath.endsWith('/')) {
+    throw new Error('Mailflare mail bridge requires one absolute non-root base path')
+  }
+  const prefix = '/api/helloada/mail'
+
+  return async (
+    request: Request,
+    env: Env,
+    _context: Context,
+    dispatch: (request: Request) => Promise<Response>,
+  ): Promise<Response> => {
+    const incoming = new URL(request.url)
+    if (incoming.pathname !== prefix && !incoming.pathname.startsWith(`${prefix}/`)) {
+      throw new Error('Mailflare mail bridge received a request outside its namespace')
+    }
+    const expected = String(env.HELLOADA_SITE_AGENT_TOKEN || '')
+    const supplied = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
+    if (!expected || !supplied || !secureEqual(expected, supplied)) {
+      return jsonError(401, 'The workspace service identity is required.')
+    }
+    const subject = (request.headers.get('x-helloada-owner-subject') || '').trim()
+    if (!subject) return jsonError(400, 'The owner subject is required.')
+    if (!mailboxRuntimeReady(env)) return jsonError(503, 'The mailbox is not provisioned yet.')
+
+    const session = await ensureOwnerSession(env, defaultLocale)
+    if (session.state === 'migration_in_progress') {
+      return jsonError(503, 'The mailbox migration is still running.')
+    }
+
+    const target = new URL(request.url)
+    target.pathname = `${basePath}/api${incoming.pathname.slice(prefix.length)}`
+    const headers = new Headers(request.headers)
+    headers.delete('authorization')
+    headers.delete('x-helloada-owner-subject')
+    headers.delete('cookie')
+    headers.set('cookie', `${SESSION_COOKIE}=${session.token}`)
+    const method = request.method.toUpperCase()
+    const body = method === 'GET' || method === 'HEAD' ? undefined : await request.arrayBuffer()
+    const authorized = new Request(target, { method, headers, body })
+    try {
+      return withoutCache(await dispatch(authorized))
+    } finally {
+      if (session.sessionId) {
+        await env.MAILFLARE_DB.prepare('DELETE FROM sessions WHERE id = ?').bind(session.sessionId).run()
+      }
+    }
+  }
 }
 
 export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
