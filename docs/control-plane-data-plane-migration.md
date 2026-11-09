@@ -241,3 +241,10 @@ that tenant's site or a pinned package changes.
   tenant alias, so direct in-preview element selection cannot read the frame.
   The panel editor remains available. A same-origin preview bridge is Phase 3
   work, not a reason to proxy the whole site through the control plane.
+- Mailflare (Messages, Calendar) keeps its own tenant-origin session. A
+  cross-site iframe cannot carry that cookie, so the control plane opens the
+  tenant Mailflare surface in a new tab instead of embedding it. Do not weaken
+  the tenant session cookie to make an iframe work.
+- "Manage content" uses the existing signed handoff (`/admin-entry/<tenant>`),
+  so the owner enters the tenant Payload admin with the same subject the
+  workspace gateway uses.
