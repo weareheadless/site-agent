@@ -2,6 +2,8 @@ import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { sanitizeHelloAdaBrandCopy, sanitizeHelloAdaLocaleValues } from '../../helloada-mailflare/scripts/helloada-branding-patch.mjs'
+
 /**
  * Builds the HelloAda-owned mailbox UI from the pinned Mailflare upstream.
  *
@@ -291,6 +293,65 @@ const patchStrictClientTypes = async (outputFile) => {
   source = source.replace(guard, 'const inboxUnreadDelta = detail.inboxUnreadDelta;\n\t\t\tif (!inboxUnreadDelta) return;')
   source = source.replace('current.folders.inbox.unread + detail.inboxUnreadDelta', 'current.folders.inbox.unread + inboxUnreadDelta')
   await writeFile(outputFile, source)
+}
+
+const patchOwnerShell = async () => {
+  // The vendor's mail assistant belongs to the upstream product; HelloAda's
+  // assistant is Ada. Hide it and drop the vendor credit from the sidebar.
+  await writeFile(path.join(outputRoot, 'src/app/(dashboard)/use-assistant-availability.ts'), `"use client";
+
+export function useAssistantAvailability() {
+	return false;
+}
+`)
+  const footer = path.join(outputRoot, 'src/components/sidebar-footer.tsx')
+  const source = await readFile(footer, 'utf8')
+  if (!source.includes('<PoweredBy />')) throw new Error('Upstream sidebar footer changed shape')
+  await writeFile(footer, source.replace('      <PoweredBy />\n', ''))
+}
+
+const applyBranding = async (files) => {
+  const sanitize = (source) => sanitizeHelloAdaBrandCopy(source)
+  for (const file of files) {
+    const output = outputPathFor(file)
+    const source = await readFile(output, 'utf8')
+    const branded = sanitize(source)
+    if (branded !== source) await writeFile(output, branded)
+  }
+  for (const entry of [...files.map((file) => path.basename(file))]) void entry
+  const locales = path.join(outputRoot, 'locales')
+  for (const name of await readdir(locales)) {
+    if (!name.endsWith('.json')) continue
+    const target = path.join(locales, name)
+    const value = JSON.parse(await readFile(target, 'utf8'))
+    await writeFile(target, JSON.stringify(sanitizeHelloAdaLocaleValues(value), null, 2) + '\n')
+  }
+  for (const name of ['index.tsx', 'base.tsx', 'routes.generated.tsx']) {
+    const target = path.join(outputRoot, name)
+    const source = await readFile(target, 'utf8')
+    await writeFile(target, sanitize(source))
+  }
+}
+
+const assertBranding = async (files) => {
+  const targets = [
+    ...files.map(outputPathFor),
+    path.join(outputRoot, 'index.tsx'),
+    path.join(outputRoot, 'base.tsx'),
+    path.join(outputRoot, 'routes.generated.tsx'),
+  ]
+  for (const target of targets) {
+    if (/\bMailflare\b/.test(await readFile(target, 'utf8'))) {
+      throw new Error('Customer-facing Mailflare brand remains in the generated mailbox: ' + path.relative(outputRoot, target))
+    }
+  }
+  const locales = path.join(outputRoot, 'locales')
+  for (const name of await readdir(locales)) {
+    if (!name.endsWith('.json')) continue
+    if (/\bMailflare\b/.test(await readFile(path.join(locales, name), 'utf8'))) {
+      throw new Error('Customer-facing Mailflare brand remains in locale ' + name)
+    }
+  }
 }
 
 const patchVendorTypes = async () => {
@@ -602,6 +663,7 @@ const main = async () => {
   await patchStrictClientTypes(path.join(outputRoot, 'src/hooks/use-message-counts.ts'))
   await patchDraftDetail(path.join(outputRoot, 'src/app/(dashboard)/drafts/[messageId]/page.tsx'))
   await patchVendorTypes()
+  await patchOwnerShell()
   await patchThreadStar(path.join(outputRoot, 'src/components/messages/thread-message-actions.tsx'))
   const localeFiles = await copyLocales()
   await patchLocaleCatalogs(path.join(outputRoot, 'src/lib/i18n/utils.ts'), localeFiles)
@@ -609,6 +671,8 @@ const main = async () => {
   const pageCount = await buildRouteMap(files)
   await writeIndex(pageCount)
   await writeStyles()
+  await applyBranding(files)
+  await assertBranding(files)
   await assertGenerated(files)
 
   const manifest = {
