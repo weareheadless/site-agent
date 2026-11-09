@@ -1332,6 +1332,8 @@ def register_workspace_routes(
                 "authorization": f"Bearer {tenant.api_token}",
                 "x-helloada-owner-subject": subject,
                 "accept": request.headers.get("accept", "application/json"),
+                # Cloudflare rejects the default Python client signature.
+                "user-agent": "site-agent/control-plane-workspace",
             }
             content_type = request.headers.get("content-type")
             if content_type:

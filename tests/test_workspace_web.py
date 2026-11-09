@@ -3781,6 +3781,7 @@ def test_site_snapshot_reads_the_worker_with_the_tenant_workspace_token(monkeypa
     def open_url(request, timeout):
         captured["url"] = request.full_url
         captured["authorization"] = request.get_header("Authorization")
+        captured["user_agent"] = request.get_header("User-agent")
         captured["timeout"] = timeout
         return Response()
 
@@ -3791,6 +3792,7 @@ def test_site_snapshot_reads_the_worker_with_the_tenant_workspace_token(monkeypa
     assert snapshot["site"]["name"] == "Tenant"
     assert captured["url"] == "https://tenant.example/api/helloada/workspace"
     assert captured["authorization"] == "Bearer tenant-workspace-token"
+    assert captured["user_agent"] == "site-agent/control-plane-workspace"
 
     class Invalid(Response):
         def read(self):
@@ -3834,6 +3836,7 @@ def test_control_plane_worker_gateway_uses_the_tenant_token_and_owner_subject(tm
         captured["method"] = request.get_method()
         captured["authorization"] = request.get_header("Authorization")
         captured["subject"] = request.get_header("X-helloada-owner-subject")
+        captured["user_agent"] = request.get_header("User-agent")
         return Upstream()
 
     monkeypatch.setattr("site_agent.web.workspace.urllib.request.urlopen", open_url)
@@ -3858,6 +3861,7 @@ def test_control_plane_worker_gateway_uses_the_tenant_token_and_owner_subject(tm
     assert captured["url"] == "https://tenant.example/api/helloada/workspace?locale=en"
     assert captured["authorization"] == f"Bearer {tenant.api_token}"
     assert captured["subject"] == "hello-user-1"
+    assert captured["user_agent"] == "site-agent/control-plane-workspace"
     assert missing_subject.status_code == 400
     assert unknown.status_code == 404
     assert denied.status_code == 401

@@ -1573,6 +1573,8 @@ class ChatService:
                 "Authorization": f"Bearer {gateway.token}",
                 "Accept": "application/json",
                 "Cache-Control": "no-cache",
+                # Cloudflare rejects the default Python client signature.
+                "User-Agent": "site-agent/control-plane-workspace",
             },
         )
         try:
