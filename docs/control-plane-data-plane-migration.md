@@ -217,6 +217,25 @@ that tenant's site or a pinned package changes.
 
 ## Current implementation status
 
+### Verified canary (2026-11-08)
+
+- Control-plane app release `20261109032000-tenant-surfaces`, source
+  `1943551418d34e94ba60e83fd07574e4280056ab`.
+- Shared API release `20261109024500-api-workspace-ua`, source
+  `9c671ef4f1aea6b2405f01d9bcbaf07932ff8882`.
+- Inmersion Worker release `rel-20261109025000-control-plane-workspace`,
+  source `33f5ec5a57cf2eae521f472b08d9a430d36e75e4`, runtime fingerprint
+  `d525b2f5ec3e5b377a55a6c20def7b87acb6ca451bfddee511f2c05172911ebb`,
+  routes `/`, `/about`, `/courses`.
+- Observed in a fresh authenticated browser document at
+  `https://helloada.app/websites/12/workspace`: the control-plane shell, Ada
+  conversation, committed-route selector, live tenant preview, Growth and
+  Gallery views, and the signed handoff into the tenant Payload admin.
+- The public site at the tenant origin still returns the same page and title;
+  the tenant release did not change content or schema.
+- Messages opens the tenant Mailflare surface in a new tab because that app
+  keeps its own tenant-origin session.
+
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
 - Phase 0: contained by Phase 1; the compiled-preview path now generates the
