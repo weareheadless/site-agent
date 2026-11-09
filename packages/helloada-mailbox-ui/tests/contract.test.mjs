@@ -140,3 +140,26 @@ test('the package carries the vendor type shim it needs', () => {
   const actions = read('src/components/message-actions/message-actions.tsx')
   assert.match(actions, /^\/\/ @ts-nocheck/)
 })
+
+test('every internal link and router push goes through the mailbox base', async () => {
+  const walk = async (directory) => {
+    const files = []
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name)
+      if (entry.isDirectory()) files.push(...await walk(target))
+      else if (/\.(?:ts|tsx)$/.test(entry.name)) files.push(target)
+    }
+    return files
+  }
+  for (const file of await walk(path.join(outputRoot, 'src'))) {
+    const source = readFileSync(file, 'utf8')
+    const relative = path.relative(outputRoot, file)
+    assert.doesNotMatch(source, /from "next\/link"/, relative)
+    assert.doesNotMatch(source, /\buseRouter\(\)/, relative)
+    assert.doesNotMatch(source, /href=\{`\/api/, relative)
+    if (/router\.(push|replace)\("\//.test(source)) assert.match(source, /useMailboxRouter\(\)/, relative)
+  }
+  const base = read('base.tsx')
+  assert.match(base, /export function MailboxLink/)
+  assert.match(base, /export function useMailboxRouter/)
+})

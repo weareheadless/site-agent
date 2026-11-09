@@ -170,27 +170,16 @@ const adaptFile = async (file, outputFile) => {
     source = ensureImport(source, ['authFetch'], importSpecifier(relativeOutput, 'src/lib/auth/client.ts'))
   }
 
-  // Internal navigation must stay under the mailbox base path.
-  source = source.replace(/href="(\/[^"]*)"/g, (_, value) => {
-    if (value.startsWith('/api/')) {
-      needs.add('apiUrl')
-      return `href={apiUrl("${value}")}`
-    }
-    needs.add('mb')
-    return `href={mb("${value}")}`
+  // Every internal link goes through one wrapper: API paths reach the owner
+  // proxy, app paths stay under the mailbox mount point, and the rewrite works
+  // for string, template and config-derived hrefs alike.
+  source = source.replace(/import\s+(\w+)\s+from\s+["']next\/link["']/g, (_, name) =>
+    `import { MailboxLink as ${name} } from "${baseSpecifier}"`)
+  source = source.replace(/href=\{`(\/api[^`]*)`\}/g, (_, path) => {
+    needs.add('apiUrl')
+    return `href={apiUrl(\`${path}\`)}`
   })
-  source = source.replace(/href='(\/[^']*)'/g, (_, value) => {
-    if (value.startsWith('/api/')) {
-      needs.add('apiUrl')
-      return `href={apiUrl("${value}")}`
-    }
-    needs.add('mb')
-    return `href={mb("${value}")}`
-  })
-  source = source.replace(/router\.(push|replace)\((\s*)"(\/[^"]*)"/g, (_, method, whitespace, value) => {
-    needs.add('mb')
-    return `router.${method}(${whitespace}mb("${value}")`
-  })
+
   const replacedNextHooks = new Set()
   source = source.replace(/\busePathname\(\)/g, () => {
     needs.add('useMailboxPathname')
@@ -202,12 +191,16 @@ const adaptFile = async (file, outputFile) => {
     replacedNextHooks.add('useParams')
     return 'useMailboxParams()'
   })
+  source = source.replace(/\buseRouter\(\)/g, () => {
+    needs.add('useMailboxRouter')
+    replacedNextHooks.add('useRouter')
+    return 'useMailboxRouter()'
+  })
 
   // The control plane supplies the page height; the mailbox must not claim the
   // whole viewport inside it.
   source = source.replace(/\bh-dvh\b/g, 'h-full')
 
-  needs.delete('authFetch')
   if (needs.size) {
     source = ensureImport(source, [...needs].sort(), baseSpecifier)
     for (const name of replacedNextHooks) {
@@ -417,8 +410,9 @@ const patchThreadStar = async (outputFile) => {
 const writeBase = async () => {
   const source = `"use client";
 
-import { createContext, useContext, type ReactNode } from "react";
-import { usePathname } from "next/navigation";
+import { createContext, useContext, useMemo, type ComponentProps, type ReactNode } from "react";
+import NextLink from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 
 export type MailboxConfig = { apiBase: string; basePath: string };
 
@@ -455,6 +449,25 @@ export function MailboxParamsProvider({ value, children }: { value: Record<strin
 }
 
 export const useMailboxParams = (): Record<string, string> => useContext(ParamsContext);
+
+export function MailboxLink({ href, ...rest }: { href?: unknown } & Omit<ComponentProps<typeof NextLink>, "href">) {
+	const resolved = typeof href === "string"
+		? href.startsWith("/api") ? apiUrl(href) : href.startsWith("/") ? mb(href) : href
+		: href;
+	return <NextLink href={resolved as never} {...rest} />;
+}
+
+export function useMailboxRouter() {
+	const router = useRouter();
+	return useMemo(
+		() => ({
+			...router,
+			push: (href: string, options?: Parameters<typeof router.push>[1]) => router.push(mb(href), options),
+			replace: (href: string, options?: Parameters<typeof router.replace>[1]) => router.replace(mb(href), options),
+		}),
+		[router],
+	);
+}
 
 `
   await writeFile(path.join(outputRoot, 'base.tsx'), source)
