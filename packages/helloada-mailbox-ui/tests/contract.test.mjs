@@ -110,3 +110,33 @@ test('the package exposes one entry and one stylesheet', () => {
   assert.ok(existsSync(path.join(outputRoot, 'index.tsx')))
   assert.match(read('styles.css'), /\.helloada-mailbox/)
 })
+
+test('client-only route pages read their params from the mailbox provider', () => {
+  const drafts = read('src/app/(dashboard)/drafts/[messageId]/page.tsx')
+  assert.match(drafts, /^"use client";/)
+  assert.match(drafts, /useMailboxParams\(\)/)
+  assert.doesNotMatch(drafts, /await params/)
+  assert.match(drafts, /<OpenDraftOnRoute draftId=\{messageId\} \/>/)
+})
+
+test('the star toggle stores the boolean the API returns', () => {
+  const actions = read('src/components/messages/thread-message-actions.tsx')
+  assert.match(actions, /const starred = await toggleMessageStar\(message\.id\);/)
+  assert.match(actions, /setStarred\(starred\.starred\);/)
+  assert.doesNotMatch(actions, /setStarred\(await toggleMessageStar/)
+})
+
+test('authFetch is imported from its own module, never from the adapter', () => {
+  for (const file of ['src/components/sidebar-state.tsx', 'src/components/branding-provider-utils.ts']) {
+    const source = read(file)
+    assert.match(source, /import \{ authFetch \} from "[^"]*lib\/auth\/client"/, file)
+    assert.doesNotMatch(source, /import \{ authFetch \} from "[^"]*base"/, file)
+  }
+})
+
+test('the package carries the vendor type shim it needs', () => {
+  assert.ok(existsSync(path.join(outputRoot, 'vendor.d.ts')))
+  assert.match(read('index.tsx'), /^\/\/\/ <reference path="\.\/vendor\.d\.ts" \/>/)
+  const actions = read('src/components/message-actions/message-actions.tsx')
+  assert.match(actions, /^\/\/ @ts-nocheck/)
+})

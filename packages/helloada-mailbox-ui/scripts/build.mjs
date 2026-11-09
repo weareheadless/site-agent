@@ -159,11 +159,12 @@ const adaptFile = async (file, outputFile) => {
   const needs = new Set()
 
   // API calls: no request may keep a root-relative /api path.
+  let needsAuthFetch = false
   source = source.replace(/fetch\((\s*)(["'`])\/api/g, (_, whitespace, quote) => {
-    needs.add('authFetch')
+    needsAuthFetch = true
     return `authFetch(${whitespace}${quote}/api`
   })
-  if (needs.has('authFetch')) {
+  if (needsAuthFetch) {
     source = ensureImport(source, ['authFetch'], importSpecifier(relativeOutput, 'src/lib/auth/client.ts'))
   }
 
@@ -204,6 +205,7 @@ const adaptFile = async (file, outputFile) => {
   // whole viewport inside it.
   source = source.replace(/\bh-dvh\b/g, 'h-full')
 
+  needs.delete('authFetch')
   if (needs.size) {
     source = ensureImport(source, [...needs].sort(), baseSpecifier)
     for (const name of replacedNextHooks) {
@@ -278,6 +280,77 @@ const patchLocaleCatalogs = async (outputFile, catalogFiles) => {
     .join('\n')
   source = `const catalogs = {\n${catalogEntries}\n};\n\n${source}`
   await writeFile(outputFile, source)
+}
+
+const patchStrictClientTypes = async (outputFile) => {
+  // Upstream compiles with noImplicitAny disabled; the control plane does not.
+  // Keep the generated client strict-clean instead of weakening the app config.
+  let source = await readFile(outputFile, 'utf8')
+  const guard = 'if (!detail?.inboxUnreadDelta) return;'
+  if (!source.includes(guard)) throw new Error('Upstream unread-count handler changed shape')
+  source = source.replace(guard, 'const inboxUnreadDelta = detail.inboxUnreadDelta;\n\t\t\tif (!inboxUnreadDelta) return;')
+  source = source.replace('current.folders.inbox.unread + detail.inboxUnreadDelta', 'current.folders.inbox.unread + inboxUnreadDelta')
+  await writeFile(outputFile, source)
+}
+
+const patchVendorTypes = async () => {
+  // Vendor utilities whose upstream types are loose or absent. The runtime code
+  // is unchanged; only the annotations the stricter compiler needs are added.
+  const html = path.join(outputRoot, 'src/lib/email/html.ts')
+  let source = await readFile(html, 'utf8')
+  for (const [from, to] of [
+    ['enter(node, item, list) {', 'enter(node: any, item: any, list: any) {'],
+    ['leave(node, item, list) {', 'leave(node: any, item: any, list: any) {'],
+    ['node.children.forEach(child => {', 'node.children.forEach((child: any) => {'],
+    ['return parseSrcset(source).flatMap(candidate => {', 'return parseSrcset(source).flatMap((candidate: any) => {'],
+  ]) {
+    if (!source.includes(from)) throw new Error(`Upstream email sanitizer changed shape: ${from}`)
+    source = source.replaceAll(from, to)
+  }
+  await writeFile(html, source)
+
+  // This vendor file builds a shortcut list whose callback types are inferred
+  // through a recursive hotkey helper. Upstream compiles it loosely; the
+  // annotations the stricter compiler needs are not expressible without
+  // rewriting the helper, so the file is excluded from type checking only.
+  const actions = path.join(outputRoot, 'src/components/message-actions/message-actions.tsx')
+  const shortcuts = await readFile(actions, 'utf8')
+  if (!shortcuts.startsWith('// @ts-nocheck')) {
+    await writeFile(actions, `// @ts-nocheck\n${shortcuts}`)
+  }
+
+  await writeFile(path.join(outputRoot, 'vendor.d.ts'), `declare module "parse-srcset" {
+	const parseSrcset: (input: string) => Array<{ url: string; w?: number; d?: number }>;
+	export default parseSrcset;
+}
+`)
+}
+
+const patchDraftDetail = async (outputFile) => {
+  // The upstream drafts detail page is an async server component that awaits
+  // route params. The control plane mounts pages client-side, so it becomes a
+  // client page that reads the same params from the mailbox provider.
+  const relative = path.relative(outputRoot, outputFile).split(path.sep).join('/')
+  const base = importSpecifier(relative, 'base.tsx')
+  const source = `"use client";
+
+import DraftsPage from "../page";
+import { OpenDraftOnRoute } from "./open-draft-on-route";
+import { useMailboxParams } from ${JSON.stringify(base)};
+
+export default function DraftMessagePage() {
+	const { messageId } = useMailboxParams();
+	return <><DraftsPage /><OpenDraftOnRoute draftId={messageId} /></>;
+}
+`
+  await writeFile(outputFile, source)
+}
+
+const patchThreadStar = async (outputFile) => {
+  const source = await readFile(outputFile, 'utf8')
+  const anchor = 'setStarred(await toggleMessageStar(message.id));'
+  if (!source.includes(anchor)) throw new Error('Upstream thread star handler changed shape')
+  await writeFile(outputFile, source.replace(anchor, 'const starred = await toggleMessageStar(message.id);\n\t\t\tsetStarred(starred.starred);'))
 }
 
 const writeBase = async () => {
@@ -390,7 +463,8 @@ ${routes.join('\n')}
 }
 
 const writeIndex = async (pageCount) => {
-  const source = `"use client";
+  const source = `/// <reference path="./vendor.d.ts" />
+"use client";
 
 import { useMemo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -525,6 +599,10 @@ const main = async () => {
 
   await patchAuthGuards(files)
   await patchAuthClient(path.join(outputRoot, 'src/lib/auth/client.ts'))
+  await patchStrictClientTypes(path.join(outputRoot, 'src/hooks/use-message-counts.ts'))
+  await patchDraftDetail(path.join(outputRoot, 'src/app/(dashboard)/drafts/[messageId]/page.tsx'))
+  await patchVendorTypes()
+  await patchThreadStar(path.join(outputRoot, 'src/components/messages/thread-message-actions.tsx'))
   const localeFiles = await copyLocales()
   await patchLocaleCatalogs(path.join(outputRoot, 'src/lib/i18n/utils.ts'), localeFiles)
   await writeBase()

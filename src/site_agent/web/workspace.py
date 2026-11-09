@@ -1354,9 +1354,12 @@ def register_workspace_routes(
             data = await asyncio.to_thread(upstream.read)
             response = Response(content=data, status_code=upstream.status,
                                 headers={"cache-control": "no-store"})
-            upstream_type = upstream.headers.get("content-type")
-            if upstream_type:
-                response.headers["content-type"] = upstream_type
+            # Representation headers the owner surface needs verbatim: the
+            # attachment filename and type must survive the control plane.
+            for header in ("content-type", "content-disposition", "content-length"):
+                value = upstream.headers.get(header)
+                if value:
+                    response.headers[header] = value
             for cookie in upstream.headers.get_all("set-cookie") or []:
                 response.headers.append("set-cookie", cookie)
             return response

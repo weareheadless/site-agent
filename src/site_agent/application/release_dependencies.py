@@ -58,16 +58,33 @@ def verify_integrity(data: bytes, integrity: str, package_name: str) -> None:
             f"(expected {integrity}, received {actual})"
         )
 
+def _declared_packages(package: dict[str, Any]) -> tuple[str, ...]:
+    """Select the private packages a checkout actually depends on.
+
+    The allow-list is the full catalogue; a checkout is verified for what it
+    declares. An unknown `@weareheadless/*` dependency fails closed instead of
+    being silently ignored.
+    """
+    declared = set((package.get("dependencies") or {}))
+    unknown = sorted(name for name in declared
+                     if name.startswith("@weareheadless/") and name not in PRIVATE_PACKAGES)
+    if unknown:
+        raise RuntimeError(f"Undeclared private release package: {unknown[0]}")
+    return tuple(name for name in PRIVATE_PACKAGES if name in declared)
+
+
 def _verified_release_dependencies(
     checkout: Path,
     token: str,
-    package_names: tuple[str, ...] = PRIVATE_PACKAGES,
+    package_names: tuple[str, ...] | None = None,
 ) -> Iterator[dict[str, Any]]:
     if not token:
         raise RuntimeError("Central GitHub release credential is required")
-    if not package_names or any(name not in PRIVATE_PACKAGES for name in package_names):
-        raise ValueError("Only declared private release packages can be verified")
     package = json.loads((checkout / "package.json").read_text(encoding="utf-8"))
+    if package_names is None:
+        package_names = _declared_packages(package)
+    if any(name not in PRIVATE_PACKAGES for name in package_names):
+        raise ValueError("Only declared private release packages can be verified")
     lock = json.loads((checkout / "package-lock.json").read_text(encoding="utf-8"))
     for name in package_names:
         url = package.get("dependencies", {}).get(name)
@@ -109,7 +126,7 @@ def _verified_release_dependencies(
 def verify_release_dependencies(
     checkout: Path,
     token: str,
-    package_names: tuple[str, ...] = PRIVATE_PACKAGES,
+    package_names: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Verify canonical lockfile entries against exact published GitHub bytes."""
     keys = ("package", "release", "assetId", "integrity", "digest")
@@ -124,6 +141,7 @@ def prepare_release_dependencies(
     npm: str,
     temporary_root: Path,
     run: Callable[[list[str], Path], None],
+    package_names: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Verify exact private packages and seed npm's cache without changing the lockfile."""
     checkout = checkout.resolve()
@@ -135,7 +153,7 @@ def prepare_release_dependencies(
         dir=temporary_root,
     ) as temporary:
         asset_root = Path(temporary)
-        for artifact in _verified_release_dependencies(checkout, token):
+        for artifact in _verified_release_dependencies(checkout, token, package_names):
             target = asset_root / artifact["filename"]
             target.write_bytes(artifact["data"])
             target.chmod(0o600)
