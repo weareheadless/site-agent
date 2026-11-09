@@ -3800,3 +3800,65 @@ def test_site_snapshot_reads_the_worker_with_the_tenant_workspace_token(monkeypa
                         lambda request, timeout: Invalid())
     with pytest.raises(BridgeError, match="invalid"):
         ChatService.site_snapshot(service)
+
+
+def test_control_plane_worker_gateway_uses_the_tenant_token_and_owner_subject(tmp_path, monkeypatch):
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    tenant.config.setdefault("site", {})["payload"] = {
+        "enabled": True, "url": "https://tenant.example", "token_env": "TENANT_TOKEN",
+    }
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/v1/control-plane/websites", control_token="control-secret",
+    )
+    captured = {}
+
+    from email.message import Message
+
+    class Upstream:
+        status = 200
+
+        def __init__(self):
+            self.headers = Message()
+            self.headers["content-type"] = "application/json"
+            self.headers["set-cookie"] = "payload-lng=es; Path=/; SameSite=Lax"
+
+        def read(self):
+            return b'{"ok":true}'
+
+    def open_url(request, timeout):
+        captured["url"] = request.full_url
+        captured["method"] = request.get_method()
+        captured["authorization"] = request.get_header("Authorization")
+        captured["subject"] = request.get_header("X-helloada-owner-subject")
+        return Upstream()
+
+    monkeypatch.setattr("site_agent.web.workspace.urllib.request.urlopen", open_url)
+    url = f"/v1/control-plane/websites/{tenant.tenant_id}/worker/workspace?locale=en"
+    with TestClient(app) as client:
+        allowed = client.get(url, headers={
+            "Authorization": "Bearer control-secret",
+            "X-HelloAda-Owner-Subject": "hello-user-1",
+        })
+        missing_subject = client.get(
+            f"/v1/control-plane/websites/{tenant.tenant_id}/worker/workspace",
+            headers={"Authorization": "Bearer control-secret"},
+        )
+        unknown = client.get(
+            "/v1/control-plane/websites/missing/worker/workspace",
+            headers={"Authorization": "Bearer control-secret", "X-HelloAda-Owner-Subject": "hello-user-1"},
+        )
+        denied = client.get(url, headers={"X-HelloAda-Owner-Subject": "hello-user-1"})
+    assert allowed.status_code == 200
+    assert allowed.json() == {"ok": True}
+    assert allowed.headers["set-cookie"].startswith("payload-lng=es")
+    assert captured["url"] == "https://tenant.example/api/helloada/workspace?locale=en"
+    assert captured["authorization"] == f"Bearer {tenant.api_token}"
+    assert captured["subject"] == "hello-user-1"
+    assert missing_subject.status_code == 400
+    assert unknown.status_code == 404
+    assert denied.status_code == 401
+    memory.close()

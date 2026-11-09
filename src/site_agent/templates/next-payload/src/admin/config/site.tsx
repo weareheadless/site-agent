@@ -39,6 +39,13 @@ let activeHelloAdaSite = defaultHelloAdaSite
 
 const route = (value: string, fallback: string) => {
   const normalized = String(value || '').trim()
+  if (/^https?:\/\//.test(normalized)) {
+    try {
+      return new URL(normalized).toString().replace(/\/$/, '')
+    } catch {
+      return fallback
+    }
+  }
   if (!normalized.startsWith('/') || normalized.startsWith('//')) return fallback
   return normalized.replace(/\/$/, '') || '/'
 }

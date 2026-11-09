@@ -14,6 +14,8 @@ import asyncio
 
 import hmac
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -1301,6 +1303,61 @@ def register_workspace_routes(
             headers.append((b"authorization", f"Bearer {tenant.api_token}".encode()))
             request.scope["headers"] = headers
             return await call_next(request)
+
+        # The tenant Worker owns the owner-visible site: Payload documents,
+        # committed routes, previews, media and the Ada bridge. The control
+        # plane reaches that same workspace with the tenant workspace token and
+        # the HelloAda subject it has already authenticated. This is the only
+        # server-to-server path; a browser never holds the tenant token.
+        @app.api_route(
+            f"{control_prefix}/{{website_id}}/worker/{{suffix:path}}",
+            methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        )
+        async def control_plane_worker_gateway(website_id: str, suffix: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            subject = request.headers.get("x-helloada-owner-subject", "").strip()
+            if not subject:
+                raise HTTPException(status_code=400, detail="control-plane workspace request requires an owner subject")
+            if not suffix or ".." in suffix.split("/"):
+                raise HTTPException(status_code=400, detail="workspace path is invalid")
+            site = tenant.config.get("site") or {}
+            payload_settings = site.get("payload") or {}
+            base_url = str(payload_settings.get("url") or "").rstrip("/")
+            if not base_url:
+                raise HTTPException(status_code=503, detail="the website workspace is not configured")
+            query = request.url.query
+            url = f"{base_url}/api/helloada/{suffix}" + (f"?{query}" if query else "")
+            body = await request.body()
+            forwarded = {
+                "authorization": f"Bearer {tenant.api_token}",
+                "x-helloada-owner-subject": subject,
+                "accept": request.headers.get("accept", "application/json"),
+            }
+            content_type = request.headers.get("content-type")
+            if content_type:
+                forwarded["content-type"] = content_type
+
+            def send():
+                outbound = urllib.request.Request(url, data=body or None, headers=forwarded,
+                                                  method=request.method)
+                try:
+                    return urllib.request.urlopen(outbound, timeout=60)
+                except urllib.error.HTTPError as exc:  # a workspace error is a response
+                    return exc
+
+            try:
+                upstream = await asyncio.to_thread(send)
+            except (OSError, urllib.error.URLError) as exc:
+                raise HTTPException(status_code=503, detail="the website workspace is unavailable") from exc
+            data = await asyncio.to_thread(upstream.read)
+            response = Response(content=data, status_code=upstream.status,
+                                headers={"cache-control": "no-store"})
+            upstream_type = upstream.headers.get("content-type")
+            if upstream_type:
+                response.headers["content-type"] = upstream_type
+            for cookie in upstream.headers.get_all("set-cookie") or []:
+                response.headers.append("set-cookie", cookie)
+            return response
 
 
 def create_workspace_api_app(

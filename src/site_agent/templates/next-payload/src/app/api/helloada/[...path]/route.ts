@@ -271,7 +271,17 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
     routes.push({ path: declared, kind: 'page', collection: '', sourceId: '' })
   }
   return {
-    site: { name: process.env.HELLOADA_SITE_NAME || 'Your website', url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin },
+    site: {
+      name: process.env.HELLOADA_SITE_NAME || 'Your website',
+      url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin,
+      tenantId: helloAdaSite.tenantId,
+      defaultLocale: helloAdaSite.defaultLocale,
+      locales: helloAdaSite.locales,
+      preview: helloAdaSite.routes.preview,
+      liveSite: helloAdaSite.routes.liveSite,
+      content: helloAdaSite.content,
+      features: helloAdaSite.features,
+    },
     routes,
     documents,
     ada: { configured: helloAdaRuntimeStatus().configured },

@@ -23,9 +23,9 @@ test('the bridge mints an owner-only exact preview token for one draft document'
 test('the workspace shows the exact pending revision instead of the published alias', () => {
   assert.match(workspace, /fetchHelloAda\('\/api\/helloada\/preview'/)
   assert.match(workspace, /draftPreview && draftPreview\.key === draftPreviewKey/)
-  assert.match(workspace, /window\.location\.origin\}\$\{draftPreview\.url\}/)
+  assert.match(workspace, /siteOrigin\}\$\{draftPreview\.url\}/)
   // The published alias remains the fallback for documents without a draft.
-  assert.match(workspace, /site\.routes\.preview\}/)
+  assert.match(workspace, /previewAlias\}/)
   // The signed token is not handed to the model as conversation context.
   assert.match(workspace, /url: draftPreview && draftPreview\.key === draftPreviewKey/)
 })

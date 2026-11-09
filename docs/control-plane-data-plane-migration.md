@@ -221,9 +221,23 @@ that tenant's site or a pinned package changes.
   template; preview and release call it; the duplicate root script is removed.
 - Phase 0: contained by Phase 1; the compiled-preview path now generates the
   same inputs as release.
-- Phase 2 first slice: implemented. The control plane has a trusted workspace
-  gateway (`/v1/control-plane/websites/{tenant}/workspace/...`) that injects the
-  tenant workspace token server-side, and a `workspace/site` snapshot endpoint
-  that reads the Worker's canonical site snapshot. The tenant API keeps its own
-  auth contract; the control token is not a workspace service token.
-- Phase 2 next: the HelloAda `/websites/<id>/workspace` route and the UI port.
+- Phase 2: implemented for the canary. The control plane has a trusted
+  workspace gateway (`/v1/control-plane/websites/{tenant}/workspace/...`) that
+  injects the tenant workspace token server-side, and a `workspace/site`
+  snapshot endpoint that reads the Worker's canonical site snapshot. The tenant
+  API keeps its own auth contract; the control token is not a workspace service
+  token.
+- The Worker bridge also accepts the tenant workspace token with an explicit
+  HelloAda owner subject
+  (`/v1/control-plane/websites/{tenant}/worker/...`). The Worker links that
+  subject to the same durable Payload owner the signed handoff creates, so the
+  control plane gets the same access checks and audit identity without a
+  browser session or a second user model.
+- The HelloAda app serves `/websites/<id>/workspace` and proxies browser calls
+  through its own authenticated server route. The ported workspace UI reads the
+  tenant's own site configuration from the snapshot (locales, modules, preview
+  mount) instead of guessing it.
+- Known limitation of the canary: the preview is a cross-origin iframe of the
+  tenant alias, so direct in-preview element selection cannot read the frame.
+  The panel editor remains available. A same-origin preview bridge is Phase 3
+  work, not a reason to proxy the whole site through the control plane.

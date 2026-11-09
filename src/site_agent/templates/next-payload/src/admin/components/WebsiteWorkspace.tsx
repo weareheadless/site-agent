@@ -803,25 +803,39 @@ function ReviewWorkspace() {
   )
   const candidateReviewPreviewReady = candidateReviewLinked && candidatePreviewReady
 
+  const siteOrigin = useMemo(() => {
+    const live = site.routes.liveSite
+    if (/^https?:\/\//.test(live)) {
+      try { return new URL(live).origin } catch { /* fall back to this deployment */ }
+    }
+    return typeof window === 'undefined' ? '' : window.location.origin
+  }, [site.routes.liveSite])
+
+  const previewAlias = useMemo(() => {
+    const preview = site.routes.preview
+    const absolute = /^https?:\/\//.test(preview) ? preview : `${siteOrigin}${preview}`
+    return absolute.replace(/\/$/, '')
+  }, [site.routes.preview, siteOrigin])
+
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
     if (designBuild?.preview?.preview_url && candidatePreviewReady
       && candidateReviewPreviewReady) {
       const base = designBuild.preview.preview_url
       const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
-      return `${window.location.origin}${base}${path}`
+      return `${siteOrigin}${base}${path}`
     }
     if (draftPreview && draftPreview.key === draftPreviewKey) {
-      return `${window.location.origin}${draftPreview.url}`
+      return `${siteOrigin}${draftPreview.url}`
     }
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
     if (sourceReview && !sourceReview.url) return 'about:blank'
     const baseUrl = sourceReview
-      ? `${window.location.origin}${sourceReview.url}${path}`
-      : `${window.location.origin}${site.routes.preview}/${path}`
+      ? `${siteOrigin}${sourceReview.url}${path}`
+      : `${previewAlias}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewRevision, selectedRoute, site.routes.preview, sourceReview])
+  }, [candidatePreviewReady, candidateReviewPreviewReady, designBuild?.preview, draftPreview, draftPreviewKey, previewAlias, previewRevision, selectedRoute, siteOrigin, sourceReview])
 
   const syncRouteFromPreview = useCallback(() => {
     // Browsing inside the preview and the page selector must agree: a nav link
@@ -902,7 +916,7 @@ function ReviewWorkspace() {
         // Never hand the signed exact-preview token to the model; the route is
         // the context Ada needs, and the display alias names it.
         url: draftPreview && draftPreview.key === draftPreviewKey
-          ? `${site.routes.preview}${selectedRoute === '/' ? '' : selectedRoute}`
+          ? `${previewAlias}${selectedRoute === '/' ? '' : selectedRoute}`
           : previewUrl,
         revision: previewRevision,
       },
@@ -917,7 +931,7 @@ function ReviewWorkspace() {
           }
         : null,
     }
-  }, [adaPhase, draftPreview, draftPreviewKey, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.routes.preview, site.siteName, workspace])
+  }, [adaPhase, draftPreview, draftPreviewKey, previewAlias, previewRevision, previewUrl, selectedDocument, selectedRoute, selectedRouteData, site.siteName, workspace])
 
   const loadEditorMedia = useCallback(async (page: number, append: boolean, search: string) => {
     setEditorMediaLoading(true)
