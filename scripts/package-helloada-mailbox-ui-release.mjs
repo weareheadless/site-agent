@@ -36,7 +36,10 @@ const main = () => {
   const upstreamPin = JSON.parse(readFileSync(path.join(root, 'packages/helloada-mailflare/UPSTREAM.json'), 'utf8'))
   const output = path.join(packageRoot, '.release')
   mkdirSync(output, { recursive: true })
-  const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
+  // Build once with visible output, then pack the exact built tree without
+  // letting the build's stdout corrupt npm's JSON report.
+  execFileSync('node', ['scripts/build.mjs'], { cwd: packageRoot, stdio: 'inherit' })
+  const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
   const archive = path.join(output, packed.filename)
 
   for (const file of ['dist/index.tsx', 'dist/base.tsx', 'dist/routes.generated.tsx', 'dist/styles.css', 'dist/build.json', 'README.md']) {
