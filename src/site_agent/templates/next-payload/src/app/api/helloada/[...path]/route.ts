@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { getCloudflareContext } from '@opennextjs/cloudflare'
 import config from '@payload-config'
 import { getPayload } from 'payload'
-import type { CollectionSlug, GlobalSlug, PayloadRequest, TypedLocale } from 'payload'
+import type { CollectionSlug, GlobalSlug, PayloadRequest, TypedLocale, Where } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { serviceAuthorized } from '@/lib/service-auth'
@@ -216,11 +216,11 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
   }> = []
   for (const collection of editableCollections) {
     try {
-      const readAll = async (draft: boolean) => {
+      const readAll = async (draft: boolean, where?: Where) => {
         const documents: Record<string, unknown>[] = []
         let page = 1
         while (true) {
-          const result = await payload.find({ collection: collection as CollectionSlug, depth: 0, limit: 100, page, draft, overrideAccess: true })
+          const result = await payload.find({ collection: collection as CollectionSlug, depth: 0, limit: 100, page, draft, where, overrideAccess: true })
           documents.push(...(result.docs as unknown as Record<string, unknown>[]))
           if (!result.hasNextPage) return documents
           const nextPage = Number(result.nextPage)
@@ -229,7 +229,11 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
         }
       }
       const publishedRows = await readAll(false)
-      const draft = await readAll(true)
+      // A drafts-enabled find returns the latest version of every document,
+      // including every published one. Only documents whose latest state is a
+      // draft need that join; reading the rest from the main table keeps a
+      // large catalog inside D1's per-window resource budget.
+      const draft = await readAll(true, { _status: { equals: 'draft' } })
       // Payload's published read returns main-table rows that are still drafts,
       // including an interrupted create with no locale or version row. Such a
       // row is not a published document and must not enter the editable list.

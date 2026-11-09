@@ -125,5 +125,5 @@ test('the workspace snapshot serializes collection reads for D1', async () => {
   assert.match(source, /for \(const collection of editableCollections\)/)
   assert.doesNotMatch(source, /Promise\.all\(editableCollections/)
   assert.match(source, /const publishedRows = await readAll\(false\)/)
-  assert.match(source, /const draft = await readAll\(true\)/)
+  assert.match(source, /const draft = await readAll\(true, \{ _status: \{ equals: 'draft' \} \}\)/)
 })
