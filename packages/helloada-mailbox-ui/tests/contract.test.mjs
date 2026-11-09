@@ -156,6 +156,7 @@ test('every internal link and router push goes through the mailbox base', async 
     const relative = path.relative(outputRoot, file)
     assert.doesNotMatch(source, /from "next\/link"/, relative)
     assert.doesNotMatch(source, /\buseRouter\(\)/, relative)
+    assert.doesNotMatch(source, /\buseParams(?:<[^>]*>)?\(\)/, relative)
     assert.doesNotMatch(source, /href=\{`\/api/, relative)
     if (/router\.(push|replace)\("\//.test(source)) assert.match(source, /useMailboxRouter\(\)/, relative)
   }

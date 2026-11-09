@@ -186,7 +186,7 @@ const adaptFile = async (file, outputFile) => {
     replacedNextHooks.add('usePathname')
     return 'useMailboxPathname()'
   })
-  source = source.replace(/\buseParams\(\)/g, () => {
+  source = source.replace(/\buseParams(?:<[^>]*>)?\(\)/g, () => {
     needs.add('useMailboxParams')
     replacedNextHooks.add('useParams')
     return 'useMailboxParams()'
