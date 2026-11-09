@@ -1,4 +1,4 @@
-import { defineHelloAdaSite, setHelloAdaSite } from '@/lib/site-config'
+import { defineHelloAdaSite, setHelloAdaSite } from '@/admin/config/site'
 
 export const helloAdaPublicContentRoutes = {
   postsIndex: '/blog',

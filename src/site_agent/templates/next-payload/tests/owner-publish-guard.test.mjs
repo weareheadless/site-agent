@@ -88,7 +88,7 @@ const harness = async (t) => {
   await writeFile(stub, stubs)
   const bundled = await build({
     entryPoints: [entry], bundle: true, write: false, format: 'esm', platform: 'node',
-    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/helloada-preview','@/lib/helloada-preview-claims','@/lib/payload-versions','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@/lib/static-website','@/lib/helloada-runtime','@weareheadless/helloada-payload-core/bindings','@/helloada.config'].map(specifier => [specifier, stub])),
+    alias: Object.fromEntries(['@payload-config','@/lib/service-auth','@/lib/helloada-auth','@/lib/mailflare-provisioning-api','@/lib/helloada-upstream','@/lib/growth-operations','@/lib/content-routes','@/lib/helloada-preview','@/lib/helloada-preview-claims','@/lib/payload-versions','@/lib/payload-hash','@/lib/growth-contract','@/lib/runtime-env','@/lib/static-website','@weareheadless/helloada-payload-core/bindings','@/admin/server/runtime-env','@/helloada.config'].map(specifier => [specifier, stub])),
   })
   const bundlePath = path.join(temp, 'route.mjs')
   await writeFile(bundlePath, bundled.outputFiles[0].text)

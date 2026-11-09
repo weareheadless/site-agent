@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { helloAdaWorkspacePath } from '../src/lib/helloada-runtime.ts'
+import { helloAdaWorkspacePath } from '../src/admin/server/runtime-env.ts'
 
 test('publication and checkpoint routes reach the workspace bridge', () => {
   assert.equal(helloAdaWorkspacePath('/api/helloada/publication', 'GET'), '/workspace/publication')

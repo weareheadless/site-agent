@@ -14,7 +14,7 @@ import {
   helloAdaContentBindings,
 } from '@weareheadless/helloada-payload-core/bindings'
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
-import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/lib/helloada-runtime'
+import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@/admin/server/runtime-env'
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument, presentationRoutes } from '@/lib/content-routes'
 import { staticPresentationRoutes, type StaticWebsiteEnv } from '@/lib/static-website'

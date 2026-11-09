@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 import json
+from pathlib import Path
+import shutil
+import subprocess
 import pytest
 
 from site_agent.application.growth_service_model import AREAS, service_model
@@ -412,6 +415,40 @@ def test_findings_preserve_run_index_and_exact_initiative_linkage_without_title_
     # It remains cross-area work with the same lineage, rather than a second finding.
     search = next(row for row in model["areas"] if row["id"] == "search_visibility")
     assert search["findings"] == content["findings"]
+
+
+def test_actual_serialized_model_passes_shared_admin_typescript_contract():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable for the shared TypeScript contract check")
+    opportunity = {"kind": "code", "title": "Improve the route labels", "why": "Visitors may miss routes.",
+        "scope": "Clarify existing route labels.", "primaryArea": "website_health", "secondaryAreas": [],
+        "evidence": ["inventory"], "requiredSources": ["inventory"]}
+    run = {"run_id": "contract-run", "status": "complete", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z",
+        "material": {"sources": [{"id": "inventory", "state": "ready", "observedAt": "2026-10-20T00:00:00Z"}]},
+        "candidateIds": [10], "assessment": {"opportunities": [opportunity]}}}
+    initiative = {"id": 10, "kind": "code", "state": "ready_for_review", "growth_run_id": "contract-run",
+        "expected": {"opportunity": opportunity}}
+    model = project(tasks=[{"id": "initiative:10", "kind": "code", "focus": "needs_you",
+        "canApprove": True, "ownerActionId": 21}], initiatives=[initiative], runs=[run],
+        sources=[{"id": "inventory", "state": "ready", "observedAt": "2026-10-20T00:00:00Z"}])
+    health = next(area for area in model["areas"] if area["id"] == "website_health")
+    assert health["findings"][0]["candidateId"] == "10"
+
+    root = Path(__file__).resolve().parents[1]
+    script = """
+import { isGrowthServiceModel } from './src/site_agent/templates/next-payload/src/admin/lib/growth-data.ts';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(String(isGrowthServiceModel(JSON.parse(input))));
+"""
+    result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", script],
+        cwd=root, input=json.dumps(model), text=True, capture_output=True, timeout=20)
+    if result.returncode and "bad option" in result.stderr.lower():
+        pytest.skip("Installed Node does not support native TypeScript stripping")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
 
 
 def test_waiting_findings_only_join_unique_titles_and_report_current_external_capacity_work():

@@ -13,10 +13,7 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert (root / "payload.config.ts").exists()
     assert (root / "src/helloada.config.ts").exists()
     assert (root / "src/app/api/helloada/[...path]/route.ts").exists()
-    assert not (root / "src/admin").exists()
-    assert not (root / "src/components/admin/HelloAdaWorkspace.tsx").exists()
-    assert "components/admin" not in (root / "payload.config.ts").read_text()
-    assert "components/admin" not in (root / "src/app/(payload)/admin/importMap.js").read_text()
+    assert (root / "src/components/admin/HelloAdaWorkspace.tsx").exists()
     config = (root / "src/helloada.config.ts").read_text()
     wrangler = (root / "wrangler.jsonc").read_text()
     assert 'tenantId: "north-star-studio"' in config
@@ -50,6 +47,17 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     routes = (root / "src/helloada.config.ts").read_text()
     assert "postsIndex: '/blog'" in routes
     assert "postDetail: '/blog'" in routes
+
+
+def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_path):
+    root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")
+    nav = (root / "src/components/admin/HelloAdaNav.tsx").read_text()
+
+    # Payload sends req, payload and i18n (including functions) to server Nav
+    # components. Forwarding the whole object crashes authenticated admin pages.
+    assert "HelloAdaNav({ user }: ComponentProps<typeof SharedNav>)" in nav
+    assert "<SharedNav user={user} />" in nav
+    assert "{..." not in nav
 
 
 def test_managed_site_baseline_keeps_tenant_identity_unbound_until_bootstrap(tmp_path):

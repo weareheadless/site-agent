@@ -1,2 +1,1 @@
-// The owner workspace now lives on the control plane. The tenant Payload admin
-// keeps Payload's own styles; only the shared brand overrides belong here.
+@use '../../admin/styles/admin.scss';

@@ -4,7 +4,7 @@ import vm from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 
-const source = readFileSync(new URL('../src/lib/helloada-runtime.ts', import.meta.url), 'utf8').replace(/import \{ getCloudflareContext \} from [^\n]+\n/, '')
+const source = readFileSync(new URL('../src/admin/server/runtime-env.ts', import.meta.url), 'utf8').replace(/import \{ getCloudflareContext \} from [^\n]+\n/, '')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 function runtime(bindings, env = {}) {
   const sandbox = { exports: {}, URLSearchParams, process: { env }, getCloudflareContext: () => {

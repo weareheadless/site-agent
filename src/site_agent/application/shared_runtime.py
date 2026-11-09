@@ -421,11 +421,13 @@ def _tree_paths(template_root: Path, trees: list[str]) -> list[str]:
 
 _SITE_CONFIG_PATH = Path("src/helloada.config.ts")
 _RETIRED_SITE_CONFIG_IMPORT = "from '@weareheadless/helloada-payload-admin/config'"
-_SITE_CONFIG_IMPORT = "from '@/lib/site-config'"
+_SITE_CONFIG_IMPORT = "from '@/admin/config/site'"
 _RETIRED_ADMIN_PREFIX = "@weareheadless/helloada-payload-admin"
 _RETIRED_ADMIN_IMPORTS = {
-    f"{_RETIRED_ADMIN_PREFIX}/server": "@/lib/helloada-runtime",
-    f"{_RETIRED_ADMIN_PREFIX}/config": "@/lib/site-config",
+    f"{_RETIRED_ADMIN_PREFIX}/styles/admin.scss": "@/admin/styles/admin.scss",
+    f"{_RETIRED_ADMIN_PREFIX}/server": "@/admin/server/runtime-env",
+    f"{_RETIRED_ADMIN_PREFIX}/config": "@/admin/config/site",
+    _RETIRED_ADMIN_PREFIX: "@/admin",
 }
 _RETIRED_ADMIN_IMPORT = re.compile(
     r"""(?:from\s*|import\s*\(\s*|require\s*\(\s*)['"]"""
