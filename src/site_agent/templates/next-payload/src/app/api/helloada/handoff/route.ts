@@ -29,7 +29,18 @@ function isHttpsOrigin(value: string): boolean {
   }
 }
 
-async function readToken(request: Request): Promise<string> {
+/** Keep the post-handoff destination on this tenant origin. */
+function handoffNext(value: string, origin: string): string {
+  const next = String(value || '').trim() || '/admin'
+  if (!next.startsWith('/') || next.startsWith('//') || next.includes('\\')) {
+    throw new Error('handoff_request_invalid')
+  }
+  const resolved = new URL(next, origin)
+  if (resolved.origin !== origin) throw new Error('handoff_request_invalid')
+  return `${resolved.pathname}${resolved.search}`
+}
+
+async function readHandoff(request: Request): Promise<{ token: string; next: string }> {
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/x-www-form-urlencoded')) {
     throw new Error('handoff_request_invalid')
   }
@@ -58,8 +69,11 @@ async function readToken(request: Request): Promise<string> {
   }
   const fields = new URLSearchParams(new TextDecoder().decode(body))
   const token = fields.get('token') || ''
-  if (!token || fields.size !== 1) throw new Error('handoff_request_invalid')
-  return token
+  if (!token || fields.size < 1 || fields.size > 2) throw new Error('handoff_request_invalid')
+  if ([...fields.keys()].some((key) => key !== 'token' && key !== 'next')) {
+    throw new Error('handoff_request_invalid')
+  }
+  return { token, next: handoffNext(fields.get('next') || '/admin', new URL(request.url).origin) }
 }
 
 export async function POST(request: Request) {
@@ -78,9 +92,11 @@ export async function POST(request: Request) {
   }
 
   let claims
+  let next = '/admin'
   try {
-    const token = await readToken(request)
-    claims = await verifyOwnerHandoffToken(token, {
+    const handoff = await readHandoff(request)
+    next = handoff.next
+    claims = await verifyOwnerHandoffToken(handoff.token, {
       issuer,
       tenantId,
       targetOrigin: requestOrigin,
@@ -148,7 +164,7 @@ export async function POST(request: Request) {
     status: 303,
     headers: {
       ...noStoreHeaders,
-      location: new URL('/admin', requestOrigin).toString(),
+      location: new URL(next, requestOrigin).toString(),
       'set-cookie': cookie,
     },
   })
