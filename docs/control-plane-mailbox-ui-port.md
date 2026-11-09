@@ -33,9 +33,9 @@ so there is exactly one mailbox interface.
   (dashboard, calendar, and later settings), the generated layout chain, the
   API base, and a stylesheet. It contains no auth: the control plane has already
   authenticated the owner and scoped the website.
-- `helloada.app/websites/<id>/mail/<path>` renders `MailboxApp` under the
+- `helloada.app/<slug>/mail/<path>` renders `MailboxApp` under the
   existing control-plane navigation. Browser calls go to the existing owner
-  proxy, `/api/helloada/websites/<id>/owner/mail/<path>`, which injects the
+  proxy, `/api/helloada/websites/<slug>/owner/mail/<path>`, which injects the
   tenant workspace token and the owner subject. No tenant cookie and no iframe.
 - The tenant Worker keeps the Mailflare API routes. `/mail` UI routes are
   removed only after every surface is verified in the control plane.
