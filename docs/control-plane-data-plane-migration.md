@@ -249,10 +249,25 @@ that tenant's site or a pinned package changes.
   cannot display it. The control plane keeps the published alias in the frame
   and links the exact draft to Manage content; the tenant admin shows it
   same-origin. A same-origin preview bridge is the remaining Phase 3 item.
-- Casamigo has no HelloAda `websites` record, so `/admin-entry/casamigo` and
-  the portfolio entry cannot resolve. Its Worker `/admin` is healthy; the
-  custom domain redirects `/admin` to `/es/admin`, which 404s. Fix the record
-  with the correct owner and the custom-domain admin route separately.
+- Casamigo is registered as HelloAda website `16` (`tenantId: casamigo`) owned by
+  `admin@helloada.app`, phase `live`. `/admin-entry/casamigo` hands the owner
+  into the tenant Payload admin, the control-plane workspace loads its snapshot
+  and published preview, and the portfolio card resolves. Its registered
+  public URL is `https://www.casamigo.net`; the Worker URL is the canonical
+  preview origin. The separate `casamigo.app` host redirects `/admin` to
+  `/es/admin`, which 404s; that host is not the registered tenant domain.
+- Casamigo needed a current-runtime release before the control plane could use
+  it: the Worker's site-agent token no longer matched the registered tenant
+  token, the static preview alias denied framing from `helloada.app`, and the
+  snapshot read every collection's draft version at once. The release installed
+  the registered token, preview responses now allow the control-plane origin in
+  `frame-ancestors`, the snapshot reads only documents whose latest state is a
+  draft, and in-preview editing is disabled for a cross-origin preview so the
+  workspace cannot crash on a SecurityError.
+- The static presentation profile runs the Worker before the assets binding.
+  Mailflare's `/mail/_next/*` build output was therefore never served, so the
+  casamigo inbox loaded without styles or scripts. The composed tenant Worker
+  now serves those assets from the binding before dispatching to Mailflare.
 - Atelier-harmonie still needs its business-catalog schema migration before a
   workspace release.
 
