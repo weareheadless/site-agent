@@ -268,6 +268,22 @@ that tenant's site or a pinned package changes.
   Mailflare's `/mail/_next/*` build output was therefore never served, so the
   casamigo inbox loaded without styles or scripts. The composed tenant Worker
   now serves those assets from the binding before dispatching to Mailflare.
+- Casamigo's workspace had two owner-visible navigation failures. A static
+  site has no committed Next page files, so the workspace snapshot listed only
+  Payload documents and Home, Pulse and the imported pages were unreachable;
+  the snapshot now merges the reviewed static manifest into the route
+  inventory. The native page `<select>` also could not carry hundreds of
+  listings and articles, so the control plane now uses a searchable, grouped
+  page dialog that starts on Home and bounds the rendered result set.
+  Preview responses now inject a same-site navigation guard: root-absolute and
+  live-domain links, including script-generated `href`s, stay under
+  `/casamigo-preview` for both static and Next/Payload pages. Verified by
+  selecting Pulse and by clicking Properties and a property card from the
+  preview; both remained under the preview alias. Worker release
+  `rel-20261109130001-casamigo-page-picker` (`9be79e70`, runtime
+  `84b21861`, version `6c5e87d4`); control-plane releases
+  `20261109130001-page-picker` and `20261109132500-page-picker-anchored`
+  (`d116663`).
 - Atelier-harmonie is HelloAda website `11` (`tenantId: atelier-harmonie`,
   owner `ben@weareheadless.com`). The tenant ledger predated the shared
   business catalogue, so the central migration chain could not be appended
