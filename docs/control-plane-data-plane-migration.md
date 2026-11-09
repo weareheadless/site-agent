@@ -374,11 +374,37 @@ raw admin at the tenant domain.
   `089acb8c`, version `6f364833`). Raw admin, workspace load, preview
   containment and public pages were verified again after re-promotion.
 
-Remaining rollout: inmersion, casamigo and oceanicvibes each need their own
-admin-removal tenant migration before their Phase 3 runtime release; the
-blocked tenants follow once unblocked. Batch releases only through the
-canonical queue, verify the owner-visible workspace and raw admin per tenant,
-and keep the control revert path available until the batch is complete.
+Batch rollout after the canary (all on runtime `089acb8c`, schema 13):
+
+- Casamigo tenant commit `8354fa8c` (`refactor(admin): adopt the
+  platform-owned admin without the tenant workspace`), release
+  `rel-20261109190000-casamigo-spanish-market-desk-raw-admin`. Live health
+  reports `releaseSha 8354fa8c`; the tenant `/admin` and website are served
+  from the same Worker.
+- Inmersion tenant commit `d286b96e`, release
+  `rel-20261109185752-45081786`. Its first Phase 3 attempt
+  (`rel-20261109184748-ce240c6e`, source `90beb10`) failed at build with
+  `Module not found: '@/components/admin/...'` because the tenant still
+  referenced the admin files the overlay now removes; the admin-removal tenant
+  migration fixed the cause. Live health reports `releaseSha d286b96e`.
+- Oceanicvibes tenant commit `1c3dddb5`, release
+  `rel-20261109190500-oceanic-raw-admin`. Removed the tracked admin views, the
+  retired message/calendar helpers and the admin package pin; typecheck passed
+  against the overlaid workspace before queueing. Live health reports
+  `releaseSha 1c3dddb5`; tenant `/admin` authenticated through the control-plane
+  handoff renders the raw Payload dashboard (Collections, Globals, locale
+  `en`), the published preview `/oceanicvibes-preview` renders and keeps
+  `/oceanicvibes-preview/blog/beyond-the-course-...` contained, and public
+  home/about are unchanged. Oceanicvibes is website `10`; its control-plane
+  workspace loads the project snapshot. Its pending draft 72 still shows the
+  known exact-draft preview limitation and directs the owner to the tenant
+  admin.
+
+Remaining rollout: Astrid and the validation/e2e tenants follow once their
+source baselines are current; the blocked tenants stay blocked until their
+own cause is resolved. Batch releases only through the canonical queue, verify
+the owner-visible workspace and raw admin per tenant, and keep the control
+revert path available until the batch is complete.
 
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
