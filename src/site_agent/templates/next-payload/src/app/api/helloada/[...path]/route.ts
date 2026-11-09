@@ -197,7 +197,24 @@ const contentFields = (document: Record<string, unknown>, route: string, collect
   helloAdaContentBindings(document, collection, route)
 
 const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPayload>>) => {
-  const results = await Promise.all(editableCollections.map(async (collection) => {
+  // D1 rejects an unbounded fan-out of count/select queries. The workspace
+  // reads three collections and two revisions each; serialize those reads so a
+  // large catalog cannot turn its own snapshot into a transient 503.
+  const results: Array<{
+    collection: EditableCollection
+    published: number
+    draft: number
+    documents: Array<{
+      id: string
+      collection: EditableCollection
+      sourceId: string
+      slug: string
+      title: string
+      status: string
+      draftHash: string
+    }>
+  }> = []
+  for (const collection of editableCollections) {
     try {
       const readAll = async (draft: boolean) => {
         const documents: Record<string, unknown>[] = []
@@ -211,7 +228,8 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
           page = nextPage
         }
       }
-      const [publishedRows, draft] = await Promise.all([readAll(false), readAll(true)])
+      const publishedRows = await readAll(false)
+      const draft = await readAll(true)
       // Payload's published read returns main-table rows that are still drafts,
       // including an interrupted create with no locale or version row. Such a
       // row is not a published document and must not enter the editable list.
@@ -220,7 +238,7 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
         return !status || status === 'published'
       })
       const documents = mergeEditableDocuments(published, draft)
-      return {
+      results.push({
         collection,
         published: published.length,
         draft: draft.length,
@@ -237,16 +255,20 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
           draftHash: await hashJson(withoutPayloadMetadata(item)),
         }
         })),
-      }
+      })
     } catch (cause) {
+      const nested = cause && typeof cause === 'object' && 'cause' in cause
+        ? (cause as { cause?: unknown }).cause
+        : undefined
       console.error('helloada_payload_workspace_query_failed', {
         tenant: helloAdaSite.tenantId,
         collection,
         error: errorMessage(cause),
+        cause: nested ? errorMessage(nested) : undefined,
       })
       throw new PayloadWorkspaceQueryError(collection, cause)
     }
-  }))
+  }
   return results.flatMap((result) => result.documents)
 }
 

@@ -118,3 +118,12 @@ test('the workspace snapshot derives a route only from a document with a slug', 
   assert.match(source, /documents\.flatMap\(\(document\) => document\.slug \?/)
   assert.match(source, /status === 'published'/)
 })
+
+test('the workspace snapshot serializes collection reads for D1', async () => {
+  const source = await readFile(new URL('../src/app/api/helloada/[...path]/route.ts', import.meta.url), 'utf8')
+
+  assert.match(source, /for \(const collection of editableCollections\)/)
+  assert.doesNotMatch(source, /Promise\.all\(editableCollections/)
+  assert.match(source, /const publishedRows = await readAll\(false\)/)
+  assert.match(source, /const draft = await readAll\(true\)/)
+})
