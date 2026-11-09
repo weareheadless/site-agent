@@ -1,15 +1,15 @@
 {
   "releases": {
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261109192206-4f3de072",
-      "sha": "fce1008e96115cdc527535e35b12b41f7708db0b"
+      "id": "rel-20261109203100-inmersion-integrated-mail",
+      "sha": "d286b96eae8c6b1eb8c81310de620e8774647162"
     },
     "casamigo": {
-      "id": "rel-20261109190000-casamigo-spanish-market-desk-raw-admin",
+      "id": "rel-20261109203000-casamigo-integrated-mail",
       "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14"
     },
     "oceanicvibes": {
-      "id": "rel-20261109190500-oceanic-raw-admin",
+      "id": "rel-20261109203200-oceanic-integrated-mail",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
     },
     "atelier-harmonie": {
