@@ -18,6 +18,7 @@ ASSET = re.compile(
 )
 PRIVATE_PACKAGES = (
     "@weareheadless/helloada-payload-core",
+    "@weareheadless/helloada-mailbox-ui",
 )
 RELEASE_ASSET_API = "/repos/weareheadless/site-agent/releases"
 

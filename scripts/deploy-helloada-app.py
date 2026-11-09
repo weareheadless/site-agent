@@ -272,7 +272,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         private_key = _load_handoff_secret(config, source_dir.parent)
         profile = {"credentials": {"profile_file": str(toolchain["credentialProfile"] )}}
         sys.path.insert(0, str(ROOT / "src"))
-        from site_agent.credentials import credential_environment, credential_profile, github_ssh_command
+        from site_agent.credentials import credential_environment, credential_profile, github_api_token, github_ssh_command
         cloudflare_profile = dict(credential_profile(profile, "cloudflare"))
         if not cloudflare_profile.get("env_file") or not Path(cloudflare_profile["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
@@ -305,6 +305,15 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         source_hash = _source_tree_hash(source_dir)
         receipt["lockfileSha256"] = hashlib.sha256((source_dir / "package-lock.json").read_bytes()).hexdigest()
         stage("dependencies")
+        from site_agent.application.release_dependencies import prepare_release_dependencies
+        receipt["sharedPackageAssets"] = prepare_release_dependencies(
+            source_dir,
+            github_api_token(profile, safe_base),
+            npm,
+            temporary,
+            lambda command, directory: _run(command, directory, safe_base),
+            package_names=("@weareheadless/helloada-mailbox-ui",),
+        )
         _run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"], source_dir, safe_base)
         worker_config = _validate_app_config(source_dir, config, node, build_env, toolchain["npmVersion"])
         receipt["workerConfig"] = worker_config

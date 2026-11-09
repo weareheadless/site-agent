@@ -2324,6 +2324,7 @@ def main() -> int:
             npm,
             Path(base["TMPDIR"]),
             lambda command, directory: run(command, directory, base),
+            package_names=("@weareheadless/helloada-payload-core",),
         )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         stage("generate-payload-contract")
