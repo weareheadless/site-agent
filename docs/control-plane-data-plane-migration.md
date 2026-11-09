@@ -1,6 +1,6 @@
 # Control plane and data plane: one workspace, one build contract
 
-**Status:** active implementation plan, 2026-11-08
+**Status:** active implementation plan, 2026-11-09
 **Supersedes:** the "Deferred: platform-hosted admin" section of
 `docs/admin-shared-runtime-migration.md`.
 **Does not change:** the tenant Worker's public site, Payload CMS, tenant data,
@@ -268,8 +268,43 @@ that tenant's site or a pinned package changes.
   Mailflare's `/mail/_next/*` build output was therefore never served, so the
   casamigo inbox loaded without styles or scripts. The composed tenant Worker
   now serves those assets from the binding before dispatching to Mailflare.
-- Atelier-harmonie still needs its business-catalog schema migration before a
-  workspace release.
+- Atelier-harmonie is HelloAda website `11` (`tenantId: atelier-harmonie`,
+  owner `ben@weareheadless.com`). The tenant ledger predated the shared
+  business catalogue, so the central migration chain could not be appended
+  verbatim: products, categories and their version tables already existed in
+  an older shape. A reviewed, forward-only bridge migration
+  (`20261109_140000_atelier_shared_schema_bridge`, tenant commit `b6601ab`)
+  adds only the missing catalogue shape, moves route slugs into the localized
+  tables, backfills the published values and drops only the empty superseded
+  category section tables. The exact prior ledger was
+  `9d59664e7cd22dee1ff25b6ce8b8b9f091197b37da1893d4c98cbc91c827777f`; the
+  registered target head is
+  `1075e5820db98efdc5d08cd452bad1f23b725fd1ee78db66e8616769646771f4`.
+  Release `rel-20261109120000-atelier-schema-13` applied all 17 migrations,
+  verified the Payload contract and promoted schema revision 13 on core
+  `0.6.5`. Pre-migration D1 export:
+  `/SOCIAL/payload-releases/backups/atelier-harmonie-pre-schema-13-20261109T115523Z.sql`;
+  time-travel bookmark
+  `00000dba-00000000-0000511e-b9e87982c900974cf4b9f5351c936a6b`.
+- Atelier exposed two owner-visible regressions after the migration, both
+  fixed and released. The public site read Payload's admin language cookie, so
+  an English admin session requested English content that the tenant does not
+  publish and returned 404; the public site now reads only the dedicated
+  `helloada-locale` cookie and falls back to the configured content locale
+  (commit `290bd33`, release `rel-20261109121000-atelier-public-locale`).
+  First-viewport `Reveal` elements waited for a scroll trigger that never fired
+  after image layout shifts, leaving the product hero blurred until the owner
+  scrolled; elements already in the first viewport now animate immediately
+  (commit `6becada`, release `rel-20261109124000-atelier-reveal`).
+- Verified after those releases: public home, shop, category and product pages
+  render the approved composition and motion; the tenant `/admin` loads the
+  shared workspace; `/mail/inbox` loads; and the portfolio card is `LIVE` and
+  opens `/websites/11/workspace` (HelloAda app commits `1149758` and
+  `ed828ed`). The control-plane workspace loads the atelier page inventory,
+  Growth, Gallery, History and chat, but the cross-origin preview iframe is
+  still blank for atelier even though the tenant preview alias renders
+  directly. That is the same-origin preview bridge gap below, not a release
+  claim.
 
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
