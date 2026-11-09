@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261108224500-api-integration-gate2",
-    "sha": "ab0eff42afe15b6472b1c558b1a68366159f0d82"
+    "id": "20261109005222-api-control-plane-gateway",
+    "sha": "1bb0f42bf7204d7fcda6a8f8ce435edabe224486"
   }
 }
