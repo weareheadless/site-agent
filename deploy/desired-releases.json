@@ -1,8 +1,8 @@
 {
   "releases": {
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261109023000-handoff-next",
-      "sha": "8793c7b3a10a4856ddc1803e1fcffe547a843e6e"
+      "id": "rel-20261109023248-e2ca671e",
+      "sha": "f621122f00afa36cd32fbc1ea13b3af9e1a1d632"
     },
     "casamigo": {
       "id": "runtime-20261108232700-c7940a05",
