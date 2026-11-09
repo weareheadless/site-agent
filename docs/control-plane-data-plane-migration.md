@@ -233,8 +233,28 @@ that tenant's site or a pinned package changes.
   Gallery views, and the signed handoff into the tenant Payload admin.
 - The public site at the tenant origin still returns the same page and title;
   the tenant release did not change content or schema.
-- Messages opens the tenant Mailflare surface in a new tab because that app
-  keeps its own tenant-origin session.
+- Messages opens the tenant Mailflare surface through the signed handoff with
+  `next=/mail/inbox`, so a fresh owner lands in the inbox in one step. Verified
+  on inmersion: `/admin-entry/<tenant>?next=/mail/inbox` → tenant inbox.
+
+### Rollout after the canary
+
+- Oceanicvibes is released with the workspace bridge. Its control-plane
+  workspace loads the published preview, Growth, Gallery, History and the
+  tenant handoff.
+- Draft 72's compiled preview now builds and is ready. The cause was the
+  generator requiring identity slots that an older candidate branch did not
+  declare; the generator now adds the missing Worker vars itself.
+- The exact-draft preview is tenant-session scoped, so a cross-site iframe
+  cannot display it. The control plane keeps the published alias in the frame
+  and links the exact draft to Manage content; the tenant admin shows it
+  same-origin. A same-origin preview bridge is the remaining Phase 3 item.
+- Casamigo has no HelloAda `websites` record, so `/admin-entry/casamigo` and
+  the portfolio entry cannot resolve. Its Worker `/admin` is healthy; the
+  custom domain redirects `/admin` to `/es/admin`, which 404s. Fix the record
+  with the correct owner and the custom-domain admin route separately.
+- Atelier-harmonie still needs its business-catalog schema migration before a
+  workspace release.
 
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
