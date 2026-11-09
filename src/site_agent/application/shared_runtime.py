@@ -158,8 +158,10 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
     entries: list[tuple[str, bytes]] = [
         (str(_MANIFEST_PATH), raw_manifest),
         ("src/site_agent/application/shared_runtime.py", (root / "src/site_agent/application/shared_runtime.py").read_bytes()),
-        ("scripts/generate-payload-contract.mjs", (root / "scripts/generate-payload-contract.mjs").read_bytes()),
-        ("scripts/presentation-inventory.mjs", (root / "scripts/presentation-inventory.mjs").read_bytes()),
+        ("template/scripts/generate-payload-contract.mjs",
+         (root / _TEMPLATE_PATH / "scripts/generate-payload-contract.mjs").read_bytes()),
+        ("template/scripts/presentation-inventory.mjs",
+         (root / _TEMPLATE_PATH / "scripts/presentation-inventory.mjs").read_bytes()),
     ]
     template = root / _TEMPLATE_PATH
     for relative in sorted(str(item) for item in manifest["copy"]) + _tree_paths(template, manifest["copyTrees"]):

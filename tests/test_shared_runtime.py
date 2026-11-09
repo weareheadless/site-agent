@@ -200,11 +200,11 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     (control / "src/site_agent/application").mkdir(parents=True)
     shutil.copyfile(ROOT / "src/site_agent/application/shared_runtime.py",
                     control / "src/site_agent/application/shared_runtime.py")
-    (control / "scripts").mkdir()
-    shutil.copyfile(ROOT / "scripts/generate-payload-contract.mjs",
-                    control / "scripts/generate-payload-contract.mjs")
-    shutil.copyfile(ROOT / "scripts/presentation-inventory.mjs",
-                    control / "scripts/presentation-inventory.mjs")
+    template_scripts = control / "src/site_agent/templates/next-payload/scripts"
+    template_scripts.mkdir(parents=True, exist_ok=True)
+    for name in ("generate-payload-contract.mjs", "presentation-inventory.mjs"):
+        shutil.copyfile(ROOT / "src/site_agent/templates/next-payload/scripts" / name,
+                        template_scripts / name)
     (control / "pyproject.toml").write_text('[project]\\nversion = "0.0.0"\\n')
 
     template = control / "src/site_agent/templates/next-payload"
@@ -226,11 +226,11 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
         target.write_text("schema")
 
     original = shared_runtime_fingerprint(control)
-    generator = control / "scripts/generate-payload-contract.mjs"
+    generator = control / "src/site_agent/templates/next-payload/scripts/generate-payload-contract.mjs"
     generator.write_text(generator.read_text() + "\\n// changed")
     assert shared_runtime_fingerprint(control) != original
 
-    generator.write_text((ROOT / "scripts/generate-payload-contract.mjs").read_text())
+    generator.write_text((ROOT / "src/site_agent/templates/next-payload/scripts/generate-payload-contract.mjs").read_text())
     schema_source = control / "packages/helloada-payload-core/src/fingerprint-source.ts"
     schema_source.write_text("changed schema")
     assert shared_runtime_fingerprint(control) != original

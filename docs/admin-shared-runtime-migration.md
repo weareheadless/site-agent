@@ -420,6 +420,10 @@ revert plus a release.
 
 ## Deferred: platform-hosted admin
 
+**Superseded 2026-11-08.** Physical separation is now active work in
+`docs/control-plane-data-plane-migration.md`; the reasoning below records why it
+was deferred, not a decision to keep it deferred.
+
 Physically separating admin is not part of this migration, because Payload's
 admin is server-rendered against the tenant database (`RootPage({ config })`)
 and `/api/helloada/*` runs Payload in-process. A platform-hosted admin

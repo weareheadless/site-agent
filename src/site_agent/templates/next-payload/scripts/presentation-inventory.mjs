@@ -1,5 +1,6 @@
-import { readdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 const PAGE_FILES = new Set(['page.tsx', 'page.ts', 'page.jsx', 'page.js'])
 // Directories that never publish an owner-facing page.
@@ -49,4 +50,26 @@ export const createPresentationInventory = (appRoot, previewMount) => {
     previewMount,
     routes: discoverPresentationRoutes(appRoot).map((route) => ({ path: route })),
   }
+}
+/**
+ * Write the inventory for one site checkout. The release runner and the
+ * compiled-preview builder both call this, so a candidate compiles with the
+ * same committed-route declaration the promoted Worker will ship.
+ */
+export const writePresentationInventory = async (siteRoot) => {
+  const root = path.resolve(siteRoot)
+  const { helloAdaSite } = await import(pathToFileURL(path.join(root, 'src/helloada.config.ts')).href)
+  const inventory = createPresentationInventory(path.join(root, 'src/app'), helloAdaSite.routes?.preview)
+  const target = path.join(root, 'src/generated/helloada-presentation.json')
+  mkdirSync(path.dirname(target), { recursive: true })
+  writeFileSync(target, `${JSON.stringify(inventory, null, 2)}\n`)
+  return inventory
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+  const siteRoot = process.argv.slice(2).find((value) => value.startsWith('--site-root='))
+  if (!siteRoot) throw new Error('--site-root is required')
+  const root = siteRoot.slice('--site-root='.length)
+  const inventory = await writePresentationInventory(root)
+  process.stdout.write(`Generated presentation inventory with ${inventory.routes.length} routes at ${root}.\n`)
 }

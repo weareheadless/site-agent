@@ -9,17 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_generated_locale_identity_comes_from_worker_config_not_stale_template_manifest(tmp_path):
-    control = tmp_path / 'control'
-    (control / 'scripts').mkdir(parents=True)
-    generator = control / 'scripts/generate-payload-contract.mjs'
-    shutil.copyfile(ROOT / 'scripts/generate-payload-contract.mjs', generator)
-    shutil.copyfile(ROOT / 'scripts/presentation-inventory.mjs',
-                    control / 'scripts/presentation-inventory.mjs')
     core_version = json.loads(
         (ROOT / 'packages/helloada-payload-core/package.json').read_text()
     )['version']
-    (control / 'packages/helloada-payload-core').mkdir(parents=True)
-    (control / 'packages/helloada-payload-core/package.json').write_text(json.dumps({'version': core_version}))
     site = tmp_path / 'site'
     shutil.copytree(ROOT / 'src/site_agent/templates/next-payload', site,
                     ignore=shutil.ignore_patterns('node_modules', '.next', '.open-next', '.wrangler', '*.tsbuildinfo'))
@@ -32,6 +24,7 @@ def test_generated_locale_identity_comes_from_worker_config_not_stale_template_m
     manifest_path.write_text(json.dumps(manifest))
     core = tmp_path / 'core/src'
     (core / 'schema').mkdir(parents=True)
+    (core.parent / 'package.json').write_text(json.dumps({'version': core_version}))
     scope = site / 'node_modules/@weareheadless'
     scope.mkdir(parents=True)
     (scope / 'helloada-payload-core').symlink_to(core.parent, target_is_directory=True)
@@ -48,7 +41,7 @@ export const createHelloAdaContractIdentity = (selection) => ({
   configurationIdentity: createHash('sha256').update(JSON.stringify(selection)).digest('hex')
 })
 ''')
-    subprocess.run(['node', '--experimental-strip-types', str(generator), f'--site-root={site}'],
+    subprocess.run(['node', '--experimental-strip-types', str(site / 'scripts/generate-payload-contract.mjs'), f'--site-root={site}'],
                    cwd=site, check=True, capture_output=True, text=True,
                    env={**os.environ, 'HELLOADA_SHARED_RUNTIME_FINGERPRINT': 'a' * 64})
     generated = json.loads(manifest_path.read_text())

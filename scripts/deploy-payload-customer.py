@@ -2327,7 +2327,7 @@ def main() -> int:
         )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         stage("generate-payload-contract")
-        contract_generator = ROOT / "scripts/generate-payload-contract.mjs"
+        contract_generator = ROOT / "src/site_agent/templates/next-payload/scripts/generate-payload-contract.mjs"
         contract_env = {**base, "HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_provenance["fingerprint"]}
         run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, contract_env)
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))

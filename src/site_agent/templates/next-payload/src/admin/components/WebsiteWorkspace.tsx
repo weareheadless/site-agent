@@ -2517,7 +2517,7 @@ function ReviewWorkspace() {
               ) : null}
            </div>
 
-          {adaPhase === 'workspace' && workspace?.documents.length === 0 ? (
+          {adaPhase === 'workspace' && workspace?.documents.length === 0 && workspace?.routes.length === 0 ? (
             <div className="helloada-context-note" role="status">
                <strong>{t('workspace.contextConnected')}</strong>
                <p>{t('workspace.contextConnectedNote')}</p>

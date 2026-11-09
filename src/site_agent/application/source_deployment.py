@@ -812,10 +812,13 @@ class SourceDeploymentService:
         production: bool = False,
         preview_secret: str | None = None,
         local_payload: bool = False,
+        env_extra: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         started = time.monotonic()
         try:
             child_env = self._preview_env(production=production, payload_secret=preview_secret)
+            if env_extra:
+                child_env.update({key: str(value) for key, value in env_extra.items()})
             if local_payload:
                 child_env.update({"NODE_ENV": "development", "PAYLOAD_CLI": "1"})
             result = subprocess.run(
@@ -1480,16 +1483,28 @@ class SourceDeploymentService:
                 "removed": len(runtime_overlay["removed"]),
             })
             self._write_revision_marker(worktree, local_head)
-            self._prepare_preview_mount(worktree, job)
-            local_secrets = worktree / ".dev.vars"
-            fd = os.open(local_secrets, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                stream.write("PAYLOAD_SECRET=" + json.dumps(preview_secret) + "\n")
             npm = self._verify_toolchain(worktree)
             self._mark_step(job, "dependencies")
             checks.extend(self.ensure_dependencies(
                 worktree, timeout=timeout, preview_secret=preview_secret, npm=npm,
             ))
+            # The candidate compiles the same generated contract the release
+            # ships: schema identity, Wrangler pins and the committed-route
+            # inventory. This runs before the preview rewrites Wrangler for its
+            # isolated local bindings.
+            self._mark_step(job, "generate-payload-contract")
+            contract_generator = (Path(__file__).resolve().parents[1]
+                                  / "templates/next-payload/scripts/generate-payload-contract.mjs")
+            checks.append(self._check(
+                ["node", "--import", "tsx", str(contract_generator), f"--site-root={worktree}"],
+                worktree, "generate_payload_contract", timeout, preview_secret=preview_secret,
+                env_extra={"HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_fingerprint},
+            ))
+            self._prepare_preview_mount(worktree, job)
+            local_secrets = worktree / ".dev.vars"
+            fd = os.open(local_secrets, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write("PAYLOAD_SECRET=" + json.dumps(preview_secret) + "\n")
             if self.payload_gateway is not None:
                 self._mark_step(job, "content")
                 checks.extend(self._seed_canonical_preview(worktree, job, npm, timeout, preview_secret))

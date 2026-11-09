@@ -6,9 +6,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createPresentationInventory } from './presentation-inventory.mjs'
 
 
-const root = fileURLToPath(new URL('../', import.meta.url))
+const templateRoot = fileURLToPath(new URL('../', import.meta.url))
 const siteRootArgument = process.argv.slice(2).find((value) => value.startsWith('--site-root='))
-const siteRoot = path.resolve(siteRootArgument?.slice('--site-root='.length) || path.join(root, 'src/site_agent/templates/next-payload'))
+const siteRoot = path.resolve(siteRootArgument?.slice('--site-root='.length) || templateRoot)
 const coreSourceRoot = path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/src')
 const [{ createHelloAdaContractIdentity }, { createHelloAdaContentContract, HELLOADA_CAPABILITIES }] = await Promise.all([
   import(pathToFileURL(path.join(coreSourceRoot, 'contract.ts')).href),
@@ -28,7 +28,7 @@ const { helloAdaSite } = await import(pathToFileURL(path.join(siteRoot, 'src/hel
 // backs them. Derive the inventory from the app tree so a built site cannot
 // ship without its pages listed in the workspace.
 const presentation = createPresentationInventory(path.join(siteRoot, 'src/app'), helloAdaSite.routes.preview)
-const corePackage = JSON.parse(readFileSync(path.join(root, 'packages/helloada-payload-core/package.json'), 'utf8'))
+const corePackage = JSON.parse(readFileSync(path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/package.json'), 'utf8'))
 const sitePackage = JSON.parse(readFileSync(path.join(siteRoot, 'package.json'), 'utf8'))
 const siteLock = JSON.parse(readFileSync(path.join(siteRoot, 'package-lock.json'), 'utf8'))
 // The admin is shared runtime source now, identified by the exact fingerprint

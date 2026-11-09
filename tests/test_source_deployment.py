@@ -4,6 +4,7 @@ import sys
 import hashlib
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -1084,3 +1085,13 @@ def test_the_preview_mounts_the_candidates_own_media(tmp_path):
         assert f'{mounted}/api/helloada/source/preview/j1/runtime/app.css' not in out
     finally:
         service.close()
+
+
+def test_compiled_preview_generates_the_presentation_inventory_before_typecheck():
+    """A candidate must compile the same committed-route declaration as the release."""
+    source = (Path(__file__).resolve().parents[1] / "src/site_agent/application/source_deployment.py").read_text()
+    overlay = source.index("apply_preview_runtime_overlay(")
+    inventory = source.index("generate-payload-contract.mjs", overlay)
+    typecheck = source.index('"typecheck"', inventory)
+    build = source.index('"open_next_build"', inventory)
+    assert overlay < inventory < typecheck < build
