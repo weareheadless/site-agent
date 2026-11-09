@@ -406,6 +406,37 @@ own cause is resolved. Batch releases only through the canonical queue, verify
 the owner-visible workspace and raw admin per tenant, and keep the control
 revert path available until the batch is complete.
 
+### Integrated Messages (2026-11-09)
+
+Phase 3 removed the tenant-hosted workspace and, with it, the embedded
+Mailflare inbox. Messages is now a control-plane view instead of a new tab.
+
+- Tenant runtime: `mailflare-owner-gate.ts` gains
+  `createMailflareMailBridge`. It accepts `GET/POST/PUT/PATCH/DELETE` under
+  `/api/helloada/mail/*`, checks the tenant workspace token and an owner
+  subject, provisions or reuses the tenant mailbox owner, creates a temporary
+  `ep_session`, rewrites the request to `/mail/api/*`, dispatches it into the
+  Mailflare worker, strips the control-plane headers and deletes the session
+  after the response. Mailboxes, message lists, threads, read state, send and
+  calendar events use the same bridge.
+- Runtime fingerprint `3c95fb46`; canary
+  `rel-20261109201500-atelier-mail-bridge-r2` at tenant `4fcdd8c`, then
+  `rel-20261109203000-casamigo-integrated-mail`,
+  `rel-20261109203100-inmersion-integrated-mail` and
+  `rel-20261109203200-oceanic-integrated-mail` at their existing source SHAs.
+- Control plane: `HelloAdaMail` replaces the iframe view. The workspace nav
+  renders `Messages` as a normal view (`?view=messages`), with the inbox, a
+  reading pane, attachments, a reply composer and an explicit "Review and
+  send" action; `Calendar` appears only when the tenant enables bookings.
+  `Manage content` stays as a handoff for raw Payload work.
+- App releases `20261109202100-integrated-mail` (`d970054`) and the refresh
+  polish `948eb82`.
+- Verified live: atelier, casamigo and inmersion show the integrated inbox
+  (empty mailboxes), and oceanicvibes renders four conversations; opening
+  `test email` shows the body, both attachments and the reply composer with
+  `ben@jamin.io` as the recipient. No email was sent during verification.
+  Public sites, raw admin and the existing workspace views are unchanged.
+
 - Phase 1: implemented in this change. The generator lives in the packaged
   template; preview and release call it; the duplicate root script is removed.
 - Phase 0: contained by Phase 1; the compiled-preview path now generates the
@@ -432,10 +463,14 @@ revert path available until the batch is complete.
   is tenant-session scoped and stays in the tenant admin; a same-origin preview
   bridge for exact drafts is Phase 3 work, not a reason to proxy the whole site
   through the control plane.
-- Mailflare (Messages, Calendar) keeps its own tenant-origin session. A
-  cross-site iframe cannot carry that cookie, so the control plane opens the
-  tenant Mailflare surface in a new tab instead of embedding it. Do not weaken
-  the tenant session cookie to make an iframe work.
+- Mailflare (Messages, Calendar) no longer requires a new tab. The tenant
+  Worker exposes a server-to-server bridge at `/api/helloada/mail/*`: the
+  control plane presents the tenant workspace token plus the owner subject, the
+  Worker provisions the same tenant mailbox owner session the browser gate
+  uses, and dispatches the JSON request into the Mailflare API. The temporary
+  session is deleted after the request; the browser never receives a tenant
+  cookie. The tenant `/mail` UI still exists for direct tenant-session access,
+  but it is no longer the owner's route.
 - "Manage content" uses the existing signed handoff (`/admin-entry/<tenant>`),
   so the owner enters the tenant Payload admin with the same subject the
   workspace gateway uses.
