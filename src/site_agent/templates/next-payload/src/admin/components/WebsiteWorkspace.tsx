@@ -1115,6 +1115,33 @@ function ReviewWorkspace() {
     }
   }, [designBuild?.draft_id, t])
 
+  const retryPreview = useCallback(async () => {
+    const draft = sourceReview
+    if (!draft?.draftId || !/^[0-9a-f]{40}$/.test(draft.sha || '')) return
+    setPreviewStatus('refreshing')
+    setError('')
+    try {
+      const response = await fetchHelloAda('/api/helloada/source/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          branch: 'preview',
+          commit: draft.sha,
+          draft_id: draft.draftId,
+          mode: 'compiled_preview',
+        }),
+      })
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { message?: string }
+        throw new Error(body.message || t('workspace.previewError'))
+      }
+      await loadPreviewPlan()
+    } catch (cause) {
+      setPreviewStatus('error')
+      setError(cause instanceof Error ? cause.message : t('workspace.previewError'))
+    }
+  }, [loadPreviewPlan, sourceReview, t])
+
   const openEditor = useCallback((focusKey?: string) => {
     if (!canEditPage) return
     const knownFields = reviewFields.map((entry) => pendingChangesRef.current[entry.key] || entry)
@@ -2368,6 +2395,11 @@ function ReviewWorkspace() {
                  >
                    {previewStatus === 'refreshing' ? <span className="helloada-preview-status-spinner" aria-hidden="true" /> : null}
                    <span>{previewStatusMessage}</span>
+                    {previewStatus === 'error' && sourceReview?.draftId ? (
+                      <button type="button" className="helloada-preview-retry" onClick={() => void retryPreview()}>
+                        {t('owner.retry')}
+                      </button>
+                    ) : null}
                  </div>
                ) : null}
                {activePreviewEditKey && previewEditTargets.some((target) => target.key === activePreviewEditKey && (manualEditing || target.type === 'image')) ? (

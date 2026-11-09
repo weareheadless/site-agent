@@ -2019,6 +2019,17 @@ textarea:focus-visible {
   color: var(--helloada-negative);
 }
 
+.helloada-preview-status .helloada-preview-retry {
+  pointer-events: auto;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
 .helloada-preview-status-spinner {
   width: 11px;
   height: 11px;
