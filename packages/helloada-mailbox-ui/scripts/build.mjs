@@ -423,7 +423,8 @@ export function MailboxApp({ config, path, params = {}, locale = DEFAULT_LOCALE 
 	config: MailboxConfig;
 	path: string;
 	params?: Record<string, string>;
-	locale?: Locale;
+	/** A BCP-47 tag; unknown tags fall back to the bundled English catalog. */
+	locale?: string;
 }) {
 	configureMailbox(config);
 	const normalized = path === "" ? "/" : path.replace(/\\/+$/, "");
@@ -432,7 +433,7 @@ export function MailboxApp({ config, path, params = {}, locale = DEFAULT_LOCALE 
 	if (!matched) return null;
 	return (
 		<QueryClientProvider client={client}>
-			<LanguageProvider initialLocale={locale}>
+			<LanguageProvider initialLocale={locale as Locale}>
 				<MailboxParamsProvider value={matched.params}>{matched.route.element}</MailboxParamsProvider>
 			</LanguageProvider>
 		</QueryClientProvider>
