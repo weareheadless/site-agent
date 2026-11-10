@@ -85,6 +85,38 @@ so there is exactly one mailbox interface.
 Each stage ends with a canonical-queue release, a fresh authenticated browser
 check of the real page, and a rollback path that is an ordinary app revert.
 
+## Stage 2 record
+
+Package: `@weareheadless/helloada-mailbox-ui@0.1.0` from the pinned upstream
+`ca41c56a` (0.5.1), published as the GitHub release asset
+`weareheadless-helloada-mailbox-ui-0.1.0.tgz` (21 routes, 267 files, 32 locale
+catalogs) and pinned in the app by URL plus `sha512` integrity. The app release
+pipeline verifies the published bytes before `npm ci`.
+
+App release: `20261110002000-mailbox-params`, SHA
+`f138fdeeee959c647ce8a46b2d2fcc59f5368a67`, deployed and verified through the
+canonical queue; `/api/health` reports the same SHA.
+
+Verified in a real authenticated browser on `oceanicvibes`:
+
+- `/oceanicvibes/mail` redirects to `/mail/inbox`; the mailbox renders under the
+  shared control-plane navigation with HelloAda branding and no vendor credit.
+- Inbox lists the one real message; opening it keeps the URL under
+  `/oceanicvibes/mail/inbox/<message-id>` and renders sender, recipient, date,
+  the message body and both attachments.
+- The attachment modal shows the filename, `application/pgp-keys` type and a
+  Download control; the proxy keeps `content-disposition`.
+- Search narrows to one result for `proton` and shows `0 - 0 of 0` with
+  "No messages match these filters" for a term with no matches.
+- `atelier-harmonie` shows the empty state (`0 - 0 of 0`, "No emails") rather
+  than an error.
+
+Notes for later stages: the in-app browser is narrow, so the mailbox sidebar is
+off-canvas there — it is not a layout defect. Body text renders through a portal,
+so text snapshots omit it while the captured page shows it. The bridge still
+creates one `ep_session` per request; latency is tolerable, so session reuse is
+deferred until it is measured as a problem.
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without
