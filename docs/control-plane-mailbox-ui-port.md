@@ -117,6 +117,40 @@ so text snapshots omit it while the captured page shows it. The bridge still
 creates one `ep_session` per request; latency is tolerable, so session reuse is
 deferred until it is measured as a problem.
 
+## Stage 3 record
+
+Verified in a real authenticated browser on `oceanicvibes` against live mailbox
+data, with owner approval. No code change was required: every write surface the
+generated UI issued used the existing `/api/helloada/mail/*` bridge through the
+owner proxy with no additional adaptation.
+
+- **Star.** The thread star toggled to "Remove star", the message appeared in
+  `Starred (1)`, and untoggling removed it.
+- **Archive.** The message moved to `Archived (1)` with the URL following to
+  `/mail/archived`; the bulk "Unarchive" action returned it to the Inbox.
+- **Drafts.** Compose saved a draft on close (`Stage 3 verification draft`),
+  the draft appeared in `Drafts`, its detail route
+  (`/mail/drafts/<id>`) reopened the composer prefilled, and "Delete draft"
+  removed it.
+- **Send.** One message from `hello@oceanicvibes.com` to the same address was
+  sent from the composer. It appears in `Sent` and was delivered back into the
+  Inbox, where the detail page renders the subject, sender, recipient, date and
+  body. This proves the outbound send, domain delivery, inbound ingestion and
+  control-plane render path in one pass.
+- **Reply.** Reply on the real inbound message opened a prefilled composer with
+  the sender chip (`ben@jamin.io`), `Re: test email` and the quoted body; it was
+  discarded without sending.
+
+The self-addressed test message revealed one upstream edge case worth recording:
+replying to a message whose sender is the mailbox itself filters the sender out
+of the recipients and reports "Sender address is required". That is upstream
+behaviour, not a control-plane defect; a reply to a normal third-party sender
+works as shown.
+
+Clean-up: the verification star, archive and drafts were reverted, and both
+copies of the test message were moved to Trash and deleted. Final state matches
+the starting state (Inbox 1, Sent 1, Drafts 2, Starred 0, Archived 0, Trash 0).
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without
