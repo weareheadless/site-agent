@@ -14,7 +14,7 @@ def _gateway(draft_revision="a", rows=None):
         require_authoring_contract=lambda: CONTRACT,
         list=lambda *args, **kwargs: rows if rows is not None else [{"id": 1}],
         read=lambda collection, identifier, **kwargs: dict(draft),
-        read_global=lambda slug, **kwargs: {"slug": slug},
+        read_global=lambda slug, **kwargs: {"slug": slug, "_status": "published"},
         read_media=lambda identifier, **kwargs: {"id": identifier},
     )
 
@@ -61,3 +61,20 @@ def test_preview_retains_published_locale_baselines():
     gateway.read = lambda *args, **kwargs: {"id": 1, "_status": "published", "title": "Published content"}
     snapshot = canonical_preview_snapshot(gateway, [])
     assert snapshot["documents"][0]["locales"]["en"]["title"] == "Published content"
+
+
+def test_preview_does_not_publish_a_global_that_was_never_published():
+    """A draft-only global has no published content to carry into the preview.
+
+    `inmersion`'s siteSettings was never filled, so its only version is a draft
+    with an empty required business name. The preview seed writing that as
+    published failed Payload validation and blocked the whole preview, on a
+    global the site never reads.
+    """
+    gateway = _gateway()
+    gateway.read_global = lambda slug, **kwargs: (
+        {"slug": slug, "_status": "published"} if slug == "navigation"
+        else {"address": {}, "_status": "draft"}
+    )
+    snapshot = canonical_preview_snapshot(gateway, [])
+    assert [item["slug"] for item in snapshot["globals"]] == ["navigation"]

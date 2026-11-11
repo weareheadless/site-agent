@@ -143,6 +143,9 @@ for (const item of snapshot.globals) {
   for (const [locale, document] of Object.entries(item.locales)) {
     const data = rewrite(clean(document), definition.fields, item.slug)
     delete data.id
+    // `_status` is version state, not a field: the snapshot only carries a
+    // published global, and this write stores exactly that published value.
+    delete data._status
     if (!Object.keys(data).length) continue
     await payload.updateGlobal({ slug: item.slug, overrideAccess: true, locale, data })
   }

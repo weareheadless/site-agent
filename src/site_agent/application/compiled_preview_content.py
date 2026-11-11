@@ -51,10 +51,14 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
                 record(collection, locale, document)
         # Every rendered page reads the shared globals, so the preview needs
         # them even when the candidate does not touch them. A candidate draft
-        # below replaces the published value for that locale.
+        # below replaces the published value for that locale. A global that was
+        # only ever saved as a draft has no published content to copy: writing
+        # it as published would invent content the workspace never stored, and
+        # the canonical schema rejects it (a required field like the business
+        # name is empty because the owner never filled it).
         for slug in _WEBSITE_GLOBALS:
             document = gateway.read_global(slug, draft=False, locale=locale)
-            if isinstance(document, Mapping) and document:
+            if isinstance(document, Mapping) and document.get("_status") == "published":
                 globals_.setdefault(slug, {"slug": slug, "locales": {}})["locales"][locale] = dict(document)
 
     for effect in effects:
