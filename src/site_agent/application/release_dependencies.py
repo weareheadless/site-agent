@@ -16,10 +16,13 @@ from typing import Any
 ASSET = re.compile(
     r"^https://github\.com/weareheadless/site-agent/releases/download/([^/]+)/([^/]+\.tgz)$"
 )
-PRIVATE_PACKAGES = (
-    "@weareheadless/helloada-payload-core",
-    "@weareheadless/helloada-mailbox-ui",
-)
+# Every platform package is published as an immutable release of this one
+# repository, so the release URL is the contract. This used to be a hardcoded
+# catalogue of package names, which drifted from what tenants actually pinned:
+# a tenant that still declared a package the platform had shipped failed its
+# preview build as "undeclared", while the release pipeline deployed the same
+# repository. Each declared package is verified below; nothing is ignored.
+RELEASE_PACKAGE_PREFIX = "@weareheadless/"
 RELEASE_ASSET_API = "/repos/weareheadless/site-agent/releases"
 
 class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
@@ -59,18 +62,18 @@ def verify_integrity(data: bytes, integrity: str, package_name: str) -> None:
         )
 
 def _declared_packages(package: dict[str, Any]) -> tuple[str, ...]:
-    """Select the private packages a checkout actually depends on.
+    """Select the platform release packages a checkout actually depends on.
 
-    The allow-list is the full catalogue; a checkout is verified for what it
-    declares. An unknown `@weareheadless/*` dependency fails closed instead of
-    being silently ignored.
+    The checkout is the contract: any package published as an immutable release
+    of this repository is verified, and each one must carry the exact release
+    URL and locked integrity. A dependency that is not such a package fails in
+    ``_verified_release_dependencies`` instead of being silently skipped.
     """
-    declared = set((package.get("dependencies") or {}))
-    unknown = sorted(name for name in declared
-                     if name.startswith("@weareheadless/") and name not in PRIVATE_PACKAGES)
-    if unknown:
-        raise RuntimeError(f"Undeclared private release package: {unknown[0]}")
-    return tuple(name for name in PRIVATE_PACKAGES if name in declared)
+    declared = sorted(
+        name for name in (package.get("dependencies") or {})
+        if name.startswith(RELEASE_PACKAGE_PREFIX)
+    )
+    return tuple(declared)
 
 
 def _verified_release_dependencies(
@@ -83,8 +86,8 @@ def _verified_release_dependencies(
     package = json.loads((checkout / "package.json").read_text(encoding="utf-8"))
     if package_names is None:
         package_names = _declared_packages(package)
-    if any(name not in PRIVATE_PACKAGES for name in package_names):
-        raise ValueError("Only declared private release packages can be verified")
+    if any(not name.startswith(RELEASE_PACKAGE_PREFIX) for name in package_names):
+        raise ValueError("Only platform release packages can be verified")
     lock = json.loads((checkout / "package-lock.json").read_text(encoding="utf-8"))
     for name in package_names:
         url = package.get("dependencies", {}).get(name)
@@ -170,10 +173,10 @@ def main() -> int:
     import os
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--package", action="append", choices=PRIVATE_PACKAGES)
+    parser.add_argument("--package", action="append")
     args = parser.parse_args()
     checkout = Path.cwd() / "src/site_agent/templates/next-payload"
-    package_names = tuple(args.package) if args.package else PRIVATE_PACKAGES
+    package_names = tuple(args.package) if args.package else None
     for item in verify_release_dependencies(checkout, os.environ.get("GITHUB_TOKEN", ""), package_names):
         print(f"Verified {item['package']} {item['release']} ({item['digest']})")
     return 0
