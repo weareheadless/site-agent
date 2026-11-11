@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261111231500-publish-retry-supersede",
-    "sha": "6c966a1990560a942c827c8c85597b44124c209c"
+    "id": "20261111234000-release-retry-identity",
+    "sha": "dd3d743432916e92b64ece2e8bac544eabf09f22"
   }
 }
