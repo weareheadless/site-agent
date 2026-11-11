@@ -136,6 +136,25 @@ document. An unplanned field is still refused, a dispatch whose outcome is
 unknown is still never replayed, and source work still waits until every planned
 field has been written.
 
+## Reviewing the compiled candidate
+
+A source change is compiled by the preview service and mounted at the Next
+basePath `/api/helloada/source/preview/<job>/runtime`. That mount is served
+through the tenant Worker bridge, which answers an owner session on the tenant
+origin and nothing else. Measured on `inmersion`'s exact job 3 candidate:
+the same URL returns `200` with the token, and
+`401 {"error":"helloada_bridge_error","message":"authentication_required"}`
+without it.
+
+The control-plane workspace is cross-site to that origin, so its iframe never
+sends the tenant session and a frame pointed at the mount shows that 401. The
+workspace therefore keeps the published alias in the frame and hands the owner
+into their own website session with `next=<mount>` (`/admin-entry/<tenant>` →
+`/api/helloada/handoff`). A top-level navigation carries the cookie, and staying
+on the tenant origin keeps the build's basePath, its assets and its
+client-side navigation intact. Approval stays in the Design controls; only the
+visual check opens in the tenant session.
+
 ## Defects found while migrating
 
 1. `owner_message_without_unstarted_build` replaced an entire answer with one
@@ -169,6 +188,27 @@ chat:
 
 No data migration is involved; the legacy loop and its tests are intact. The
 explicit `opencode` key still works and is equivalent to the capability default.
+
+## Verified on inmersion
+
+The owner's own request — the freediving and scuba courses plus the excursions,
+with prices, durations, schedules, requirements and inclusions — now runs
+end to end on the opencode agent: job 6 changed 10 files, the compiled preview
+built, and the exact candidate document was driven in Chromium at 1440x900 and
+390x844:
+
+- all 16 candidate routes return `200` and render, at both widths;
+- zero broken images; no console errors, page errors or failed requests;
+- the video is `readyState 4` and plays (`duration 8.4s`);
+- clicking "Courses" inside the preview stays at `<mount>/courses` with
+  `h1: Courses in Playa del Carmen`, instead of the doubled mount that used to
+  render a blank page with 401 prefetches;
+- `prefers-reduced-motion: reduce` produces no page errors and the same content
+  as no-preference.
+
+The two steps this host cannot hold are the owner's: the handoff click into the
+tenant session, and the approve/decline decision. They are not claimed as
+verified from here.
 
 ## Not yet verified
 
