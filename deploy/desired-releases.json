@@ -1,19 +1,19 @@
 {
   "releases": {
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261110020356-2a760ec0",
+      "id": "rel-20261111153000-media-upload-video",
       "sha": "bc1a95a3cdecb67dd63050d65b25cb57a9aec73a"
     },
     "casamigo": {
-      "id": "rel-20261109203000-casamigo-integrated-mail",
+      "id": "rel-20261111153000-casamigo-media-upload-video",
       "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14"
     },
     "oceanicvibes": {
-      "id": "rel-20261109203200-oceanic-integrated-mail",
+      "id": "rel-20261111153000-oceanic-media-upload-video",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
     },
     "atelier-harmonie": {
-      "id": "rel-20261109201500-atelier-mail-bridge-r2",
+      "id": "rel-20261111153000-atelier-media-upload-video",
       "sha": "4fcdd8cf3e22d7b07514c7beaef402db72112f3b"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {

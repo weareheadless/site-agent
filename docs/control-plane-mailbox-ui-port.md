@@ -176,6 +176,27 @@ Verified in a real authenticated browser on
 cards show a video frame with controls instead of a broken image. The tenant
 site, its Payload admin and its media files were not changed.
 
+### Bulk image and video upload
+
+The gallery upload is now a media upload:
+
+- The picker accepts `image/*,video/*` with `multiple`. Each file is a separate
+  `/api/helloada/media/upload` request on the same canonical bridge, so one
+  rejected file fails alone and the rest still land. The button shows the
+  current `n/total` while the batch runs, and failures are listed by filename.
+- The tenant bridge accepts `image/*` and `video/*` on both the owner and
+  service upload paths and rejects anything else with `415`. The single
+  `25 MB` limit covers both and keeps the proxy's in-memory body buffer
+  bounded; longer footage belongs compressed.
+- A video is stored with `analysisStatus: 'skipped'` and is never sent to the
+  image analyzer. `attachmentFrom` now carries `mime_type` so the chat can
+  render a video attachment as video rather than a broken image, and the
+  gallery's "Use in Ada" link forwards `asset_type` with the asset.
+
+The shared runtime change reaches tenants through the normal release queue;
+the tenant's own frontend composition still decides where a video appears on
+the public site.
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without

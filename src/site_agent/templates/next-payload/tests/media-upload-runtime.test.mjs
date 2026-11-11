@@ -9,9 +9,9 @@ const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts'
   .replace(/export /g, '')
 const javascript = stripTypeScriptTypes(source, { mode: 'transform' })
 
-function bridge(authenticated = true, service = false, existing = []) {
+function bridge(authenticated = true, service = false, existing = [], mediaOverride) {
   const pending = [], calls = []
-  const media = { id: 41, filename: 'logo.png', url: '/api/media/file/logo.png', mimeType: 'image/png',
+  const media = mediaOverride || { id: 41, filename: 'logo.png', url: '/api/media/file/logo.png', mimeType: 'image/png',
     analysisStatus: 'ready', tags: [{ value: 'logo' }], description: 'Owner logo' }
   const payload = {
     create: async (options) => { calls.push({ create: options }); return media },
@@ -51,6 +51,37 @@ test('canonical upload persists the file before scheduling tenant-scoped analysi
   assert.equal(route.calls[1].url, 'https://shared.example/v1/workspace/media/analyze')
   assert.equal(route.calls[1].options.headers.Authorization, 'Bearer fixture-tenant-token')
   assert.deepEqual(JSON.parse(route.calls[1].options.body), { media_id: '41' })
+})
+
+test('a video is stored with analysis skipped and no vision call', async () => {
+  const route = bridge(true, false, [], {
+    id: 42, filename: 'clip.mp4', url: '/api/media/file/clip.mp4', mimeType: 'video/mp4', analysisStatus: 'skipped',
+  })
+  const form = new FormData()
+  form.append('file', new File(['fixture'], 'clip.mp4', { type: 'video/mp4' }))
+  const result = await route.POST(new Request('https://owner.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 201)
+  const body = await result.json()
+  assert.equal(body.attachment.asset_id, 42)
+  assert.equal(body.attachment.mime_type, 'video/mp4')
+  const create = route.calls.find((call) => call.create).create
+  assert.equal(create.collection, 'media')
+  assert.equal(create.data.analysisStatus, 'skipped')
+  assert.equal(create.file.mimetype, 'video/mp4')
+  assert.equal(route.pending.length, 0, 'a video must not be sent to the image analyzer')
+})
+
+test('a file that is neither image nor video is rejected before storage', async () => {
+  const route = bridge()
+  const form = new FormData()
+  form.append('file', new File(['fixture'], 'notes.pdf', { type: 'application/pdf' }))
+  const result = await route.POST(new Request('https://owner.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 415)
+  assert.equal(route.calls.filter((call) => call.create).length, 0)
 })
 
 test('embedded gallery receives canonical analysis status and tags', async () => {

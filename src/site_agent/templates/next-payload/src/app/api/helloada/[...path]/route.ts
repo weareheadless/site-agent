@@ -63,6 +63,19 @@ const scheduleMediaAnalysis = (mediaId: unknown): void => {
   getCloudflareContext().ctx.waitUntil(pending)
 }
 
+const uploadLimitBytes = 25 * 1024 * 1024
+
+/**
+ * The media library holds stills and short clips. A single limit keeps the
+ * proxy's in-memory body buffer bounded; longer footage belongs compressed.
+ */
+const uploadMediaKind = (mimeType: string): 'image' | 'video' | undefined => {
+  const value = String(mimeType || '').toLowerCase()
+  if (value.startsWith('image/')) return 'image'
+  if (value.startsWith('video/')) return 'video'
+  return undefined
+}
+
 const editableCollections = ['pages', 'posts', 'products'] as const
 type EditableCollection = (typeof editableCollections)[number]
 
@@ -184,6 +197,7 @@ const attachmentFrom = (value: Record<string, unknown>) => {
     name: media.filename,
     alt_text: media.alt,
     description: text(value.description),
+    mime_type: text(value.mimeType) || null,
     width: value.width || null,
     height: value.height || null,
     url: media.url || null,
@@ -457,8 +471,9 @@ async function serviceMediaUpload(request: Request) {
   const form = await request.formData().catch(() => undefined)
   const value = form?.get('file')
   if (!(value instanceof File)) return errorResponse('file_required', 400)
-  if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
-  if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
+  const kind = uploadMediaKind(value.type)
+  if (!kind) return errorResponse('unsupported_media_type', 415)
+  if (value.size < 1 || value.size > uploadLimitBytes) return errorResponse('file_too_large', 413)
   const payload = await getPayload({ config })
   const sourceId = text(form?.get('sourceId')).trim()
   const alt = text(form?.get('alt')).trim()
@@ -474,12 +489,12 @@ async function serviceMediaUpload(request: Request) {
   }
   const document = await payload.create({
     collection: 'media',
-    data: { alt, ...(sourceId ? { sourceId } : {}) },
+    data: { alt, ...(sourceId ? { sourceId } : {}), ...(kind === 'video' ? { analysisStatus: 'skipped' as const } : {}) },
     draft: true,
     overrideAccess: true,
     file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
   })
-  scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
+  if (kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
   return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
 }
 
@@ -673,18 +688,22 @@ export async function POST(request: Request, { params }: RouteProps) {
     const form = await request.formData().catch(() => undefined)
     const value = form?.get('file')
     if (!(value instanceof File)) return errorResponse('file_required', 400)
-    if (!value.type.startsWith('image/')) return errorResponse('image_required', 415)
-    if (value.size < 1 || value.size > 25 * 1024 * 1024) return errorResponse('file_too_large', 413)
+    const kind = uploadMediaKind(value.type)
+    if (!kind) return errorResponse('unsupported_media_type', 415)
+    if (value.size < 1 || value.size > uploadLimitBytes) return errorResponse('file_too_large', 413)
     const bytes = Buffer.from(await value.arrayBuffer())
     const document = await withRecoveredWrite(auth.payload, { collection: 'media' }, () => auth.payload.create({
       collection: 'media',
-      data: { alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda image' },
+      data: {
+        alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda media',
+        ...(kind === 'video' ? { analysisStatus: 'skipped' as const } : {}),
+      },
       draft: true,
       req: auth.req,
       user: auth.user,
       file: { data: bytes, mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
     }))
-    scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
+    if (kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
     return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
   }
   if (path === '/publish') {
