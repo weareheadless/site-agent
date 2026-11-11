@@ -151,6 +151,31 @@ Clean-up: the verification star, archive and drafts were reverted, and both
 copies of the test message were moved to Trash and deleted. Final state matches
 the starting state (Inbox 1, Sent 1, Drafts 2, Starred 0, Archived 0, Trash 0).
 
+## Gallery media record
+
+The control-plane gallery showed every image as a broken tile for
+`inmersion freediving`. Two separate causes, both fixed in the app repository:
+
+- **Tenant-relative media paths.** Payload returns media as
+  `/api/media/file/<name>`, which the control plane resolved against
+  `helloada.app` and got a 404. `src/workspace/lib/media.ts` now exposes
+  `mediaOrigin(liveSite)` and `resolveMediaUrl(value, origin)`; the gallery and
+  every workspace thumbnail resolve tenant media against
+  `site.routes.liveSite` (the tenant Worker origin) while leaving absolute,
+  `data:` and `blob:` values untouched. The asset URL handed to the chat stays
+  tenant-relative because the chat sends it back to the tenant API.
+- **Videos rendered as images.** The media library also holds `video/mp4`
+  items, and the gallery drew them with `<img>`, producing a broken-image icon.
+  Video items now render as `<video controls playsInline muted
+  preload="metadata">` in the gallery, the chat media picker and the page
+  editor thumbnails; `mimeType` is carried through `AdminMediaThumbnail`.
+
+Verified in a real authenticated browser on
+`/inmersion-freediving-bb2a4e404a7fcea4/workspace?view=gallery` after release
+`cc40dc7`: all ten images render from the tenant origin and the three video
+cards show a video frame with controls instead of a broken image. The tenant
+site, its Payload admin and its media files were not changed.
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without
