@@ -197,6 +197,82 @@ def test_unmatched_publishing_draft_is_terminal_after_restart(tmp_path, monkeypa
     memory.close()
 
 
+def test_a_failed_release_is_retried_from_the_same_approval(tmp_path, monkeypatch):
+    """A transient pipeline failure must not make the approval unretryable.
+
+    The owner approved once; the release then died on a transport error. The
+    failed receipt belongs to that attempt, so a later approval retries the same
+    exact decision with a new release ID instead of replaying the old failure.
+    """
+    memory, deployer, draft_id, release_root = make_service(
+        tmp_path, monkeypatch, {"publish": release_job(1)}, draft_status="publish_failed",
+    )
+    path = release_root / "runs/demo/20261004-validation-1/receipt.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(deployed_receipt(draft_id) | {
+        "status": "failed", "stage": "artifact-verified",
+        "error": "<urlopen error EOF occurred in violation of protocol (_ssl.c:2437)>",
+    }))
+    approved = {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id}
+    draft = memory.get_draft(draft_id)
+    memory.update_draft_meta(draft_id, {**draft["meta"], "approved_release": approved})
+    assert deployer.for_draft(draft_id)["status"] == "failed"
+
+    calls = []
+    monkeypatch.setattr(deployer, "_head", lambda _branch: "a" * 40)
+    monkeypatch.setattr(
+        deployment, "request_release",
+        lambda _config, _env, sha, *, approval_id: calls.append((sha, approval_id))
+        or {"release_id": "20261004-validation-2", "control_sha": "c" * 40},
+    )
+    chat = ChatService(memory, object(), source_deployment=deployer)
+
+    result = chat.approve_draft(draft_id)
+
+    assert result["status"] == "publishing"
+    assert calls == [("a" * 40, draft_id)]
+    assert memory.get_draft(draft_id)["status"] == "publishing"
+    deployer.close()
+    memory.close()
+
+
+def test_approving_a_source_update_supersedes_an_older_pending_candidate(tmp_path, monkeypatch):
+    monkeypatch.setattr(deployment, "ThreadPoolExecutor", HeldExecutor)
+    memory = Memory(tmp_path / "memory.db")
+    older = memory.save_draft("Older attempt", "", kind="merge",
+                              meta={"preview": {"status": "blocked"}})
+    draft_id = memory.save_draft("Reviewed candidate", "", kind="merge",
+                                 meta={"preview": {"status": "ready", "job_id": "preview"}})
+    release_root = tmp_path / "release-receipts"
+    release_root.mkdir()
+    deployer = deployment.SourceDeploymentService(
+        {
+            "instance_name": "demo",
+            "deployment_pipeline": {"release_root": str(release_root)},
+            "site": {"branch": "main", "preview_branch": "preview"},
+        }, env={}, memory=memory,
+    )
+    monkeypatch.setattr(deployer, "_head", lambda _branch: "a" * 40)
+    monkeypatch.setattr(
+        deployment, "request_release",
+        lambda *_args, **_kwargs: {"release_id": "20261004-validation-1", "control_sha": "c" * 40},
+    )
+
+    class Adapter:
+        def merge_preview(self, *args):
+            return {"merged": True, "commit_sha": "a" * 40, "parent_sha": "b" * 40, "path": "preview->main"}
+
+    chat = ChatService(memory, object(), source_deployment=deployer)
+    monkeypatch.setattr(chat, "_merge_adapter", lambda _tenant: Adapter())
+
+    chat.approve_draft(draft_id)
+
+    assert memory.get_draft(older)["status"] == "superseded"
+    assert memory.get_draft(draft_id)["status"] == "publishing"
+    deployer.close()
+    memory.close()
+
+
 def test_workspace_approval_retries_do_not_merge_or_queue_twice(tmp_path, monkeypatch):
     memory, deployer, draft_id, _release_root = make_service(tmp_path, monkeypatch, draft_status="pending")
     calls = []

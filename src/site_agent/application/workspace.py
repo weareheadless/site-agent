@@ -3915,18 +3915,13 @@ class ChatService:
             deployer = tenant.context.get("source_deployment") if tenant else self.source_deployment
             lookup = getattr(deployer, "for_draft", None)
             receipt = lookup(normalized_id) if callable(lookup) else {}
-            if receipt and draft.get("status") in {"publishing", "publish_failed", "live"}:
-                if tenant is not None and (draft.get("meta") or {}).get("growth_package"):
-                    from .growth_delivery import release_checkpoint
-                    initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
-                        if int(row.get("draft_id") or 0) == normalized_id), None)
-                    if initiative is None:
-                        raise BridgeError("the released Growth work identity is missing")
-                    release_checkpoint(tenant.context, initiative, str((draft.get("meta") or {}).get("review_package_hash") or ""), receipt)
-                return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
-                        "status": draft["status"], "deployment": receipt, "idempotent": True}
             approved = (draft.get("meta") or {}).get("approved_release")
             start = getattr(deployer, "start", None)
+            # A release that failed after the owner approved it is retried from
+            # that same exact decision. The failed receipt it left behind is
+            # evidence of the attempt, not a reason to answer every later
+            # approval with that old failure: a build that died on a transient
+            # error must be recoverable without asking the owner to decide again.
             if draft.get("status") == "publish_failed" and isinstance(approved, Mapping) and callable(start):
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
@@ -3939,6 +3934,16 @@ class ChatService:
                 return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
                         "status": {"deployed": "live", "failed": "publish_failed"}.get(receipt.get("status"), "publishing"),
                         "deployment": dict(receipt), "idempotent": True}
+            if receipt and draft.get("status") in {"publishing", "publish_failed", "live"}:
+                if tenant is not None and (draft.get("meta") or {}).get("growth_package"):
+                    from .growth_delivery import release_checkpoint
+                    initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                        if int(row.get("draft_id") or 0) == normalized_id), None)
+                    if initiative is None:
+                        raise BridgeError("the released Growth work identity is missing")
+                    release_checkpoint(tenant.context, initiative, str((draft.get("meta") or {}).get("review_package_hash") or ""), receipt)
+                return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
+                        "status": draft["status"], "deployment": receipt, "idempotent": True}
             # A design approval that failed before its source was merged has no
             # approved release to replay. Retrying it must re-run the same exact
             # decision: the reviewed Payload revisions are published
@@ -4240,6 +4245,21 @@ class ChatService:
                                 "The approved source candidate is deployed; CrawlSEO receipt reconciliation will retry.")
             else:
                 memory.update_draft_status(normalized_id, "approved")
+            # An approved source change supersedes older pending source reviews,
+            # exactly as an approved design does. Leaving one pending offers the
+            # owner a candidate this approval has already replaced.
+            if str((memory.get_draft(normalized_id) or {}).get("status") or "") in {"publishing", "live", "approved"}:
+                for older in memory.list_drafts(status="pending", limit=500):
+                    older_id = int(older.get("id") or 0)
+                    older_meta = older.get("meta") if isinstance(older.get("meta"), Mapping) else {}
+                    if (
+                        older_id == normalized_id
+                        or str(older.get("kind") or "") not in {"merge", "rollback"}
+                        or any(key in older_meta for key in ("growth_package", "growth_candidate_pending", "review_package_hash"))
+                    ):
+                        continue
+                    memory.update_draft_status(older_id, "superseded")
+                    memory.record_action("superseded", f"#{older_id}: replaced by approved #{normalized_id}")
             if kind == "rollback":
                 target_publish_id = meta.get("target_publish_id")
                 try:
