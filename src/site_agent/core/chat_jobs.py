@@ -26,10 +26,26 @@ def _job_worker_id() -> str:
 
 
 def _chat_engine(context: dict[str, Any]) -> str:
-    """Which engine answers an owner chat turn: the opencode agent or the legacy loop."""
-    chat = (context.get("config") or {}).get("chat") or {}
-    engine = str(chat.get("engine") or "legacy").strip().lower()
-    return "opencode" if engine == "opencode" else "legacy"
+    """Which engine answers an owner chat turn.
+
+    A workspace with a builder and a checkout runs the opencode agent, which
+    owns the turn end to end: it reads the repository, edits it and answers in
+    its own words. The legacy tool loop is the explicit rollback
+    (``chat.engine: legacy``) and the only engine for a site without a source
+    workspace. The engine follows capability rather than a per-tenant opt-in,
+    so a re-registered or newly provisioned site cannot silently fall back to
+    the retired loop.
+    """
+    config = context.get("config") or {}
+    chat = config.get("chat") or {}
+    engine = str(chat.get("engine") or "").strip().lower()
+    if engine == "legacy":
+        return "legacy"
+    if engine == "opencode":
+        return "opencode"
+    from ..hands import opencode_runner
+
+    return "opencode" if opencode_runner.builder_available(dict(config)) else "legacy"
 
 
 def _with_attachment_context(

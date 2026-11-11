@@ -81,3 +81,41 @@ def test_the_default_engine_is_the_legacy_loop(tmp_path, monkeypatch):
 
     assert seen["called"] is True
     assert result["reply"] == "legacy answer"
+
+
+SOURCE_WORKSPACE = {"site": {"clone_path": "/srv/site"}, "builder": {"enabled": True}}
+
+
+def test_a_source_workspace_uses_the_opencode_engine_without_a_config_key(tmp_path, monkeypatch):
+    from site_agent.application import agent_tools
+    from site_agent.hands import chat_agent
+
+    memory, job, context = _job(tmp_path, dict(SOURCE_WORKSPACE))
+    with closing(memory):
+        monkeypatch.setattr(chat_agent, "run_turn", lambda *a, **k: {"reply": PLAN, "session": "s1"})
+        monkeypatch.setattr(agent_tools, "turn_summary", lambda *a, **k: {
+            "completed_payload_effects": [], "source_build_completed": False,
+            "merge_draft_id": None, "preview": None, "change": None, "changed": None, "plan": None,
+        })
+        result = run_job(context, job, "test-worker")
+
+    assert result["reply"] == PLAN
+
+
+def test_an_explicit_legacy_key_keeps_the_legacy_loop_on_a_source_workspace(tmp_path, monkeypatch):
+    from site_agent.brain import editor
+
+    config = {**SOURCE_WORKSPACE, "chat": {"engine": "legacy"}}
+    memory, job, context = _job(tmp_path, config)
+    seen = {}
+
+    def handle_message(*args, **kwargs):
+        seen["called"] = True
+        return {"reply": "legacy answer", "proposal_id": None, "merge_draft_id": None}
+
+    with closing(memory):
+        monkeypatch.setattr(editor, "handle_message", handle_message)
+        result = run_job(context, job, "test-worker", adapter_factory=lambda: object())
+
+    assert seen["called"] is True
+    assert result["reply"] == "legacy answer"

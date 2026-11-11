@@ -1020,6 +1020,9 @@ def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monke
     memory, config, adapter, context, client = runtime
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/nonexistent-clone"
+    # This test covers the legacy loop's own plan→build routing; a source
+    # workspace now defaults to the opencode agent, so pin the rollback engine.
+    config["chat"] = {"engine": "legacy"}
 
     from site_agent.hands import opencode_runner as runner
 
@@ -1059,6 +1062,8 @@ def test_chat_spawn_build_runs_staged_builder(runtime, monkeypatch):
     memory, config, adapter, context, client = runtime
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/whatever"
+    # Legacy-loop coverage: pin the rollback engine for a source workspace.
+    config["chat"] = {"engine": "legacy"}
 
     from site_agent.hands import opencode_runner as runner
     monkeypatch.setattr(

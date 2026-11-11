@@ -1,7 +1,15 @@
 # Owner chat on the opencode agent
 
-Status: implemented and live for `oceanicvibes`, behind `chat.engine`. The legacy
-loop remains the default and the rollback path.
+Status: implemented and the engine for every workspace that has a builder and a
+checkout. The legacy loop is the explicit rollback (`chat.engine: legacy`) and
+the engine for a site without a source workspace.
+
+The engine is chosen from capability, not from a per-tenant opt-in. `inmersion`
+was the first tenant to hit the difference: it had no `chat.engine` key, so it
+kept the retired 24-step loop and a repository-scale request (`update the site
+with these courses and excursions`) spent all 24 steps on file reads and media
+searches without ever reaching a write. Falling back on a missing key is what
+made a re-registered or newly provisioned config silently broken.
 
 ## What changed
 
@@ -108,16 +116,20 @@ field has been written.
 
 ## Operating it
 
-Enable per tenant with:
+No per-tenant key is needed. A tenant whose `builder.enabled` is true and whose
+`site.clone_path` is set runs the opencode agent; everything else keeps the
+legacy loop.
+
+Rollback is an explicit per-tenant key and an API release through the normal
+queue:
 
 ```yaml
 chat:
-  engine: opencode
+  engine: legacy
 ```
 
-Rollback is setting it back to `legacy` (or removing the key) and restarting the
-API through the normal release queue. No data migration is involved; the legacy
-loop and its tests are intact.
+No data migration is involved; the legacy loop and its tests are intact. The
+explicit `opencode` key still works and is equivalent to the capability default.
 
 ## Not yet verified
 
