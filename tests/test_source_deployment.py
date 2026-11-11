@@ -314,32 +314,30 @@ def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(
         service.close()
 
 
-def test_compiled_preview_navigation_stays_on_exact_mounted_candidate():
+def test_compiled_preview_navigation_is_left_to_the_next_mount():
+    """Next's basePath owns route navigation; the transport must not repeat it.
+
+    `inmersion`'s preview rendered every page, but clicking a link went to
+    `<mount>/<mount>/courses` and the page went blank: the served HTML and RSC
+    props carried the mount, and Next's router added it again. The mount is a
+    build-time basePath, so a site route already resolves inside the preview.
+    """
     mount = '/api/helloada/source/preview/exact-job/runtime'
     job = {'runtime_base_path': mount, 'public_asset_roots': []}
-    samples = [
-        ('<a href="/?locale=en">English</a>', 'text/html', '<a href="?locale=en">English</a>'),
-        ('{"href":"/?locale=en"}', 'text/x-component', '{"href":"?locale=en"}'),
-        (r'{\"href\":\"/?locale=en\"}', 'text/html', r'{\"href\":\"?locale=en\"}'),
-    ]
-    for body, content_type, expected in samples:
-        rewritten = source_deployment.SourceDeploymentService._rewrite_runtime_assets(body.encode(), content_type, job)
-        assert rewritten.decode() == expected
-        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(rewritten, content_type, job) == rewritten
-    for href in ('https://instagram.com/example', '//example.com/', '#work', '?locale=en',
-                 'mailto:owner@example.com', '/api/helloada/media/file', '/admin', '/mail/inbox', '/_next/script.js',
-                 '/robots.txt', mount + '/?locale=en'):
-        body = f'<a href="{href}">Link</a>'.encode()
-        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job) == body
-    # Site links stay inside the preview instead of jumping to the live site.
-    for href, expected in (('/', f'{mount}/'), ('/work?locale=en', f'{mount}/work?locale=en'),
-                           ('/blog', f'{mount}/blog')):
-        body = f'<a href="{href}">Link</a>'.encode()
-        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job).decode() == f'<a href="{expected}">Link</a>'
-    text = b'<p>The path /?locale=en is not a navigation attribute.</p>'
-    assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(text, 'text/html', job) == text
-    body = b"<a href='/work?locale=es#colour'>"
-    assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(body, 'text/html', job, 'work') == b"<a href='?locale=es#colour'>"
+    for body, content_type in [
+        ('<a href="/?locale=en">English</a>', 'text/html'),
+        ('<a href="/work?locale=en">Work</a>', 'text/html'),
+        ('{"href":"/blog"}', 'text/x-component'),
+        (r'{\"href\":\"/blog\"}', 'text/html'),
+    ]:
+        assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(
+            body.encode(), content_type, job) == body.encode()
+    # Root-relative public assets are not mounted by Next, so they still are.
+    assets = {'public_asset_roots': ['/photos/']}
+    body = b'<img src="/photos/reef.webp">'
+    rewritten = source_deployment.SourceDeploymentService._rewrite_runtime_assets(
+        body, 'text/html', {**job, **assets})
+    assert rewritten == f'<img src="{mount}/photos/reef.webp">'.encode()
 
 
 def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
@@ -1081,7 +1079,7 @@ def test_the_preview_mounts_the_candidates_own_media(tmp_path):
             '<link rel="stylesheet" href="/api/helloada/source/preview/j1/runtime/app.css">'
             "</head><body><img src=\"/api/media/file/logo.jpg\"></body></html>"
         ).encode()
-        out = service._rewrite_runtime_assets(body, "text/html", job, "about").decode()
+        out = service._rewrite_runtime_assets(body, "text/html", job).decode()
         mounted = "/api/helloada/source/preview/j1/runtime"
         assert out.count(f'{mounted}/api/media/file/') == 2
         # The platform bridge keeps its own address inside the preview.

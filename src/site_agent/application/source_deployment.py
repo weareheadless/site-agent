@@ -986,48 +986,26 @@ class SourceDeploymentService:
                                     for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
 
     @staticmethod
-    def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any], request_path: str = "") -> bytes:
+    def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any]) -> bytes:
+        """Mount root-relative public asset URLs. Navigation belongs to Next.
+
+        The preview build sets Next's ``basePath`` to this mount, so the client
+        router and every ``next/link`` already resolve site routes inside the
+        preview. Rewriting those hrefs as well made the router add the mount a
+        second time: an in-preview click landed on a doubled URL, the page went
+        blank and the prefetch answered 401. Next does not mount plain
+        root-relative asset URLs (``<img src="/photos/x.webp">``,
+        ``url(/fonts/x.woff2)``) in SSR HTML, its RSC payload or its bundles, so
+        those are the only thing this transport rewrites.
+        """
         base = str(job.get("runtime_base_path") or "")
         roots = list(job.get("public_asset_roots") or []) + list(_PREVIEW_CANDIDATE_ASSET_ROOTS)
-        if not base or not any(kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")):
+        if not base or not roots or not any(
+            kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")
+        ):
             return body
-        # Root-relative public URLs occur in SSR HTML, its RSC payload and the
-        # matching client bundles. Rewrite all three so hydration sees the same
-        # props; Next's own chunks/router use its explicit basePath above.
-        text = body.decode("utf-8")
-        if roots:
-            pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
-            text = pattern.sub(lambda match: match["prefix"] + base + match["asset"], text)
-        # Same-page query links must stay in this preview, not jump to the
-        # unpublished public site. Query-relative hrefs work for plain anchors
-        # and Next links without adding Next's basePath twice. Keep SSR and RSC
-        # props identical; leave other routes and external destinations alone.
-        navigation = re.compile(r'''(?P<prefix>(?<![\w-])href(?:\\?["'])?\s*[=:]\s*\\?["'])(?P<path>/(?!/)[^"'\\<>\s]*)(?P<suffix>\\?["'])''')
-
-        def mounted_link(match: re.Match[str]) -> str:
-            path = match["path"]
-            parsed = urllib.parse.urlsplit(path)
-            current = "/" + request_path.strip("/")
-            if parsed.path.rstrip("/") == current.rstrip("/") and parsed.query:
-                # Same-page query links stay relative so Next does not prefix
-                # its basePath twice.
-                relative = "?" + parsed.query + ("#" + parsed.fragment if parsed.fragment else "")
-                return match["prefix"] + relative + match["suffix"]
-            prefix = base.rstrip("/")
-            if path == prefix or path.startswith(prefix + "/"):
-                return match[0]
-            if any(path == exempt or path.startswith(exempt + "/")
-                   for exempt in _PREVIEW_PLATFORM_PATHS):
-                # Platform routes (admin, mail, APIs, Next assets) are not site
-                # pages and must keep their own address inside the preview.
-                return match[0]
-            # Every other in-site link must stay inside the preview. A plain
-            # anchor without Next's basePath otherwise jumps to the live site,
-            # so the owner would browse the published page instead of the
-            # candidate and see two versions of the same page.
-            return match["prefix"] + prefix + path + match["suffix"]
-
-        return navigation.sub(mounted_link, text).encode("utf-8")
+        pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
+        return pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8")).encode("utf-8")
 
     @staticmethod
     def _preview_root_is_ready(status: int) -> bool:
@@ -1246,7 +1224,7 @@ class SourceDeploymentService:
                 # Check the document the browser will actually receive: the
                 # preview mounts the candidate's own asset URLs, and a reference
                 # that only resolves unmounted is not what the owner sees.
-                body = self._rewrite_runtime_assets(body, content_type, job, route.lstrip("/"))
+                body = self._rewrite_runtime_assets(body, content_type, job)
             for reference in self._document_asset_references(body, url):
                 assets.setdefault(reference, route)
         for reference, route in assets.items():
@@ -2007,7 +1985,7 @@ class SourceDeploymentService:
             with response:
                 return {
                     "status": int(response.status),
-                    "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job, clean_path),
+                    "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job),
                     "content_type": response.headers.get("Content-Type", "application/octet-stream"),
                     "commit": str(job.get("commit") or ""),
                 }
