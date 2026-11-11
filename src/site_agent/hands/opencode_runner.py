@@ -3704,6 +3704,33 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
         elif media_asset_ids is not None:
             context["_media_asset_ids"] = previous
     return stage_review(context, message, outcome, progress)
+def _supersede_replaced_reviews(memory: Any, staged_draft_id: int) -> None:
+    """Retire the candidate a newer one has replaced.
+
+    A pending source review whose preview could not be prepared is excluded from
+    the one-review-at-a-time guard, so a retry stages a second draft. The first
+    then stays pending with a preview that can never build again — its branch
+    moved on — and once the newer draft is approved it is the only pending one,
+    so the Design tab selects it and shows a failure the owner cannot act on.
+    That is two review surfaces for one request, one of them dead.
+
+    Retiring it is not an owner decision: the decision it asked for no longer
+    exists, and the candidate it described is superseded by the one now under
+    review. Growth candidates keep their own approval flow and are never retired
+    here.
+    """
+    for draft in memory.list_drafts(status="pending", limit=500):
+        draft_id = int(draft.get("id") or 0)
+        if draft_id == staged_draft_id or draft.get("kind") not in {"merge", "rollback"}:
+            continue
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        if any(key in meta for key in ("growth_package", "growth_candidate_pending", "review_package_hash")):
+            continue
+        memory.update_draft_meta(draft_id, {**meta, "superseded_by": staged_draft_id})
+        memory.update_draft_status(draft_id, "superseded")
+        memory.record_action("draft_superseded", f"#{draft_id} replaced by #{staged_draft_id}")
+
+
 def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any], progress=None) -> dict[str, Any]:
     """Create the owner review draft and its compiled preview for one finished change."""
     builder = (context.get("config") or {}).get("builder") or {}
@@ -3768,6 +3795,7 @@ def stage_review(context: dict[str, Any], message: str, outcome: dict[str, Any],
             "head_sha": candidate_sha,
             "preview": preview,
         })
+        _supersede_replaced_reviews(memory, merge_draft_id)
         change.update({
             "status": "ready_for_review" if preview.get("status") == "ready" else "preparing_preview" if preview.get("status") == "building" else "blocked",
             "draft_id": merge_draft_id,

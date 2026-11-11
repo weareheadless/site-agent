@@ -155,6 +155,16 @@ on the tenant origin keeps the build's basePath, its assets and its
 client-side navigation intact. Approval stays in the Design controls; only the
 visual check opens in the tenant session.
 
+A review the owner cannot decide must not stay behind as a second surface. When
+a candidate's preview cannot be prepared, the next request stages a new draft
+from a clean base; the old one stayed pending against a branch that had moved
+on, so its preview could only fail. After the new draft was approved it was the
+only pending draft left, the Design tab selected it, and the owner saw "The
+website preview could not be prepared" for work that had already been replaced.
+Staging now retires the replaced draft as `superseded`, so one request has one
+live review; a Growth candidate is never retired this way because its approval
+flow owns its decision.
+
 ## Defects found while migrating
 
 1. `owner_message_without_unstarted_build` replaced an entire answer with one

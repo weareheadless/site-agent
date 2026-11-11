@@ -759,6 +759,67 @@ def test_prepare_preview_always_isolated_and_never_touches_local_work(tmp_path, 
     assert "Local work" in (clone / "index.html").read_text()
 
 
+def test_a_replaced_candidate_is_retired_instead_of_left_pending(tmp_path):
+    """One owner request must not leave a second, unbuildable review behind.
+
+    The first attempt's preview failed, so the retry staged a second draft from
+    a clean base. The first stayed pending with a branch that had moved on: its
+    preview could only fail, and once the second was approved it became the only
+    pending draft, so the Design tab selected it and showed a build failure the
+    owner could not act on.
+    """
+    memory = Memory(tmp_path / "m.db")
+    replaced = memory.save_draft(
+        "first attempt", "Ada: add the courses", kind="merge",
+        meta={
+            "head": "preview", "base": "main", "base_sha": "b" * 40, "head_sha": "a" * 40,
+            "preview": {"status": "blocked", "job_id": "job-1",
+                        "error": "deployment branch advanced before its build started"},
+        },
+    )
+    growth = memory.save_draft("growth candidate", "x", kind="merge",
+                               meta={"growth_package": {"candidateType": "source_code"}})
+    content = memory.save_draft("copy", "{}", kind="payload_content", meta={})
+    staged = memory.save_draft("second attempt", "Ada: add the courses", kind="merge",
+                               meta={"head": "preview", "base": "main"})
+
+    runner._supersede_replaced_reviews(memory, staged)
+
+    drafts = {draft["id"]: draft for draft in memory.list_drafts(limit=10)}
+    assert drafts[replaced]["status"] == "superseded"
+    assert drafts[replaced]["meta"]["superseded_by"] == staged
+    # The replacement, a Growth candidate and a content draft are untouched.
+    assert drafts[staged]["status"] == "pending"
+    assert drafts[growth]["status"] == "pending"
+    assert drafts[content]["status"] == "pending"
+    assert {draft["id"] for draft in memory.list_drafts(status="pending")} == {staged, growth, content}
+    memory.close()
+
+
+def test_staging_a_new_candidate_retires_the_review_it_replaced(tmp_path):
+    memory = Memory(tmp_path / "m.db")
+    replaced = memory.save_draft(
+        "first attempt", "Ada: add the courses", kind="merge",
+        meta={"head": "preview", "base": "main", "head_sha": "a" * 40,
+              "preview": {"status": "blocked", "error": "preview failed"}},
+    )
+    context = {"config": {}, "memory": memory}
+    staged = runner.stage_review(
+        context,
+        "add the courses",
+        {
+            "changed": True, "changed_paths": ["src/content/site.ts"], "output": "Done.",
+            "branch": "preview", "candidate_sha": "c" * 40,
+            "preview": {"requires_build": False, "status": "ready"},
+        },
+    )
+    drafts = {draft["id"]: draft for draft in memory.list_drafts(limit=10)}
+    assert staged["merge_draft_id"] != replaced
+    assert drafts[replaced]["status"] == "superseded"
+    assert drafts[staged["merge_draft_id"]]["status"] == "pending"
+    memory.close()
+
+
 def test_stage_merge_draft_preserves_older_pending_owner_proposals(tmp_path):
     memory = Memory(tmp_path / "m.db")
     old = memory.save_draft("first build", "diff", kind="merge",
