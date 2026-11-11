@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 
 import pytest
 
@@ -333,6 +334,30 @@ def _queue_with(monkeypatch, releases, *, terminal):
         raise AssertionError((method, path))
     monkeypatch.setattr(queue, "_request", request)
     return queue, terminal
+
+
+def test_a_failed_release_attempt_is_reissued_under_a_new_identity(monkeypatch):
+    """A terminal attempt must be retryable; its identity is never reused."""
+    queue, terminal = _queue_with(
+        monkeypatch,
+        {"demo": {"id": "rel-20261103120000-abcdef01", "sha": SHA, "approvalId": 7}},
+        terminal=frozenset({"rel-20261103120000-abcdef01"}),
+    )
+    result = queue.request("demo", SHA, None, approval_id=7, terminal_release_ids=terminal)
+    assert result["release_id"] != "rel-20261103120000-abcdef01"
+    assert re.fullmatch(r"rel-\d{14}-[0-9a-f]{8}", result["release_id"])
+    assert result["control_sha"] == "5" * 40
+
+
+def test_a_repeated_request_for_a_running_attempt_keeps_its_identity(monkeypatch):
+    queue, terminal = _queue_with(
+        monkeypatch,
+        {"demo": {"id": "rel-20261103120000-abcdef01", "sha": SHA, "approvalId": 7}},
+        terminal=frozenset(),
+    )
+    result = queue.request("demo", SHA, None, approval_id=7, terminal_release_ids=terminal)
+    assert result["release_id"] == "rel-20261103120000-abcdef01"
+    assert result["control_sha"] == "1" * 40
 
 
 def test_a_pending_release_request_is_never_overwritten(monkeypatch):

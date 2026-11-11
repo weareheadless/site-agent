@@ -245,11 +245,17 @@ class GitHubReleaseQueue:
                     "control_sha": parent_sha,
                 }
             if requested_release_id is None and same_request and isinstance(current.get("id"), str):
-                return {
-                    "release_id": current["id"],
-                    "source_sha": source_sha,
-                    "control_sha": parent_sha,
-                }
+                # Idempotency is bounded by the attempt's own state. A request
+                # that already failed or was interrupted is retried under a new
+                # release identity, exactly like an operator retry: the pipeline
+                # will not run a terminal ID again, and reusing it would answer
+                # the owner's approval with the old failure forever.
+                if terminal_release_ids is None or current["id"] not in terminal_release_ids:
+                    return {
+                        "release_id": current["id"],
+                        "source_sha": source_sha,
+                        "control_sha": parent_sha,
+                    }
 
             if (isinstance(current, Mapping) and terminal_release_ids is not None
                     and current.get("id") not in terminal_release_ids):
