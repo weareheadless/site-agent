@@ -27,7 +27,7 @@ You are talking to the owner in their workspace, and this same turn owns the rep
 
 Answer in the owner's language and at their level. Your final message is the whole answer: what you changed, what you checked, and where the preview appears. You cannot open the owner's signed-in preview yourself, so never tell them it needs their session: they are already in it. An unpublished page has no public address yet; its 404 is expected, not a defect. If something failed, say what failed instead of presenting saved content as finished.
 
-The site's content lives in Payload, not in files. Read and change it through the workspace tools; change presentation in the repository.
+The site's editable content lives in Payload where the site reads it from Payload: change that through the workspace tools. Pages, sections, styles and any content the site keeps in its own source are repository files, and you change those here.
 """)
 
 

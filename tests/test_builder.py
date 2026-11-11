@@ -589,34 +589,39 @@ def test_builder_allows_configured_site_files(tmp_path):
     runner._validate_build_paths(config, clone, "origin/preview")
 
 
-def test_builder_allows_only_exact_next_crawl_metadata_files(tmp_path):
+def test_builder_allows_the_tenant_composition_and_refuses_platform_source(tmp_path):
     clone = _make_clone(tmp_path)
     config = _builder_config(clone)
     config['design_engine'] = {'build_profile': 'next_react'}
     config['site']['writable_patterns'] = [
-        'src/app/(frontend)/**', 'src/components/**', 'public/**',
+        'src/app/(frontend)/site.css', 'src/components/site/presentation/**',
     ]
     _git(clone, 'checkout', '-q', 'preview')
-    (clone / 'src/app/robots.txt/route.ts').parent.mkdir(parents=True, exist_ok=True)
-    (clone / 'src/app/robots.txt/route.ts').write_text('export const GET = () => new Response(\"User-agent: *\")')
+    # A source-authored tenant replaces the scaffold with its own routes and
+    # content modules; the scaffold's pattern list must not deny them.
+    for path in ('src/app/robots.txt/route.ts', 'src/app/(frontend)/excursions/page.tsx', 'src/content/site.ts'):
+        target = clone / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('export default function Page() { return null }')
     (clone / 'public').mkdir(exist_ok=True)
     (clone / 'public/robots.txt').write_text('User-agent: *')
     runner._validate_build_paths(config, clone, 'origin/preview')
 
-    (clone / 'src/app/feed.xml').mkdir(parents=True)
-    (clone / 'src/app/feed.xml/route.ts').write_text('export const GET = () => new Response(\"feed\")')
+    protected = clone / 'src/app/(frontend)/[[...slug]]/page.tsx'
+    protected.parent.mkdir(parents=True, exist_ok=True)
+    protected.write_text('export default function Page() { return null }')
     with pytest.raises(runner.RunnerError, match='outside the writable sandbox'):
         runner._validate_build_paths(config, clone, 'origin/preview')
 
 
-def test_generic_builder_context_exposes_crawl_metadata_contract(tmp_path, monkeypatch):
+def test_generic_builder_context_exposes_the_source_boundary(tmp_path, monkeypatch):
     clone = tmp_path / 'clone'
     clone.mkdir()
     captured = {}
     config = {
         'site': {
             'clone_path': str(clone),
-            'writable_patterns': ['src/app/(frontend)/**', 'src/components/**', 'public/**'],
+            'writable_patterns': ['src/app/(frontend)/site.css', 'src/components/site/presentation/**'],
         },
         'design_engine': {'build_profile': 'next_react'},
         'builder': {},
@@ -632,10 +637,11 @@ def test_generic_builder_context_exposes_crawl_metadata_contract(tmp_path, monke
 
     prompt_context = captured['site_digest']
     assert 'AUTHORITATIVE SOURCE OWNERSHIP CONTRACT' in prompt_context
-    assert 'src/app/robots.txt/route.ts' in prompt_context
-    assert 'public/sitemap.xml' in prompt_context
-    assert 'src/lib/site-origin.ts' not in prompt_context
-    assert 'Keep origin resolution in the selected metadata file' in prompt_context
+    # The statement Ada reads is the boundary the sandbox enforces: the
+    # platform paths are named, and the tenant's own composition is not.
+    assert 'except protected_paths' in prompt_context
+    assert 'src/app/(frontend)/layout.tsx' in prompt_context
+    assert 'src/content/site.ts' not in prompt_context
 
 
 def test_builder_origin_url_never_persists_token():

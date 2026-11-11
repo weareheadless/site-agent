@@ -191,7 +191,8 @@ def test_compiled_candidate_is_checked_against_frontend_allowlist_before_build(t
         meta={"base_sha": base_sha, "candidate_sha": candidate_sha},
     )
     service = source_deployment.SourceDeploymentService(
-        {"site": {"clone_path": str(repo)}}, memory=memory,
+        {"site": {"clone_path": str(repo)}, "design_engine": {"build_profile": "next_react"}},
+        memory=memory,
     )
     try:
         result = service._verify_candidate_source_boundary(repo, candidate_sha, draft_id)
@@ -971,8 +972,10 @@ def test_the_tab_icon_is_a_tenant_brand_asset():
     from site_agent.frontend_ownership import is_frontend_owned_path
 
     assert is_frontend_owned_path("public/favicon.ico")
-    # The route and layout remain platform-owned.
-    assert not is_frontend_owned_path("src/app/(frontend)/page.tsx")
+    # The tenant's own homepage and routes are presentation source it authors.
+    assert is_frontend_owned_path("src/app/(frontend)/page.tsx")
+    # The shared route shell and layout remain platform-owned.
+    assert not is_frontend_owned_path("src/app/(frontend)/[[...slug]]/page.tsx")
     assert not is_frontend_owned_path("src/app/(frontend)/layout.tsx")
 
 

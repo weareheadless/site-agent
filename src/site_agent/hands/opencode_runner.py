@@ -3837,8 +3837,8 @@ GSAP production guardrails:
 - Use the exact GSAP version and package entrypoints available in the
   workspace. The framework baseline includes the host-approved `gsap` package;
   use normal imports and current APIs rather than CDN scripts or guessed
-  vendor paths. Do not install packages, download archives, or add a dependency
-  outside the approved capability list.
+  vendor paths. The installed dependency set is host-owned: do not install
+  packages, download archives, or add a dependency.
 - Use GSAP 3 APIs only: gsap.to(), gsap.from(), gsap.fromTo(), gsap.timeline(),
   and current plugin APIs. Never use TweenMax, TimelineLite, Power2, or other
   GSAP 2 syntax. Do not invent methods or plugins; inspect the installed version
@@ -3877,9 +3877,10 @@ GSAP production guardrails:
 %%BUILDER_TOOLSET%%%%PERSONA%%Hard rules:
 - You are working in a disposable checkout created from the immutable build
   base. Work here; never switch branches, never push.
-- Never touch admin.html, .github/, CNAME, or any credentials. You may update
-  package.json and its lockfile only when the change uses an exact host-approved
-  capability and is required by the implementation.
+- Never touch admin.html, .github/, CNAME, or any credentials. The Payload
+  schema, migrations, admin, authentication, the HelloAda bridge, package.json
+  and its lockfile, and build/runtime configuration are the platform; the rest
+  of this repository is yours to author.
 - Read files before editing so your edits preserve recognizable brand conventions,
   unless the execution contract supplies the relevant files and measured design
   references and explicitly requires immediate editing.

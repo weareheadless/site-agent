@@ -6,87 +6,121 @@ from site_agent.hands.repo_changes import source_path_allowed, source_authoring_
 
 
 def config():
+    """A registered source-authored tenant, as the API actually loads it.
+
+    The shipped defaults fill ``site.writable_patterns`` with the scaffold's
+    presentation files, so a tenant that never configured one still arrives
+    here with that list. The ownership boundary cannot depend on it.
+    """
     return {'design_engine': {'build_profile': 'next_react'}, 'site': {
         'writable_patterns': [
-            'next.config.mjs', 'src/app/(frontend)/**', 'src/components/**', 'public/**',
+            'src/app/(frontend)/site.css', 'src/components/site/presentation/**',
+            'src/components/site/TenantChrome.tsx', 'public/site/**', 'public/fonts/**',
         ]}}
 
 
-def test_source_plan_and_validator_share_the_ownership_boundary():
-    plan = {'content_effects': [], 'source_brief': 'Improve the section typography',
-            'source_paths': ['src/components/site/presentation/Training.tsx'],
-            'acceptance_criteria': ['Typography stays readable at mobile widths'], 'response_only': False}
-    accepted = _validate_website_change_plan(plan, None, config())
-    assert accepted['source_paths'] == plan['source_paths']
-    assert source_path_allowed(config(), accepted['source_paths'][0])
-    assert source_path_allowed(config(), 'src/app/(frontend)/oceanic.css')
-    # Crawl and discovery metadata can be authored through either native Next
-    # metadata routes, explicit route handlers, or the exact root static files.
-    crawl_paths = [
-        'src/app/robots.ts', 'src/app/sitemap.ts',
-        'src/app/robots.txt/route.ts', 'src/app/sitemap.xml/route.ts',
-        'public/robots.txt', 'public/sitemap.xml',
+BESPOKE_FILES = [
+    'src/app/(frontend)/page.tsx',
+    'src/app/(frontend)/courses/page.tsx',
+    'src/app/(frontend)/courses/[slug]/page.tsx',
+    'src/app/(frontend)/excursions/page.tsx',
+    'src/app/(frontend)/excursions/[slug]/page.tsx',
+    'src/app/(frontend)/depth/page.tsx',
+    'src/app/(frontend)/site.css',
+    'src/content/site.ts',
+    'src/components/dive/DiveScene.tsx',
+    'src/components/site/presentation/Training.tsx',
+    'public/site/excursion-cenote.webp',
+    'public/robots.txt',
+    'src/app/robots.ts',
+]
+
+PLATFORM_FILES = [
+    'package.json', 'package-lock.json', 'next.config.mjs', 'tsconfig.json',
+    'payload.config.ts', 'wrangler.jsonc', 'worker.ts', 'open-next.config.ts',
+    'src/middleware.ts', 'src/helloada.config.ts', 'src/payload-types.ts',
+    'src/app/(frontend)/layout.tsx', 'src/app/(frontend)/[[...slug]]/page.tsx',
+    'src/app/(payload)/admin/importMap.js',
+    'src/app/api/helloada/[...path]/route.ts', 'src/app/api/workspace/content/route.ts',
+    'src/collections/Pages.ts', 'src/globals/SiteSettings.ts', 'src/migrations/index.ts',
+    'src/lib/content.ts', 'src/lib/content-routes.ts', 'src/lib/helloada-auth.ts',
+    'src/lib/runtime-env.ts', 'src/lib/service-auth.ts',
+    'src/components/admin/HelloAdaNav.tsx', 'src/components/PublicDocument.tsx',
+    'src/components/site/TenantSections.tsx', 'public/brand/helloada-logo.svg',
+    'helloada-content-contract.json', 'template-manifest.json',
+    '.helloada-managed.json', '.gitignore', '.env', '.github/workflows/ci.yml',
+]
+
+
+def _plan(*paths):
+    return {
+        'content_effects': [], 'source_brief': 'Add the courses and excursions',
+        'source_paths': list(paths),
+        'acceptance_criteria': ['Every course has a page'], 'response_only': False,
+    }
+
+
+def test_a_source_authored_site_can_author_its_own_composition():
+    for path in BESPOKE_FILES:
+        assert source_path_allowed(config(), path), path
+    # The plan validator and the build sandbox are one decision.
+    accepted = _validate_website_change_plan(
+        _plan('src/app/(frontend)/excursions/page.tsx', 'src/content/site.ts'),
+        None, config(),
+    )
+    assert accepted['source_paths'] == [
+        'src/app/(frontend)/excursions/page.tsx', 'src/content/site.ts',
     ]
-    for path in crawl_paths:
-        assert source_path_allowed(config(), path)
-        assert _validate_website_change_plan(
-            {**plan, 'source_paths': [path]}, None, config()
-        )['source_paths'] == [path]
 
-    for path in [
-        'public/random.txt', 'public/other-sitemap.xml',
-        'src/app/feed.xml/route.ts', 'src/app/(frontend)/page.tsx',
-        'src/app/robots.txt/other.ts', 'src/lib/helloada-auth.ts',
-        'src/lib/site-origin.ts', 'next.config.mjs', 'package.json', 'payload.config.ts',
-    ]:
-        assert not source_path_allowed(config(), path)
+
+def test_platform_source_stays_outside_the_tenant_boundary():
+    for path in PLATFORM_FILES:
+        assert not source_path_allowed(config(), path), path
         with pytest.raises(ValueError, match='outside tenant ownership'):
-            _validate_website_change_plan({**plan, 'source_paths': [path]}, None, config())
+            _validate_website_change_plan(_plan(path), None, config())
 
 
-def test_crawl_metadata_ownership_contract_is_visible_to_ada():
+def test_the_ownership_statement_and_the_gate_are_the_same_decision():
+    ownership = source_authoring_contract(config())
+    assert ownership['frontend_only'] is True
+    # A replaced composition cannot be described by a pattern list; the
+    # protected paths are the boundary the prompt and the sandbox share.
+    assert ownership['configured_patterns'] == ['**']
+    assert 'except protected_paths' in ownership['rule']
+    protected = ownership['protected_paths']
+    for path in BESPOKE_FILES + PLATFORM_FILES:
+        declared_protected = any(
+            path == entry or path.startswith(entry.rstrip('/') + '/') for entry in protected
+        )
+        assert source_path_allowed(config(), path) is not declared_protected, path
+
+
+def test_every_file_the_shared_runtime_release_touches_is_platform_owned():
+    import json
+    from pathlib import Path
+
     from site_agent.frontend_ownership import is_frontend_owned_path
 
-    ownership = source_authoring_contract(config())
-    assert 'src/app/robots.txt/route.ts' in ownership['crawl_metadata_patterns']
-    assert 'public/robots.txt' in ownership['crawl_metadata_patterns']
-    assert 'src/lib/site-origin.ts' not in ownership['frontend_patterns']
-    assert 'src/lib/site-origin.ts' not in ownership['configured_patterns']
-    assert 'Keep origin resolution in the selected metadata file' in ownership['crawl_metadata_rule']
-    assert not is_frontend_owned_path('src/app/robots.txt/route.ts')
-    assert not is_frontend_owned_path('public/robots.txt')
-    assert 'exact crawl metadata files listed in crawl_metadata_patterns' in ownership['rule']
+    overlay = json.loads(
+        (Path(__file__).resolve().parents[1] / 'deploy/shared-runtime-overlay.json').read_text()
+    )
+    touched = [
+        *overlay['copy'], *overlay['remove'], *overlay['copyTrees'], *overlay['fingerprintTrees'],
+    ]
+    assert touched
+    for path in touched:
+        assert not is_frontend_owned_path(path), path
 
 
-def test_delegated_edit_permissions_scope_crawl_metadata_and_deny_shell(tmp_path):
-    from site_agent.hands.opencode_runner import RunnerError, _delegated_permissions
-
-    allowed_path = 'src/app/robots.txt/route.ts'
-    task = {
-        'source_paths': [allowed_path],
-        'ownership': source_authoring_contract(config()),
-    }
-    permissions = _delegated_permissions(tmp_path, task)
-    assert permissions['edit']['*'] == 'deny'
-    assert permissions['edit'][allowed_path] == 'allow'
-    assert permissions['edit'][str(tmp_path.resolve() / allowed_path)] == 'allow'
-    assert permissions['edit'].get('src/lib/site-origin.ts') != 'allow'
-    assert permissions['edit'].get('src/app/sitemap.ts') != 'allow'
-    assert permissions['bash'] == permissions['shell'] == 'deny'
-
-    for path in ('src/lib/site-origin.ts', 'src/app/feed.xml/route.ts'):
-        with pytest.raises(RunnerError, match='outside its ownership contract'):
-            _delegated_permissions(tmp_path, {
-                **task, 'source_paths': [path],
-            })
-
-
-def test_non_next_config_does_not_gain_crawl_metadata_capability():
+def test_non_next_config_keeps_its_configured_allowlist():
     standard_site = {
         'site': {'writable_patterns': ['src/app/(frontend)/**', 'public/**']},
     }
+    assert source_path_allowed(standard_site, 'src/app/(frontend)/site.css')
     assert not source_path_allowed(standard_site, 'src/app/robots.ts')
-    assert source_authoring_contract(standard_site)['crawl_metadata_patterns'] == []
+    assert source_authoring_contract(standard_site)['configured_patterns'] == [
+        'src/app/(frontend)/**', 'public/**',
+    ]
 
 
 def test_source_plan_requires_an_explicit_scope_before_delegation():

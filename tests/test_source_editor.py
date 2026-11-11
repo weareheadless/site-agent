@@ -123,19 +123,24 @@ def test_inventory_materializes_github_source_and_passes_root_to_tool(tmp_path):
     assert adapter.commits == []
 
 
-def test_next_source_editor_allows_only_exact_crawl_metadata_files(tmp_path):
+def test_next_source_editor_allows_the_tenant_composition_and_refuses_platform_source(tmp_path):
     service, _calls = _service(tmp_path, GithubDouble(SOURCE), {"version": 1, "fields": []})
     service.config['design_engine'] = {'build_profile': 'next_react'}
 
+    # The tenant owns its own pages, sections, styles, content modules and
+    # crawl metadata, whether or not the shared scaffold ever had them.
     for path in (
-        'src/app/robots.ts', 'src/app/sitemap.ts',
-        'src/app/robots.txt/route.ts', 'src/app/sitemap.xml/route.ts',
-        'public/robots.txt', 'public/sitemap.xml',
+        'src/app/(frontend)/excursions/page.tsx', 'src/app/(frontend)/page.tsx',
+        'src/content/site.ts', 'src/components/dive/DiveScene.tsx',
+        'src/components/site/presentation/Hero.tsx', 'src/app/robots.ts',
+        'public/robots.txt', 'public/other.txt',
     ):
         service._writable(path)
-    service._writable('src/components/site/presentation/Hero.tsx')
 
-    for path in ('src/lib/site-origin.ts', 'src/app/feed.xml/route.ts', 'public/other.txt'):
+    for path in (
+        'src/lib/site-config.ts', 'src/lib/content.ts', 'src/app/(frontend)/layout.tsx',
+        'src/app/api/helloada/[...path]/route.ts', 'payload.config.ts', 'package.json',
+    ):
         with pytest.raises(SourceEditorError, match='shared HelloAda platform'):
             service._writable(path)
 

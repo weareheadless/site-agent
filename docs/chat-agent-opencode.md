@@ -24,33 +24,72 @@ The turn now runs as an opencode agent:
 
 | piece | owner |
 |---|---|
-| Agent loop, tool selection, final message | opencode (`--agent chat`) |
-| Repository reads | opencode, natively, in a read-only checkout |
+| Agent loop, tool selection, final message | opencode (`--agent build`) |
+| Repository reads and edits | opencode, natively, in the turn's builder worktree |
 | Content, metrics, Growth, plan, build | `application/agent_tools.py` over MCP |
 | A page the owner links | `hands/web_read.py` (`read_web_page`) |
 | Tool contract and validators | `brain/editor.py` (`_tools_spec`, `_execute_tool`) |
 | Per-turn tool state | `brain/turn_state.py`, stored against the chat job |
+| Tree validation, preview commit, review draft | `hands/opencode_runner.py` (`run_owner_turn`) |
 | Message delivery | `core/chat_jobs.py`, stored unchanged |
 
-The host prepares the checkout and the agent contract, runs the turn, and stores
-what opencode wrote. It does not filter, prefix or replace that message.
+The host prepares the builder worktree and the agent contract, runs the turn,
+validates the exact tree, commits it to the preview branch and stages the
+compiled preview and the one review draft. It does not filter, prefix or
+replace the message opencode wrote.
+
+## Source ownership
+
+The agent owns the tenant's website; the platform owns its runtime. That is one
+deny list, `frontend_ownership.PLATFORM_PROTECTED_PATHS`, and one decision,
+`repo_changes.source_path_allowed`, shared by the chat/build sandbox, the source
+editor, design candidates, the compiled-preview boundary and owner-facing
+frontend restores:
+
+- **Tenant source**: routes under `src/app/(frontend)/` (except the scaffold
+  shell), `src/components/**` (except the platform set), `src/content/**`,
+  styles, fonts, and `public/**` assets.
+- **Platform source**: Payload schema, migrations, admin and authentication,
+  `src/app/api`, the HelloAda bridge and shared runtime (`src/lib/*`,
+  `mailflare-*.ts`, `worker.ts`), package pins and build/runtime configuration
+  (`package.json`, `next.config.*`, `wrangler.jsonc`, `src/helloada.config.ts`,
+  `.helloada-managed.json`), the shared route shell
+  (`src/app/(frontend)/layout.tsx`, `[[...slug]]/page.tsx`) and every file
+  `deploy/shared-runtime-overlay.json` copies. A test asserts that the overlay
+  cannot drift from this list.
+
+It was a positive allowlist of "presentation files" before. That only described
+the default scaffold, and `defaults.yaml` shipped the same short list as
+`site.writable_patterns`, so a tenant that replaced the scaffold with its own
+routes was refused its own source: inmersion's request to add courses and
+excursions produced 24 real file edits and then failed with `builder changed
+files outside the writable sandbox`, and the owner saw "Ada could not complete
+the request". The prompt told the agent the repository was hers while the gate
+enforced the scaffold list; now the statement Ada reads (`source_authoring_contract`)
+and the gate are the same decision, and the compiled-preview boundary calls the
+same function instead of repeating the rule.
+
+`SCAFFOLD_PRESENTATION_PATTERNS` is not this boundary. It is the design-run
+allowlist inside a generated site whose pages render through the host-owned
+Payload route shell, and it is deliberately narrower than what the tenant owns.
 
 ## Boundaries
 
-- The chat checkout is `<clone>-chat`, detached at `_build_base_ref` (the pending
-  preview when one exists, otherwise `origin/main`). Chat never edits it: `edit`,
-  `bash`, `shell`, `task`, `external_directory`, `webfetch` and `websearch` are
-  denied; read, glob, grep and list are allowed.
+- The owner turn runs in the builder worktree (`data/builder-worktrees/build-*`)
+  created from `_build_base_ref` (the pending preview when one exists, otherwise
+  `origin/main`). The agent edits it directly; the host then validates the exact
+  changed paths, commits them to the preview branch and stages the review draft.
 - The MCP process is tenant-scoped. It resolves one registered workspace from
   `--config`/`--env`, refuses any chat job it cannot find, and is pinned to the
   exact package the API is running through `PYTHONPATH`.
-- `spawn_build` remains the only way to start a build, and it still requires a
-  validated plan and completed Payload receipts. The model cannot talk past it.
-- `read_web_page` is the only way out to the web. opencode's own `webfetch` and
-  `websearch` are denied. The policy is http/https only, no credentials in the
-  URL, every redirect hop re-validated, every resolved address must be public,
-  text content only, and bounded size and time, because the agent runs beside
-  the workspace API and the host's credentials.
+- A delegated source task narrows the agent to its planned `source_paths`; the
+  unrestricted owner turn is the only writable surface, and it still cannot
+  leave the platform boundary.
+- `read_web_page` is the only way out to the web for a delegated task. opencode's
+  own `webfetch` and `websearch` are denied there. The policy is http/https only,
+  no credentials in the URL, every redirect hop re-validated, every resolved
+  address must be public, text content only, and bounded size and time, because
+  the agent runs beside the workspace API and the host's credentials.
 - The opencode session id is stored per conversation, so a follow-up continues
   the same turn history. The first turn passes the recent conversation instead.
   Verified across a process restart: a follow-up answered from a new process
@@ -133,13 +172,12 @@ explicit `opencode` key still works and is equivalent to the capability default.
 
 ## Not yet verified
 
-- A build started from chat through the MCP tool. The wiring is tested end to
-  end with a stubbed `stage_build` (the validated brief reaches it and its draft
-  comes back into the job), but no real build has run through it, because
-  `run_brief` force-pushes the preview branch and revises the owner's pending
-  draft 68. That test needs the owner to publish or discard 68 first.
 - Parity on five real owner questions (two are measured above).
 - `_validate_website_change_plan` skips its source-path check for a tenant whose
   `design_engine.build_profile` is unset. `spawn_build` still validates paths
   against the ownership contract before delegating, so a bad path fails closed at
   build time; the plan-level check is simply looser than the build-level one.
+- A generated site's design run is still held to
+  `SCAFFOLD_PRESENTATION_PATTERNS`. A bespoke tenant cannot run one, which is
+  consistent with the retired intake journey: bespoke sites are authored through
+  this chat and the coding agent, not through a design run.

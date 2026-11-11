@@ -916,7 +916,7 @@ class SourceDeploymentService:
             raise SourceDeploymentError("compiled source boundary requires a full candidate SHA")
 
         try:
-            from ..frontend_ownership import is_crawl_metadata_path, is_frontend_owned_path
+            from ..hands.repo_changes import source_path_allowed
 
             output = self._run(
                 ["git", "diff", "--name-only", "-z", f"{base_sha}...{commit}"],
@@ -928,18 +928,10 @@ class SourceDeploymentService:
         paths = [path for path in output.split("\0") if path]
         if not paths:
             raise SourceDeploymentError("candidate has no presentation source changes relative to its reviewed base")
-        # The authoring contract declares exact root robots/sitemap files
-        # writable for Next sites. The preview boundary must accept exactly what
-        # authoring accepted, or a reviewed crawl change is refused after the
-        # agent already made it.
-        frontend_only = str((self.config.get("design_engine") or {}).get("build_profile") or "") == "next_react"
-
-        def presentation_owned(path: str) -> bool:
-            return is_frontend_owned_path(path) or bool(
-                frontend_only and is_crawl_metadata_path(path)
-            )
-
-        prohibited = [path for path in paths if not presentation_owned(path)]
+        # The preview boundary accepts exactly what the authoring gate accepted:
+        # one ownership decision, so a reviewed change can never be refused here
+        # after the agent already made it.
+        prohibited = [path for path in paths if not source_path_allowed(self.config, path)]
         if prohibited:
             names = ", ".join(prohibited[:8])
             suffix = f" and {len(prohibited) - 8} more" if len(prohibited) > 8 else ""

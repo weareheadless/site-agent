@@ -14,7 +14,11 @@ from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Mapping
 
-from ..frontend_ownership import FRONTEND_OWNED_PATTERNS, PLATFORM_PROTECTED_PATHS, is_frontend_owned_path
+from ..frontend_ownership import (
+    PLATFORM_PROTECTED_PATHS,
+    SCAFFOLD_PRESENTATION_PATTERNS,
+    is_frontend_owned_path,
+)
 
 
 class SiteBuildError(RuntimeError):
@@ -229,7 +233,7 @@ NEXT_REACT_PROFILE = SiteBuildProfile(
     # zero, not by an ``out`` directory this stack does not produce.
     output_required=False,
     route_manifest="design/ada-route-manifest.json",
-    writable_patterns=FRONTEND_OWNED_PATTERNS,
+    writable_patterns=SCAFFOLD_PRESENTATION_PATTERNS,
     prohibited_paths=PLATFORM_PROTECTED_PATHS,
 )
 

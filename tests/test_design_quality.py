@@ -863,7 +863,8 @@ def test_native_source_gate_does_not_scan_host_provisioned_runtime_files(tmp_pat
     )
 
     assert findings == []
-    assert evidence["source_files"] == ["src/components/site/presentation/App.tsx"]
+    # Tenant source is scanned; the host-provisioned runtime is not.
+    assert evidence["source_files"] == ["src/app.js", "src/components/site/presentation/App.tsx"]
     assert evidence["host_provisioned_files"] == ["public/vendor/gsap/gsap.min.js"]
 
 
@@ -953,7 +954,9 @@ def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
     assert findings == []
     expected = "src/components/site/presentation/LightDescent.tsx"
     assert expected in evidence["source_files"]
-    assert evidence["react_source_files"] == [expected]
+    # The retained tree is scanned as the tenant's own source, including the
+    # baseline app route it ships with.
+    assert evidence["react_source_files"] == ["src/app/page.tsx", expected]
     assert evidence["gsap_usage_files"] == [expected]
 
 
