@@ -38,6 +38,16 @@ sudo ln -sfn /etc/nginx/sites-available/api.helloada.app.conf \
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
+That vhost declares `client_max_body_size 32m` and streams request bodies
+(`proxy_request_buffering off`). Both are part of the upload contract, not host
+tuning: an owner's media upload passes this ingress before the tenant bridge
+reads the file, and the bridge accepts up to 25 MB. Never install a vhost
+without the limit — nginx's 1 MB default rejects every real clip with its own
+HTML 413, and the gallery can only report the rejection, not a cause.
+`tests/test_media_upload_limit.py` fails if the vhost and the bridge disagree.
+A reload leaves the previous workers serving for a moment, so verify the path
+afterwards rather than during the reload.
+
 After `api.helloada.app` resolves to this host, provision TLS with:
 
 ```bash
