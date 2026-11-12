@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from datetime import date, datetime
 from collections.abc import Mapping
 from typing import Any
 
@@ -339,6 +341,306 @@ class CrawlSEOApplicationService:
             raise CrawlSEOApplicationError("CrawlSEO connector returned an invalid findings inventory")
         return response
 
+    def _opportunity_binding(self, site_id: str, capability: str) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site id", 120)
+        capabilities = self.connector_capabilities(site_id)
+        if capabilities.get("schemaVersion") != "1.0" or capabilities.get("siteId") != site_id or not isinstance(capabilities.get("projectId"), str) or not capabilities["projectId"].strip():
+            raise CrawlSEOApplicationError("CrawlSEO connector binding does not match the requested site")
+        names = capabilities.get("capabilities")
+        if not isinstance(names, list) or capability not in names:
+            raise CrawlSEOApplicationError(f"CrawlSEO {capability} is unavailable")
+        return capabilities
+
+    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site id", 120)
+        limit = _bounded_int(limit, "opportunity limit", 100)
+        if cursor is not None:
+            cursor = self._bounded_text(cursor, "opportunity cursor", 500)
+        binding = self._opportunity_binding(site_id, "opportunities.read")
+        result = self._connector_call("connector_opportunities", "opportunities", site_id=site_id, limit=limit, cursor=cursor)
+        self._assert_identity(result, binding, site_id, "opportunities")
+        rows = result.get("opportunities")
+        if (not isinstance(rows, list) or len(rows) > limit
+                or any(not isinstance(row, Mapping) or not isinstance(row.get("id"), str) or not row["id"].strip() for row in rows)
+                or (result.get("nextCursor") is not None and not isinstance(result.get("nextCursor"), str))):
+            raise CrawlSEOApplicationError("invalid CrawlSEO opportunities response")
+        return result
+
+    def connector_task(self, site_id: str, task_id: str) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site id", 120)
+        task_id = self._bounded_text(task_id, "task id", 160)
+        binding = self._opportunity_binding(site_id, "tasks.read")
+        result = self._connector_call("connector_task", "task", site_id=site_id, task_id=task_id)
+        self._assert_identity(result, binding, site_id, "task")
+        task = result.get("task")
+        if not isinstance(task, Mapping) or task.get("id") != task_id:
+            raise CrawlSEOApplicationError("CrawlSEO task response does not match the requested task")
+        return result
+
+    def connector_opportunity_operation(self, opportunity_id: str, operation: Mapping[str, Any]) -> dict[str, Any]:
+        opportunity_id = self._bounded_text(opportunity_id, "opportunity id", 160)
+        payload = self._human_confirmation(operation, "operation")
+        if set(payload) - {"siteId", "generation", "idempotencyKey", "confirmedBy", "confirmationRef", "operation", "expectedUpdatedAt", "expectedDecisionId", "reason"}:
+            raise CrawlSEOApplicationError("CrawlSEO opportunity operation contains unsupported fields")
+        if payload.get("operation") not in {"accept", "park", "reject"}:
+            raise CrawlSEOApplicationError("CrawlSEO opportunity operation is invalid")
+        self._iso_timestamp(payload.get("expectedUpdatedAt"), "expectedUpdatedAt")
+        for key in ("expectedDecisionId", "reason"):
+            if key in payload:
+                payload[key] = self._bounded_text(payload[key], key, 500 if key == "reason" else 160)
+        binding = self._opportunity_binding(payload["siteId"], "opportunities.decide")
+        result = self._connector_call("connector_opportunity_operation", "opportunity operation", opportunity_id=opportunity_id, operation=payload)
+        self._assert_identity(result, binding, payload["siteId"], "opportunity operation")
+        return result
+
+    def connector_confirm_task(self, task_id: str, confirmation: Mapping[str, Any]) -> dict[str, Any]:
+        task_id = self._bounded_text(task_id, "task id", 160)
+        payload = self._human_confirmation(confirmation, "confirmation")
+        if set(payload) - {"siteId", "generation", "idempotencyKey", "confirmedBy", "confirmationRef", "opportunityId", "expectedStatus", "status"}:
+            raise CrawlSEOApplicationError("CrawlSEO task confirmation contains unsupported fields")
+        if payload.get("expectedStatus") not in {"todo", "in_progress", "awaiting_human", "delivered", "verified_outcome"} or payload.get("status") not in {"in_progress", "delivered", "verified_outcome"}:
+            raise CrawlSEOApplicationError("CrawlSEO task confirmation status is invalid")
+        payload["opportunityId"] = self._bounded_text(payload.get("opportunityId"), "opportunity id", 160)
+        binding = self._opportunity_binding(payload["siteId"], "tasks.confirm")
+        result = self._connector_call("connector_confirm_task", "task confirmation", task_id=task_id, confirmation=payload)
+        self._assert_identity(result, binding, payload["siteId"], "task confirmation")
+        return result
+
+    def connector_analytics(self, site_id: str, start_date: str | None = None, end_date: str | None = None) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site id", 120)
+        if (start_date is None) != (end_date is None):
+            raise CrawlSEOApplicationError("CrawlSEO startDate and endDate must be provided together")
+        if start_date is not None and end_date is not None:
+            start_date = self._analytics_date(start_date, "start date")
+            end_date = self._analytics_date(end_date, "end date")
+            days = (date.fromisoformat(end_date) - date.fromisoformat(start_date)).days + 1
+            if days < 1 or days > 366:
+                raise CrawlSEOApplicationError("CrawlSEO analytics date range cannot exceed 366 days")
+        binding = self._opportunity_binding(site_id, "analytics.read")
+        result = self._connector_call("connector_analytics", "analytics", max_bytes=2_000_000,
+                                      site_id=site_id, start_date=start_date, end_date=end_date)
+        self._assert_identity(result, binding, site_id, "analytics")
+        return self._validated_connector_analytics(result)
+
+    @classmethod
+    def _validated_connector_analytics(cls, result: Mapping[str, Any]) -> dict[str, Any]:
+        period = result.get("requestedPeriod")
+        if not isinstance(period, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics requestedPeriod")
+        start = cls._analytics_date(period.get("startDate"), "requested start date")
+        end = cls._analytics_date(period.get("endDate"), "requested end date")
+        if (date.fromisoformat(end) - date.fromisoformat(start)).days not in range(366):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics requestedPeriod")
+        return {"schemaVersion": "1.0", "projectId": result["projectId"], "siteId": result["siteId"],
+                "requestedPeriod": {"startDate": start, "endDate": end},
+                "ga4": cls._analytics_ga4(result.get("ga4")), "gsc": cls._analytics_gsc(result.get("gsc"))}
+
+    @classmethod
+    def _analytics_ga4(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GA4 analytics response")
+        status = cls._analytics_text(value.get("status"), "GA4 status")
+        prop = cls._analytics_nullable_text(value.get("propertyId"), "GA4 propertyId")
+        observed = cls._analytics_nullable_text(value.get("observedAt"), "GA4 observedAt")
+        coverage = cls._analytics_coverage(value.get("coverage"))
+        data = value.get("data")
+        clean_data = None if data is None else cls._analytics_ga4_data(data)
+        if status not in {"available", "missing", "invalid"} or (status == "available") != (clean_data is not None):
+            raise CrawlSEOApplicationError("CrawlSEO GA4 availability does not match its metrics")
+        return {"status": status, "propertyId": prop, "observedAt": observed, "coverage": coverage,
+                "data": clean_data, "snapshotId": cls._analytics_nullable_text(value.get("snapshotId"), "GA4 snapshotId"),
+                "connection": cls._analytics_connection(value.get("connection")),
+                "latestSync": cls._analytics_sync(value.get("latestSync"))}
+
+    @classmethod
+    def _analytics_gsc(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GSC analytics response")
+        queries, pages = value.get("queries"), value.get("pages")
+        if not isinstance(queries, list) or not isinstance(pages, list):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GSC row collections")
+        counts, truncation = value.get("rowCount"), value.get("truncation")
+        if not isinstance(counts, Mapping) or not isinstance(truncation, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GSC row metadata")
+        clean_counts = {key: cls._analytics_count(counts.get(key), f"GSC rowCount.{key}") for key in ("queries", "pages")}
+        clean_truncation = {key: cls._analytics_count(truncation.get(key), f"GSC truncation.{key}") for key in ("queries", "pages")}
+        if len(queries) + clean_truncation["queries"] != clean_counts["queries"] or len(pages) + clean_truncation["pages"] != clean_counts["pages"]:
+            raise CrawlSEOApplicationError("CrawlSEO GSC truncation metadata does not match row counts")
+        clean_queries = [cls._analytics_gsc_row(row, query=True) for row in queries]
+        clean_pages = [cls._analytics_gsc_row(row, query=False) for row in pages]
+        return {"status": cls._analytics_text(value.get("status"), "GSC status"),
+                "propertyId": cls._analytics_nullable_text(value.get("propertyId"), "GSC propertyId"),
+                "observedAt": cls._analytics_nullable_text(value.get("observedAt"), "GSC observedAt"),
+                "coverage": cls._analytics_coverage(value.get("coverage")), "queries": clean_queries, "pages": clean_pages,
+                "rowCount": clean_counts, "truncation": clean_truncation,
+                "connection": cls._analytics_connection(value.get("connection")),
+                "latestSync": cls._analytics_sync(value.get("latestSync"))}
+
+    @classmethod
+    def _analytics_ga4_data(cls, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, Mapping) or not isinstance(value.get("current_week"), Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metrics")
+        fields = ("current_week", "previous_week", "delta_pct", "top_pages", "sources", "organic_queries")
+        result: dict[str, Any] = {}
+        for field in fields:
+            if field not in value:
+                continue
+            item = value[field]
+            if field in {"current_week", "previous_week", "delta_pct"}:
+                if not isinstance(item, Mapping):
+                    raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metric map")
+                result[field] = cls._metric_map(item, allow_empty=field != "current_week", allow_null=field == "delta_pct")
+            else:
+                if not isinstance(item, list):
+                    raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metric rows")
+                row_fields = {"top_pages": ("path", "views"), "sources": ("source", "sessions", "users"),
+                              "organic_queries": ("query", "sessions", "users", "views")}[field]
+                result[field] = [cls._metric_row(row, row_fields) for row in item]
+        return result or None
+
+    @classmethod
+    def _metric_map(cls, value: Mapping[str, Any], *, allow_empty: bool = False, allow_null: bool = False) -> dict[str, Any]:
+        allowed = {"activeUsers", "totalUsers", "sessions", "screenPageViews"}
+        result = {}
+        for key, item in value.items():
+            if key in allowed:
+                if item is None and allow_null:
+                    result[key] = None
+                    continue
+                if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+                    raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metric value")
+                result[key] = item
+        if not result and not allow_empty:
+            raise CrawlSEOApplicationError("CrawlSEO GA4 metric map contains no recognized metrics")
+        return result
+
+    @classmethod
+    def _metric_row(cls, value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+        if not isinstance(value, Mapping) or any(key not in value for key in fields):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics metric row")
+        out = {}
+        for key in fields:
+            item = value[key]
+            if key in {"path", "source", "query"}:
+                out[key] = cls._analytics_text(item, f"metric {key}")
+            elif isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+                raise CrawlSEOApplicationError("invalid CrawlSEO analytics metric row value")
+            else:
+                out[key] = item
+        return out
+
+    @classmethod
+    def _analytics_gsc_row(cls, value: Any, *, query: bool) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GSC row")
+        fields = ("query", "page", "device", "country", "date", "clicks", "impressions", "ctr", "position") if query else (
+            "url", "date", "clicks", "impressions", "ctr", "position")
+        row = {}
+        for key in fields:
+            if key not in value:
+                raise CrawlSEOApplicationError("incomplete CrawlSEO GSC row")
+            item = value[key]
+            if key == "date":
+                row[key] = cls._analytics_date(item, "GSC row date")
+            elif key in {"query", "page", "url", "device", "country"}:
+                row[key] = cls._analytics_nullable_text(item, f"GSC {key}") if key in {"device", "country"} else cls._analytics_text(item, f"GSC {key}")
+            elif key in {"clicks", "impressions"}:
+                row[key] = cls._analytics_count(item, f"GSC {key}")
+            elif isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+                raise CrawlSEOApplicationError("invalid CrawlSEO GSC numeric value")
+            else:
+                row[key] = item
+        return row
+
+    @classmethod
+    def _analytics_connection(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics connection metadata")
+        error = cls._analytics_nullable_text(value.get("errorCode"), "connection errorCode")
+        return {"status": cls._analytics_text(value.get("status"), "connection status"),
+                "lastSuccessfulAt": cls._analytics_nullable_text(value.get("lastSuccessfulAt"), "lastSuccessfulAt"),
+                "errorCode": error}
+
+    @classmethod
+    def _analytics_sync(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics sync metadata")
+        return {"status": cls._analytics_text(value.get("status"), "sync status"),
+                "observedAt": cls._analytics_nullable_text(value.get("observedAt"), "sync observedAt"),
+                "errorCode": cls._analytics_nullable_text(value.get("errorCode"), "sync errorCode")}
+
+    @classmethod
+    def _analytics_coverage(cls, value: Any) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics coverage")
+        start = cls._analytics_date(value.get("startDate"), "coverage startDate")
+        end = cls._analytics_date(value.get("endDate"), "coverage endDate")
+        if start > end:
+            raise CrawlSEOApplicationError("invalid CrawlSEO analytics coverage")
+        return {"startDate": start, "endDate": end}
+
+    @staticmethod
+    def _analytics_date(value: Any, label: str) -> str:
+        if not isinstance(value, str) or len(value) != 10:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid")
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as exc:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid") from exc
+        if parsed.isoformat() != value:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid")
+        return value
+
+    @staticmethod
+    def _analytics_text(value: Any, label: str) -> str:
+        if not isinstance(value, str) or len(value) > 1000:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid")
+        return value
+
+    @classmethod
+    def _analytics_nullable_text(cls, value: Any, label: str) -> str | None:
+        return None if value is None else cls._analytics_text(value, label)
+
+    @staticmethod
+    def _analytics_count(value: Any, label: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid")
+        return value
+
+    @staticmethod
+    def _assert_identity(result: Mapping[str, Any], binding: Mapping[str, Any], site_id: str, label: str) -> None:
+        if result.get("schemaVersion") != "1.0" or result.get("siteId") != site_id or result.get("projectId") != binding.get("projectId"):
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} project/site identity does not match the selected binding")
+
+    @classmethod
+    def _human_confirmation(cls, value: Mapping[str, Any], label: str) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} must be an object")
+        required = ("siteId", "generation", "idempotencyKey", "confirmedBy", "confirmationRef")
+        if any(key not in value for key in required):
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} requires explicit human confirmation fields")
+        payload = dict(value)
+        payload["siteId"] = cls._bounded_text(payload["siteId"], "site id", 120)
+        generation = payload["generation"]
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise CrawlSEOApplicationError("CrawlSEO generation is invalid")
+        for key, size in (("idempotencyKey", 240), ("confirmedBy", 160), ("confirmationRef", 240)):
+            payload[key] = cls._bounded_text(payload[key], key, size)
+        return payload
+
+    @staticmethod
+    def _iso_timestamp(value: Any, label: str) -> None:
+        if not isinstance(value, str) or len(value) > 40:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is invalid") from exc
+        if parsed.tzinfo is None:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} must include a timezone")
+
     def connector_action(self, action_id: str, site_id: str | None = None) -> dict[str, Any]:
         result = self._connector_call("connector_action", "connector action", action_id=self._bounded_text(action_id, "action id", 120), site_id=site_id)
         action = result.get("action") if isinstance(result.get("action"), Mapping) else result
@@ -529,11 +831,12 @@ class CrawlSEOApplicationService:
         return self._safe_mapping(value, "budget reservation")
 
     def _connector_call(self, method: str, label: str, **kwargs: Any) -> dict[str, Any]:
+        max_bytes = kwargs.pop("max_bytes", 200_000)
         operation = getattr(self.provider, method, None)
         if not callable(operation):
             raise CrawlSEOApplicationError(f"CrawlSEO {label} is unsupported by this configured connector")
         result = self._read(label, lambda: operation(**kwargs))
-        return self._safe_mapping(result, label, max_bytes=200_000)
+        return self._safe_mapping(result, label, max_bytes=max_bytes)
 
     @staticmethod
     def _bounded_text(value: str, field_name: str, maximum: int) -> str:

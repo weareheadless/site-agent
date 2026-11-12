@@ -333,7 +333,8 @@ def test_a_preview_address_is_signed_for_its_tenant_and_job():
         preview_host.path_for(key, "tenant/../one", job, expires)
 
 
-def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path):
+@pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
+def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path, redirect_status):
     import http.server
     import threading
 
@@ -344,7 +345,7 @@ def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path):
             seen["path"] = self.path
             seen["rsc"] = self.headers.get("RSC")
             seen["tree"] = self.headers.get("Next-Router-State-Tree")
-            self.send_response(308)
+            self.send_response(redirect_status)
             self.send_header("Location", "/depth")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -380,7 +381,7 @@ def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path):
     assert seen["path"] == f"{mount}/courses/training"
     assert seen["rsc"] == "1"
     assert seen["tree"] == '["",{"children":["depth"]}]'
-    assert result["status"] == 308
+    assert result["status"] == redirect_status
     assert result["location"] == f"{mount}/depth"
 
 

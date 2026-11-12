@@ -1025,6 +1025,7 @@ def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monke
     config["chat"] = {"engine": "legacy"}
 
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
 
     monkeypatch.setattr(
         runner,
@@ -1066,6 +1067,7 @@ def test_chat_spawn_build_runs_staged_builder(runtime, monkeypatch):
     config["chat"] = {"engine": "legacy"}
 
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
     monkeypatch.setattr(
         runner, "stage_build",
         lambda ctx, brief, progress=None: {

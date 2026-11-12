@@ -108,11 +108,37 @@ the replacement has passed owner and production acceptance. Central API/Worker
 release receipts and authenticated live verification are also required; unit
 tests and a local fixture are not release evidence.
 
-Connector v1 does not expose GA4/Search Console analytics reports. Under
-CrawlSEO authority, the HelloAda analytics endpoint reports that limitation
-and does not query the legacy HelloAda Google integration as a fallback. The
-legacy SEO-insights endpoint likewise omits local recommendations from its
-current view and labels retained local results as historical.
+The versioned consumer client exposes site-scoped opportunity/task reads and
+analytics, plus explicit opportunity decisions and task confirmations. It
+requires the matching `opportunities.read`, `opportunities.decide`,
+`tasks.read`, `tasks.confirm`, or `analytics.read` capability from the selected
+site's current `/capabilities` response. Every response must identify schema
+`1.0` and the same project and site binding. There is no legacy MCP or Google
+integration fallback when a capability is missing.
+
+Mutation requests carry explicit reviewed values: `siteId`, `generation`,
+`idempotencyKey`, stable human `confirmedBy`, and the original owner-message
+`confirmationRef`. Opportunity operations additionally carry the operation,
+`expectedUpdatedAt`, and optional decision/reason fields. Task confirmations
+carry `opportunityId`, `expectedStatus`, and the requested status. The client
+does not fetch a newer generation or status before sending; stale reviewed
+requests are forwarded unchanged and rejected remotely. This consumer code is
+not deployed or activated, makes no tenant mutations, and does not change the
+owner UI or its existing analytics surface.
+
+Analytics data is returned only through the connector's bounded, versioned
+response (maximum 2 MB). The consumer validates `requestedPeriod`, and each
+source's status, nullable property/observation fields, coverage, data/rows,
+row counts, truncation, connection and latest-sync metadata against the
+service's actual response shape. GA4 preserves its six recognized observations
+(`current_week`, `previous_week`, `delta_pct`, `top_pages`, `sources`, and
+`organic_queries`), including metric maps. GSC preserves query/page dimensions
+and per-row dates. Unknown fields are omitted at these structural boundaries;
+reported row counts and truncation values are validated without shortening
+lists. Null/missing source data is valid, while malformed shapes fail closed.
+Date ranges must be provided as a pair and cannot exceed 366 days. The legacy
+SEO-insights endpoint continues to omit local recommendations from its current
+view and labels retained local results as historical.
 
 When CrawlSEO authority is active, the HelloAda Growth projection shows
 current CrawlSEO Action revisions and their saved CrawlSEO evidence. It suppresses

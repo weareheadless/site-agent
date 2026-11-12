@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "1.0",
+  "projectId": "project-1",
+  "siteId": "site-1",
+  "requestedPeriod": {"startDate": "2026-11-01", "endDate": "2026-11-07"},
+  "ga4": {
+    "status": "available",
+    "propertyId": "properties/123",
+    "observedAt": "2026-11-10T00:00:00.000Z",
+    "coverage": {"startDate": "2026-11-01", "endDate": "2026-11-07"},
+    "data": {
+      "current_week": {"activeUsers": 8, "sessions": 12},
+      "previous_week": {"activeUsers": 5, "sessions": 9},
+      "delta_pct": {"activeUsers": 60, "sessions": 33.3},
+      "top_pages": [{"path": "/", "views": 40}],
+      "sources": [{"source": "Organic Search", "sessions": 7, "users": 5}],
+      "organic_queries": [{"query": "sample query", "sessions": 2, "users": 2, "views": 4}],
+      "coverage": {"startDate": "2026-11-01", "endDate": "2026-11-07"},
+      "accessToken": "must-not-pass"
+    },
+    "snapshotId": "snap-1",
+    "connection": {"status": "connected", "lastSuccessfulAt": "2026-11-09T00:00:00.000Z", "errorCode": null},
+    "latestSync": {"status": "failed", "observedAt": "2026-11-12T00:00:00.000Z", "errorCode": "GA4_SYNC_FAILED"}
+  },
+  "gsc": {
+    "status": "available",
+    "propertyId": "sc-domain:example.test",
+    "observedAt": "2026-11-10T00:00:00.000Z",
+    "coverage": {"startDate": "2026-11-01", "endDate": "2026-11-07"},
+    "queries": [{"query": "sample query", "date": "2026-11-06", "clicks": 2, "impressions": 20, "ctr": 0.1, "position": 3.2, "page": "https://example.test/", "device": "DESKTOP", "country": "usa", "privateToken": "must-not-pass"}],
+    "pages": [{"url": "https://example.test/", "date": "2026-11-06", "clicks": 2, "impressions": 20, "ctr": 0.1, "position": 3.2}],
+    "rowCount": {"queries": 1, "pages": 1},
+    "truncation": {"queries": 0, "pages": 0},
+    "connection": {"status": "revoked", "lastSuccessfulAt": null, "errorCode": null},
+    "latestSync": {"status": "failed", "observedAt": "2026-11-12T00:00:00.000Z", "errorCode": "GSC_SYNC_FAILED"}
+  },
+  "unexpectedSecret": "must-not-pass"
+}

@@ -171,6 +171,7 @@ def test_metrics_are_valid_bounded_json_and_include_search_evidence(env):
 def test_existing_source_site_routes_focused_visual_edits_to_builder(env, monkeypatch):
     from site_agent.brain.editor import _looks_like_source_edit_request, _tools_spec
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
     from site_agent.hands.base import SiteAdapter
 
     memory, config, context = env
@@ -511,6 +512,7 @@ def test_reads_pending_build_from_preview_branch(env):
 
 def test_spawn_build_tool_runs_staged_builder_and_surfaces_draft(env, monkeypatch):
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
 
     monkeypatch.setattr(runner, "builder_available", lambda cfg: True)
     monkeypatch.setattr(
@@ -545,6 +547,7 @@ def test_spawn_build_tool_runs_staged_builder_and_surfaces_draft(env, monkeypatc
 
 def test_builder_route_validates_creative_request_before_builder(env, monkeypatch):
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
@@ -583,6 +586,7 @@ def test_spawn_build_absent_when_builder_disabled(env):
 
 def test_existing_source_design_intent_uses_planned_builder_not_typed_handoff(env, monkeypatch):
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
@@ -907,6 +911,7 @@ def test_a_short_closing_note_does_not_replace_the_answer_already_written(env):
 def test_a_normal_build_summary_is_not_prefixed_with_planning_narration(env, monkeypatch):
     from site_agent.brain.editor import handle_message
     from site_agent.hands import opencode_runner as runner
+    monkeypatch.setattr(runner, "opencode_bin", lambda _config: "/fake/opencode")
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
