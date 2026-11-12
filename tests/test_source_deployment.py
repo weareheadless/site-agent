@@ -282,6 +282,102 @@ def test_candidate_preview_lookup_is_read_only_and_exact(tmp_path):
         service.close()
 
 
+def test_the_compiled_preview_mounts_where_its_owner_surface_renders_it(tmp_path):
+    """A candidate build takes the basePath of the frame that requests it.
+
+    The in-app preview and the full-screen tab are then one same-origin URL.
+    Serving the build from a different origin was the second preview.
+    """
+    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
+    (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",
+        "d1_databases": [{"binding": "D1", "database_id": "local"}],
+        "r2_buckets": [{"binding": "R2", "bucket_name": "local"}],
+    }))
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        job = {"id": "6782629d-412a-425b-99f1-1c19c8a5efbf",
+               "runtime_mount": source_deployment.preview_mount("inmersion-freediving")}
+        service._prepare_preview_mount(tmp_path, job)
+        mount = "/api/helloada/tenants/inmersion-freediving/source/preview/6782629d-412a-425b-99f1-1c19c8a5efbf/runtime"
+        assert job["runtime_base_path"] == mount
+        assert job["runtime_mount"] == "/api/helloada/tenants/inmersion-freediving/source/preview"
+        assert 'basePath: ' + json.dumps(mount) in (tmp_path / "next.config.mjs").read_text()
+    finally:
+        service.close()
+
+
+def test_the_preview_mount_comes_from_the_tenant_not_from_the_caller():
+    assert source_deployment.preview_mount("inmersion-freediving-bb2a4e404a7fcea4") == \
+        "/api/helloada/tenants/inmersion-freediving-bb2a4e404a7fcea4/source/preview"
+    for invalid in ("", "../tenant", "tenant/other", "tenant?next=/admin", "https://evil.example/tenant"):
+        with pytest.raises(source_deployment.SourceDeploymentError, match="tenant identity is not a safe preview mount"):
+            source_deployment.preview_mount(invalid)
+    # Every build starter derives the same mount from the same identity, so a
+    # chat job, a design job and a browser retry cannot disagree.
+    service = source_deployment.SourceDeploymentService({"instance_name": "tenant-7", "site": {}})
+    try:
+        assert service._preview_mount() == "/api/helloada/tenants/tenant-7/source/preview"
+    finally:
+        service.close()
+    anonymous = source_deployment.SourceDeploymentService({"site": {}})
+    try:
+        with pytest.raises(source_deployment.SourceDeploymentError, match="not a safe preview mount"):
+            anonymous._preview_mount()
+    finally:
+        anonymous.close()
+
+
+def test_a_candidate_redirect_and_flight_request_stay_on_the_mount(tmp_path):
+    import http.server
+    import threading
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler
+            seen["path"] = self.path
+            seen["rsc"] = self.headers.get("RSC")
+            seen["tree"] = self.headers.get("Next-Router-State-Tree")
+            self.send_response(308)
+            self.send_header("Location", "/depth")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    mount = "/api/helloada/tenants/inmersion-freediving/source/preview/job/runtime"
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+
+    class Running:
+        def poll(self):
+            return None
+
+    try:
+        service._jobs["job"] = {
+            "id": "job", "status": "ready", "commit": "a" * 40,
+            "runtime_port": server.server_address[1], "runtime_base_path": mount,
+        }
+        service._runtimes["job"] = (Running(), tmp_path)
+        result = service.runtime("job", "courses/training", "", {
+            "RSC": "1",
+            "Next-Router-State-Tree": '["",{"children":["depth"]}]',
+            "Accept": "text/html",
+        })
+    finally:
+        service._runtimes.clear()
+        service.close()
+        server.shutdown()
+
+    assert seen["path"] == f"{mount}/courses/training"
+    assert seen["rsc"] == "1"
+    assert seen["tree"] == '["",{"children":["depth"]}]'
+    assert result["status"] == 308
+    assert result["location"] == f"{mount}/depth"
+
+
 def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(tmp_path):
     (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
     (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",
@@ -290,7 +386,8 @@ def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(
         "ai": {"binding": "AI"}, "send_email": [{"name": "EMAIL"}],
     }))
     (tmp_path / "public/assets").mkdir(parents=True)
-    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
     try:
         job = {"id": "6782629d-412a-425b-99f1-1c19c8a5efbf"}
         service._prepare_preview_mount(tmp_path, job)
@@ -704,7 +801,8 @@ def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch
     worktree = tmp_path / "preview"
     (worktree / ".open-next").mkdir(parents=True)
     (worktree / ".dev.vars").write_text('PAYLOAD_SECRET="resume-secret"\n', encoding="utf-8")
-    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
     commit = "a" * 40
     service._jobs["preview-1"] = {
         "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "queued",
@@ -733,7 +831,8 @@ def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch
 
 
 def test_compiled_preview_rebuilds_when_the_output_is_missing(tmp_path, monkeypatch):
-    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
     try:
         monkeypatch.setattr(service, "_start_runtime", lambda *a, **k: pytest.fail("no output to resume"))
         job = {"id": "preview-2", "mode": "compiled_preview", "commit": "b" * 40,

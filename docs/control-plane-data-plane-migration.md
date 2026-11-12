@@ -247,10 +247,12 @@ that tenant's site or a pinned package changes.
 - Draft 72's compiled preview now builds and is ready. The cause was the
   generator requiring identity slots that an older candidate branch did not
   declare; the generator now adds the missing Worker vars itself.
-- The exact-draft preview is tenant-session scoped, so a cross-site iframe
-  cannot display it. The control plane keeps the published alias in the frame
-  and links the exact draft to Manage content; the tenant admin shows it
-  same-origin. A same-origin preview bridge is the remaining Phase 3 item.
+- The exact-draft preview is now same-origin with the workspace. The compiled
+  candidate's basePath is derived from the tenant identity
+  (`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`) and served by
+  the owner's own app route, so every build starter and both surfaces agree on
+  one URL. The published alias is no longer substituted for a pending candidate
+  and the tenant handoff link is removed.
 - Casamigo is registered as HelloAda website `16` (`tenantId: casamigo`) owned by
   `admin@helloada.app`, phase `live`. `/admin-entry/casamigo` hands the owner
   into the tenant Payload admin, the control-plane workspace loads its snapshot
@@ -483,10 +485,9 @@ Mailflare inbox. Messages is now a control-plane view instead of a new tab.
   mount) instead of guessing it.
 - Known limitation of the canary: the published preview is a cross-origin
   iframe of the tenant alias, so direct in-preview element selection cannot
-  read the frame. The panel editor remains available. The exact-draft preview
-  is tenant-session scoped and stays in the tenant admin; a same-origin preview
-  bridge for exact drafts is Phase 3 work, not a reason to proxy the whole site
-  through the control plane.
+  read the frame. The panel editor remains available. The exact compiled
+  candidate is same-origin with the workspace and drives the frame; the
+  published alias is only the preview when there is no pending candidate.
 - Mailflare (Messages, Calendar) no longer requires a new tab. The tenant
   Worker exposes a server-to-server bridge at `/api/helloada/mail/*`: the
   control plane presents the tenant workspace token plus the owner subject, the

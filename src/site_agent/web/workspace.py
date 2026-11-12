@@ -42,6 +42,22 @@ from .design_preview import (
 )
 from .preview import PreviewAccess, PreviewBuildCache
 
+_PREVIEW_RUNTIME_PATH = re.compile(r"source/preview/[^/]+/runtime(?:/|$)")
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface a redirect to the browser instead of following it server-side.
+
+    A compiled candidate's redirect belongs to the owner's surface: following
+    it here resolved the mount against the wrong origin.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D401 - stdlib signature
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect())
+
 
 def authenticated_owner_actor(request: Request, tenant: Tenant | None = None) -> str | None:
     """Read only after service/control authentication, never from owner JSON.
@@ -866,6 +882,16 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/source/preview/{{job_id}}/runtime")
+    def workspace_source_preview_runtime_root(job_id: str, request: Request):
+        """The mount root is the candidate homepage.
+
+        Next reaches it without a trailing slash (`trailingSlash: false`); a
+        redirect here would be resolved against this API origin instead of the
+        owner surface that framed the build.
+        """
+        return workspace_source_preview_runtime(job_id, "", request)
+
     @app.get(f"{prefix}/source/preview/{{job_id}}/runtime/{{file_path:path}}")
     def workspace_source_preview_runtime(job_id: str, file_path: str, request: Request):
         tenant = require_service(request)
@@ -875,22 +901,36 @@ def register_workspace_routes(
                 file_path,
                 request.url.query,
                 {
+                    # A compiled Next app distinguishes an RSC navigation from
+                    # a document request by these headers. Dropping them made a
+                    # link click fetch HTML where flight data was expected.
                     "Accept": request.headers.get("accept", ""),
                     "Cookie": request.headers.get("cookie", ""),
                     "User-Agent": request.headers.get("user-agent", ""),
+                    "RSC": request.headers.get("rsc", ""),
+                    "Next-Router-State-Tree": request.headers.get("next-router-state-tree", ""),
+                    "Next-Router-Prefetch": request.headers.get("next-router-prefetch", ""),
+                    "Next-Router-Segment-Prefetch": request.headers.get("next-router-segment-prefetch", ""),
+                    "Next-Url": request.headers.get("next-url", ""),
+                    "Purpose": request.headers.get("purpose", ""),
+                    "X-Nextjs-Data": request.headers.get("x-nextjs-data", ""),
                 },
                 tenant=tenant,
             )
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        headers = {
+            "Content-Type": str(result.get("content_type") or "application/octet-stream"),
+            "Cache-Control": "private, no-store",
+            "X-Workspace-Preview-Commit": str(result.get("commit") or ""),
+        }
+        location = str(result.get("location") or "")
+        if location:
+            headers["Location"] = location
         return Response(
             content=result.get("body") or b"",
             status_code=int(result.get("status") or 502),
-            headers={
-                "Content-Type": str(result.get("content_type") or "application/octet-stream"),
-                "Cache-Control": "private, no-store",
-                "X-Workspace-Preview-Commit": str(result.get("commit") or ""),
-            },
+            headers=headers,
         )
 
     @app.get(f"{prefix}/chat/jobs/{{job_id}}")
@@ -1335,15 +1375,24 @@ def register_workspace_routes(
                 # Cloudflare rejects the default Python client signature.
                 "user-agent": "site-agent/control-plane-workspace",
             }
+            # A compiled preview answers RSC navigation only when the flight
+            # request headers survive every bridge hop.
+            for name in ("rsc", "next-router-state-tree", "next-router-prefetch",
+                         "next-router-segment-prefetch", "next-url", "purpose", "x-nextjs-data"):
+                value = request.headers.get(name)
+                if value:
+                    forwarded[name] = value
             content_type = request.headers.get("content-type")
             if content_type:
                 forwarded["content-type"] = content_type
+            preview_runtime = bool(_PREVIEW_RUNTIME_PATH.search(suffix))
 
             def send():
                 outbound = urllib.request.Request(url, data=body or None, headers=forwarded,
                                                   method=request.method)
+                opener = _NO_REDIRECT_OPENER.open if preview_runtime else urllib.request.urlopen
                 try:
-                    return urllib.request.urlopen(outbound, timeout=60)
+                    return opener(outbound, timeout=60)
                 except urllib.error.HTTPError as exc:  # a workspace error is a response
                     return exc
 
@@ -1355,8 +1404,9 @@ def register_workspace_routes(
             response = Response(content=data, status_code=upstream.status,
                                 headers={"cache-control": "no-store"})
             # Representation headers the owner surface needs verbatim: the
-            # attachment filename and type must survive the control plane.
-            for header in ("content-type", "content-disposition", "content-length"):
+            # attachment filename, type and a candidate redirect must survive
+            # the control plane.
+            for header in ("content-type", "content-disposition", "content-length", "location"):
                 value = upstream.headers.get(header)
                 if value:
                     response.headers[header] = value

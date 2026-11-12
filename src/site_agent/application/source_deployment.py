@@ -47,6 +47,23 @@ _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/ro
 _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
+# The compiled candidate is mounted inside the owner surface that renders it,
+# and that mount is derived from this tenant's identity. Every starter (chat
+# job, design job, browser retry) therefore compiles the one artifact the
+# workspace frames; the in-app preview and a full-screen tab load one
+# same-origin URL. The route is the owner's own authenticated preview bridge.
+_PREVIEW_MOUNT_ROUTE = "/api/helloada/tenants/{tenant}/source/preview"
+_TENANT_MOUNT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
+_PREVIEW_MOUNT = re.compile(r"^/[A-Za-z0-9._~:/-]+$")
+_PREVIEW_FLIGHT_REQUEST_HEADERS = (
+    "rsc",
+    "next-router-state-tree",
+    "next-router-prefetch",
+    "next-router-segment-prefetch",
+    "next-url",
+    "purpose",
+    "x-nextjs-data",
+)
 _PREVIEW_ENV_ALLOWLIST = frozenset({
     "PATH", "LANG", "LC_ALL", "CI", "TZ",
     "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NPM_CONFIG_CACHE",
@@ -56,6 +73,36 @@ _PREVIEW_ENV_ALLOWLIST = frozenset({
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def preview_mount(tenant_id: Any) -> str:
+    """Return the URL prefix every compiled candidate of this tenant mounts at.
+
+    It is derived from the tenant identity, never from a request parameter, so
+    the chat job that builds the candidate and the workspace that frames it
+    cannot disagree about where it lives. The compiled Next ``basePath`` is
+    exactly the path the owner's own preview bridge requests.
+    """
+    tenant = str(tenant_id or "").strip()
+    if not _TENANT_MOUNT_IDENTITY.fullmatch(tenant):
+        raise SourceDeploymentError("tenant identity is not a safe preview mount")
+    return _PREVIEW_MOUNT_ROUTE.format(tenant=tenant)
+
+
+def _checked_preview_mount(value: Any) -> str:
+    """Accept a stored mount only when it is a relative route this service wrote."""
+    raw = str(value or "").strip()
+    if (
+        not raw
+        or len(raw) > 300
+        or "?" in raw
+        or "#" in raw
+        or "//" in raw
+        or ".." in raw.split("/")
+        or not _PREVIEW_MOUNT.fullmatch(raw)
+    ):
+        raise SourceDeploymentError("source preview mount is invalid")
+    return raw.rstrip("/")
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -940,6 +987,9 @@ class SourceDeploymentService:
             )
         return {"name": "presentation_source_boundary", "ok": True, "changed_files": len(paths)}
 
+    def _preview_mount(self) -> str:
+        return preview_mount(self.config.get("instance_name"))
+
     def _preview_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
@@ -971,7 +1021,9 @@ class SourceDeploymentService:
                              "vars": {key: value for key, value in (worker.get("vars") or {}).items()
                                       if key in public_vars or key.startswith("NEXT_PUBLIC_")}})
         worker_path.write_text(json.dumps(local_worker, indent=2) + "\n", encoding="utf-8")
-        base_path = f"/api/helloada/source/preview/{job['id']}/runtime"
+        mount = _checked_preview_mount(job.get("runtime_mount") or self._preview_mount())
+        job["runtime_mount"] = mount
+        base_path = f"{mount}/{job['id']}/runtime"
         original.rename(retained)
         original.write_text(
             "import original from './.helloada-source-preview.next.mjs'\n"
@@ -1159,6 +1211,7 @@ class SourceDeploymentService:
         return {
             "status": "ready",
             "mode": _COMPILED_PREVIEW,
+            "runtime_mount": str(job.get("runtime_mount") or self._preview_mount()),
             "runtime_path": f"/api/workspace/source/preview/{job['id']}/runtime",
             "preview_url": f"/api/workspace/source/preview/{job['id']}/runtime/",
             "deployment_mode": "isolated_host_runtime",
@@ -1385,6 +1438,10 @@ class SourceDeploymentService:
         to start.
         """
         if mode != _COMPILED_PREVIEW or not job.get("resume"):
+            return None
+        # A resumed worktree keeps the basePath it was compiled with. Resuming
+        # a build compiled for another mount would frame the wrong route.
+        if str(job.get("runtime_mount") or self._preview_mount()) != self._preview_mount():
             return None
         raw = str(job.get("worktree_path") or "").strip()
         if not raw:
@@ -1724,6 +1781,7 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("retained design has no exact canonical Payload revision receipts")
         else:
             payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
+        runtime_mount = self._preview_mount() if mode == _COMPILED_PREVIEW else ""
         with self._lock:
             for existing in self._jobs.values():
                 if not isinstance(existing, Mapping):
@@ -1737,6 +1795,9 @@ class SourceDeploymentService:
                     # The same source commit against different Payload revisions
                     # is a different preview: it renders different content.
                     and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
+                    # The build's basePath is where this tenant's workspace
+                    # frames it; a job built for another mount is not reusable.
+                    and str(existing.get("runtime_mount") or runtime_mount) == runtime_mount
                     and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
                 ):
                     return dict(existing)
@@ -1751,6 +1812,8 @@ class SourceDeploymentService:
             "created_at": _now(),
             "updated_at": _now(),
         }
+        if runtime_mount:
+            job["runtime_mount"] = runtime_mount
         if draft_id is not None:
             job["draft_id"] = draft_id
         if design_run_id:
@@ -1974,10 +2037,11 @@ class SourceDeploymentService:
         target = f"http://127.0.0.1:{port}{job.get('runtime_base_path') or ''}/{clean_path}"
         if query:
             target = f"{target}?{query}"
+        allowed = {"accept", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}
         request_headers = {
             key: value
             for key, value in (headers or {}).items()
-            if key.lower() in {"accept", "cookie", "user-agent"} and value
+            if key.lower() in allowed and value
         }
         request = urllib.request.Request(target, headers=request_headers, method="GET")
         try:
@@ -1987,6 +2051,7 @@ class SourceDeploymentService:
                     "status": int(response.status),
                     "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job),
                     "content_type": response.headers.get("Content-Type", "application/octet-stream"),
+                    "location": self._rewrite_runtime_location(response.headers.get("Location", ""), job),
                     "commit": str(job.get("commit") or ""),
                 }
         except urllib.error.HTTPError as exc:
@@ -1994,10 +2059,30 @@ class SourceDeploymentService:
                 "status": int(exc.code),
                 "body": exc.read(),
                 "content_type": exc.headers.get("Content-Type", "text/plain; charset=utf-8"),
+                "location": self._rewrite_runtime_location(exc.headers.get("Location", ""), job) if exc.headers else "",
                 "commit": str(job.get("commit") or ""),
             }
         except (OSError, urllib.error.URLError) as exc:
             raise SourceDeploymentError(f"compiled preview request failed: {str(exc)[:300]}") from exc
+
+    @staticmethod
+    def _rewrite_runtime_location(location: str, job: Mapping[str, Any]) -> str:
+        """Keep a candidate redirect inside the mount that rendered it.
+
+        `/courses/training` permanently redirects to `/depth`. The browser must
+        follow that on the owner surface, not on the preview host or the live
+        site, so a root-relative destination takes the build's exact basePath.
+        """
+        raw = str(location or "").strip()
+        base = str(job.get("runtime_base_path") or "")
+        if not raw or not base:
+            return ""
+        parts = urllib.parse.urlsplit(raw)
+        if parts.scheme or parts.netloc or not parts.path.startswith("/"):
+            return raw
+        if parts.path == base or parts.path.startswith(base + "/"):
+            return raw
+        return base + parts.path + (f"?{parts.query}" if parts.query else "")
 
     def close(self) -> None:
         """Stop queued preview work during tenant shutdown."""

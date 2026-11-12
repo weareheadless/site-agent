@@ -138,22 +138,37 @@ field has been written.
 
 ## Reviewing the compiled candidate
 
-A source change is compiled by the preview service and mounted at the Next
-basePath `/api/helloada/source/preview/<job>/runtime`. That mount is served
-through the tenant Worker bridge, which answers an owner session on the tenant
-origin and nothing else. Measured on `inmersion`'s exact job 3 candidate:
-the same URL returns `200` with the token, and
-`401 {"error":"helloada_bridge_error","message":"authentication_required"}`
-without it.
+A source change is compiled by the preview service and mounted at a Next
+basePath derived from the tenant identity:
+`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`. That route is
+served by the control-plane app for the signed-in owner of that tenant and
+proxied to the tenant workspace, so the compiled build resolves same-origin:
+its documents, assets and RSC navigation all pass the owner proxy with the
+owner's own identities. The in-app frame and a full-screen tab load that one
+URL.
 
-The control-plane workspace is cross-site to that origin, so its iframe never
-sends the tenant session and a frame pointed at the mount shows that 401. The
-workspace therefore keeps the published alias in the frame and hands the owner
-into their own website session with `next=<mount>` (`/admin-entry/<tenant>` →
-`/api/helloada/handoff`). A top-level navigation carries the cookie, and staying
-on the tenant origin keeps the build's basePath, its assets and its
-client-side navigation intact. Approval stays in the Design controls; only the
-visual check opens in the tenant session.
+The mount is derived from the tenant, not passed by a caller, because the chat
+job (or a design job) builds the candidate before any browser frames it. Every
+starter therefore compiles the one artifact the workspace renders; a
+job-scoped or surface-scoped mount let the builder and the frame disagree, and
+reproduced the second preview.
+
+There is no second preview. The frame never substitutes the published alias for
+a pending candidate, and a candidate starts as `about:blank` with an explicit
+preparing state until its exact mount is ready. An earlier version framed the
+published alias and handed the owner into the tenant origin with
+`next=<mount>` because a cross-site iframe cannot carry the tenant session; that
+split let the owner compare two different artifacts and is removed, together
+with `exactSourcePreviewHref` and the `routes.manage` handoff field. A build
+whose recorded mount is not this tenant's mount is reported as unavailable
+rather than framed.
+
+The transport carries what a Next candidate needs to behave like the site:
+RSC and router-state request headers survive every hop, and a root-relative
+redirect (`/courses/training` → `/depth`) is rewritten under the build's
+basePath and returned to the browser instead of being followed server-side.
+Both the owner proxy and the API gateway use a no-redirect request for a
+preview runtime path; the release gate keeps its own `308` handling.
 
 A review the owner cannot decide must not stay behind as a second surface. When
 a candidate's preview cannot be prepared, the next request stages a new draft
@@ -175,12 +190,9 @@ mount instead of ejecting the owner onto the live site. The failed receipt is
 kept as history; the exact approved source is retried under a new release
 identity rather than edited into success.
 
-One transport gap remains: the compiled-preview proxy returns status and body
-but not `Location`, so a server redirect appears as an empty `308` inside the
-compiled Design preview. The Worker-served alias and the release gate are
-fixed; the compiled-preview proxy should forward `Location` under its runtime
-base path in the same way. That is a small API-side change, recorded here
-rather than silently accepted.
+The compiled-preview proxy now forwards `Location` under its runtime base path
+too, so a candidate redirect is followed on the owner surface rather than
+appearing as an empty `308`.
 
 ## Defects found while migrating
 
