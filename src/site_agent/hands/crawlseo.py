@@ -595,6 +595,43 @@ class CrawlSEOClient:
             query["cursor"] = cursor
         return self._connector_request("GET", f"/findings?{urlencode(query)}")
 
+    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None) -> Mapping[str, Any]:
+        if not isinstance(site_id, str) or not site_id.strip() or len(site_id) > 120:
+            raise CrawlSEOProtocolError("CrawlSEO site id is invalid")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise CrawlSEOProtocolError("CrawlSEO opportunity limit is invalid")
+        query: dict[str, Any] = {"siteId": site_id, "limit": limit}
+        if cursor is not None:
+            if not isinstance(cursor, str) or not cursor.strip() or len(cursor) > 500:
+                raise CrawlSEOProtocolError("CrawlSEO opportunity cursor is invalid")
+            query["cursor"] = cursor
+        return self._connector_request("GET", f"/opportunities?{urlencode(query)}")
+
+    def connector_task(self, site_id: str, task_id: str) -> Mapping[str, Any]:
+        for value, label, maximum in ((site_id, "site id", 120), (task_id, "task id", 160)):
+            if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+                raise CrawlSEOProtocolError(f"CrawlSEO {label} is invalid")
+        return self._connector_request("GET", f"/tasks/{quote(task_id, safe='')}?{urlencode({'siteId': site_id})}")
+
+    def connector_opportunity_operation(self, opportunity_id: str, operation: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(opportunity_id, str) or not opportunity_id.strip() or len(opportunity_id) > 160:
+            raise CrawlSEOProtocolError("CrawlSEO opportunity id is invalid")
+        return self._connector_request("POST", f"/opportunities/{quote(opportunity_id, safe='')}/operations", operation)
+
+    def connector_confirm_task(self, task_id: str, confirmation: Mapping[str, Any]) -> Mapping[str, Any]:
+        if not isinstance(task_id, str) or not task_id.strip() or len(task_id) > 160:
+            raise CrawlSEOProtocolError("CrawlSEO task id is invalid")
+        return self._connector_request("POST", f"/tasks/{quote(task_id, safe='')}", confirmation)
+
+    def connector_analytics(self, site_id: str, start_date: str | None = None,
+                            end_date: str | None = None) -> Mapping[str, Any]:
+        query: dict[str, str] = {"siteId": site_id}
+        if start_date is not None:
+            query["startDate"] = start_date
+        if end_date is not None:
+            query["endDate"] = end_date
+        return self._connector_request("GET", f"/analytics?{urlencode(query)}")
+
     def connector_action(self, action_id: str, site_id: str | None = None) -> Mapping[str, Any]:
         suffix = f"?{urlencode({'siteId': site_id})}" if site_id else ""
         result = self._connector_request("GET", f"/actions/{quote(action_id, safe='')}{suffix}")
