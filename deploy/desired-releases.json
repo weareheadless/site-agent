@@ -13,9 +13,9 @@
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261112045000-inmersion-preview-mount",
+      "id": "runtime-20261112161500-inmersion-preview-origin",
       "sha": "809a7e44d2c4d8f6ead87200a32b237ada785048",
-      "sharedRuntimeFingerprint": "1f86dcadef67af43ebee7337d8888b2cc721172e0b5503cc57a840072c019b61"
+      "sharedRuntimeFingerprint": "4edaf354df0ef016d27b0d026ac08208831a9fff4df45e0aaeab8d4c2fb59830"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261103223219-bf91af50",
