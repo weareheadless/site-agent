@@ -194,3 +194,15 @@ def test_analytics_matches_producer_empty_comparison_maps_and_numeric_contract()
     response["ga4"]["data"]["current_week"]["activeUsers"] = None
     with pytest.raises(CrawlSEOApplicationError, match="metric"):
         CrawlSEOApplicationService(provider).connector_analytics("site-1")
+
+
+def test_analytics_preserves_saved_data_and_an_ambiguous_connection_without_selecting_a_property():
+    response = json.loads(json.dumps(ANALYTICS_FIXTURE))
+    response["ga4"]["propertyId"] = None
+    response["ga4"]["connection"] = {"status": "ambiguous", "lastSuccessfulAt": None, "errorCode": "MULTIPLE_GOOGLE_GRANTS"}
+    provider = Provider()
+    provider.connector_analytics = lambda **_kwargs: response
+    result = CrawlSEOApplicationService(provider).connector_analytics("site-1")
+    assert result["ga4"]["propertyId"] is None
+    assert result["ga4"]["connection"] == response["ga4"]["connection"]
+    assert result["ga4"]["data"]["current_week"]["activeUsers"] == 8

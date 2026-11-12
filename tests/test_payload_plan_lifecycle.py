@@ -364,6 +364,8 @@ def test_handler_marks_source_build_at_dispatch_even_when_it_raises(tmp_path, mo
     _permit_prompt_contract(monkeypatch)
     from site_agent.hands import opencode_runner
 
+    monkeypatch.setattr(opencode_runner, "opencode_bin", lambda _config: "/fake/opencode")
+
     monkeypatch.setattr(opencode_runner, "builder_available", lambda _config: True)
 
     def stage_build(context, _brief, _progress):

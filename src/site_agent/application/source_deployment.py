@@ -40,6 +40,17 @@ class SourceDeploymentError(RuntimeError):
     """A source revision could not be validated or deployed."""
 
 
+class _BrowserOwnedRedirects(urllib.request.HTTPRedirectHandler):
+    """The browser follows redirects after the proxy rewrites the preview mount.
+
+    Following here drops the signed mount and may forward owner cookies to a
+    redirect target. Handle all redirect statuses at this one client boundary.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/robots.txt", "/sitemap.xml")
 # Files the candidate itself serves from its Payload API rather than from
@@ -2060,7 +2071,7 @@ class SourceDeploymentService:
         }
         request = urllib.request.Request(target, headers=request_headers, method="GET")
         try:
-            response = urllib.request.urlopen(request, timeout=60)
+            response = urllib.request.build_opener(_BrowserOwnedRedirects()).open(request, timeout=60)
             with response:
                 return {
                     "status": int(response.status),
