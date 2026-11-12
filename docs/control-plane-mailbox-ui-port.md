@@ -213,6 +213,32 @@ and shows it:
 The filter applies to the pages already loaded; `Load more` keeps extending the
 same filtered view.
 
+### Uploads are bounded by progress, not by a fixed clock
+
+Every workspace request used to abort after 25 seconds, media uploads included.
+The owner's stills were taking about two seconds each for roughly 200 KB, so a
+multi-megabyte clip could never finish inside that window; the gallery reported
+an abort while the bytes were still moving, and nothing reached the library.
+
+Media uploads now use one shared helper (`src/workspace/api/upload-media.ts`)
+for the gallery, the page editor and the chat. It uploads with XHR so it can see
+progress, abandons a connection only after 90 seconds without a byte moving,
+then allows 180 seconds for the tenant to store the file and answer. The gallery
+button shows the transfer percentage while it runs.
+
+The 25 MB ceiling is unchanged and is now promised by the picker: the gallery
+states it, and an oversized file is stopped before a request is made with a
+localised explanation. The ceiling exists because the upload body is buffered
+through the app proxy and the shared API; removing it means a direct-to-R2
+upload path, which is a separate contract change and remains deferred.
+
+The browser's MIME guess is not authoritative either. A phone clip can arrive as
+`application/octet-stream`, so the tenant bridge sniffs the first bytes and
+stores the resolved type (`video/mp4`, `video/quicktime`, `video/webm`, and the
+image formats the library already accepts). A renamed download is still
+refused: the extension alone never decides. The stored type is what the gallery
+badge, the filter and the public player read.
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without

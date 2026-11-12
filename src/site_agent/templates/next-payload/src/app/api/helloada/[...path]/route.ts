@@ -63,17 +63,46 @@ const scheduleMediaAnalysis = (mediaId: unknown): void => {
   getCloudflareContext().ctx.waitUntil(pending)
 }
 
-const uploadLimitBytes = 25 * 1024 * 1024
+/**
+ * The media library holds stills and short clips. The limit keeps the
+ * proxy's in-memory multipart body bounded; the picker promises the same
+ * 25 MB number before it sends anything.
+ */
+const maxMediaBytes = 25 * 1024 * 1024
+const mediaLimitMessage = 'That file is larger than the 25 MB limit. Compress it or choose a shorter clip.'
+const mediaTypeMessage = 'Only images and videos can be uploaded.'
+
+type MediaFileKind = { kind: 'image' | 'video'; mimeType: string }
 
 /**
- * The media library holds stills and short clips. A single limit keeps the
- * proxy's in-memory body buffer bounded; longer footage belongs compressed.
+ * A phone clip can arrive with no useful browser MIME (`application/octet-stream`
+ * is common). The file's own header is the authoritative signal; the stored
+ * type is what the media record and the public player use.
  */
-const uploadMediaKind = (mimeType: string): 'image' | 'video' | undefined => {
-  const value = String(mimeType || '').toLowerCase()
-  if (value.startsWith('image/')) return 'image'
-  if (value.startsWith('video/')) return 'video'
+const sniffMediaKind = (head: Uint8Array): MediaFileKind | undefined => {
+  const ascii = (start: number, length: number) => String.fromCharCode(...head.subarray(start, start + length))
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return { kind: 'image', mimeType: 'image/jpeg' }
+  if (head.length >= 4 && head[0] === 0x89 && ascii(1, 3) === 'PNG') return { kind: 'image', mimeType: 'image/png' }
+  if (head.length >= 4 && ascii(0, 4) === 'GIF8') return { kind: 'image', mimeType: 'image/gif' }
+  if (head.length >= 12 && ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return { kind: 'image', mimeType: 'image/webp' }
+  if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) return { kind: 'video', mimeType: 'video/webm' }
+  if (head.length >= 12 && ascii(4, 4) === 'ftyp') {
+    const brand = ascii(8, 4)
+    if (brand === 'avif' || brand === 'avis') return { kind: 'image', mimeType: 'image/avif' }
+    if (brand === 'heic' || brand === 'heix' || brand === 'hevc' || brand === 'mif1') return { kind: 'image', mimeType: 'image/heic' }
+    if (brand === 'qt  ') return { kind: 'video', mimeType: 'video/quicktime' }
+    return { kind: 'video', mimeType: 'video/mp4' }
+  }
   return undefined
+}
+
+const mediaKindOfFile = async (file: File): Promise<MediaFileKind | undefined> => {
+  const declared = String(file.type || '').toLowerCase()
+  if (declared.startsWith('image/') || declared.startsWith('video/')) {
+    return { kind: declared.startsWith('video/') ? 'video' : 'image', mimeType: declared }
+  }
+  const head = new Uint8Array(await file.slice(0, 16).arrayBuffer())
+  return sniffMediaKind(head)
 }
 
 const editableCollections = ['pages', 'posts', 'products'] as const
@@ -471,9 +500,9 @@ async function serviceMediaUpload(request: Request) {
   const form = await request.formData().catch(() => undefined)
   const value = form?.get('file')
   if (!(value instanceof File)) return errorResponse('file_required', 400)
-  const kind = uploadMediaKind(value.type)
-  if (!kind) return errorResponse('unsupported_media_type', 415)
-  if (value.size < 1 || value.size > uploadLimitBytes) return errorResponse('file_too_large', 413)
+  const media = await mediaKindOfFile(value)
+  if (!media) return errorResponse(mediaTypeMessage, 415)
+  if (value.size < 1 || value.size > maxMediaBytes) return errorResponse(mediaLimitMessage, 413)
   const payload = await getPayload({ config })
   const sourceId = text(form?.get('sourceId')).trim()
   const alt = text(form?.get('alt')).trim()
@@ -489,12 +518,12 @@ async function serviceMediaUpload(request: Request) {
   }
   const document = await payload.create({
     collection: 'media',
-    data: { alt, ...(sourceId ? { sourceId } : {}), ...(kind === 'video' ? { analysisStatus: 'skipped' as const } : {}) },
+    data: { alt, ...(sourceId ? { sourceId } : {}), ...(media.kind === 'video' ? { analysisStatus: 'skipped' as const } : {}) },
     draft: true,
     overrideAccess: true,
-    file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
+    file: { data: Buffer.from(await value.arrayBuffer()), mimetype: media.mimeType, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
   })
-  if (kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
+  if (media.kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
   return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
 }
 
@@ -688,22 +717,22 @@ export async function POST(request: Request, { params }: RouteProps) {
     const form = await request.formData().catch(() => undefined)
     const value = form?.get('file')
     if (!(value instanceof File)) return errorResponse('file_required', 400)
-    const kind = uploadMediaKind(value.type)
-    if (!kind) return errorResponse('unsupported_media_type', 415)
-    if (value.size < 1 || value.size > uploadLimitBytes) return errorResponse('file_too_large', 413)
+    const media = await mediaKindOfFile(value)
+    if (!media) return errorResponse(mediaTypeMessage, 415)
+    if (value.size < 1 || value.size > maxMediaBytes) return errorResponse(mediaLimitMessage, 413)
     const bytes = Buffer.from(await value.arrayBuffer())
     const document = await withRecoveredWrite(auth.payload, { collection: 'media' }, () => auth.payload.create({
       collection: 'media',
       data: {
         alt: value.name.replace(/[^A-Za-z0-9._ -]+/g, '').trim().slice(0, 120) || 'HelloAda media',
-        ...(kind === 'video' ? { analysisStatus: 'skipped' as const } : {}),
+        ...(media.kind === 'video' ? { analysisStatus: 'skipped' as const } : {}),
       },
       draft: true,
       req: auth.req,
       user: auth.user,
-      file: { data: bytes, mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
+      file: { data: bytes, mimetype: media.mimeType, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
     }))
-    if (kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
+    if (media.kind === 'image') scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
     return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
   }
   if (path === '/publish') {

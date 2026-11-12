@@ -81,6 +81,48 @@ test('a file that is neither image nor video is rejected before storage', async 
     method: 'POST', body: form,
   }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
   assert.equal(result.status, 415)
+  assert.match((await result.json()).message, /Only images and videos/)
+  assert.equal(route.calls.filter((call) => call.create).length, 0)
+})
+
+test('a video with no browser MIME is recognised from its own bytes', async () => {
+  const route = bridge(true, false, [], {
+    id: 43, filename: 'clip.mp4', url: '/api/media/file/clip.mp4', mimeType: 'video/mp4', analysisStatus: 'skipped',
+  })
+  const header = new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 2, 0])
+  const body = new Uint8Array([...header, ...new TextEncoder().encode('fixture')])
+  const form = new FormData()
+  form.append('file', new File([body], 'clip.mp4', { type: 'application/octet-stream' }))
+  const result = await route.POST(new Request('https://owner.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 201)
+  const create = route.calls.find((call) => call.create).create
+  assert.equal(create.data.analysisStatus, 'skipped')
+  assert.equal(create.file.mimetype, 'video/mp4')
+  assert.equal(route.pending.length, 0)
+})
+
+test('a renamed download is not trusted by its extension alone', async () => {
+  const route = bridge()
+  const form = new FormData()
+  form.append('file', new File([new TextEncoder().encode('%PDF-1.7 fixture')], 'clip.mp4', { type: 'application/octet-stream' }))
+  const result = await route.POST(new Request('https://owner.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 415)
+  assert.equal(route.calls.filter((call) => call.create).length, 0)
+})
+
+test('an oversized clip is refused with the limit in the message', async () => {
+  const route = bridge()
+  const form = new FormData()
+  form.append('file', new File([new Uint8Array(25 * 1024 * 1024 + 1)], 'clip.mp4', { type: 'video/mp4' }))
+  const result = await route.POST(new Request('https://owner.example/api/helloada/media/upload', {
+    method: 'POST', body: form,
+  }), { params: Promise.resolve({ path: ['media', 'upload'] }) })
+  assert.equal(result.status, 413)
+  assert.match((await result.json()).message, /25 MB/)
   assert.equal(route.calls.filter((call) => call.create).length, 0)
 })
 
