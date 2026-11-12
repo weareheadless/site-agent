@@ -17,12 +17,12 @@ import re
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from contextlib import asynccontextmanager
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
 from ..application.growth_evidence import growth_evidence
@@ -30,6 +30,7 @@ from ..application.growth_delivery import GrowthDeliveryError
 from ..application.bootstrap import BootstrapError, WebsiteBootstrapService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
+from ..application import preview_host
 from ..config import ConfigError, resolve_secret
 from ..hands.google_platform import GooglePlatformError
 from .design_preview import (
@@ -41,22 +42,6 @@ from .design_preview import (
     render_candidate_file,
 )
 from .preview import PreviewAccess, PreviewBuildCache
-
-_PREVIEW_RUNTIME_PATH = re.compile(r"source/preview/[^/]+/runtime(?:/|$)")
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Surface a redirect to the browser instead of following it server-side.
-
-    A compiled candidate's redirect belongs to the owner's surface: following
-    it here resolved the mount against the wrong origin.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001, D401 - stdlib signature
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect())
 
 
 def authenticated_owner_actor(request: Request, tenant: Tenant | None = None) -> str | None:
@@ -159,18 +144,6 @@ def register_workspace_routes(
         if not property_id:
             raise HTTPException(status_code=503, detail="GA4 property is not configured for this tenant")
         return property_id
-
-    def source_preview_response(value: Any) -> Any:
-        """Bind relative preview paths to this API's configured prefix."""
-        if not isinstance(value, dict):
-            return value
-        result = dict(value)
-        canonical = "/api/workspace"
-        for key in ("runtime_path", "preview_url"):
-            raw = result.get(key)
-            if isinstance(raw, str) and raw.startswith(canonical):
-                result[key] = prefix + raw[len(canonical):]
-        return result
 
     def design_service_for(tenant: Tenant | None):
         if tenant is None:
@@ -844,6 +817,111 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # -- the compiled candidate's own origin -------------------------------
+    #
+    # A preview is a complete Next application, so it is served from its own
+    # host at a signed path rather than through the workspace bridge. This
+    # service owns the URL and the runtime behind it, so a request is forwarded
+    # and never interpreted: no basePath is re-derived, no asset or redirect is
+    # rewritten, and an address from an older workspace cannot collide with the
+    # app's routes or its CMS. The signature in the path is the capability, so
+    # the frame needs no cookie and the address stops working on its own.
+    def preview_page(status: int, title: str, detail: str) -> HTMLResponse:
+        body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title><style>
+:root {{ color-scheme: light dark; }}
+body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px;
+  background: #0d0f13; color: #e8e6e1;
+  font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }}
+main {{ max-width: 460px; }}
+p.eyebrow {{ margin: 0 0 14px; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #8d8f96; }}
+h1 {{ margin: 0 0 12px; font-size: 22px; line-height: 1.25; font-weight: 600; }}
+p.detail {{ margin: 0; color: #a9abb2; }}
+@media (prefers-color-scheme: light) {{
+  body {{ background: #faf8f4; color: #1b1d21; }} p.eyebrow {{ color: #6f7178; }} p.detail {{ color: #55575e; }}
+}}
+</style></head><body><main>
+<p class="eyebrow">HelloAda</p><h1>{title}</h1><p class="detail">{detail}</p>
+</main></body></html>"""
+        return HTMLResponse(body, status_code=status, headers={"cache-control": "no-store"})
+
+    def preview_runtime_response(
+        owner: str,
+        job_id: str,
+        expires: str,
+        signature: str,
+        file_path: str,
+        request: Request,
+    ):
+        try:
+            key = preview_host.signing_key(env)
+        except preview_host.PreviewHostError:
+            return preview_page(503, "This preview is unavailable", "The preview host is not configured.")
+        if not preview_host.verify(key, owner, job_id, expires, signature):
+            return preview_page(
+                404,
+                "This preview is no longer available",
+                "The address has expired or belongs to an earlier version of the workspace. "
+                "Reload the workspace and rebuild the preview.",
+            )
+        # The address names its tenant, so the request does not depend on an
+        # earlier browser call or on this process having served the build.
+        tenant = registry.for_tenant_id(preview_host.tenant_id(owner)) if registry is not None else None
+        if registry is not None and tenant is None:
+            return preview_page(
+                404,
+                "This preview is no longer available",
+                "Its workspace is not registered on this host any more.",
+            )
+        try:
+            result = service.source_preview_runtime(
+                job_id,
+                file_path,
+                request.url.query,
+                {
+                    "Accept": request.headers.get("accept", ""),
+                    "User-Agent": request.headers.get("user-agent", ""),
+                    "RSC": request.headers.get("rsc", ""),
+                    "Next-Router-State-Tree": request.headers.get("next-router-state-tree", ""),
+                    "Next-Router-Prefetch": request.headers.get("next-router-prefetch", ""),
+                    "Next-Router-Segment-Prefetch": request.headers.get("next-router-segment-prefetch", ""),
+                    "Next-Url": request.headers.get("next-url", ""),
+                    "Purpose": request.headers.get("purpose", ""),
+                    "X-Nextjs-Data": request.headers.get("x-nextjs-data", ""),
+                },
+                tenant=tenant,
+            )
+        except BridgeError:
+            return preview_page(
+                409,
+                "This preview is not running",
+                "The build finished or the preview service restarted. Rebuild the preview from the workspace.",
+            )
+        headers = {
+            "Content-Type": str(result.get("content_type") or "application/octet-stream"),
+            "Cache-Control": "private, no-store",
+            "X-Preview-Commit": str(result.get("commit") or ""),
+        }
+        location = str(result.get("location") or "")
+        if location:
+            headers["Location"] = location
+        return Response(
+            content=result.get("body") or b"",
+            status_code=int(result.get("status") or 502),
+            headers=headers,
+        )
+
+    preview_route = f"{preview_host.PREVIEW_PREFIX}/{{owner}}/{{job_id}}/{{expires}}/{{signature}}"
+
+    @app.api_route(preview_route, methods=["GET", "HEAD"])
+    def workspace_preview_runtime_root(owner: str, job_id: str, expires: str, signature: str, request: Request):
+        return preview_runtime_response(owner, job_id, expires, signature, "", request)
+
+    @app.api_route(preview_route + "/{file_path:path}", methods=["GET", "HEAD"])
+    def workspace_preview_runtime(owner: str, job_id: str, expires: str, signature: str, file_path: str, request: Request):
+        return preview_runtime_response(owner, job_id, expires, signature, file_path, request)
+
     @app.get(f"{prefix}/source/preview/styles")
     def workspace_source_preview_styles(request: Request):
         tenant = require_service(request)
@@ -856,7 +934,7 @@ def register_workspace_routes(
     def workspace_source_preview_latest(request: Request, branch: str | None = None):
         tenant = require_service(request)
         try:
-            return source_preview_response(service.source_preview_latest(branch, tenant=tenant))
+            return service.source_preview_latest(branch, tenant=tenant)
         except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -870,7 +948,7 @@ def register_workspace_routes(
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
-            return source_preview_response(service.source_preview_start(body, tenant=tenant))
+            return service.source_preview_start(body, tenant=tenant)
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -878,60 +956,9 @@ def register_workspace_routes(
     def workspace_source_preview_status(job_id: str, request: Request):
         tenant = require_service(request)
         try:
-            return source_preview_response(service.source_preview_status(job_id, tenant=tenant))
+            return service.source_preview_status(job_id, tenant=tenant)
         except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-    @app.get(f"{prefix}/source/preview/{{job_id}}/runtime")
-    def workspace_source_preview_runtime_root(job_id: str, request: Request):
-        """The mount root is the candidate homepage.
-
-        Next reaches it without a trailing slash (`trailingSlash: false`); a
-        redirect here would be resolved against this API origin instead of the
-        owner surface that framed the build.
-        """
-        return workspace_source_preview_runtime(job_id, "", request)
-
-    @app.get(f"{prefix}/source/preview/{{job_id}}/runtime/{{file_path:path}}")
-    def workspace_source_preview_runtime(job_id: str, file_path: str, request: Request):
-        tenant = require_service(request)
-        try:
-            result = service.source_preview_runtime(
-                job_id,
-                file_path,
-                request.url.query,
-                {
-                    # A compiled Next app distinguishes an RSC navigation from
-                    # a document request by these headers. Dropping them made a
-                    # link click fetch HTML where flight data was expected.
-                    "Accept": request.headers.get("accept", ""),
-                    "Cookie": request.headers.get("cookie", ""),
-                    "User-Agent": request.headers.get("user-agent", ""),
-                    "RSC": request.headers.get("rsc", ""),
-                    "Next-Router-State-Tree": request.headers.get("next-router-state-tree", ""),
-                    "Next-Router-Prefetch": request.headers.get("next-router-prefetch", ""),
-                    "Next-Router-Segment-Prefetch": request.headers.get("next-router-segment-prefetch", ""),
-                    "Next-Url": request.headers.get("next-url", ""),
-                    "Purpose": request.headers.get("purpose", ""),
-                    "X-Nextjs-Data": request.headers.get("x-nextjs-data", ""),
-                },
-                tenant=tenant,
-            )
-        except BridgeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        headers = {
-            "Content-Type": str(result.get("content_type") or "application/octet-stream"),
-            "Cache-Control": "private, no-store",
-            "X-Workspace-Preview-Commit": str(result.get("commit") or ""),
-        }
-        location = str(result.get("location") or "")
-        if location:
-            headers["Location"] = location
-        return Response(
-            content=result.get("body") or b"",
-            status_code=int(result.get("status") or 502),
-            headers=headers,
-        )
 
     @app.get(f"{prefix}/chat/jobs/{{job_id}}")
     def workspace_chat_job(job_id: str, request: Request):
@@ -1375,24 +1402,14 @@ def register_workspace_routes(
                 # Cloudflare rejects the default Python client signature.
                 "user-agent": "site-agent/control-plane-workspace",
             }
-            # A compiled preview answers RSC navigation only when the flight
-            # request headers survive every bridge hop.
-            for name in ("rsc", "next-router-state-tree", "next-router-prefetch",
-                         "next-router-segment-prefetch", "next-url", "purpose", "x-nextjs-data"):
-                value = request.headers.get(name)
-                if value:
-                    forwarded[name] = value
             content_type = request.headers.get("content-type")
             if content_type:
                 forwarded["content-type"] = content_type
-            preview_runtime = bool(_PREVIEW_RUNTIME_PATH.search(suffix))
-
             def send():
                 outbound = urllib.request.Request(url, data=body or None, headers=forwarded,
                                                   method=request.method)
-                opener = _NO_REDIRECT_OPENER.open if preview_runtime else urllib.request.urlopen
                 try:
-                    return opener(outbound, timeout=60)
+                    return urllib.request.urlopen(outbound, timeout=60)
                 except urllib.error.HTTPError as exc:  # a workspace error is a response
                     return exc
 
@@ -1418,6 +1435,8 @@ def register_workspace_routes(
 def create_workspace_api_app(
     registry: TenantRegistry,
     *,
+    config: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
     prefix: str = "/v1/workspace",
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
@@ -1425,9 +1444,29 @@ def create_workspace_api_app(
 ) -> FastAPI:
     """Create the single shared, tenant-aware API process."""
 
+    host_config = dict(config or {})
+    host_env = dict(env or {})
+
+    async def ensure_preview_host() -> None:
+        """Give the preview host its public record without a manual step.
+
+        The address follows the API's own host, so a fresh installation gets a
+        working preview origin on first start. A Cloudflare outage must not stop
+        the API from serving; the failure is reported and retried next start.
+        """
+        if not host_env.get(preview_host.PREVIEW_HOST_ENV):
+            return
+        try:
+            record = await asyncio.to_thread(preview_host.ensure_preview_host_dns, host_env, config=host_config)
+        except preview_host.PreviewHostError as exc:
+            print(f"[site-agent] preview host not provisioned: {exc}")
+            return
+        print(f"[site-agent] preview host {record['host']} -> {record['target']} (proxied)")
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         registry.start()
+        await ensure_preview_host()
         try:
             yield
         finally:
@@ -1452,8 +1491,8 @@ def create_workspace_api_app(
 
     register_workspace_routes(
         app,
-        config={},
-        env={},
+        config=host_config,
+        env=host_env,
         service=ChatService(registry=registry),
         registry=registry,
         prefix=prefix,

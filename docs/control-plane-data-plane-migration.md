@@ -247,12 +247,14 @@ that tenant's site or a pinned package changes.
 - Draft 72's compiled preview now builds and is ready. The cause was the
   generator requiring identity slots that an older candidate branch did not
   declare; the generator now adds the missing Worker vars itself.
-- The exact-draft preview is now same-origin with the workspace. The compiled
-  candidate's basePath is derived from the tenant identity
-  (`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`) and served by
-  the owner's own app route, so every build starter and both surfaces agree on
-  one URL. The published alias is no longer substituted for a pending candidate
-  and the tenant handoff link is removed.
+- The exact-draft preview has its own origin. A compiled candidate is a
+  complete Next application, so it is served at `preview.<platform host>` and a
+  signed `/p/<tenant>/<job>/<expiry>/<signature>` path by the same service that builds and
+  runs it. The workspace frames the `preview_url` the job reports and never
+  composes or proxies one; the app has no preview route, and the candidate's
+  links, assets, redirects and 404s are its own. The published alias is no
+  longer substituted for a pending candidate and the tenant handoff link is
+  removed.
 - Casamigo is registered as HelloAda website `16` (`tenantId: casamigo`) owned by
   `admin@helloada.app`, phase `live`. `/admin-entry/casamigo` hands the owner
   into the tenant Payload admin, the control-plane workspace loads its snapshot

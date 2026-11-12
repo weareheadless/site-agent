@@ -138,37 +138,53 @@ field has been written.
 
 ## Reviewing the compiled candidate
 
-A source change is compiled by the preview service and mounted at a Next
-basePath derived from the tenant identity:
-`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`. That route is
-served by the control-plane app for the signed-in owner of that tenant and
-proxied to the tenant workspace, so the compiled build resolves same-origin:
-its documents, assets and RSC navigation all pass the owner proxy with the
-owner's own identities. The in-app frame and a full-screen tab load that one
-URL.
+A source change is compiled into a complete Next application, and that
+application is served from **its own origin**: `preview.<platform host>` (for the
+shared API, `https://preview.helloada.app`) at the signed path
+`/p/<tenant>/<job>/<expiry>/<signature>`. The same service builds the candidate
+and runs it, so it owns the URL and forwards bytes: nothing re-derives a
+basePath, rewrites an asset, or reinterprets a redirect.
 
-The mount is derived from the tenant, not passed by a caller, because the chat
-job (or a design job) builds the candidate before any browser frames it. Every
-starter therefore compiles the one artifact the workspace renders; a
-job-scoped or surface-scoped mount let the builder and the frame disagree, and
-reproduced the second preview.
+Why it is not a route in the workspace app. A candidate used to be mounted at
+`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`, which meant the
+app had to reproduce Next's URL semantics — basePath root with and without a
+trailing slash, RSC and prefetch headers, redirects, asset prefixes, 404s — and
+own a namespace the CMS also answered on. Every mismatch was another broken
+preview: the wrong mount, dropped flight headers, a swallowed redirect, a CMS
+`Route not found` page, a logo that led nowhere. Each repair added another rule
+to the emulation. One origin removes the emulation instead.
+
+The address is the capability. The signature is an HMAC over the tenant, the job
+and the expiry, so the frame needs no cookie (a cross-origin iframe could not
+carry one), the address cannot be guessed, rotating
+`HELLOADA_PREVIEW_SIGNING_KEY` retires every address handed out before, and an
+expired build answers with a page that says so rather than a machine error. The
+service refuses any job whose signature does not verify, so a preview is still
+owner-only in practice: only the workspace, which holds the owner session, is
+told the address.
+
+The workspace never composes a preview URL. The job's status reports
+`preview_url`, the in-app frame and a full-screen tab open that exact value, and
+appending a route to it is the only transformation (`previewUrlForRoute`). A
+build the service no longer serves has no `preview_url`, so the workspace
+rebuilds instead of framing something else. Because the candidate is now
+cross-origin, the workspace cannot read its document: the page selector drives
+the frame, and a link click inside the frame moves the frame alone.
+
+Preview host provisioning is automatic. On startup the shared API ensures the
+preview hostname resolves (`ensure_preview_host_dns`), copying the address of
+`HELLOADA_PREVIEW_DNS_HOST` and creating a proxied record when none exists, so a
+fresh installation needs no hand-made Cloudflare record. The host's nginx vhost
+and certificate are part of the reviewed host setup
+(`deploy/nginx-preview.helloada.app.conf`).
 
 There is no second preview. The frame never substitutes the published alias for
-a pending candidate, and a candidate starts as `about:blank` with an explicit
-preparing state until its exact mount is ready. An earlier version framed the
-published alias and handed the owner into the tenant origin with
-`next=<mount>` because a cross-site iframe cannot carry the tenant session; that
+a pending candidate; the alias is the preview only when there is nothing to
+review, and a candidate starts as `about:blank` with an explicit preparing state
+until its build reports an address. An earlier version framed the published
+alias and handed the owner into the tenant origin with `next=<mount>`; that
 split let the owner compare two different artifacts and is removed, together
-with `exactSourcePreviewHref` and the `routes.manage` handoff field. A build
-whose recorded mount is not this tenant's mount is reported as unavailable
-rather than framed.
-
-The transport carries what a Next candidate needs to behave like the site:
-RSC and router-state request headers survive every hop, and a root-relative
-redirect (`/courses/training` → `/depth`) is rewritten under the build's
-basePath and returned to the browser instead of being followed server-side.
-Both the owner proxy and the API gateway use a no-redirect request for a
-preview runtime path; the release gate keeps its own `308` handling.
+with `exactSourcePreviewHref` and the `routes.manage` handoff field.
 
 A review the owner cannot decide must not stay behind as a second surface. When
 a candidate's preview cannot be prepared, the next request stages a new draft
@@ -190,9 +206,9 @@ mount instead of ejecting the owner onto the live site. The failed receipt is
 kept as history; the exact approved source is retried under a new release
 identity rather than edited into success.
 
-The compiled-preview proxy now forwards `Location` under its runtime base path
-too, so a candidate redirect is followed on the owner surface rather than
-appearing as an empty `308`.
+A candidate redirect needs no rewriting now that the preview owns its origin:
+Next emits it under its own basePath and the browser follows it on the same
+host.
 
 ## Defects found while migrating
 

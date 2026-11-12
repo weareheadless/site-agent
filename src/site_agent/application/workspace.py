@@ -2033,7 +2033,7 @@ class ChatService:
             key: latest.get(key)
             for key in (
                 "id", "status", "mode", "branch", "commit", "created_at", "updated_at", "ok",
-                "runtime_path", "deployment_mode", "preview_url",
+                "deployment_mode", "preview_url",
                 "live", "verified_commit", "revision_verification",
             )
             if key in latest
@@ -3555,7 +3555,7 @@ class ChatService:
                             and all(isinstance(meta.get(key), str) for key in ("head", "base", "head_sha", "base_sha", "summary"))
                             and isinstance(meta.get("changed_paths"), list)
                             and all(isinstance(path, str) for path in meta["changed_paths"])
-                            and set(preview) == preview_fields
+                            and set(preview) <= preview_fields
                             and preview.get("mode") in {"compile", "compiled_preview"}
                             and preview.get("status") in {"blocked", "failed"}
                             and isinstance(preview.get("requires_build"), bool)

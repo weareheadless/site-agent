@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..credentials import credential_environment, cloudflare_env_names, github_api_token, github_ssh_command
+from . import preview_host
 from ..hands.github_static import GithubStatic
 from .release_queue import ReleaseQueueError, release_root, request_release
 
@@ -47,14 +48,11 @@ _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/ro
 _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
-# The compiled candidate is mounted inside the owner surface that renders it,
-# and that mount is derived from this tenant's identity. Every starter (chat
-# job, design job, browser retry) therefore compiles the one artifact the
-# workspace frames; the in-app preview and a full-screen tab load one
-# same-origin URL. The route is the owner's own authenticated preview bridge.
-_PREVIEW_MOUNT_ROUTE = "/api/helloada/tenants/{tenant}/source/preview"
-_TENANT_MOUNT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
-_PREVIEW_MOUNT = re.compile(r"^/[A-Za-z0-9._~:/-]+$")
+_PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
+# A compiled candidate is a complete application, so it is served from its own
+# origin at a signed path (application/preview_host.py) instead of a route
+# inside the workspace app. The build's Next basePath is that exact path, and
+# one service owns both the path and the runtime behind it.
 _PREVIEW_FLIGHT_REQUEST_HEADERS = (
     "rsc",
     "next-router-state-tree",
@@ -73,36 +71,6 @@ _PREVIEW_ENV_ALLOWLIST = frozenset({
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def preview_mount(tenant_id: Any) -> str:
-    """Return the URL prefix every compiled candidate of this tenant mounts at.
-
-    It is derived from the tenant identity, never from a request parameter, so
-    the chat job that builds the candidate and the workspace that frames it
-    cannot disagree about where it lives. The compiled Next ``basePath`` is
-    exactly the path the owner's own preview bridge requests.
-    """
-    tenant = str(tenant_id or "").strip()
-    if not _TENANT_MOUNT_IDENTITY.fullmatch(tenant):
-        raise SourceDeploymentError("tenant identity is not a safe preview mount")
-    return _PREVIEW_MOUNT_ROUTE.format(tenant=tenant)
-
-
-def _checked_preview_mount(value: Any) -> str:
-    """Accept a stored mount only when it is a relative route this service wrote."""
-    raw = str(value or "").strip()
-    if (
-        not raw
-        or len(raw) > 300
-        or "?" in raw
-        or "#" in raw
-        or "//" in raw
-        or ".." in raw.split("/")
-        or not _PREVIEW_MOUNT.fullmatch(raw)
-    ):
-        raise SourceDeploymentError("source preview mount is invalid")
-    return raw.rstrip("/")
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -987,16 +955,13 @@ class SourceDeploymentService:
             )
         return {"name": "presentation_source_boundary", "ok": True, "changed_files": len(paths)}
 
-    def _preview_mount(self) -> str:
-        return preview_mount(self.config.get("instance_name"))
-
     def _preview_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
             return int(probe.getsockname()[1])
 
-    def _prepare_preview_mount(self, worktree: Path, job: dict[str, Any]) -> None:
-        """Apply transport-only Next compiler settings in the disposable build."""
+    def _prepare_preview_runtime(self, worktree: Path, job: dict[str, Any]) -> None:
+        """Point the disposable build at the signed path its runtime is served from."""
         original = worktree / "next.config.mjs"
         retained = worktree / ".helloada-source-preview.next.mjs"
         if original.is_symlink() or not original.is_file() or retained.exists():
@@ -1021,9 +986,9 @@ class SourceDeploymentService:
                              "vars": {key: value for key, value in (worker.get("vars") or {}).items()
                                       if key in public_vars or key.startswith("NEXT_PUBLIC_")}})
         worker_path.write_text(json.dumps(local_worker, indent=2) + "\n", encoding="utf-8")
-        mount = _checked_preview_mount(job.get("runtime_mount") or self._preview_mount())
-        job["runtime_mount"] = mount
-        base_path = f"{mount}/{job['id']}/runtime"
+        base_path = str(job.get("runtime_base_path") or "")
+        if not base_path.startswith(_PREVIEW_PATH_PREFIX) or ".." in base_path.split("/"):
+            raise SourceDeploymentError("compiled preview has no signed runtime path")
         original.rename(retained)
         original.write_text(
             "import original from './.helloada-source-preview.next.mjs'\n"
@@ -1032,7 +997,6 @@ class SourceDeploymentService:
             f" return {{ ...config, basePath: {json.dumps(base_path)}, assetPrefix: {json.dumps(base_path)} }}\n"
             "}\n", encoding="utf-8",
         )
-        job["runtime_base_path"] = base_path
         public = worktree / "public"
         job["public_asset_roots"] = [f"/{item.name}" + ("/" if item.is_dir() else "")
                                     for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
@@ -1211,9 +1175,7 @@ class SourceDeploymentService:
         return {
             "status": "ready",
             "mode": _COMPILED_PREVIEW,
-            "runtime_mount": str(job.get("runtime_mount") or self._preview_mount()),
-            "runtime_path": f"/api/workspace/source/preview/{job['id']}/runtime",
-            "preview_url": f"/api/workspace/source/preview/{job['id']}/runtime/",
+            "runtime_base_path": str(job.get("runtime_base_path") or ""),
             "deployment_mode": "isolated_host_runtime",
             "runtime_port": port,
             "revision_verification": revision,
@@ -1439,9 +1401,13 @@ class SourceDeploymentService:
         """
         if mode != _COMPILED_PREVIEW or not job.get("resume"):
             return None
-        # A resumed worktree keeps the basePath it was compiled with. Resuming
-        # a build compiled for another mount would frame the wrong route.
-        if str(job.get("runtime_mount") or self._preview_mount()) != self._preview_mount():
+        # A resumed worktree keeps the basePath it was compiled with, and that
+        # basePath carries this job's signature. A changed signing key or a
+        # rebuilt identity means the compiled output no longer matches the
+        # address it would be served at.
+        # Only a build compiled for the signed path its own origin serves can be
+        # resumed; an older job carries a mount this service no longer serves.
+        if not str(job.get("runtime_base_path") or "").startswith(_PREVIEW_PATH_PREFIX):
             return None
         raw = str(job.get("worktree_path") or "").strip()
         if not raw:
@@ -1527,7 +1493,7 @@ class SourceDeploymentService:
                 worktree, "generate_payload_contract", timeout, preview_secret=preview_secret,
                 env_extra={"HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_fingerprint},
             ))
-            self._prepare_preview_mount(worktree, job)
+            self._prepare_preview_runtime(worktree, job)
             local_secrets = worktree / ".dev.vars"
             fd = os.open(local_secrets, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -1674,8 +1640,7 @@ class SourceDeploymentService:
         if status == "ready":
             preview.update({
                 "status": "ready",
-                "runtime_path": result.get("runtime_path"),
-                "preview_url": result.get("preview_url"),
+                "preview_url": self._with_preview_url(job).get("preview_url"),
                 "deployment_mode": result.get("deployment_mode"),
             })
             preview.pop("error", None)
@@ -1723,7 +1688,12 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("deployment branch advanced before its build started; rescan and retry")
             result = self._resume_build(job, branch, commit, mode) or self._build(job, branch, commit, mode)
             with self._lock:
-                self._jobs[job_id] = {**self._jobs[job_id], **result, "updated_at": _now()}
+                # The address is part of the finished job, not something a
+                # reader re-derives: the draft sync, the status endpoint and the
+                # workspace all hand out this one value.
+                self._jobs[job_id] = self._with_preview_url({
+                    **self._jobs[job_id], **result, "updated_at": _now(),
+                })
                 self._jobs[job_id].pop("error", None)
                 self._persist()
             self._sync_compiled_preview_draft(self._jobs[job_id], result)
@@ -1781,7 +1751,22 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("retained design has no exact canonical Payload revision receipts")
         else:
             payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
-        runtime_mount = self._preview_mount() if mode == _COMPILED_PREVIEW else ""
+        job_id = str(uuid.uuid4())
+        runtime_base_path = ""
+        if mode == _COMPILED_PREVIEW:
+            # The address names this tenant and this job and is signed over
+            # both, so the service that answers it can resolve the request from
+            # the URL alone. It is minted once here; every reader is handed the
+            # same value.
+            try:
+                runtime_base_path = preview_host.path_for(
+                    preview_host.signing_key(self.env),
+                    self.config.get("instance_name"),
+                    job_id,
+                    preview_host.expiry_for(_now()),
+                )
+            except preview_host.PreviewHostError as exc:
+                raise SourceDeploymentError(f"compiled preview is not configured: {exc}") from exc
         with self._lock:
             for existing in self._jobs.values():
                 if not isinstance(existing, Mapping):
@@ -1795,13 +1780,9 @@ class SourceDeploymentService:
                     # The same source commit against different Payload revisions
                     # is a different preview: it renders different content.
                     and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
-                    # The build's basePath is where this tenant's workspace
-                    # frames it; a job built for another mount is not reusable.
-                    and str(existing.get("runtime_mount") or runtime_mount) == runtime_mount
                     and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
                 ):
                     return dict(existing)
-        job_id = str(uuid.uuid4())
         job = {
             "id": job_id,
             "ok": True,
@@ -1812,8 +1793,8 @@ class SourceDeploymentService:
             "created_at": _now(),
             "updated_at": _now(),
         }
-        if runtime_mount:
-            job["runtime_mount"] = runtime_mount
+        if runtime_base_path:
+            job["runtime_base_path"] = runtime_base_path
         if draft_id is not None:
             job["draft_id"] = draft_id
         if design_run_id:
@@ -1888,7 +1869,26 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("source deployment job not found")
             if job.get("mode") == _PRODUCTION:
                 self._refresh_release_job(job)
-            return dict(job)
+            return self._with_preview_url(job)
+
+    def _with_preview_url(self, job: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach the address the workspace frames for this exact build.
+
+        The path is signed when the job is created, so every reader — status,
+        latest, the build result — hands out the same URL and no caller has to
+        compose one from parts.
+        """
+        result = dict(job)
+        base = str(result.get("runtime_base_path") or "")
+        if not base:
+            return result
+        try:
+            result["preview_url"] = preview_host.origin(self.env) + base
+        except preview_host.PreviewHostError:
+            # Configuration is checked when a preview starts. An old job without
+            # an address must not take the whole status response down.
+            result.pop("preview_url", None)
+        return result
 
     def latest_preview(self, branch: str | None = None) -> dict[str, Any]:
         return self.latest(branch, mode=_COMPILED_PREVIEW)
@@ -2018,7 +2018,7 @@ class SourceDeploymentService:
             ]
             if not candidates:
                 return {}
-            return dict(max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or "")))
+            return self._with_preview_url(max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or "")))
 
     def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         """Proxy one authenticated browser request to an isolated preview."""

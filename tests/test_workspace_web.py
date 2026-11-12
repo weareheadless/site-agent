@@ -3866,3 +3866,61 @@ def test_control_plane_worker_gateway_uses_the_tenant_token_and_owner_subject(tm
     assert unknown.status_code == 404
     assert denied.status_code == 401
     memory.close()
+
+
+def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
+    """The preview origin forwards bytes for a valid address and refuses the rest.
+
+    No cookie, no session, no earlier browser call: the path names the tenant and
+    the job, and the signature is what makes it usable.
+    """
+    from site_agent.application import preview_host
+
+    memory = Memory(tmp_path / "memory.db")
+    job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
+    served: list[tuple[str, str, str]] = []
+
+    class Deployer:
+        def runtime(self, job_id, path, query="", headers=None):
+            served.append((path, (headers or {}).get("RSC", ""), (headers or {}).get("Accept", "")))
+            return {
+                "status": 200,
+                "body": ("home" if not path else path).encode(),
+                "content_type": "text/html; charset=utf-8",
+                "commit": "a" * 40,
+            }
+
+    tenant = Tenant("demo", {}, memory, None, {"source_deployment": Deployer()}, "demo-token")
+    registry = TenantRegistry({"demo": tenant})
+    key = "k" * 40
+    app = FastAPI()
+    register_workspace_routes(
+        app,
+        config={},
+        env={"HELLOADA_PREVIEW_HOST": "preview.example.test", "HELLOADA_PREVIEW_SIGNING_KEY": key},
+        service=ChatService(registry=registry),
+        registry=registry,
+    )
+    expires = preview_host.expiry_for("2026-11-12T10:00:00+00:00")
+    path = preview_host.path_for(key, "demo", job, expires)
+
+    with TestClient(app) as client:
+        root = client.get(path)
+        nested = client.get(f"{path}/courses", headers={"RSC": "1", "Accept": "text/x-component"})
+        forged = client.get(path[:-1] + ("0" if path[-1] != "0" else "1"))
+        expired = client.get(preview_host.path_for(key, "demo", job, expires - preview_host.PREVIEW_TTL_SECONDS - 1))
+        foreign = client.get(preview_host.path_for(key, "other", job, expires))
+
+    assert root.status_code == 200
+    assert root.text == "home"
+    assert root.headers["content-type"].startswith("text/html")
+    # The frame and the full-screen tab need no cookie to reach their own build.
+    assert "set-cookie" not in root.headers
+    assert nested.status_code == 200
+    assert nested.text == "courses"
+    assert served[1][1] == "1" and served[1][2] == "text/x-component"
+    for refused in (forged, expired, foreign):
+        assert refused.status_code == 404
+        assert "no longer available" in refused.text
+    assert all(item[0] != "courses" for item in served[2:])
+    memory.close()

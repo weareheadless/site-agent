@@ -2,11 +2,6 @@ import { helloAdaRuntime, helloAdaWorkspacePath } from '@/lib/helloada-runtime'
 
 const UPSTREAM_TIMEOUT_MS = 25_000
 
-/** A compiled candidate's redirect belongs to the owner's surface, not here. */
-const previewRuntime = (path: string): boolean => /^\/api\/helloada\/source\/preview\/[^/]+\/runtime(?:\/|$)/.test(path)
-
-const previewRequestHeaders = ['rsc', 'next-router-state-tree', 'next-router-prefetch', 'next-router-segment-prefetch', 'next-url', 'purpose', 'x-nextjs-data']
-
 const upstreamBase = () => helloAdaRuntime().url
 const upstreamToken = () => helloAdaRuntime().token
 
@@ -30,27 +25,16 @@ export async function fetchHelloAdaUpstream(path: string, request: Request, owne
     if (ownerActorId) headers.set('X-HelloAda-Owner-Id', ownerActorId)
     const contentType = request.headers.get('content-type')
     if (contentType) headers.set('Content-Type', contentType)
-    // A compiled preview answers RSC navigation only when the flight request
-    // headers survive the bridge.
-    if (previewRuntime(path)) {
-      for (const name of previewRequestHeaders) {
-        const value = request.headers.get(name)
-        if (value) headers.set(name, value)
-      }
-    }
     const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer()
     const response = await fetch(url, {
       method: request.method,
       headers,
       body,
       cache: 'no-store',
-      // Never follow a candidate redirect here: the destination is a mount on
-      // the owner surface, and resolving it against this origin lands nowhere.
-      redirect: previewRuntime(path) ? 'manual' : 'follow',
       signal: controller.signal,
     })
     const out = new Headers({ 'Cache-Control': 'no-store', 'Content-Type': response.headers.get('content-type') || 'application/json' })
-    const location = previewRuntime(path) ? response.headers.get('location') : null
+    const location = response.headers.get('location')
     if (location) out.set('Location', location)
     return new Response(response.body, { status: response.status, headers: out })
   } catch (error) {

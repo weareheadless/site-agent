@@ -747,6 +747,8 @@ def _cmd_api(args: argparse.Namespace) -> int:
     api = config.get("workspace_api") or {}
     app = create_workspace_api_app(
         registry,
+        config=config,
+        env=raw_env,
         prefix=str(api.get("prefix") or "/v1/workspace"),
         control_token=raw_env.get("HELLOADA_CONTROL_PLANE_TOKEN"),
         registration=registration,
