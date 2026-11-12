@@ -197,6 +197,22 @@ The shared runtime change reaches tenants through the normal release queue;
 the tenant's own frontend composition still decides where a video appears on
 the public site.
 
+### Telling a clip from a still
+
+Rendering video correctly was not enough to find one: a video card looked like a
+photo until you pressed play, and a library mixing both had no way to narrow it.
+The gallery now carries one shared decision (`src/workspace/lib/gallery-filter.ts`)
+and shows it:
+
+- a `Video` badge with a play glyph sits on every clip's tile;
+- the toolbar filters the loaded library by All / Images / Videos, each with its
+  own count, and the item count follows the filter;
+- records without a `mimeType` stay images, because the library held stills
+  before it held clips and a missing type must never hide one.
+
+The filter applies to the pages already loaded; `Load more` keeps extending the
+same filtered view.
+
 ## Acceptance
 
 - The owner reaches every mailbox surface from the workspace navigation without
