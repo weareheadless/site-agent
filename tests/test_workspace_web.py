@@ -3924,3 +3924,38 @@ def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
         assert "no longer available" in refused.text
     assert all(item[0] != "courses" for item in served[2:])
     memory.close()
+
+
+def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
+    """A fresh installation needs no hand-made Cloudflare record for previews.
+
+    The startup hook is the whole point: the record is created the first time
+    this service runs, copying the API's own address.
+    """
+    from site_agent.application import preview_host
+    from site_agent.web.workspace import create_workspace_api_app
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        preview_host, "ensure_preview_host_dns",
+        lambda env, config=None: calls.append(str(env[preview_host.PREVIEW_HOST_ENV]))
+        or {"host": "preview.example.test", "target": "192.0.2.10", "proxied": True},
+    )
+    registry = TenantRegistry({})
+    app = create_workspace_api_app(
+        registry,
+        config={},
+        env={"HELLOADA_PREVIEW_HOST": "preview.example.test",
+             "HELLOADA_PREVIEW_DNS_HOST": "api.example.test"},
+        prefix="/v1/workspace",
+    )
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+    assert calls == ["preview.example.test"]
+
+    # A deployment with no preview origin still boots; it simply has none.
+    calls.clear()
+    app = create_workspace_api_app(registry, config={}, env={}, prefix="/v1/workspace")
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+    assert calls == []
