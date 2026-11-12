@@ -354,11 +354,15 @@ def test_compiled_preview_recovery_retains_publishing_draft_status(tmp_path, mon
     memory, service, draft_id, _release_root = make_service(tmp_path, monkeypatch)
     memory.update_draft_status(draft_id, "publishing")
     service._sync_compiled_preview_draft(
-        {"id": "preview", "draft_id": draft_id, "mode": "compiled_preview"},
-        {"status": "ready", "commit": "a" * 40, "runtime_path": "/preview/runtime"},
+        {"id": "preview", "draft_id": draft_id, "mode": "compiled_preview",
+         "runtime_base_path": "/p/demo/preview/1799999999/0123456789abcdef"},
+        {"status": "ready", "commit": "a" * 40},
     )
     draft = memory.list_drafts()[0]
     assert draft["status"] == "publishing"
-    assert draft["meta"]["preview"]["runtime_path"] == "/preview/runtime"
+    # The draft inherits the address the build reports; there is no mount for it
+    # to keep.
+    assert draft["meta"]["preview"]["status"] == "ready"
+    assert "runtime_path" not in draft["meta"]["preview"]
     service.close()
     memory.close()
