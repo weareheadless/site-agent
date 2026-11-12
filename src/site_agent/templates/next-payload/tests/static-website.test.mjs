@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { containPreviewNavigation, staticPresentationRoutes, staticWebsiteResponse } from '../src/lib/static-website.ts'
+import { containPreviewNavigation, previewHtmlResponse, staticPresentationRoutes, staticWebsiteResponse } from '../src/lib/static-website.ts'
 
 const security = {
   origins: { script: ['https://cdn.example.com'], img: ['https://img.example.com'], frame: ['https://meet.example.com'] },
@@ -76,6 +76,32 @@ test('preview alias redirects preserve its mount and cannot alias platform APIs'
   assert.equal(response.headers.get('location'), `https://tenant.workers.dev${mount}/en/?revision=one`)
   assert.equal((await staticWebsiteResponse(request(`${mount}/api/health`), env(), mount)).status, 404)
   assert.equal((await staticWebsiteResponse(request('/wrong-preview/'), env(), mount)).status, 404)
+})
+
+test('a preview redirect stays inside the preview mount', async () => {
+  const mount = '/tenant-preview'
+  const retired = await previewHtmlResponse(
+    new Response(null, { status: 308, headers: { location: '/depth?from=training' } }), mount, env())
+  assert.equal(retired.status, 308)
+  assert.equal(retired.headers.get('location'), `${mount}/depth?from=training`)
+
+  const home = await previewHtmlResponse(
+    new Response(null, { status: 308, headers: { location: '/?release=abc' } }), mount, env())
+  assert.equal(home.headers.get('location'), `${mount}?release=abc`)
+
+  const alreadyMounted = await previewHtmlResponse(
+    new Response(null, { status: 308, headers: { location: `${mount}/about` } }), mount, env())
+  assert.equal(alreadyMounted.headers.get('location'), `${mount}/about`)
+
+  const external = await previewHtmlResponse(
+    new Response(null, { status: 307, headers: { location: 'https://example.com/elsewhere' } }), mount, env())
+  assert.equal(external.headers.get('location'), 'https://example.com/elsewhere')
+
+  // Platform paths stay at the root; the preview alias must not become a
+  // second entry point for the raw admin or an API.
+  const admin = await previewHtmlResponse(
+    new Response(null, { status: 307, headers: { location: '/admin' } }), mount, env())
+  assert.equal(admin.headers.get('location'), '/admin')
 })
 
 test('Payload presentation and reserved platform routes stay with the platform', async () => {

@@ -18,6 +18,8 @@ type StaticManifest = {
 
 /** The standard owner workspace embeds only the tenant preview alias. */
 const CONTROL_PLANE_ORIGIN = 'https://helloada.app'
+/** Platform paths the preview alias must never own, including after a redirect. */
+const PREVIEW_PLATFORM_PATH = /^\/(?:api|admin|mail|_next|helloada-preview|_helloada)(?:\/|$)/
 
 /**
  * The committed inventory of the imported static site. It ships with the
@@ -214,6 +216,19 @@ const injectPreviewNavigation = (html: string, mount: string, env: StaticWebsite
  */
 export async function previewHtmlResponse(response: Response, mount: string, env: StaticWebsiteEnv): Promise<Response> {
   const headers = new Headers(response.headers)
+  // A route the app retires can answer with a root-relative permanent
+  // redirect (for example `/training` -> `/depth`). Inside the preview that
+  // target must stay under the mount, or the owner is ejected onto the live
+  // site. Same containment as navigation and assets, for Location headers.
+  const location = headers.get('location')
+  if (location && location.startsWith('/') && !location.startsWith('//')) {
+    const target = new URL(location, 'https://preview.invalid')
+    if (!PREVIEW_PLATFORM_PATH.test(target.pathname)
+        && target.pathname !== mount && !target.pathname.startsWith(`${mount}/`)) {
+      target.pathname = target.pathname === '/' ? mount : `${mount}${target.pathname}`
+      headers.set('location', `${target.pathname}${target.search}${target.hash}`)
+    }
+  }
   headers.set('x-robots-tag', 'noindex, nofollow')
   headers.delete('x-frame-options')
   const frameAncestors = `frame-ancestors 'self' ${CONTROL_PLANE_ORIGIN}`

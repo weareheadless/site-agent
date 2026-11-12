@@ -165,6 +165,23 @@ Staging now retires the replaced draft as `superseded`, so one request has one
 live review; a Growth candidate is never retired this way because its approval
 flow owns its decision.
 
+The owner's second candidate retired `/courses/training` in favour of `/depth`
+with a permanent server redirect. The release gate rejected that as an
+unrendered page (Python 3.10 does not follow `308`), promoted the exact version
+first, and left a failed receipt behind a live site. The gate now follows a
+permanent redirect and requires its destination to render, and the Tenant
+Worker's preview alias rewrites a root-relative `Location` under the preview
+mount instead of ejecting the owner onto the live site. The failed receipt is
+kept as history; the exact approved source is retried under a new release
+identity rather than edited into success.
+
+One transport gap remains: the compiled-preview proxy returns status and body
+but not `Location`, so a server redirect appears as an empty `308` inside the
+compiled Design preview. The Worker-served alias and the release gate are
+fixed; the compiled-preview proxy should forward `Location` under its runtime
+base path in the same way. That is a small API-side change, recorded here
+rather than silently accepted.
+
 ## Defects found while migrating
 
 1. `owner_message_without_unstarted_build` replaced an entire answer with one

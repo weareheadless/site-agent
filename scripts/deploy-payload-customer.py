@@ -29,6 +29,15 @@ if TYPE_CHECKING:
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+# A promoted version may be rechecked read-only after any post-promotion gate.
+# The preview gate runs on the promoted Worker, so its failure must remain
+# resumable instead of stranding a live version behind a failed receipt.
+RESUMABLE_RELEASE_STAGES = (
+    "verify-deployment", "verify-cron-triggers", "verify-queue-consumers",
+    "verify-mailflare-migrations", "verify-preview", "verify-connection",
+    "awaiting-browser-verification", "verified",
+)
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
 MAILFLARE_D1_RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
@@ -1100,7 +1109,7 @@ def validate_presentation_inventory(customer: dict[str, Any], inventory: Any) ->
     return {"profile": profile, "previewMount": mount, "routes": routes}
 
 
-def preview_page_status(url: str) -> int:
+def preview_page_status(url: str, redirects: int = 5) -> int:
     request = urllib.request.Request(
         url,
         headers={"Accept": "text/html", "Cache-Control": "no-cache", "User-Agent": "HelloAda-Release/1.0"},
@@ -1109,6 +1118,13 @@ def preview_page_status(url: str) -> int:
         with urllib.request.urlopen(request, timeout=25) as response:
             return int(getattr(response, "status", 200))
     except urllib.error.HTTPError as error:
+        # Python follows 301/302/303/307 itself but 3.10 still raises on 308.
+        # A permanent redirect is a valid owner-visible route (a retired URL
+        # pointing at the page that replaced it), so follow it and require the
+        # destination to render. A broken redirect still fails.
+        location = error.headers.get("Location")
+        if error.code == 308 and location and redirects > 0:
+            return preview_page_status(urllib.parse.urljoin(url, location), redirects - 1)
         return int(error.code)
 
 
@@ -1923,23 +1939,6 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     recorded_purpose = "workspace-bootstrap" if receipt.get("initialSchemaHead") is not None else "website"
     if recorded_purpose != release_purpose:
         raise ValueError("verification purpose differs from the exact queued release operation")
-    expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
-                "worker": customer["worker"], "repository": customer["repository"],
-                "sharedRuntimeFingerprint": customer["sharedRuntimeFingerprint"], "payloadCore": customer["payloadCore"],
-                "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"],
-                "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-                "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
-                "mailflareD1DatabaseName": customer["mailflareD1DatabaseName"],
-                "mailflareR2BucketName": customer["mailflareR2BucketName"],
-                "mailflareInboundQueueName": customer["mailflareInboundQueueName"],
-                "mailflareOutboundQueueName": customer["mailflareOutboundQueueName"],
-                "mailflareAgentQueueName": customer["mailflareAgentQueueName"]}
-    if approval_id is not None:
-        expected["approvalId"] = approval_id
-    if initialization_head is not None:
-        expected["initialSchemaHead"] = initialization_head
-    if any(receipt.get(key) != value for key, value in expected.items()):
-        raise ValueError("verification target differs from the recorded release")
     # Normal builds resolve the schema from the generated Payload manifest,
     # not the registry's older schema metadata. Verify that same recorded
     # contract; verify_live still requires its exact current Worker health.
@@ -1952,13 +1951,35 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         })
     except RuntimeError as error:
         raise ValueError("recorded release Payload contract is invalid") from error
+    # The runtime fingerprint and Payload contract belong to the build that
+    # produced the promoted version, not to the template on main today. Use the
+    # receipt's recorded identity so a read-only recheck still works after the
+    # shared runtime advanced, while the tenant/resource identity stays
+    # authoritative from the registry.
+    expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
+                "worker": resolved_customer["worker"], "repository": resolved_customer["repository"],
+                "sharedRuntimeFingerprint": resolved_customer["sharedRuntimeFingerprint"],
+                "payloadCore": customer["payloadCore"],
+                "migrationHead": customer["migrationHead"],
+                "websitePresent": resolved_customer["websitePresent"],
+                "privateEmailR2BucketName": resolved_customer["privateEmailR2BucketName"],
+                "mailflareD1DatabaseId": resolved_customer["mailflareD1DatabaseId"],
+                "mailflareD1DatabaseName": resolved_customer["mailflareD1DatabaseName"],
+                "mailflareR2BucketName": resolved_customer["mailflareR2BucketName"],
+                "mailflareInboundQueueName": resolved_customer["mailflareInboundQueueName"],
+                "mailflareOutboundQueueName": resolved_customer["mailflareOutboundQueueName"],
+                "mailflareAgentQueueName": resolved_customer["mailflareAgentQueueName"]}
+    if approval_id is not None:
+        expected["approvalId"] = approval_id
+    if initialization_head is not None:
+        expected["initialSchemaHead"] = initialization_head
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ValueError("verification target differs from the recorded release")
     try:
         mailflare_migration_receipt(receipt)
     except RuntimeError as error:
         raise ValueError("release has no exact Mailflare migration provenance") from error
-    if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
-            "verify-deployment", "verify-cron-triggers", "verify-queue-consumers", "verify-mailflare-migrations", "verify-connection",
-            "awaiting-browser-verification", "verified"):
+    if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in RESUMABLE_RELEASE_STAGES:
         raise ValueError("only a promoted release may resume read-only verification")
     if receipt.get("cronTriggers", {}).get("desired") != ["*/5 * * * *", "0 2 * * *"]:
         raise ValueError("release has no verified message and Mailflare schedule contract")

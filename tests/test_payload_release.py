@@ -4,9 +4,11 @@ import hashlib
 import io
 import json
 import sys
+import threading
 import urllib.error
 import zipfile
 import shutil
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -102,6 +104,47 @@ def test_preview_gate_renders_the_home_and_every_declared_page(monkeypatch):
     monkeypatch.setattr(release, 'preview_page_status', lambda url: 404 if url.endswith('/courses?release=' + 'a' * 40) else 200)
     with pytest.raises(RuntimeError, match='does not render the owner site'):
         release.verify_preview_routes(customer, presentation, 'a' * 40)
+
+
+def test_preview_status_follows_a_permanent_route_redirect():
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_GET(self):
+            if self.path.startswith('/training'):
+                self.send_response(308)
+                self.send_header('Location', '/depth')
+                self.end_headers()
+                return
+            body = b'ok'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        port = server.server_address[1]
+        # A retired route that permanently points at the page replacing it is a
+        # valid owner-visible route; Python 3.10's urllib raises on 308, so the
+        # verifier has to follow it and require the destination to render.
+        assert release.preview_page_status(f'http://127.0.0.1:{port}/training?release={"a" * 40}') == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_verify_only_can_resume_a_promoted_release_after_a_preview_failure():
+    assert 'verify-preview' in release.RESUMABLE_RELEASE_STAGES
+    assert 'verify-deployment' in release.RESUMABLE_RELEASE_STAGES
+    source = (ROOT / 'scripts/deploy-payload-customer.py').read_text()
+    block = source[source.index('def verification_receipt('):source.index('MINIMUM_FREE_GIB')]
+    # The runtime fingerprint and Payload contract belong to the promoted
+    # build, not to the template on main when the recheck runs.
+    assert '"sharedRuntimeFingerprint": resolved_customer["sharedRuntimeFingerprint"]' in block
+    assert 'sharedRuntimeFingerprint"]: customer[' not in block
 
 
 CUSTOMER = {
