@@ -77,6 +77,24 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def preview_runtime_url(port: int, base_path: str, path: str = "") -> str:
+    """The exact address of one candidate path inside its own runtime.
+
+    The signed base path *is* the document URL, so the preview root is that
+    path and never that path with a trailing slash: Next answers the canonical
+    form and redirects the other one. Every caller builds its request here so
+    a readiness probe, the render gate and the owner's frame all ask for the
+    same address.
+    """
+    base = str(base_path or "").strip().rstrip("/")
+    if not base.startswith(_PREVIEW_PATH_PREFIX) or ".." in base.split("/"):
+        raise SourceDeploymentError("compiled preview has no signed runtime path")
+    clean = str(path or "").lstrip("/")
+    if ".." in Path(clean).parts:
+        raise SourceDeploymentError("compiled preview path is invalid")
+    return f"http://127.0.0.1:{int(port)}{base}" + (f"/{clean}" if clean else "")
+
+
 class _DocumentAssets(HTMLParser):
     """Collect the files a rendered document makes the browser request.
 
@@ -1134,7 +1152,7 @@ class SourceDeploymentService:
                 self._stop_runtime(str(job["id"]))
                 raise SourceDeploymentError("compiled preview process exited before it was ready")
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}{base_path}/", timeout=3) as response:
+                with urllib.request.urlopen(preview_runtime_url(port, base_path), timeout=3) as response:
                     if self._preview_root_is_ready(int(response.status)):
                         ready = True
                         break
@@ -1211,12 +1229,12 @@ class SourceDeploymentService:
         references are requested too, so a link to a file the build never
         emitted fails here instead of in the owner's browser tab.
         """
-        if not base.endswith("/"):
-            base += "/"
+        base = str(base or "").rstrip("/")
         verified: list[str] = []
         assets: dict[str, str] = {}
         for route in routes:
-            url = urllib.parse.urljoin(base, route.lstrip("/") if route != "/" else ".")
+            # Home is the base path itself; every other route is appended to it.
+            url = base if route == "/" else f"{base}/{route.lstrip('/')}"
             try:
                 with urllib.request.urlopen(url, timeout=20) as response:
                     status = int(response.status)
@@ -2031,10 +2049,7 @@ class SourceDeploymentService:
             if process.poll() is not None:
                 raise SourceDeploymentError("compiled preview process is no longer running")
             port = int(job.get("runtime_port") or 0)
-        clean_path = str(path or "").lstrip("/")
-        if ".." in Path(clean_path).parts:
-            raise SourceDeploymentError("compiled preview path is invalid")
-        target = f"http://127.0.0.1:{port}{job.get('runtime_base_path') or ''}/{clean_path}"
+            target = preview_runtime_url(port, str(job.get("runtime_base_path") or ""), str(path or ""))
         if query:
             target = f"{target}?{query}"
         allowed = {"accept", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}

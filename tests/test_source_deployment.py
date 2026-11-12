@@ -333,7 +333,7 @@ def test_a_preview_address_is_signed_for_its_tenant_and_job():
         preview_host.path_for(key, "tenant/../one", job, expires)
 
 
-def test_a_candidate_redirect_and_flight_request_stay_on_the_mount(tmp_path):
+def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path):
     import http.server
     import threading
 
@@ -354,7 +354,7 @@ def test_a_candidate_redirect_and_flight_request_stay_on_the_mount(tmp_path):
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    mount = "/api/helloada/tenants/inmersion-freediving/source/preview/job/runtime"
+    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
 
     class Running:
@@ -1215,3 +1215,61 @@ def test_compiled_preview_generates_the_presentation_inventory_before_typecheck(
     typecheck = source.index('"typecheck"', inventory)
     build = source.index('"open_next_build"', inventory)
     assert overlay < inventory < typecheck < build
+
+
+def test_the_preview_root_is_its_own_address_not_the_slash_form():
+    """The signed path is the document; the slash form is a redirect.
+
+    Python's urllib does not follow a 308, so asking for the slash form turned a
+    working build into "did not become ready".
+    """
+    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
+    assert source_deployment.preview_runtime_url(8080, mount) == f"http://127.0.0.1:8080{mount}"
+    assert source_deployment.preview_runtime_url(8080, mount + "/") == f"http://127.0.0.1:8080{mount}"
+    assert source_deployment.preview_runtime_url(8080, mount, "/courses") == (
+        f"http://127.0.0.1:8080{mount}/courses")
+    assert source_deployment.preview_runtime_url(8080, mount, "courses/") == (
+        f"http://127.0.0.1:8080{mount}/courses/")
+    with pytest.raises(source_deployment.SourceDeploymentError):
+        source_deployment.preview_runtime_url(8080, "/not-a-signed-path")
+    with pytest.raises(source_deployment.SourceDeploymentError):
+        source_deployment.preview_runtime_url(8080, mount, "../admin")
+
+
+def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
+    import http.server
+    import threading
+
+    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
+    seen: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - stdlib handler
+            seen.append(self.path)
+            if self.path == f"{mount}/":
+                self.send_response(308)
+                self.send_header("Location", mount)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b"<!doctype html><html><body>ok</body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        verified = service._verify_preview_routes(
+            f"http://127.0.0.1:{server.server_address[1]}{mount}", ["/", "/courses"])
+    finally:
+        service.close()
+        server.shutdown()
+    assert verified == ["/", "/courses"]
+    assert f"{mount}/" not in seen
