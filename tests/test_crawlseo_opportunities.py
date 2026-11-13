@@ -229,3 +229,30 @@ def test_opportunities_validate_the_whole_project_counts_and_reject_a_bad_shape(
 
     with pytest.raises(CrawlSEOApplicationError, match="counts"):
         CrawlSEOApplicationService(Negative()).connector_opportunities("site-1")
+
+
+def test_a_full_page_of_verbose_opportunities_is_not_refused_by_a_scalar_byte_cap():
+    """A 100-row page is legitimately hundreds of kilobytes.
+
+    The default 200 KB scalar bound refused the connector's own maximum page
+    with "invalid CrawlSEO opportunities response", which read like a broken
+    connector. The bound follows the list endpoints (findings, analytics).
+    """
+
+    class Verbose(Provider):
+        def connector_opportunities(self, **kwargs):
+            rows = [{
+                "id": f"opp-{index}",
+                "title": "Add a line-training section to the homepage " * 8,
+                "summary": "Evidence paragraph about the page and its queries. " * 40,
+                "dedupKey": f"phase3:content_business:{index:016x}",
+                "scoreInputs": {"worth": {"targetPages": ["https://example.test/blog/a-very-long-slug-" + "x" * 60]}},
+                "recommendationDecision": {"action": "Write the section and link it. " * 20},
+                "tasks": [],
+            } for index in range(100)]
+            return {"schemaVersion": "1.0", "projectId": "project-1", "siteId": kwargs["site_id"],
+                    "opportunities": rows, "nextCursor": "opp-99"}
+
+    result = CrawlSEOApplicationService(Verbose()).connector_opportunities("site-1", limit=100)
+    assert len(result["opportunities"]) == 100
+    assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) > 200_000
