@@ -135,7 +135,10 @@ def worker_runtime_secrets(
         raise TenantEnvironmentError("registered tenant Resend sender credential is incomplete")
     if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_DOMAIN_ID")):
         raise TenantEnvironmentError("registered tenant Resend sender key is not bound to an exact domain")
-    result = {"PAYLOAD_SECRET": values["PAYLOAD_SECRET"], token_name: values[token_name]}
+    result = {
+        "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
+        WORKER_SITE_AGENT_TOKEN_ENV: values[token_name],
+    }
     if values.get("RESEND_API_KEY"):
         result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
     if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):

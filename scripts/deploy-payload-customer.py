@@ -1513,7 +1513,12 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
             auto_email_provisioning_enabled,
             worker_runtime_secrets,
         )
+        from site_agent.application.tenant_registration import WORKER_SITE_AGENT_TOKEN_ENV
 
+        worker_manifest_path = ROOT / "src/site_agent/templates/next-payload/template-manifest.json"
+        worker_manifest = json.loads(worker_manifest_path.read_text(encoding="utf-8"))
+        if str(worker_manifest.get("workerTokenEnv") or "").strip() != WORKER_SITE_AGENT_TOKEN_ENV:
+            raise ValueError("canonical Worker token binding differs from the tenant registration contract")
         registered_customers = manifest.get("customers")
         customer = registered_customers.get(tenant) if isinstance(registered_customers, dict) else None
         if not isinstance(customer, dict):
