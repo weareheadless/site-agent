@@ -10,6 +10,14 @@ export function helloAdaWorkspacePath(path: string, method: string, search = '')
   if (suffix === '/growth/research-policy' && ['GET', 'PUT'].includes(method)) return `/workspace/growth/research-policy${search}`
   const crawlseoActionDecision = suffix.match(/^\/growth\/actions\/([0-9]+)\/decision$/)
   if (crawlseoActionDecision && method === 'POST') return `/workspace/growth/actions/${crawlseoActionDecision[1]}/decision${search}`
+  // Opportunity work: the decision queue, one explicit decision and one task.
+  // Ids are opaque to this bridge, so they are only checked for shape and
+  // escaped; the connector decides what they mean.
+  if (suffix === '/growth/opportunities' && method === 'GET') return `/workspace/growth/opportunities${search}`
+  const opportunityDecision = suffix.match(/^\/growth\/opportunities\/([A-Za-z0-9_-]{1,120})\/decision$/)
+  if (opportunityDecision && method === 'POST') return `/workspace/growth/opportunities/${opportunityDecision[1]}/decision${search}`
+  const growthTask = suffix.match(/^\/growth\/tasks\/([A-Za-z0-9_-]{1,120})$/)
+  if (growthTask && ['GET', 'POST'].includes(method)) return `/workspace/growth/tasks/${growthTask[1]}${search}`
   if (method === 'POST' && suffix === '/growth/check') return `/workspace/growth/check${search}`
   if (method === 'POST' && suffix === '/media/analyze') return `/workspace/media/analyze${search}`
   if (method === 'POST' && /^\/messages\/[0-9]+\/draft-with-ada$/.test(suffix)) return `/workspace/messages/reply-draft${search}`
