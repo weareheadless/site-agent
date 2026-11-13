@@ -69,11 +69,20 @@ class CloudflareDNSClient:
         name = str(zone_name or "").strip().rstrip(".")
         if not name:
             raise CloudflareDNSError("zone name is required")
-        payload = self._request(f"/zones?name={urllib.parse.quote(name)}&per_page=1")
-        results = payload.get("result") or []
+        payload = self._request(f"/zones?name={urllib.parse.quote(name)}&per_page=50")
+        results = [item for item in (payload.get("result") or []) if isinstance(item, Mapping)]
         if not payload.get("success") or not results:
             raise CloudflareDNSError(f"zone not found: {name}")
-        return str(results[0].get("id") or "")
+        # The same name can be registered twice, for example a live zone and one
+        # left behind as ``moved`` after the domain changed accounts. The active
+        # zone is the one this account controls; the API's ordering is not a
+        # contract, so never decide by taking the first result.
+        active = [item for item in results if str(item.get("status") or "") == "active"]
+        if len(active) == 1:
+            return str(active[0].get("id") or "")
+        if len(results) == 1:
+            return str(results[0].get("id") or "")
+        raise CloudflareDNSError(f"zone is ambiguous: {name}")
 
     def zone_id_for_hostname(self, hostname: str) -> str:
         """Resolve the authoritative Cloudflare zone for a hostname.

@@ -51,6 +51,47 @@ def test_zone_lookup_resolves_the_most_specific_managed_parent_zone():
     assert len(client.paths) == 2
 
 
+def test_zone_lookup_ignores_a_retired_duplicate_of_the_same_name():
+    """A moved zone must not block the active one it duplicates.
+
+    `astridrincon.com` is registered twice: the platform's active zone and one
+    left behind as `moved` after an account change. Choosing by name alone made
+    every email provisioning run fail with an ambiguity that no user could fix.
+    """
+
+    class ZoneClient(CloudflareEmailClient):
+        def request(self, method, path, body=None):
+            if path.startswith("/zones?name="):
+                return {"result": [
+                    {"id": "retired-zone", "name": "example.com", "status": "moved"},
+                    {"id": "live-zone", "name": "example.com", "status": "active"},
+                ]}
+            return {"result": [{"id": "retired-zone", "name": "example.com", "status": "moved"},
+                               {"id": "live-zone", "name": "example.com", "status": "active"}]}
+
+    zone = ZoneClient("token", "dns-token").zone("example.com")
+
+    assert zone["id"] == "live-zone"
+
+
+def test_two_active_duplicate_zones_are_still_ambiguous():
+    class ZoneClient(CloudflareEmailClient):
+        def request(self, method, path, body=None):
+            if path.startswith("/zones?name="):
+                return {"result": [
+                    {"id": "one", "name": "example.com", "status": "active"},
+                    {"id": "two", "name": "example.com", "status": "active"},
+                ]}
+            return {"result": [], "result_info": {"total_pages": 1}}
+
+    try:
+        ZoneClient("token", "dns-token").zone("example.com")
+    except cloudflare_email.CloudflareEmailError as exc:
+        assert "ambiguous" in str(exc)
+    else:  # pragma: no cover - the assertion is the point
+        raise AssertionError("two active zones must not be resolved by position")
+
+
 def test_cloudflare_email_client_routes_dns_and_email_calls_to_separate_tokens(monkeypatch):
     tokens = []
 

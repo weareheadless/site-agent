@@ -91,6 +91,11 @@ class CloudflareEmailClient:
         result = self.request("GET", f"/zones?name={urllib.parse.quote(clean)}&per_page=100").get("result") or []
         matches = [item for item in result if isinstance(item, Mapping) and str(item.get("name", "")).lower() == clean]
         if len(matches) > 1:
+            # A zone name can exist twice: the live zone and one left behind as
+            # ``moved`` after the domain changed accounts. Only a tie between
+            # active zones is genuinely ambiguous.
+            matches = [item for item in matches if str(item.get("status") or "") == "active"] or matches
+        if len(matches) > 1:
             raise CloudflareEmailError(f"Cloudflare zone is ambiguous: {clean}")
         if not matches:
             # A site's registered hostname can be www.example.com while its
@@ -116,6 +121,10 @@ class CloudflareEmailClient:
                 raise CloudflareEmailError(f"No Cloudflare zone owns the registered hostname: {clean}")
             most_specific = max(len(str(item.get("name") or "")) for item in parents)
             matches = [item for item in parents if len(str(item.get("name") or "")) == most_specific]
+        if len(matches) != 1:
+            active = [item for item in matches if str(item.get("status") or "") == "active"]
+            if len(active) == 1:
+                matches = active
         if len(matches) != 1:
             raise CloudflareEmailError(f"Cloudflare zone is ambiguous: {clean}")
         zone = dict(matches[0])
