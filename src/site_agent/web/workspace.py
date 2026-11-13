@@ -782,6 +782,20 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/publication/retry")
+    async def workspace_publication_retry(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            body = {}
+        if body is not None and not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.publication_retry(body, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/publication")
     def workspace_publication(request: Request):
         tenant = require_service(request)

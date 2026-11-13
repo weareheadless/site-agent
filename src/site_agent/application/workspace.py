@@ -4877,6 +4877,36 @@ class ChatService:
             restored.append(entry)
         return {"restored": restored, "unsupported": unsupported, "superseded": superseded}
 
+    def publication_retry(
+        self,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Queue one more release attempt for an approved change that failed."""
+        if body is not None and not isinstance(body, Mapping):
+            raise BridgeError("release retry body must be an object")
+        body = body or {}
+        try:
+            draft_id = int(body.get("draft_id"))
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("choose the change whose release should be retried") from exc
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        deployer = self._source_deployer(tenant)
+        retry = getattr(deployer, "retry_release", None)
+        if not callable(retry):
+            raise BridgeError("this site cannot retry a release from the workspace")
+        from .source_deployment import SourceDeploymentError
+
+        try:
+            job = retry(draft_id)
+        except SourceDeploymentError as exc:
+            raise BridgeError(str(exc)[:500]) from exc
+        memory, _llm, _tenant_id = self._scope(tenant)
+        memory.record_action("publish_retry", f"#{draft_id}: {str(job.get('release_id') or 'new attempt')} queued from the workspace")
+        return self.publication(tenant=tenant)
+
     def publication(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Report the owner-visible state of the current production release.
 

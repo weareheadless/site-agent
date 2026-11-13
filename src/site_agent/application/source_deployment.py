@@ -1728,6 +1728,49 @@ class SourceDeploymentService:
 
             wake_growth_pending(self.memory)
 
+    def retry_release(self, draft_id: Any) -> dict[str, Any]:
+        """Queue one more attempt for an approved change whose release failed.
+
+        A failed release id is evidence, not a verdict: the pipeline never runs a
+        terminal id again, so recovery means a new attempt for the same source.
+        That is only honest while the source is still the head of ``main`` — after
+        the site moves, the approved change has to be re-applied before it can be
+        released, and this refuses instead of deploying a stale tree.
+        """
+        try:
+            approval = int(draft_id)
+        except (TypeError, ValueError) as exc:
+            raise SourceDeploymentError("retrying a release needs the exact approval identity") from exc
+        if approval < 1:
+            raise SourceDeploymentError("retrying a release needs the exact approval identity")
+        with self._lock:
+            jobs = [
+                job for job in self._jobs.values()
+                if isinstance(job, Mapping)
+                and job.get("mode") == _PRODUCTION
+                and job.get("draft_id") == approval
+            ]
+            if not jobs:
+                raise SourceDeploymentError("this change has no release attempt to retry")
+            job = max(jobs, key=lambda item: str(item.get("created_at") or ""))
+            if job.get("status") not in {"failed", "interrupted"}:
+                raise SourceDeploymentError("only a failed release can be retried")
+            commit = str(job.get("commit") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SourceDeploymentError("the failed release has no exact source revision")
+        if self.memory is not None:
+            draft = self.memory.get_draft(approval)
+            if isinstance(draft, Mapping) and draft.get("status") == "live":
+                raise SourceDeploymentError("this change is already live")
+        if self._head("main") != commit:
+            raise SourceDeploymentError(
+                "the site changed after this release failed; the approved change must be re-applied before it can be released"
+            )
+        return self.start(
+            {"mode": _PRODUCTION, "branch": "main", "commit": commit, "draft_id": approval},
+            allow_production=True,
+        )
+
     def _run_job(self, job_id: str, branch: str, requested_commit: str | None, mode: str) -> None:
         with self._lock:
             job = self._jobs[job_id]

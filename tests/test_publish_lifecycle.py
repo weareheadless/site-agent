@@ -366,3 +366,82 @@ def test_compiled_preview_recovery_retains_publishing_draft_status(tmp_path, mon
     assert "runtime_path" not in draft["meta"]["preview"]
     service.close()
     memory.close()
+
+
+def test_a_failed_release_is_retried_as_a_new_attempt_for_the_same_source(tmp_path, monkeypatch):
+    """A failed attempt is evidence, not a verdict.
+
+    The pipeline never runs a terminal release id again, so retrying means a
+    new attempt for the same approved commit. The old receipt stays visible and
+    the draft returns to publishing.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed", phase="generate-payload-contract")
+    calls = []
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+
+    def request_release(config, env, source_sha, *, approval_id):
+        calls.append((source_sha, approval_id))
+        return {"release_id": "20261113-retry-1", "control_sha": "c" * 40}
+
+    monkeypatch.setattr(deployment, "request_release", request_release)
+
+    job = service.retry_release(draft_id)
+
+    assert job["status"] == "queued"
+    assert job["phase"] == "queued_on_vps"
+    assert job["release_id"] == "20261113-retry-1"
+    assert job["commit"] == "a" * 40
+    assert job["draft_id"] == draft_id
+    assert job["id"] != "failed-attempt"
+    assert calls == [("a" * 40, draft_id)]
+    assert memory.list_drafts()[0]["status"] == "publishing"
+    # The failed attempt is retained as evidence.
+    assert service._jobs["failed-attempt"]["status"] == "failed"
+    service.close()
+    memory.close()
+
+
+def test_a_failed_release_is_not_retried_after_the_site_moved(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed")
+    called = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+
+    with pytest.raises(SourceDeploymentError, match="must be re-applied"):
+        service.retry_release(draft_id)
+
+    assert not called
+    assert service._jobs["failed-attempt"]["status"] == "failed"
+    service.close()
+    memory.close()
+
+
+def test_only_a_failed_release_can_be_retried(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+    service._jobs["running-attempt"] = release_job(draft_id, status="queued")
+    called = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
+
+    with pytest.raises(SourceDeploymentError, match="only a failed release"):
+        service.retry_release(draft_id)
+
+    assert not called
+    service.close()
+    memory.close()
+
+
+def test_a_live_change_cannot_be_released_again(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="live")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed")
+    called = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+
+    with pytest.raises(SourceDeploymentError, match="already live"):
+        service.retry_release(draft_id)
+
+    assert not called
+    service.close()
+    memory.close()

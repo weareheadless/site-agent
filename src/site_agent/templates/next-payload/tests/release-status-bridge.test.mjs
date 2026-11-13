@@ -9,8 +9,13 @@ test('publication and checkpoint routes reach the workspace bridge', () => {
   assert.equal(helloAdaWorkspacePath('/api/helloada/checkpoints/restore', 'POST'), '/workspace/checkpoints/restore')
 })
 
+test('a failed release can be retried through the workspace bridge', () => {
+  assert.equal(helloAdaWorkspacePath('/api/helloada/publication/retry', 'POST'), '/workspace/publication/retry')
+})
+
 test('publication and checkpoint routes reject the wrong method', () => {
   assert.equal(helloAdaWorkspacePath('/api/helloada/publication', 'POST'), undefined)
+  assert.equal(helloAdaWorkspacePath('/api/helloada/publication/retry', 'GET'), undefined)
   assert.equal(helloAdaWorkspacePath('/api/helloada/checkpoints', 'POST'), undefined)
   assert.equal(helloAdaWorkspacePath('/api/helloada/checkpoints/restore', 'GET'), undefined)
 })

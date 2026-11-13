@@ -39,6 +39,9 @@ export function helloAdaWorkspacePath(path: string, method: string, search = '')
   const version = suffix.match(/^\/versions\/([0-9]+)\/restore$/)
   if (version && method === 'POST') return `/workspace/versions/${version[1]}/restore${search}`
   if (['/publication', '/checkpoints'].includes(suffix) && method === 'GET') return `/workspace${suffix}${search}`
+  // One more attempt for an approved change whose release failed. The change
+  // is named by the body, never by the path.
+  if (suffix === '/publication/retry' && method === 'POST') return `/workspace/publication/retry${search}`
   if (suffix === '/checkpoints/restore' && method === 'POST') return `/workspace/checkpoints/restore${search}`
   if (suffix === '/worktree/discard' && method === 'POST') return `/workspace/worktree/discard${search}`
   if (suffix === '/source/preview' && ['GET', 'POST'].includes(method)) return `/workspace/source/preview${search}`
