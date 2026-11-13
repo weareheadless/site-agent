@@ -2206,7 +2206,9 @@ def main() -> int:
     if args.build_only and args.verify_only:
         parser.error("--build-only cannot recheck an already promoted release")
     if not args.verify_only:
-        require_free_space(release_root)
+        # A rehearsal keeps no release history, so it needs the build's own
+        # floor rather than the VPS headroom that protects the next queued run.
+        require_free_space(release_root, MINIMUM_BUILD_FREE_BYTES // (1024 ** 3) if args.build_only else None)
     directory = release_root / "runs" / args.tenant / args.release_id
     workspace = None
     workspace_path = None
