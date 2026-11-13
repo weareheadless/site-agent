@@ -71,3 +71,43 @@ Only a candidate whose required checks pass gets the existing owner decision.
 The workspace selects that decision's exact compiled SHA rather than showing
 the published-content alias. Owner approval still uses the canonical draft
 approval operation and production release queue.
+
+The proxy requests a decoded request path escaped once. Next names chunks after
+route segments such as `[...slug]` and answers the decoded form with a redirect
+to the escaped one, so passing the decoded form through hands the browser a
+redirect back to the address it just asked for. The document renders and every
+client chunk loops, which is a preview the owner cannot use. The render gate
+already requests the escaped form, so this only shows up in the browser.
+
+## A review that outlived its base
+
+A compiled preview is pinned to the exact base its review was prepared from.
+When production moves, the candidate's own tree can stop compiling even though
+the change under review is unchanged — OceanicVibes' favicon review failed with
+a missing tenant-admin import after main removed that admin. Retrying the same
+revision cannot succeed, and the draft stayed pending, so the owner's workspace
+showed one retained build failure with no action that could clear it.
+
+`POST /workspace/source/preview/rebuild` (`{ "draft_id": n }`, bridged from
+`POST /api/helloada/source/preview/rebuild`) re-applies that review onto the
+current production head and starts one fresh preview of it:
+
+- the reviewed change is the exact tree difference between the review's pinned
+  `base_sha` and its `head_sha`, read from both trees. It is never a file list
+  supplied by the caller, and it is read from the full tree rather than the
+  compare API, which stops listing after 300 files;
+- every reviewed path passes the same publish allowlist the preview boundary
+  enforces, and a repository too large to read as one tree is refused instead
+  of half-applied;
+- it refuses when the preview branch no longer carries that exact candidate, so
+  a rebuild never overwrites newer staged work, and while the same revision is
+  already building or has a ready preview;
+- the review keeps its identity, records the replaced revisions in
+  `rebased_from`, and persists the new `head_sha`/`base_sha` before the build
+  starts so the compiled-preview guard binds the new commit;
+- its commit is a normal commit on the preview branch. Nothing is published and
+  no production branch moves.
+
+A rebuild is not the same operation as `retry`: retry asks for the same revision
+again, and is what a transient build failure needs. The workspace shows one
+action for the failed preview and reports when the change was re-applied.
