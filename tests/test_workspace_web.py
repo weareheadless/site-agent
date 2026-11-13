@@ -3970,11 +3970,12 @@ def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
     from site_agent.web.workspace import create_workspace_api_app
 
     calls: list[str] = []
-    monkeypatch.setattr(
-        preview_host, "ensure_preview_host_dns",
-        lambda env, config=None: calls.append(str(env[preview_host.PREVIEW_HOST_ENV]))
-        or {"host": "preview.example.test", "target": "192.0.2.10", "proxied": True},
-    )
+
+    def provision(env, config=None, host=None):
+        calls.append(host or str(env[preview_host.PREVIEW_HOST_ENV]))
+        return {"host": host or "preview.example.test", "target": "192.0.2.10", "proxied": True}
+
+    monkeypatch.setattr(preview_host, "ensure_preview_host_dns", provision)
     registry = TenantRegistry({})
     app = create_workspace_api_app(
         registry,
@@ -3993,3 +3994,59 @@ def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
     assert calls == []
+
+
+def test_a_site_brings_its_own_preview_host(monkeypatch):
+    """The preview of a site belongs at preview.<that site's domain>.
+
+    The platform host is only the default for a site that has no address of its
+    own. The signed path carries no host, so the same build stays open either
+    way and moving the address does not invalidate it.
+    """
+    from types import SimpleNamespace
+
+    from site_agent.application import preview_host
+    from site_agent.web.workspace import create_workspace_api_app
+
+    env = {
+        "HELLOADA_PREVIEW_HOST": "preview.helloda.app",
+        "HELLOADA_PREVIEW_DNS_HOST": "api.helloda.app",
+        "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 48,
+    }
+    site = {"preview": {"host": "preview.astridrincon.com"}}
+    assert preview_host.host_for(env, site) == "preview.astridrincon.com"
+    assert preview_host.origin(env, site) == "https://preview.astridrincon.com"
+    assert preview_host.origin(env) == "https://preview.helloda.app"
+    # A hostname is not a path: a value that is not a bare name is refused
+    # rather than turned into an address the platform would sign for.
+    for bad in ("preview.example.test/../x", "example.test:8443", "",):
+        with pytest.raises(preview_host.PreviewHostError):
+            preview_host.host_for({"HELLOADA_PREVIEW_HOST": bad}, None)
+
+    calls: list[str] = []
+
+    def provision(env, config=None, host=None):
+        calls.append(str(host))
+        return {"host": str(host), "target": "192.0.2.10", "proxied": True}
+
+    monkeypatch.setattr(preview_host, "ensure_preview_host_dns", provision)
+    class Registry:
+        """Only the tenant list matters to startup provisioning."""
+
+        def __init__(self, tenants):
+            self.tenants = tenants
+
+        def start(self):
+            return None
+
+        def close(self):
+            return None
+
+    registry = Registry({
+        "site-one": SimpleNamespace(tenant_id="site-one", config=site),
+        "site-two": SimpleNamespace(tenant_id="site-two", config={}),
+    })
+    app = create_workspace_api_app(registry, config={}, env=env, prefix="/v1/workspace")
+    with TestClient(app) as client:
+        assert client.get("/healthz").status_code == 200
+    assert calls == ["preview.astridrincon.com", "preview.helloda.app"]

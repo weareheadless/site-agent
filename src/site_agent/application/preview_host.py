@@ -41,6 +41,13 @@ _SIGNATURE = re.compile(r"^[0-9a-f]{16}$")
 # The same identity rule the tenant registry applies: a preview path segment is
 # never a caller-controlled string.
 _TENANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
+# A preview host is an origin, not an authority: no port, path or userinfo, and
+# every label is a DNS label. The address is signed and published, so a value
+# that is not a bare hostname must be refused rather than published.
+_HOST = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
 
 
 class PreviewHostError(RuntimeError):
@@ -61,8 +68,25 @@ def preview_host(env: Mapping[str, str]) -> str:
     return host
 
 
-def origin(env: Mapping[str, str]) -> str:
-    return f"https://{preview_host(env)}"
+def host_for(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> str:
+    """The origin one site's previews are served at.
+
+    A preview belongs to the site it compiles, so its address belongs to that
+    site's domain: ``preview.<site domain>``. The platform host stays the
+    fallback for a tenant that has not been given its own address, and a tenant
+    config is the only place the choice lives, so the URL a build reports and
+    the URL the workspace frames can never disagree.
+    """
+    preview = config.get("preview") if isinstance(config, Mapping) else None
+    configured = str((preview or {}).get("host") or "").strip().strip("/").lower() if isinstance(preview, Mapping) else ""
+    host = configured or preview_host(env)
+    if not _HOST.fullmatch(host):
+        raise PreviewHostError("preview host is not a safe hostname")
+    return host
+
+
+def origin(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> str:
+    return f"https://{host_for(env, config)}"
 
 
 def expiry_for(created_at: Any, *, now: float | None = None) -> int:
@@ -106,8 +130,9 @@ def path_for(key: str, tenant: str, job: str, expires: int) -> str:
     return f"{PREVIEW_PREFIX}/{owner}/{job_id}/{int(expires)}/{signature(key, owner, job_id, expires)}"
 
 
-def url_for(env: Mapping[str, str], tenant: str, job: str, expires: int) -> str:
-    return f"{origin(env)}{path_for(signing_key(env), tenant, job, expires)}"
+def url_for(env: Mapping[str, str], tenant: str, job: str, expires: int,
+            *, config: Mapping[str, Any] | None = None) -> str:
+    return f"{origin(env, config)}{path_for(signing_key(env), tenant, job, expires)}"
 
 
 def verify(key: str, tenant: str, job: str, expires: str, supplied: str, *, now: float | None = None) -> bool:
@@ -131,17 +156,21 @@ def verify(key: str, tenant: str, job: str, expires: str, supplied: str, *, now:
     return hmac.compare_digest(expected.encode(), str(supplied).strip().encode())
 
 
-def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Create the preview host's public record if the platform has not yet.
+def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any] | None = None,
+                            host: str | None = None) -> dict[str, Any]:
+    """Create a preview host's public record if the platform has not yet.
 
     The address follows the host that already serves the API, so a preview
     hostname needs no hand-made Cloudflare record and a fresh installation gets
-    one the first time the API starts.
+    one the first time the API starts. ``host`` lets a site bring its own
+    ``preview.<site domain>`` address instead of the platform-wide one.
     """
     from ..credentials import credential_profile
     from ..hands.cloudflare_dns import CloudflareDNSError, CloudflareDNSClient
 
-    host = preview_host(env)
+    host = str(host or "").strip().strip("/").lower() or host_for(env, config)
+    if not _HOST.fullmatch(host):
+        raise PreviewHostError("preview host is not a safe hostname")
     anchor = str(env.get(PREVIEW_DNS_HOST_ENV) or "").strip().strip("/").lower()
     if not anchor:
         raise PreviewHostError(f"{PREVIEW_DNS_HOST_ENV} is not configured")
@@ -187,6 +216,7 @@ __all__ = [
     "PreviewHostError",
     "ensure_preview_host_dns",
     "expiry_for",
+    "host_for",
     "origin",
     "path_for",
     "preview_host",

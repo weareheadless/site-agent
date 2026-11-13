@@ -628,6 +628,84 @@ def test_compiled_preview_rebuilds_exact_commit_after_process_restart(monkeypatc
     memory.close()
 
 
+def test_a_dead_ready_preview_restarts_instead_of_reporting_itself_ready(monkeypatch, tmp_path):
+    """A build receipt is not a running preview.
+
+    The record can say ``ready`` while its workerd process is gone. Handing that
+    address to the workspace frames a 409 and the owner never gets a rebuild,
+    because the UI trusts the ``ready`` it was given.
+    """
+
+    class Future:
+        def done(self):
+            return False
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            self.submitted = []
+
+        def submit(self, function, *args):
+            self.submitted.append((function, args))
+            return Future()
+
+        def shutdown(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
+    memory = Memory(tmp_path / "memory.db")
+    memory.kv_set(
+        "source_preview_jobs",
+        {
+            "preview-job": {
+                "id": "preview-job",
+                "status": "ready",
+                "ok": True,
+                "branch": "preview",
+                "commit": "a" * 40,
+                "mode": "compiled_preview",
+                "created_at": "2026-09-22T00:00:00+00:00",
+                "updated_at": "2026-09-22T00:01:00+00:00",
+                "runtime_port": 34509,
+                "runtime_path": "/old/runtime",
+            }
+        },
+    )
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview",
+         "site": {"repository": "owner/site", "branch": "main", "preview_branch": "preview",
+                  "clone_path": str(tmp_path)}},
+        env={"HELLOADA_PREVIEW_SIGNING_KEY": "k" * 48,
+             "HELLOADA_PREVIEW_HOST": "preview.example.test"},
+        memory=memory,
+    )
+    try:
+        # The constructor's boot recovery already queued this job. Put it back
+        # to the state a live process sees when only the runtime died, and drop
+        # the boot future, so this test observes the reader's own restart.
+        service._futures.clear()
+        service._jobs["preview-job"].update(status="ready", ok=True)
+        booted = len(service._executor.submitted)
+
+        job = service.latest_preview("preview")
+        assert job["status"] == "queued"
+        assert job["error"] == "the preview process stopped; restarting this exact build"
+        assert "runtime_port" not in job
+        assert "preview_url" not in job
+        assert len(service._executor.submitted) == booted + 1
+        function, args = service._executor.submitted[-1]
+        assert function == service._run_job
+        assert args == ("preview-job", "preview", "a" * 40, "compiled_preview")
+
+        # The same request while that restart is in flight must not queue a
+        # second build of the same commit.
+        service._start_locked({"branch": "preview", "commit": "a" * 40,
+                               "mode": "compiled_preview"})
+        assert len(service._executor.submitted) == booted + 1
+    finally:
+        service.close()
+        memory.close()
+
+
 def test_production_mode_requires_the_workspace_approval_boundary(tmp_path):
     service = source_deployment.SourceDeploymentService(
         {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},

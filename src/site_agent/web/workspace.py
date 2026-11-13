@@ -1540,20 +1540,35 @@ def create_workspace_api_app(
     host_env = dict(env or {})
 
     async def ensure_preview_host() -> None:
-        """Give the preview host its public record without a manual step.
+        """Give every preview host its public record without a manual step.
 
-        The address follows the API's own host, so a fresh installation gets a
-        working preview origin on first start. A Cloudflare outage must not stop
-        the API from serving; the failure is reported and retried next start.
+        The platform host is the default, but a site may name its own
+        ``preview.<site domain>`` in its tenant config. Each address follows the
+        host that already serves the API, so a fresh installation gets a working
+        preview origin on first start. A Cloudflare outage must not stop the API
+        from serving; the failure is reported and retried next start.
         """
-        if not host_env.get(preview_host.PREVIEW_HOST_ENV):
+        hosts: dict[str, str] = {}
+        for tenant in registry.tenants.values():
+            try:
+                host = preview_host.host_for(host_env, tenant.config)
+            except preview_host.PreviewHostError:
+                continue
+            hosts.setdefault(host, tenant.tenant_id)
+        if not host_env.get(preview_host.PREVIEW_HOST_ENV) and not hosts:
             return
-        try:
-            record = await asyncio.to_thread(preview_host.ensure_preview_host_dns, host_env, config=host_config)
-        except preview_host.PreviewHostError as exc:
-            print(f"[site-agent] preview host not provisioned: {exc}")
-            return
-        print(f"[site-agent] preview host {record['host']} -> {record['target']} (proxied)")
+        if not hosts:
+            hosts = {preview_host.preview_host(host_env): ""}
+        for host, tenant_id in hosts.items():
+            try:
+                record = await asyncio.to_thread(
+                    preview_host.ensure_preview_host_dns, host_env, config=host_config, host=host,
+                )
+            except preview_host.PreviewHostError as exc:
+                suffix = f" for {tenant_id}" if tenant_id else ""
+                print(f"[site-agent] preview host {host}{suffix} not provisioned: {exc}")
+                continue
+            print(f"[site-agent] preview host {record['host']} -> {record['target']} (proxied)")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

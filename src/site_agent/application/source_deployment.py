@@ -1827,6 +1827,13 @@ class SourceDeploymentService:
                     and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
                     and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
                 ):
+                    # ``ready`` only describes the build. An address whose
+                    # process has exited is a failed preview, so the same deduped
+                    # request restarts it rather than returning a dead one.
+                    if existing.get("status") == "ready" and not self._runtime_alive(
+                        str(existing.get("id") or "")
+                    ):
+                        self._restart_preview(existing)
                     return dict(existing)
         job = {
             "id": job_id,
@@ -1916,6 +1923,49 @@ class SourceDeploymentService:
                 self._refresh_release_job(job)
             return self._with_preview_url(job)
 
+    def _runtime_alive(self, job_id: str) -> bool:
+        """Whether the process serving one job is still the one this service started.
+
+        A preview is a real process on this host. It can die while the job record
+        still says ``ready``: workerd exits, the machine drops it, or a restart
+        leaves the durable record behind. The record must never outlive the
+        process it describes, or the owner is handed an address that answers 409.
+        """
+        runtime = self._runtimes.get(str(job_id))
+        if runtime is None:
+            return False
+        process, _worktree = runtime
+        return process.poll() is None
+
+    def _restart_preview(self, job: dict[str, Any]) -> None:
+        """Queue the same reviewed commit again when its runtime is gone.
+
+        The compiled worktree survives when only the runtime died, so the resume
+        path restarts the exact build instead of paying for another compile; when
+        the worktree is gone too, the normal build runs from the same commit.
+        """
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            return
+        running = self._futures.get(job_id)
+        if running is not None and not running.done():
+            return
+        branch = str(job.get("branch") or self.site.get("preview_branch") or "preview")
+        mode = str(job.get("mode") or _COMPILED_PREVIEW)
+        commit = str(job.get("commit") or "").strip().lower()
+        job.update({
+            "status": "queued",
+            "ok": True,
+            "phase": "queued",
+            "error": "the preview process stopped; restarting this exact build",
+            "resume": bool(job.get("worktree_path")),
+            "updated_at": _now(),
+        })
+        for stale_key in ("runtime_path", "preview_url", "runtime_port"):
+            job.pop(stale_key, None)
+        self._persist()
+        self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, commit, mode)
+
     def _with_preview_url(self, job: Mapping[str, Any]) -> dict[str, Any]:
         """Attach the address the workspace frames for this exact build.
 
@@ -1928,7 +1978,7 @@ class SourceDeploymentService:
         if not base:
             return result
         try:
-            result["preview_url"] = preview_host.origin(self.env) + base
+            result["preview_url"] = preview_host.origin(self.env, self.config) + base
         except preview_host.PreviewHostError:
             # Configuration is checked when a preview starts. An old job without
             # an address must not take the whole status response down.
@@ -2063,7 +2113,13 @@ class SourceDeploymentService:
             ]
             if not candidates:
                 return {}
-            return self._with_preview_url(max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or "")))
+            job = max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
+            # A reader asking for the latest preview is asking for one it can
+            # open. When the process behind it is gone, restart the same commit
+            # and report the job as queued instead of handing out a dead address.
+            if job.get("status") == "ready" and not self._runtime_alive(str(job.get("id") or "")):
+                self._restart_preview(job)
+            return self._with_preview_url(job)
 
     def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         """Proxy one authenticated browser request to an isolated preview."""
