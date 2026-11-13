@@ -31,12 +31,8 @@
       "sha": "a2c0254de5f854f171e4851e0c9d4d604e26c87d"
     },
     "site-ff8e9af06f56201f": {
-      "id": "rel-20261113111500-astrid-schema-13-r2",
-      "sha": "7118aca1939035ad1aaa6c494a5b6b9e22c0394f",
-      "schemaMigration": {
-        "fromLedgerIdentity": "aa381fb082f60eab7b7761470929d2587904ce98577bd30c5dce1eb6f967dd25",
-        "targetMigrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
-      }
+      "id": "rel-20261113161621-2801b08e",
+      "sha": "7118aca1939035ad1aaa6c494a5b6b9e22c0394f"
     }
   },
   "schema": 1
