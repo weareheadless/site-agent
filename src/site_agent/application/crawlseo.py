@@ -18,7 +18,7 @@ from ..core.contracts import (
     CrawlSEOSearchSummary,
     safe_payload,
 )
-from ..hands.crawlseo import OPPORTUNITY_STATUSES, CrawlSEORequestRejectedError
+from ..hands.crawlseo import OPPORTUNITY_STATUSES, CrawlSEOProtocolError, CrawlSEORequestRejectedError
 
 
 class CrawlSEOApplicationError(RuntimeError):
@@ -881,9 +881,14 @@ class CrawlSEOApplicationService:
             return operation()
         except CrawlSEOApplicationError:
             raise
+        except CrawlSEORequestRejectedError as exc:
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} was rejected: {str(exc)[:200]}") from exc
+        except CrawlSEOProtocolError as exc:
+            # The connector answered and refused, or answered something this
+            # client cannot use. Its message is a fixed sentence written here, so
+            # it is safe to surface: a stale page must not read as an outage.
+            raise CrawlSEOApplicationError(str(exc)[:240]) from exc
         except Exception as exc:  # noqa: BLE001 — provider details never cross this boundary
-            if isinstance(exc, CrawlSEORequestRejectedError):
-                raise CrawlSEOApplicationError(f"CrawlSEO {label} was rejected: {str(exc)[:200]}") from exc
             if "IDEMPOTENCY_CONFLICT" in str(exc):
                 raise CrawlSEOApplicationError("CrawlSEO business knowledge IDEMPOTENCY_CONFLICT") from exc
             raise CrawlSEOApplicationError(f"CrawlSEO {label} is unavailable") from exc

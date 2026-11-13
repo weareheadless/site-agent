@@ -256,3 +256,29 @@ def test_a_full_page_of_verbose_opportunities_is_not_refused_by_a_scalar_byte_ca
     result = CrawlSEOApplicationService(Verbose()).connector_opportunities("site-1", limit=100)
     assert len(result["opportunities"]) == 100
     assert len(json.dumps(result, separators=(",", ":")).encode("utf-8")) > 200_000
+
+
+def test_a_connector_refusal_is_reported_as_a_refusal_not_as_an_outage():
+    """A stale page is not an outage.
+
+    The connector answers 409 when the reviewed version no longer matches, and
+    the transport maps that to a protocol error. Treating it as "unavailable"
+    told the owner the connector was down and hid the one action that fixes it.
+    """
+    from site_agent.hands.crawlseo import CrawlSEOProtocolError, CrawlSEOUnavailableError
+
+    class Refuses(Provider):
+        def connector_opportunity_operation(self, **kwargs):
+            raise CrawlSEOProtocolError("CrawlSEO connector rejected a stale or conflicting operation")
+
+    with pytest.raises(CrawlSEOApplicationError, match="stale or conflicting"):
+        CrawlSEOApplicationService(Refuses()).connector_opportunity_operation(
+            "opp-1", confirmation(operation="accept", expectedUpdatedAt="2026-11-01T00:00:00.000Z"))
+
+    class Down(Provider):
+        def connector_opportunity_operation(self, **kwargs):
+            raise CrawlSEOUnavailableError("CrawlSEO connector request failed (HTTP 503)")
+
+    with pytest.raises(CrawlSEOApplicationError, match="unavailable"):
+        CrawlSEOApplicationService(Down()).connector_opportunity_operation(
+            "opp-1", confirmation(operation="accept", expectedUpdatedAt="2026-11-01T00:00:00.000Z"))
