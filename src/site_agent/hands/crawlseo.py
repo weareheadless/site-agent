@@ -88,6 +88,12 @@ _KNOWN_TOOLS = frozenset({
 })
 _MISSING = object()
 
+# The connector's Opportunity workflow states. Kept as a fixed set so a typo in
+# a query string fails locally instead of reaching the provider.
+OPPORTUNITY_STATUSES = frozenset({
+    "detected", "accepted", "in_progress", "delivered", "parked", "rejected", "closed",
+})
+
 
 class _LimitedResponseStream(AsyncByteStream):
     """Limit decoded response bytes before the MCP SDK parses a message."""
@@ -595,7 +601,8 @@ class CrawlSEOClient:
             query["cursor"] = cursor
         return self._connector_request("GET", f"/findings?{urlencode(query)}")
 
-    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None) -> Mapping[str, Any]:
+    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None,
+                                status: str | None = None) -> Mapping[str, Any]:
         if not isinstance(site_id, str) or not site_id.strip() or len(site_id) > 120:
             raise CrawlSEOProtocolError("CrawlSEO site id is invalid")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
@@ -605,6 +612,10 @@ class CrawlSEOClient:
             if not isinstance(cursor, str) or not cursor.strip() or len(cursor) > 500:
                 raise CrawlSEOProtocolError("CrawlSEO opportunity cursor is invalid")
             query["cursor"] = cursor
+        if status is not None:
+            if status not in OPPORTUNITY_STATUSES:
+                raise CrawlSEOProtocolError("CrawlSEO opportunity status is invalid")
+            query["status"] = status
         return self._connector_request("GET", f"/opportunities?{urlencode(query)}")
 
     def connector_task(self, site_id: str, task_id: str) -> Mapping[str, Any]:

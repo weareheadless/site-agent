@@ -70,7 +70,11 @@ def test_application_reads_opportunities_and_checks_capabilities_and_identity():
     provider = Provider()
     service = CrawlSEOApplicationService(provider)
     assert service.connector_opportunities("site-1", limit=10)["opportunities"][0]["id"] == "opp-1"
-    assert provider.calls[-1] == ("opportunities", {"site_id": "site-1", "limit": 10, "cursor": None})
+    assert provider.calls[-1] == ("opportunities", {"site_id": "site-1", "limit": 10, "cursor": None, "status": None})
+    assert service.connector_opportunities("site-1", status="detected")["opportunities"][0]["id"] == "opp-1"
+    assert provider.calls[-1] == ("opportunities", {"site_id": "site-1", "limit": 50, "cursor": None, "status": "detected"})
+    with pytest.raises(CrawlSEOApplicationError, match="status"):
+        service.connector_opportunities("site-1", status="decided")
     class Missing(Provider):
         def connector_capabilities(self, site_id=None):
             return {"schemaVersion": "1.0", "projectId": "project-1", "siteId": site_id, "capabilities": []}
@@ -206,3 +210,22 @@ def test_analytics_preserves_saved_data_and_an_ambiguous_connection_without_sele
     assert result["ga4"]["propertyId"] is None
     assert result["ga4"]["connection"] == response["ga4"]["connection"]
     assert result["ga4"]["data"]["current_week"]["activeUsers"] == 8
+
+
+def test_opportunities_validate_the_whole_project_counts_and_reject_a_bad_shape():
+    class Counted(Provider):
+        def connector_opportunities(self, **kwargs):
+            return {"schemaVersion": "1.0", "projectId": "project-1", "siteId": kwargs["site_id"],
+                    "opportunities": [{"id": "opp-1"}], "counts": {"detected": 13, "parked": 138, "total": 151},
+                    "nextCursor": None}
+
+    service = CrawlSEOApplicationService(Counted())
+    assert service.connector_opportunities("site-1")["counts"]["parked"] == 138
+
+    class Negative(Provider):
+        def connector_opportunities(self, **kwargs):
+            return {"schemaVersion": "1.0", "projectId": "project-1", "siteId": kwargs["site_id"],
+                    "opportunities": [], "counts": {"detected": -1}, "nextCursor": None}
+
+    with pytest.raises(CrawlSEOApplicationError, match="counts"):
+        CrawlSEOApplicationService(Negative()).connector_opportunities("site-1")

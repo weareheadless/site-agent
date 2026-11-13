@@ -18,7 +18,7 @@ from ..core.contracts import (
     CrawlSEOSearchSummary,
     safe_payload,
 )
-from ..hands.crawlseo import CrawlSEORequestRejectedError
+from ..hands.crawlseo import OPPORTUNITY_STATUSES, CrawlSEORequestRejectedError
 
 
 class CrawlSEOApplicationError(RuntimeError):
@@ -351,19 +351,28 @@ class CrawlSEOApplicationService:
             raise CrawlSEOApplicationError(f"CrawlSEO {capability} is unavailable")
         return capabilities
 
-    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+    def connector_opportunities(self, site_id: str, limit: int = 50, cursor: str | None = None,
+                                status: str | None = None) -> dict[str, Any]:
         site_id = self._bounded_text(site_id, "site id", 120)
         limit = _bounded_int(limit, "opportunity limit", 100)
         if cursor is not None:
             cursor = self._bounded_text(cursor, "opportunity cursor", 500)
+        if status is not None and status not in OPPORTUNITY_STATUSES:
+            raise CrawlSEOApplicationError("CrawlSEO opportunity status is invalid")
         binding = self._opportunity_binding(site_id, "opportunities.read")
-        result = self._connector_call("connector_opportunities", "opportunities", site_id=site_id, limit=limit, cursor=cursor)
+        result = self._connector_call("connector_opportunities", "opportunities", site_id=site_id, limit=limit,
+                                      cursor=cursor, status=status)
         self._assert_identity(result, binding, site_id, "opportunities")
         rows = result.get("opportunities")
         if (not isinstance(rows, list) or len(rows) > limit
                 or any(not isinstance(row, Mapping) or not isinstance(row.get("id"), str) or not row["id"].strip() for row in rows)
                 or (result.get("nextCursor") is not None and not isinstance(result.get("nextCursor"), str))):
             raise CrawlSEOApplicationError("invalid CrawlSEO opportunities response")
+        counts = result.get("counts")
+        if counts is not None and (not isinstance(counts, Mapping)
+                                   or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+                                          for value in counts.values())):
+            raise CrawlSEOApplicationError("invalid CrawlSEO opportunity counts")
         return result
 
     def connector_task(self, site_id: str, task_id: str) -> dict[str, Any]:
