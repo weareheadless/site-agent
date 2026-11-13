@@ -1237,6 +1237,19 @@ def test_the_preview_root_is_its_own_address_not_the_slash_form():
         source_deployment.preview_runtime_url(8080, mount, "../admin")
 
 
+def test_a_route_segment_reaches_the_runtime_escaped_once():
+    """Next redirects a decoded bracket segment to its escaped form.
+
+    The proxy receives the decoded path and must request the escaped one the
+    build emitted; otherwise every client chunk under a `[...slug]` route is a
+    307 back to itself and the browser loops instead of loading the page.
+    """
+    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
+    assert source_deployment.preview_runtime_url(
+        8080, mount, "_next/static/chunks/app/(frontend)/[...slug]/page-a1b2.js",
+    ) == f"http://127.0.0.1:8080{mount}/_next/static/chunks/app/(frontend)/%5B...slug%5D/page-a1b2.js"
+
+
 def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
     import http.server
     import threading
