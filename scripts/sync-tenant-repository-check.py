@@ -261,37 +261,29 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
             branches = _branches(token, repository, row["branches"])
             changes: list[dict[str, str]] = []
             customer = customers.get(row["tenant"])
-            desired_files = dict(CANONICAL)
-            messages = {}
+            # The identity file lands before the workflow that reads it, so the
+            # run the workflow commit triggers already has its inputs.
+            desired: list[tuple[str, bytes, str]] = [
+                (path, source.read_bytes(), "") for path, source in CANONICAL.items()
+            ]
             if isinstance(customer, Mapping):
-                desired_files[RELEASE_WORKFLOW] = RELEASE_SOURCE
-                messages[RELEASE_WORKFLOW] = MESSAGES["release-updated"]
-                messages[RELEASE_MANIFEST] = MESSAGES["manifest-updated"]
+                desired.append((
+                    RELEASE_MANIFEST,
+                    _release_identity(customer, str(row["tenant"]), release_manifest, handoff_public_key),
+                    MESSAGES["manifest-updated"],
+                ))
+                desired.append((RELEASE_WORKFLOW, RELEASE_SOURCE.read_bytes(), MESSAGES["release-updated"]))
             for branch in branches:
-                for path, source in desired_files.items():
-                    desired = source.read_bytes()
+                for path, content, message in desired:
                     current = _remote_file(token, repository, branch, path)
-                    if current is not None and current[0] == desired:
+                    if current is not None and current[0] == content:
                         changes.append({"branch": branch, "path": path, "action": "unchanged"})
                         continue
                     action = "created" if current is None else "updated"
                     if apply:
-                        _write(token, repository, branch, path, desired, current[1] if current else None,
-                               message=messages.get(path, ""))
+                        _write(token, repository, branch, path, content, current[1] if current else None,
+                               message=message)
                     changes.append({"branch": branch, "path": path, "action": action})
-                if isinstance(customer, Mapping):
-                    desired = _release_identity(
-                        customer, str(row["tenant"]), release_manifest, handoff_public_key,
-                    )
-                    current = _remote_file(token, repository, branch, RELEASE_MANIFEST)
-                    if current is not None and current[0] == desired:
-                        changes.append({"branch": branch, "path": RELEASE_MANIFEST, "action": "unchanged"})
-                    else:
-                        action = "created" if current is None else "updated"
-                        if apply:
-                            _write(token, repository, branch, RELEASE_MANIFEST, desired,
-                                   current[1] if current else None, message=MESSAGES["manifest-updated"])
-                        changes.append({"branch": branch, "path": RELEASE_MANIFEST, "action": action})
                 for path in SUPERSEDED:
                     current = _remote_file(token, repository, branch, path)
                     if current is None:
