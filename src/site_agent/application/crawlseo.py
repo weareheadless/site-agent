@@ -360,8 +360,12 @@ class CrawlSEOApplicationService:
         if status is not None and status not in OPPORTUNITY_STATUSES:
             raise CrawlSEOApplicationError("CrawlSEO opportunity status is invalid")
         binding = self._opportunity_binding(site_id, "opportunities.read")
-        result = self._connector_call("connector_opportunities", "opportunities", site_id=site_id, limit=limit,
-                                      cursor=cursor, status=status)
+        # One page is at most `limit` Opportunities and each carries its tasks
+        # and evidence summary, so a 100-row page is legitimately hundreds of
+        # kilobytes. Bound it like the other list endpoints (findings, analytics)
+        # instead of the 200 KB scalar default, which refused a valid page.
+        result = self._connector_call("connector_opportunities", "opportunities", max_bytes=2_000_000,
+                                      site_id=site_id, limit=limit, cursor=cursor, status=status)
         self._assert_identity(result, binding, site_id, "opportunities")
         rows = result.get("opportunities")
         if (not isinstance(rows, list) or len(rows) > limit
