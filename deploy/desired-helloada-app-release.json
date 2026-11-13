@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261113-rebuild-stale-preview",
-    "sha": "6d0cf014f1acda01986761a2cb28600bfff56a27"
+    "id": "20261113-release-retry-ui",
+    "sha": "5c5d02e533a549e198ca503c6334fc50d5bd05ba"
   }
 }
