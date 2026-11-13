@@ -27,8 +27,9 @@
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
     },
     "site-ff8e9af06f56201f": {
-      "id": "rel-20261113120000-astrid-friendly-worker",
-      "sha": "07d832541825d796a1829fb4e502d2fc9a793188"
+      "approvalId": 1,
+      "id": "rel-20261113192118-43d63fa9",
+      "sha": "e1338a09b2b3516b85c496641b943689b91a5e9f"
     }
   },
   "schema": 1
