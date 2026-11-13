@@ -493,16 +493,26 @@ class GithubStatic(SiteAdapter):
             })
         return rows
 
-    def reset_preview_branch(self, name: str | None = None) -> dict[str, Any]:
-        """Force the preview branch back to the production branch head, discarding
-        any rejected/stale staged work so the next build starts from main again."""
-        target = name or "preview"
-        _, head = _request(
-            "GET",
-            f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}",
-            token=self.token,
-        )
-        head_sha = head["object"]["sha"]
+    def reset_preview_branch(self, name: str | None = None, sha: str | None = None) -> dict[str, Any]:
+        """Force the preview branch back to a released revision.
+
+        The preview branch is a candidate, not a second history: leaving it on
+        the tree an approved change started from hands the next build a stale
+        checkout — including derived files the release itself repaired. Defaults
+        to the production branch head; a caller that just deployed an exact
+        revision passes that revision so the reset cannot outrun the release.
+        """
+        target = str(name or "preview").strip() or "preview"
+        head_sha = str(sha or "").strip().lower()
+        if head_sha and not re.fullmatch(r"[0-9a-f]{40}", head_sha):
+            raise AdapterError("preview reset requires an exact released revision")
+        if not head_sha:
+            _, head = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}",
+                token=self.token,
+            )
+            head_sha = str(head["object"]["sha"])
         try:
             status, body = _request(
                 "PATCH",

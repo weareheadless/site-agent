@@ -1605,6 +1605,40 @@ class SourceDeploymentService:
                 except SourceDeploymentError:
                     shutil.rmtree(worktree, ignore_errors=True)
 
+    def _reconcile_preview_branch(self, draft_id: int, commit: str) -> None:
+        """Point the candidate branch at the revision that just went live.
+
+        After a release the preview branch still holds the tree the approved
+        change started from. The next build would start there, reintroducing
+        every derived file the release repaired — precisely the drift the
+        presentation check exists to catch. Resetting is only safe while no
+        newer change waits: a pending candidate is what preview is for.
+        """
+        branch = str(self.site.get("preview_branch") or "").strip()
+        if not branch or not re.fullmatch(r"[0-9a-f]{40}", commit):
+            return
+        if self.memory is not None:
+            pending = [
+                row for row in self.memory.list_drafts(status="pending", limit=500)
+                if int(row.get("id") or 0) != draft_id
+                and row.get("kind") in {"merge", "rollback"}
+            ]
+            if pending:
+                return
+        try:
+            outcome = self.adapter.reset_preview_branch(branch, sha=commit)
+        except Exception as exc:  # noqa: BLE001 - the release is live regardless
+            if self.memory is not None:
+                self.memory.record_action("preview_reset_failed", f"{branch}: {str(exc)[:200]}")
+            return
+        if self.memory is not None:
+            summary = (
+                f"{branch} advanced to {commit[:8]}"
+                if outcome.get("reset")
+                else f"{branch} was not reset: {outcome.get('reason') or 'unknown'}"
+            )
+            self.memory.record_action("preview_reset", summary)
+
     def _record_production_publish(self, job: Mapping[str, Any], result: Mapping[str, Any]) -> None:
         if self.memory is None:
             return
@@ -1626,6 +1660,7 @@ class SourceDeploymentService:
         )
         self.memory.update_draft_status(draft_id, "live")
         self.memory.record_action("publish_live", f"#{draft_id} live at {str(result.get('commit') or '')[:8]}")
+        self._reconcile_preview_branch(draft_id, str(result.get("commit") or ""))
         draft = next((row for row in self.memory.list_drafts(limit=500) if int(row.get("id") or 0) == draft_id), None)
         package = (draft.get("meta") or {}).get("growth_package") if draft else None
         if isinstance(package, Mapping) and package.get("candidateType") == "source_code":

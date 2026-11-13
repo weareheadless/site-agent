@@ -445,3 +445,66 @@ def test_a_live_change_cannot_be_released_again(tmp_path, monkeypatch):
     assert not called
     service.close()
     memory.close()
+
+
+class PreviewRecorder:
+    """Records where the candidate branch was pointed after a release."""
+
+    def __init__(self, ok=True):
+        self.calls = []
+        self.ok = ok
+
+    def reset_preview_branch(self, name, sha=None):
+        self.calls.append((name, sha))
+        return {"reset": True, "branch": name, "sha": sha} if self.ok else {
+            "reset": False, "branch": name, "reason": "missing",
+        }
+
+
+def test_a_delivered_release_advances_the_candidate_branch_to_what_is_live(tmp_path, monkeypatch):
+    """The next build must start from the released tree, not the old candidate.
+
+    Leaving preview where the approved change began reintroduces every derived
+    file the release repaired, which is the drift that failed the last publish.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+    service.adapter = PreviewRecorder()
+
+    service._record_production_publish(release_job(draft_id), {"commit": "b" * 40})
+
+    assert service.adapter.calls == [("preview", "b" * 40)]
+    assert memory.list_drafts()[0]["status"] == "live"
+    actions = [row.get("kind") for row in memory.recent_actions(limit=10)]
+    assert "preview_reset" in actions
+    service.close()
+    memory.close()
+
+
+def test_a_pending_candidate_keeps_the_preview_work_it_is_building_on(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+    service.adapter = PreviewRecorder()
+    memory.save_draft("The next change", "", kind="merge", meta={})
+
+    service._record_production_publish(release_job(draft_id), {"commit": "b" * 40})
+
+    assert service.adapter.calls == []
+    service.close()
+    memory.close()
+
+
+def test_a_refused_preview_reset_does_not_undo_a_live_release(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+
+    class BrokenPreview:
+        def reset_preview_branch(self, name, sha=None):
+            raise RuntimeError("github is rate limited")
+
+    service.adapter = BrokenPreview()
+
+    service._record_production_publish(release_job(draft_id), {"commit": "b" * 40})
+
+    assert memory.list_drafts()[0]["status"] == "live"
+    actions = [row.get("kind") for row in memory.recent_actions(limit=10)]
+    assert "preview_reset_failed" in actions
+    service.close()
+    memory.close()
