@@ -1066,7 +1066,18 @@ class SourceDeploymentService:
             r"(?P<prefix>" + quote + r"|url\(\s*(?:" + quote + r")?)(?P<asset>"
             + "|".join(re.escape(root) for root in roots) + ")"
         )
-        return pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8")).encode("utf-8")
+        mounted = pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8"))
+        if "/index.html" in roots:
+            # This candidate's home page is a static file in public/, so the
+            # site root is a public asset like the others. A bare root href is
+            # the only root-relative URL the root list cannot name, and left
+            # alone it leaves the preview for an address that does not exist.
+            # A Next route never emits this form: its basePath is the mount.
+            root_href = re.compile(
+                r"(?P<prefix>href=" + quote + r")(?P<slash>/)(?P<suffix>" + quote + r")"
+            )
+            mounted = root_href.sub(lambda match: match["prefix"] + base + match["suffix"], mounted)
+        return mounted.encode("utf-8")
 
     @staticmethod
     def _preview_root_is_ready(status: int) -> bool:

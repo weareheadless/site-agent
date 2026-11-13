@@ -448,6 +448,27 @@ def test_compiled_preview_navigation_is_left_to_the_next_mount():
     assert rewritten == f'<img src="{mount}/photos/reef.webp">'.encode()
 
 
+def test_a_static_home_link_stays_inside_the_preview():
+    """The site root of a public/ candidate is a mounted asset too.
+
+    `public/index.html` is the home page, so `href="/"` is the only
+    root-relative URL the asset-root list cannot name. Left alone it took the
+    owner out of the preview to an address nothing serves; a Next route never
+    emits that form, because its basePath is the mount itself.
+    """
+    mount = '/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef'
+    job = {'runtime_base_path': mount,
+           'public_asset_roots': ['/index.html', '/assets/', '/novias/']}
+    body = (b'<a class="wordmark" href="/" aria-current="page">Inicio</a>'
+            b'<a href="/novias/">Novias</a><a href="/?locale=en">English</a>')
+    out = source_deployment.SourceDeploymentService._rewrite_runtime_assets(
+        body, 'text/html', job).decode()
+    assert f'href="{mount}" aria-current="page"' in out
+    assert f'href="{mount}/novias/"' in out
+    # A query on the root is a Next route, not the static home file.
+    assert 'href="/?locale=en"' in out
+
+
 def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
     node_bin = tmp_path / "node-bin"
     node_bin.mkdir()
