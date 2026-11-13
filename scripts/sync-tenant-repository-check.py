@@ -44,6 +44,14 @@ CANONICAL = {
     ".github/workflows/presentation-check.yml": TEMPLATE / ".github/workflows/presentation-check.yml",
 }
 
+# The release build rehearsal: the shared-runtime overlay, contract generation,
+# dependency verification and OpenNext build, with no deploy credential.
+RELEASE_WORKFLOW = ".github/workflows/release-build.yml"
+RELEASE_SOURCE = TEMPLATE / RELEASE_WORKFLOW
+# Non-secret identity the rehearsal needs; derived from the release registry.
+RELEASE_MANIFEST = ".github/helloada-release.json"
+CONTROL_SHA_VARIABLE = "HELLOADA_CONTROL_SHA"
+
 # A tenant-specific check that the canonical one supersedes. Only files this
 # platform introduced are retired; a tenant's own scripts are never touched.
 SUPERSEDED = (
@@ -55,6 +63,10 @@ MESSAGES = {
     "created": "Add the canonical presentation check",
     "updated": "Update the presentation check to the canonical version",
     "removed": "Retire the tenant-specific presentation check",
+    "release-created": "Rehearse the release build on every candidate",
+    "release-updated": "Update the release build rehearsal",
+    "manifest-created": "Pin this repository to its release identity",
+    "manifest-updated": "Refresh the release identity",
 }
 
 
@@ -108,9 +120,12 @@ def _remote_file(token: str, repository: str, branch: str, path: str) -> tuple[b
         raise GitHubError(f"{repository}:{path} returned an unreadable blob") from exc
 
 
-def _write(token: str, repository: str, branch: str, path: str, content: bytes, sha: str | None) -> None:
+def _write(
+    token: str, repository: str, branch: str, path: str, content: bytes, sha: str | None,
+    *, message: str = "",
+) -> None:
     payload: dict[str, Any] = {
-        "message": MESSAGES["updated" if sha else "created"],
+        "message": message or MESSAGES["updated" if sha else "created"],
         "content": base64.b64encode(content).decode(),
         "branch": branch,
     }
@@ -134,6 +149,43 @@ def _branches(token: str, repository: str, declared: list[str]) -> list[str]:
     existing = {str(item.get("name")) for item in body if isinstance(item, Mapping)}
     ordered = [name for name in declared if name in existing]
     return ordered or ["main"]
+
+
+def _release_identity(customer: Mapping[str, Any], tenant: str, manifest: Mapping[str, Any],
+                      handoff_public_key: str) -> bytes:
+    """The non-secret release identity a repository needs to rehearse its build.
+
+    Contract, schema, Worker and resource names are identity, not credentials;
+    they also live in the repository's committed Wrangler configuration. The
+    rehearsal validates the generated contract against them, so a stale copy
+    fails loudly instead of deploying something else.
+    """
+    document = {
+        "schema": 1,
+        "tenant": tenant,
+        "nodeVersion": str(manifest.get("nodeVersion") or ""),
+        "npmVersion": str(manifest.get("npmVersion") or ""),
+        "handoffPublicKey": handoff_public_key,
+        "customer": dict(customer),
+    }
+    return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
+
+
+def _control_variable(token: str, repository: str, value: str, apply: bool) -> dict[str, str]:
+    """Report or set the exact control revision the workflow must check out."""
+    path = f"/repos/{repository}/actions/variables/{CONTROL_SHA_VARIABLE}"
+    status, body = _request("GET", path, token, allow_missing=True)
+    if status == 404:
+        if apply:
+            _request("POST", f"/repos/{repository}/actions/variables", token,
+                     {"name": CONTROL_SHA_VARIABLE, "value": value})
+        return {"name": CONTROL_SHA_VARIABLE, "action": "created", "value": value}
+    current = str(body.get("value") or "")
+    if current == value:
+        return {"name": CONTROL_SHA_VARIABLE, "action": "unchanged", "value": value}
+    if apply:
+        _request("PATCH", path, token, {"name": CONTROL_SHA_VARIABLE, "value": value})
+    return {"name": CONTROL_SHA_VARIABLE, "action": "updated", "value": value}
 
 
 def _tenant_rows(host_config: Mapping[str, Any], env: Mapping[str, str] | None) -> list[dict[str, Any]]:
@@ -175,6 +227,22 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
         if not source.is_file():
             raise GitHubError(f"canonical file is missing from the template: {path}")
 
+    release_manifest = json.loads((ROOT / "deploy/payload-customers.json").read_text(encoding="utf-8"))
+    customers = release_manifest.get("customers") if isinstance(release_manifest.get("customers"), Mapping) else {}
+    handoff_public_key = ""
+    gate = release_manifest.get("connectionGate") if isinstance(release_manifest.get("connectionGate"), Mapping) else {}
+    gate_env = str(gate.get("envFile") or "").strip()
+    if gate_env:
+        from site_agent.config import load_env_file
+        handoff_public_key = str(load_env_file(gate_env, {}).get("HELLOADA_HANDOFF_PUBLIC_KEY") or "")
+    if not RELEASE_SOURCE.is_file():
+        raise GitHubError(f"canonical file is missing from the template: {RELEASE_WORKFLOW}")
+    control_sha = str(
+        __import__("subprocess").check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+        ).strip()
+    )
+
     rows = _tenant_rows(host_config, credentials)
     if tenants:
         known = {row["tenant"] for row in rows}
@@ -192,8 +260,15 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
         try:
             branches = _branches(token, repository, row["branches"])
             changes: list[dict[str, str]] = []
+            customer = customers.get(row["tenant"])
+            desired_files = dict(CANONICAL)
+            messages = {}
+            if isinstance(customer, Mapping):
+                desired_files[RELEASE_WORKFLOW] = RELEASE_SOURCE
+                messages[RELEASE_WORKFLOW] = MESSAGES["release-updated"]
+                messages[RELEASE_MANIFEST] = MESSAGES["manifest-updated"]
             for branch in branches:
-                for path, source in CANONICAL.items():
+                for path, source in desired_files.items():
                     desired = source.read_bytes()
                     current = _remote_file(token, repository, branch, path)
                     if current is not None and current[0] == desired:
@@ -201,8 +276,22 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                         continue
                     action = "created" if current is None else "updated"
                     if apply:
-                        _write(token, repository, branch, path, desired, current[1] if current else None)
+                        _write(token, repository, branch, path, desired, current[1] if current else None,
+                               message=messages.get(path, ""))
                     changes.append({"branch": branch, "path": path, "action": action})
+                if isinstance(customer, Mapping):
+                    desired = _release_identity(
+                        customer, str(row["tenant"]), release_manifest, handoff_public_key,
+                    )
+                    current = _remote_file(token, repository, branch, RELEASE_MANIFEST)
+                    if current is not None and current[0] == desired:
+                        changes.append({"branch": branch, "path": RELEASE_MANIFEST, "action": "unchanged"})
+                    else:
+                        action = "created" if current is None else "updated"
+                        if apply:
+                            _write(token, repository, branch, RELEASE_MANIFEST, desired,
+                                   current[1] if current else None, message=MESSAGES["manifest-updated"])
+                        changes.append({"branch": branch, "path": RELEASE_MANIFEST, "action": action})
                 for path in SUPERSEDED:
                     current = _remote_file(token, repository, branch, path)
                     if current is None:
@@ -219,10 +308,18 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                 "reason": str(exc)[:500],
             })
             continue
+        variable = None
+        if isinstance(customers.get(row["tenant"]), Mapping):
+            try:
+                variable = _control_variable(token, repository, control_sha, apply)
+            except GitHubError as exc:
+                changes.append({"branch": "", "path": f"variable:{CONTROL_SHA_VARIABLE}",
+                                "action": f"failed: {str(exc)[:120]}"})
         result.append({
             "tenant": row["tenant"],
             "status": "applied" if apply else "planned",
             "repository": repository,
+            "variable": variable,
             "changes": changes,
         })
     return {

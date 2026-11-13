@@ -39,13 +39,18 @@ class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
         return redirected
 
 def github_fetch(path: str, token: str, *, binary: bool = False) -> Any:
+    headers = {
+        "Accept": "application/octet-stream" if binary else "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    # Published release assets are public; a caller without a credential still
+    # reads and verifies the exact bytes below, and every integrity check still
+    # applies. The canonical release pipeline always supplies its token.
+    if token:
+        headers["Authorization"] = "Bearer " + token
     request = urllib.request.Request(
         "https://api.github.com" + path,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Accept": "application/octet-stream" if binary else "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+        headers=headers,
     )
     with urllib.request.build_opener(ReleaseRedirect()).open(request, timeout=60) as response:
         data = response.read(32 * 1024 * 1024 + 1)
@@ -81,8 +86,6 @@ def _verified_release_dependencies(
     token: str,
     package_names: tuple[str, ...] | None = None,
 ) -> Iterator[dict[str, Any]]:
-    if not token:
-        raise RuntimeError("Central GitHub release credential is required")
     package = json.loads((checkout / "package.json").read_text(encoding="utf-8"))
     if package_names is None:
         package_names = _declared_packages(package)

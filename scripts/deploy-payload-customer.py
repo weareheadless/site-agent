@@ -1284,7 +1284,19 @@ def record_current_verification(
 
 
 def tenant_environment_path(manifest: dict[str, Any], tenant: str) -> Path:
-    """Resolve the exact registered tenant environment file on the protected VPS."""
+    """Resolve the exact registered tenant environment file on the protected VPS.
+
+    A runner manifest may name the file explicitly: the workflow writes the
+    tenant's protected values to a short-lived 0600 file and this release reads
+    only that file. The canonical VPS manifest never carries the override, so
+    the registry path remains the only way a queued release resolves it.
+    """
+    declared = str(manifest.get("tenantEnvFile") or "").strip()
+    if declared:
+        path = Path(declared).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError("declared runner tenant environment file is missing")
+        return path
     import yaml
     from site_agent.application.tenant_registration import provisioned_root
 
@@ -2169,6 +2181,12 @@ def main() -> int:
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
+    parser.add_argument("--release-root", type=Path,
+                        help="receipt root override for a runner that has no canonical VPS release tree")
+    parser.add_argument("--source-dir", type=Path,
+                        help="build this exact clean checkout instead of cloning the registered repository")
+    parser.add_argument("--build-only", action="store_true",
+                        help="rehearse the release build here and stop before any Cloudflare mutation")
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     validate_toolchain_manifest(manifest)
@@ -2184,7 +2202,9 @@ def main() -> int:
         require_release_purpose(args.release_purpose, args.initialize_schema_head)
     except ValueError as error:
         parser.error(str(error))
-    release_root = Path(manifest["releaseRoot"])
+    release_root = Path(args.release_root or manifest["releaseRoot"])
+    if args.build_only and args.verify_only:
+        parser.error("--build-only cannot recheck an already promoted release")
     if not args.verify_only:
         require_free_space(release_root)
     directory = release_root / "runs" / args.tenant / args.release_id
@@ -2253,7 +2273,11 @@ def main() -> int:
         from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command, github_api_token
         profile = {"credentials": {"profile_file": manifest["credentialProfile"]}}
         cloudflare = dict(credential_profile(profile, "cloudflare"))
-        if not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
+        if args.build_only:
+            # A rehearsal must be able to prove the build without any deploy
+            # credential; nothing below this point may reach Cloudflare.
+            cloudflare = {}
+        elif not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
         base = {k: os.environ[k] for k in ("HOME", "USER", "LANG", "TZ", "TMPDIR") if k in os.environ}
         base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin",
@@ -2273,9 +2297,10 @@ def main() -> int:
             base["npm_config_cache"] = str(workspace_path / "npm-cache")
             base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
-        if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
-            raise RuntimeError("declared Cloudflare profile is incomplete")
-        workers_dev_provisioner(customer, deploy_env)
+        if not args.build_only:
+            if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
+                raise RuntimeError("declared Cloudflare profile is incomplete")
+            workers_dev_provisioner(customer, deploy_env)
         if args.verify_only:
             verify_live(
                 receipt, customer, manifest, deploy_env, base, stage,
@@ -2292,20 +2317,37 @@ def main() -> int:
             raise RuntimeError(f"release requires Node {manifest['nodeVersion']}")
         if run([str(Path(manifest["npmBin"], "npm")), "--version"], directory, base).strip() != manifest["npmVersion"]:
             raise RuntimeError(f"release requires npm {manifest['npmVersion']}")
-        receipt["previousDeployment"] = cloudflare_deployment(customer, deploy_env)
+        receipt["previousDeployment"] = None if args.build_only else cloudflare_deployment(customer, deploy_env)
 
         stage("checkout")
         git_env = {**base, "GIT_SSH_COMMAND": github_ssh_command(profile, base)}
         if not git_env["GIT_SSH_COMMAND"]:
             raise RuntimeError("declared GitHub SSH identity is missing")
-        remote = github_remote(customer["repository"], profile, base)
-        run(["git", "clone", "--no-checkout", remote, str(checkout)], directory, git_env)
-        run(["git", "merge-base", "--is-ancestor", args.ref, "origin/main"], checkout, git_env)
-        run(["git", "checkout", "--detach", args.ref], checkout, git_env)
-        if run(["git", "rev-parse", "HEAD"], checkout, base).strip() != args.ref:
-            raise RuntimeError("checkout SHA mismatch")
-        if run(["git", "status", "--porcelain"], checkout, base).strip():
-            raise RuntimeError("fresh release checkout is dirty")
+        if args.source_dir is not None:
+            # A runner that already checked the repository out must not clone it
+            # again: the checked-out tree is the build input, verified against
+            # the exact source revision the caller asserted.
+            checkout = args.source_dir.expanduser().resolve()
+            if not (checkout / ".git").exists():
+                raise RuntimeError("source directory is not a git checkout")
+            if run(["git", "rev-parse", "HEAD"], checkout, base).strip() != args.ref:
+                raise RuntimeError("source directory HEAD differs from the requested revision")
+            dirty = run(["git", "status", "--porcelain"], checkout, base).strip()
+            if dirty:
+                raise RuntimeError("source directory is dirty before the build: " + dirty[:240])
+            if not args.build_only:
+                remote = github_remote(customer["repository"], profile, base)
+                run(["git", "fetch", "--no-tags", remote, "+refs/heads/main:refs/remotes/origin/main"], checkout, git_env)
+                run(["git", "merge-base", "--is-ancestor", args.ref, "origin/main"], checkout, git_env)
+        else:
+            remote = github_remote(customer["repository"], profile, base)
+            run(["git", "clone", "--no-checkout", remote, str(checkout)], directory, git_env)
+            run(["git", "merge-base", "--is-ancestor", args.ref, "origin/main"], checkout, git_env)
+            run(["git", "checkout", "--detach", args.ref], checkout, git_env)
+            if run(["git", "rev-parse", "HEAD"], checkout, base).strip() != args.ref:
+                raise RuntimeError("checkout SHA mismatch")
+            if run(["git", "status", "--porcelain"], checkout, base).strip():
+                raise RuntimeError("fresh release checkout is dirty")
         stage("shared-runtime-overlay")
         host_runtime_values = read_tenant_environment(Path(manifest["connectionGate"]["envFile"]))
         from site_agent.application.shared_runtime import apply_shared_runtime_overlay
@@ -2504,6 +2546,16 @@ def main() -> int:
         if unexpected_changes:
             raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
         stage("artifact-verified")
+        if args.build_only:
+            receipt.update({
+                "status": "built",
+                "stage": "artifact-verified",
+                "cloudflareMutations": [],
+                "finishedAt": utc_now(),
+            })
+            atomic_json(receipt_path, receipt)
+            print(f"[release] BUILT receipt={receipt_path}", flush=True)
+            return 0
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")

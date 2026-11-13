@@ -1,0 +1,101 @@
+name: Release build
+
+# Rehearse the production release build on a clean checkout: the canonical
+# shared-runtime overlay, contract generation, verified dependencies, typecheck
+# and the OpenNext build the release pipeline runs — with no Cloudflare
+# credential, no upload and no promotion.
+#
+# This is the first half of the GitHub deploy lane. A change that cannot be
+# released now fails here, on the candidate branch, before the owner approves
+# it; the deploy half adds upload and promotion on top of the same build.
+on:
+  push:
+    branches: [main, preview]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+
+      - name: Pin the release toolchain
+        run: |
+          npm install --global npm@11.13.0
+          echo "NODE_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+          echo "NPM_BIN=$(dirname "$(command -v npm)")" >> "$GITHUB_ENV"
+          python3 -m pip install --quiet pyyaml
+
+      - name: Check the release contract
+        env:
+          CONTROL_SHA: ${{ vars.HELLOADA_CONTROL_SHA }}
+        run: |
+          if [ -z "$CONTROL_SHA" ]; then
+            echo "HELLOADA_CONTROL_SHA is not set on this repository; run the fleet sync." >&2
+            exit 1
+          fi
+          git clone --quiet --filter=blob:none https://github.com/weareheadless/site-agent.git "$RUNNER_TEMP/control"
+          git -C "$RUNNER_TEMP/control" checkout --quiet "$CONTROL_SHA"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          release = json.loads(Path(".github/helloada-release.json").read_text(encoding="utf-8"))
+          (root / "runtime.env").write_text(
+              f"HELLOADA_HANDOFF_PUBLIC_KEY={release['handoffPublicKey']}\n", encoding="utf-8"
+          )
+          (root / "runtime.env").chmod(0o600)
+          (root / "host-credentials.yaml").write_text("credentials: {}\n", encoding="utf-8")
+          manifest = {
+              "schema": 1,
+              "credentialProfile": str(root / "host-credentials.yaml"),
+              "nodeBin": os.environ["NODE_BIN"],
+              "nodeVersion": release["nodeVersion"],
+              "npmBin": os.environ["NPM_BIN"],
+              "npmVersion": release["npmVersion"],
+              "releaseRoot": str(root / "releases"),
+              "connectionGate": {
+                  "apiUrl": "https://api.helloada.app/v1",
+                  "config": str(root / "absent.yaml"),
+                  "envFile": str(root / "runtime.env"),
+              },
+              "tenantEnvFile": str(root / "runtime.env"),
+              "customers": {release["tenant"]: release["customer"]},
+          }
+          (root / "releases").mkdir(exist_ok=True)
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+          PY
+
+      - name: Build the release
+        env:
+          HELLOADA_PIPELINE_SHA: ${{ vars.HELLOADA_CONTROL_SHA }}
+        run: |
+          python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
+            --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
+            --ref "$GITHUB_SHA" \
+            --release-id "ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --release-purpose website \
+            --manifest "$RUNNER_TEMP/manifest.json" \
+            --source-dir "$GITHUB_WORKSPACE" \
+            --release-root "$RUNNER_TEMP/releases" \
+            --build-only
+
+      - name: Keep the release receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-receipt
+          path: ${{ runner.temp }}/releases
+          if-no-files-found: ignore
+          retention-days: 14
