@@ -2044,3 +2044,44 @@ def test_a_repaired_candidate_is_recorded_on_the_draft_before_its_preview():
 
     assert seen["head_sha"] == "b" * 40
     assert preview["status"] == "ready"
+
+
+def test_a_static_public_change_carries_its_regenerated_inventory(tmp_path):
+    """The release validates the committed inventory against the files.
+
+    Ada edits the customer's public pages and commits them; without the
+    regenerated inventory in that same commit the approved update previews and
+    merges, then dies at release with an error the owner cannot act on.
+    """
+    from site_agent.application.github_site_import import inspect_static_site
+
+    repo = tmp_path / "static-site"
+    public = repo / "public"
+    (public / "assets").mkdir(parents=True)
+    (public / "index.html").write_text(
+        '<html lang="es"><head><title>Inicio</title></head><body>hola</body></html>')
+    (public / "assets/style.css").write_text("body{color:#000}\n")
+    repo.mkdir(exist_ok=True)
+    declared = {**inspect_static_site(repo), "sourceSha": "a" * 40,
+                "origins": {"https://images.example": "runtime image host"}}
+    manifest = repo / "helloada-frontend.json"
+    manifest.write_text(json.dumps(declared, indent=2) + "\n")
+
+    (public / "index.html").write_text(
+        '<html lang="es"><head><title>Inicio</title></head><body>hola de nuevo</body></html>')
+    (public / "assets/style.css").write_text("body{color:#111}\n")
+
+    runner._refresh_static_manifest(repo)
+
+    refreshed = json.loads(manifest.read_text())
+    actual = inspect_static_site(repo)
+    assert refreshed["files"] == actual["files"]
+    # Import and runtime statements are carried, not recomputed from the files.
+    assert refreshed["sourceSha"] == "a" * 40
+    assert refreshed["origins"] == declared["origins"]
+
+    # A site without a static inventory is left alone.
+    other = tmp_path / "next-site"
+    other.mkdir()
+    runner._refresh_static_manifest(other)
+    assert not (other / "helloada-frontend.json").exists()

@@ -4609,6 +4609,84 @@ def _provider_rejection(lines: Sequence[str]) -> str:
     return ""
 
 
+def _turn_failure_detail(terminal_error: Mapping[str, Any] | None, tail: Sequence[str]) -> str:
+    """Name why the turn stopped, instead of quoting shutdown chatter.
+
+    In `--format json` OpenCode writes the failed step to stdout as an event and
+    exits 1 without printing anything. The last raw lines are then the server's
+    own shutdown notices, which describe nothing the owner can act on.
+    """
+    if terminal_error:
+        message = str(terminal_error.get("message") or "").strip()
+        kind = str(terminal_error.get("type") or "").strip()
+        if message:
+            return f"{kind}: {message}" if kind and kind != "unknown" else message
+    return chr(10).join(tail[-8:])
+
+
+def _resumable_turn_failure(result: Mapping[str, Any]) -> str:
+    """Return the interruption reason when the same session can simply continue.
+
+    A provider stream that dies mid-turn is not a failed build: the model has
+    already made its edits and was cut off while still working. The same
+    session can finish the turn where it stopped. A failed tool call, a timeout
+    or a pre-work rejection is not resumable and keeps its existing terminal
+    path.
+    """
+    error = result.get("terminal_error")
+    if not isinstance(error, Mapping):
+        return ""
+    if not str(error.get("message") or "").strip():
+        return ""
+    if not str(result.get("session_id") or "").strip():
+        return ""
+    calls = [call for call in (result.get("tool_calls") or []) if isinstance(call, Mapping)]
+    if not calls:
+        return ""
+    if any(call.get("status") == "error" for call in calls):
+        return ""
+    usage = result.get("usage") or {}
+    if not (usage.get("prompt_tokens") or usage.get("completion_tokens") or result.get("cost")):
+        return ""
+    return str(error.get("message") or "").strip()[:200]
+
+
+_INTERRUPTED_TURN_CONTINUATION = (
+    "Your previous response was interrupted by a provider failure before it finished. "
+    "Continue the same task from where it stopped, using the work already present in this worktree. "
+    "Do not repeat changes that are already applied."
+)
+
+
+def _persist_turn_failure(config: Mapping[str, Any], error: str, result: Mapping[str, Any]) -> None:
+    """Keep the exact turn that failed, outside the disposable worktree.
+
+    The worktree is deleted on failure, so without this record the provider's
+    own reason for stopping is unrecoverable and the next incident is guesswork.
+    """
+    try:
+        root = Path(str(config.get("data_dir") or "")).expanduser()
+        if not root.is_absolute():
+            return
+        directory = root / "logs" / "opencode-failures"
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        record = {
+            "ts": stamp,
+            "error": str(error)[:2_000],
+            "model": str((config.get("builder") or {}).get("model") or ""),
+            "session_id": str(result.get("session_id") or ""),
+            "terminal_error": result.get("terminal_error"),
+            "tool_calls": list(result.get("tool_calls") or [])[-40:],
+            "transcript": str(result.get("transcript") or "")[-2_000_000:],
+        }
+        path = directory / f"{stamp}-{os.getpid()}.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        os.chmod(path, 0o600)
+    except OSError:
+        return
+
+
 def _retryable_provider_rejection(result: Mapping[str, Any]) -> str:
     """Only a structured rejection before any model work is safe to replay."""
     if result.get("tool_calls") or result.get("native_tool_calls"):
@@ -4655,15 +4733,20 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                       reply_mode: str = "tail") -> dict[str, Any]:
     """Retry explicit pre-generation provider rejections, never partial work.
 
-    The same prompt, model, credentials and session are used. Process timeouts,
-    malformed output, auth failures and any generated output/tool use remain
-    terminal for the existing durable phase reconciliation path.
+    An interrupted turn is the one exception: when the provider cut the model
+    off mid-turn the same session continues from where it stopped, because the
+    work it already made is in the worktree and replaying the brief would
+    duplicate it. The same prompt, model, credentials and session are used.
+    Process timeouts, malformed output, auth failures and any failed tool call
+    remain terminal for the existing durable phase reconciliation path.
     """
     failures = []
+    request = brief
+    resume_session: str | None = None
     for attempt in range(3):
         try:
             result = _run_opencode_turn_once(
-                clone, brief, config, progress=progress, session_id=session_id,
+                clone, request, config, progress=progress, session_id=resume_session or session_id,
                 timeout_seconds=timeout_seconds, api_key=api_key, env=env,
                 api_key_env=api_key_env, image_files=image_files, memory=memory,
                 agent_name=agent_name, home=home, reply_mode=reply_mode,
@@ -4672,6 +4755,18 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 result["provider_retry_attempts"] = failures
             return result
         except RunnerError as exc:
+            if attempt < 2:
+                interruption = (_resumable_turn_failure(exc.result or {})
+                                if str(exc).startswith("opencode exited ") else "")
+                if interruption:
+                    resume_session = str((exc.result or {}).get("session_id") or "").strip()
+                    if resume_session:
+                        failures.append({"attempt": attempt + 1, "kind": "turn-interrupted",
+                                         "reason": interruption, "session_id": resume_session})
+                        if progress:
+                            progress("the model's turn was interrupted; continuing the same session")
+                        request = _INTERRUPTED_TURN_CONTINUATION
+                        continue
             kind = (_retryable_provider_rejection(exc.result or {})
                     if str(exc).startswith("opencode exited ") else "")
             if not kind:
@@ -4799,6 +4894,10 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
     transcript_lines: list[str] = []
     session = session_id
     protocol_error: str | None = None
+    # OpenCode reports a failed step as a structured event. In `--format json`
+    # it deliberately writes that event to stdout instead of stderr, so the
+    # human-readable reason for a non-zero exit exists only here.
+    terminal_error: dict[str, str] | None = None
     last_tool_prose_index = 0
     per_message: dict[str, dict[str, Any]] = {}
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -4845,6 +4944,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             "native_tool_calls": len(tool_calls),
             "usage": dict(usage_total),
             **({"cost": reported_cost} if has_reported_cost else {}),
+            **({"terminal_error": dict(terminal_error)} if terminal_error else {}),
             "raw_output": "\n".join(tail),
             "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
         }
@@ -4862,6 +4962,13 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             if not isinstance(event, dict):
                 continue
             events.append(event)
+            if event.get("type") == "error":
+                reported = event.get("error")
+                if isinstance(reported, dict) and str(reported.get("message") or "").strip():
+                    terminal_error = {
+                        "type": str(reported.get("type") or "unknown")[:120],
+                        "message": str(reported.get("message") or "").strip()[:600],
+                    }
             step_usage = _opencode_step_usage(event)
             if step_usage is not None:
                 step_count += 1
@@ -4961,10 +5068,12 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
         provider_rejection = _provider_rejection(transcript_lines)
         if provider_rejection:
             raise RunnerError(provider_rejection, result=partial_result())
-        detail = chr(10).join(tail[-8:])
+        detail = _turn_failure_detail(terminal_error, tail)
+        failure = partial_result()
+        _persist_turn_failure(config, f"opencode exited {proc.returncode}: {detail[:400]}", failure)
         raise RunnerError(
             f"opencode exited {proc.returncode}: {detail[:400]}",
-            result=partial_result(),
+            result=failure,
         )
     # A capability the host deliberately denied is not a broken turn. The
     # authoring agent may attempt a browser/server/delegation command that the
@@ -5600,11 +5709,48 @@ def _verify_materialized_fonts(config: Mapping[str, Any], clone: Path, paths: Se
             raise RunnerError(f"builder changed the owner-provided font asset: {relative}")
 
 
+def _refresh_static_manifest(clone: Path) -> None:
+    """Keep a static presentation's committed inventory in step with its files.
+
+    A static site commits ``helloada-frontend.json`` with the digest of every
+    public file, and the release refuses any commit whose declaration no longer
+    describes the tree. A change to ``public/`` therefore has to carry the
+    regenerated inventory in the same commit; otherwise the owner's approved
+    update builds, previews, merges, and then fails at release with nothing they
+    can act on.
+
+    ``sourceSha`` and ``origins`` are statements about the import and the site's
+    runtime requests, not observations of the files, so they are carried over.
+    A site that is not a static presentation has no such file and is untouched.
+    """
+    path = clone / "helloada-frontend.json"
+    if not path.is_file() or not (clone / "public" / "index.html").is_file():
+        return
+    from ..application.github_site_import import inspect_static_site
+
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        existing = {}
+    if not isinstance(existing, Mapping):
+        existing = {}
+    declaration = inspect_static_site(clone)
+    for key in ("sourceSha", "origins"):
+        if existing.get(key):
+            declaration[key] = existing[key]
+    text = json.dumps(declaration, indent=2) + "\n"
+    if path.read_text(encoding="utf-8") != text:
+        path.write_text(text, encoding="utf-8")
+
+
 def _finish_builder(context: dict[str, Any], clone: Path, base_ref: str,
                     message: str, output: str, progress=None) -> dict[str, Any]:
     """Commit, push, and summarize a build that already passed validation."""
     config = context["config"]
     memory = context.get("memory")
+    # Before the commit is read: a public/ change without its regenerated
+    # inventory is a release-time failure, not a review-time one.
+    _refresh_static_manifest(clone)
     status = _git(clone, "status", "--porcelain").strip()
     if status:
         if progress:
