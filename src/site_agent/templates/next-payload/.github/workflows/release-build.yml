@@ -37,13 +37,9 @@ jobs:
           python3 -m pip install --quiet pyyaml
 
       - name: Check the release contract
-        env:
-          CONTROL_SHA: ${{ vars.HELLOADA_CONTROL_SHA }}
         run: |
-          if [ -z "$CONTROL_SHA" ]; then
-            echo "HELLOADA_CONTROL_SHA is not set on this repository; run the fleet sync." >&2
-            exit 1
-          fi
+          CONTROL_SHA=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["controlSha"])')
+          echo "CONTROL_SHA=$CONTROL_SHA" >> "$GITHUB_ENV"
           git clone --quiet --filter=blob:none https://github.com/weareheadless/site-agent.git "$RUNNER_TEMP/control"
           git -C "$RUNNER_TEMP/control" checkout --quiet "$CONTROL_SHA"
           python3 - <<'PY'
@@ -79,7 +75,7 @@ jobs:
 
       - name: Build the release
         env:
-          HELLOADA_PIPELINE_SHA: ${{ vars.HELLOADA_CONTROL_SHA }}
+          HELLOADA_PIPELINE_SHA: ${{ env.CONTROL_SHA }}
         run: |
           python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
             --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \

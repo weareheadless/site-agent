@@ -50,7 +50,6 @@ RELEASE_WORKFLOW = ".github/workflows/release-build.yml"
 RELEASE_SOURCE = TEMPLATE / RELEASE_WORKFLOW
 # Non-secret identity the rehearsal needs; derived from the release registry.
 RELEASE_MANIFEST = ".github/helloada-release.json"
-CONTROL_SHA_VARIABLE = "HELLOADA_CONTROL_SHA"
 
 # A tenant-specific check that the canonical one supersedes. Only files this
 # platform introduced are retired; a tenant's own scripts are never touched.
@@ -152,7 +151,7 @@ def _branches(token: str, repository: str, declared: list[str]) -> list[str]:
 
 
 def _release_identity(customer: Mapping[str, Any], tenant: str, manifest: Mapping[str, Any],
-                      handoff_public_key: str) -> bytes:
+                      handoff_public_key: str, control_sha: str) -> bytes:
     """The non-secret release identity a repository needs to rehearse its build.
 
     Contract, schema, Worker and resource names are identity, not credentials;
@@ -166,26 +165,10 @@ def _release_identity(customer: Mapping[str, Any], tenant: str, manifest: Mappin
         "nodeVersion": str(manifest.get("nodeVersion") or ""),
         "npmVersion": str(manifest.get("npmVersion") or ""),
         "handoffPublicKey": handoff_public_key,
+        "controlSha": control_sha,
         "customer": dict(customer),
     }
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
-
-
-def _control_variable(token: str, repository: str, value: str, apply: bool) -> dict[str, str]:
-    """Report or set the exact control revision the workflow must check out."""
-    path = f"/repos/{repository}/actions/variables/{CONTROL_SHA_VARIABLE}"
-    status, body = _request("GET", path, token, allow_missing=True)
-    if status == 404:
-        if apply:
-            _request("POST", f"/repos/{repository}/actions/variables", token,
-                     {"name": CONTROL_SHA_VARIABLE, "value": value})
-        return {"name": CONTROL_SHA_VARIABLE, "action": "created", "value": value}
-    current = str(body.get("value") or "")
-    if current == value:
-        return {"name": CONTROL_SHA_VARIABLE, "action": "unchanged", "value": value}
-    if apply:
-        _request("PATCH", path, token, {"name": CONTROL_SHA_VARIABLE, "value": value})
-    return {"name": CONTROL_SHA_VARIABLE, "action": "updated", "value": value}
 
 
 def _tenant_rows(host_config: Mapping[str, Any], env: Mapping[str, str] | None) -> list[dict[str, Any]]:
@@ -269,7 +252,7 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
             if isinstance(customer, Mapping):
                 desired.append((
                     RELEASE_MANIFEST,
-                    _release_identity(customer, str(row["tenant"]), release_manifest, handoff_public_key),
+                    _release_identity(customer, str(row["tenant"]), release_manifest, handoff_public_key, control_sha),
                     MESSAGES["manifest-updated"],
                 ))
                 desired.append((RELEASE_WORKFLOW, RELEASE_SOURCE.read_bytes(), MESSAGES["release-updated"]))
@@ -300,18 +283,10 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                 "reason": str(exc)[:500],
             })
             continue
-        variable = None
-        if isinstance(customers.get(row["tenant"]), Mapping):
-            try:
-                variable = _control_variable(token, repository, control_sha, apply)
-            except GitHubError as exc:
-                changes.append({"branch": "", "path": f"variable:{CONTROL_SHA_VARIABLE}",
-                                "action": f"failed: {str(exc)[:120]}"})
         result.append({
             "tenant": row["tenant"],
             "status": "applied" if apply else "planned",
             "repository": repository,
-            "variable": variable,
             "changes": changes,
         })
     return {
