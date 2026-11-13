@@ -1234,6 +1234,11 @@ def test_the_preview_root_is_its_own_address_not_the_slash_form():
         f"http://127.0.0.1:8080{mount}/courses")
     assert source_deployment.preview_runtime_url(8080, mount, "courses/") == (
         f"http://127.0.0.1:8080{mount}/courses/")
+    # A proxied slash request keeps its slash: the root's own redirect points at
+    # the slash form, so collapsing it here loops the browser.
+    assert source_deployment.preview_runtime_url(8080, mount, "/", trailing=True) == (
+        f"http://127.0.0.1:8080{mount}/")
+    assert source_deployment.preview_runtime_url(8080, mount, "/") == f"http://127.0.0.1:8080{mount}"
     with pytest.raises(source_deployment.SourceDeploymentError):
         source_deployment.preview_runtime_url(8080, "/not-a-signed-path")
     with pytest.raises(source_deployment.SourceDeploymentError):

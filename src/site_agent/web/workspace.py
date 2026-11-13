@@ -971,13 +971,34 @@ p.detail {{ margin: 0; color: #a9abb2; }}
 
     preview_route = f"{preview_host.PREVIEW_PREFIX}/{{owner}}/{{job_id}}/{{expires}}/{{signature}}"
 
+    def preview_suffix(owner: str, job_id: str, expires: str, signature: str,
+                       file_path: str, request: Request) -> str:
+        """The requested path after the signature, trailing slash included.
+
+        The root is served from the signed address and Next redirects its slash
+        form once. A proxied slash request must carry that slash, otherwise the
+        redirect points back at the address it came from and the browser loops.
+        """
+        prefix = f"{preview_host.PREVIEW_PREFIX}/{owner}/{job_id}/{expires}/{signature}"
+        raw = request.url.path
+        suffix = raw[len(prefix):] if raw.startswith(prefix) else file_path
+        # The runtime takes a path without a leading slash; a bare "/" is only
+        # the root's trailing-slash form and stays as it is.
+        return suffix[1:] if suffix.startswith("/") and suffix != "/" else suffix
+
     @app.api_route(preview_route, methods=["GET", "HEAD"])
     def workspace_preview_runtime_root(owner: str, job_id: str, expires: str, signature: str, request: Request):
-        return preview_runtime_response(owner, job_id, expires, signature, "", request)
+        return preview_runtime_response(
+            owner, job_id, expires, signature,
+            preview_suffix(owner, job_id, expires, signature, "", request), request,
+        )
 
     @app.api_route(preview_route + "/{file_path:path}", methods=["GET", "HEAD"])
     def workspace_preview_runtime(owner: str, job_id: str, expires: str, signature: str, file_path: str, request: Request):
-        return preview_runtime_response(owner, job_id, expires, signature, file_path, request)
+        return preview_runtime_response(
+            owner, job_id, expires, signature,
+            preview_suffix(owner, job_id, expires, signature, file_path, request), request,
+        )
 
     @app.get(f"{prefix}/source/preview/styles")
     def workspace_source_preview_styles(request: Request):

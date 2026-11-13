@@ -88,7 +88,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def preview_runtime_url(port: int, base_path: str, path: str = "") -> str:
+def preview_runtime_url(port: int, base_path: str, path: str = "", *, trailing: bool = False) -> str:
     """The exact address of one candidate path inside its own runtime.
 
     The signed base path *is* the document URL, so the preview root is that
@@ -109,7 +109,8 @@ def preview_runtime_url(port: int, base_path: str, path: str = "") -> str:
     # it follows forever. Everything a path segment may legally carry stays as
     # the build emitted it; only the characters Next escapes are escaped.
     escaped = urllib.parse.quote(clean, safe="/!$&'()*+,;=:@~")
-    return f"http://127.0.0.1:{int(port)}{base}" + (f"/{escaped}" if escaped else "")
+    suffix = f"/{escaped}" if escaped else ("/" if trailing else "")
+    return f"http://127.0.0.1:{int(port)}{base}{suffix}"
 
 
 class _DocumentAssets(HTMLParser):
@@ -2075,7 +2076,13 @@ class SourceDeploymentService:
             if process.poll() is not None:
                 raise SourceDeploymentError("compiled preview process is no longer running")
             port = int(job.get("runtime_port") or 0)
-            target = preview_runtime_url(port, str(job.get("runtime_base_path") or ""), str(path or ""))
+            raw_path = str(path or "")
+            target = preview_runtime_url(
+                port,
+                str(job.get("runtime_base_path") or ""),
+                raw_path,
+                trailing=raw_path.endswith("/"),
+            )
         if query:
             target = f"{target}?{query}"
         allowed = {"accept", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}
