@@ -269,7 +269,7 @@
       "contentContract": "helloada-content-v4",
       "d1DatabaseId": "e82b4627-071a-4906-8124-0d9a1c2b6519",
       "d1DatabaseName": "helloada-site-ff8e9af06f56201f",
-      "health": "https://helloada-site-ff8e9af06f56201f.weareheadless.workers.dev/api/health",
+      "health": "https://helloada-site-astridrincon.weareheadless.workers.dev/api/health",
       "mailflareAgentQueueName": "helloada-site-ff8e9af06f56201f-mail-agent",
       "mailflareD1DatabaseId": "26459b22-0e0b-47bd-a785-de66d0f916b4",
       "mailflareD1DatabaseName": "helloada-site-ff8e9af06f56201f-mail",
@@ -286,7 +286,7 @@
       "schemaRevision": 13,
       "sharedRuntimeUpdate": "manual",
       "websitePresent": true,
-      "worker": "helloada-site-ff8e9af06f56201f"
+      "worker": "helloada-site-astridrincon"
     }
   },
   "nodeBin": "/home/admin/.local/share/site-agent-node22.23.3/bin",
