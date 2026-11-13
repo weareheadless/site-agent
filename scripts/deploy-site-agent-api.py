@@ -241,7 +241,10 @@ def _prune_release_store(releases: Path, current: Path, sources: Path,
     return summary
 
 
-def _health_check(url: str, attempts: int = 180) -> int:
+# Tenant runtimes make a cold API start take minutes on a loaded host. The
+# window is a ceiling for failure, not a latency budget: a release that never
+# becomes healthy must still roll back.
+def _health_check(url: str, attempts: int = 600) -> int:
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
