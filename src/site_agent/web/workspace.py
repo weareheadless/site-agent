@@ -1009,6 +1009,20 @@ p.detail {{ margin: 0; color: #a9abb2; }}
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/source/preview/rebuild")
+    async def workspace_source_preview_rebuild(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            body = {}
+        if body is not None and not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.source_preview_rebuild(body, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/source/preview/{{job_id}}")
     def workspace_source_preview_status(job_id: str, request: Request):
         tenant = require_service(request)

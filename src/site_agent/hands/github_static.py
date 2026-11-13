@@ -787,12 +787,134 @@ class GithubStatic(SiteAdapter):
         """Compatibility name; restoration is deliberately frontend-only."""
         return self.restore_frontend_paths(target_sha, branch, message)
 
+    def reapply_review_candidate(
+        self,
+        candidate_sha: str,
+        base_sha: str,
+        branch: str,
+        message: str,
+    ) -> dict[str, Any]:
+        """Re-create one reviewed change on top of the current production head.
+
+        A pending review can outlive the base it was prepared from: production
+        moves, and the candidate's own tree then no longer compiles even though
+        the change itself is still the decision the owner is reviewing. The
+        reviewed change is the exact tree difference between its pinned base and
+        its candidate, so it is re-applied file by file onto the current
+        production head with the candidate's own blobs. Nothing outside the
+        reviewed paths moves, and the caller is told the new commit and base.
+        """
+        for value, label in ((candidate_sha, "candidate"), (base_sha, "reviewed base")):
+            if not re.fullmatch(r"[0-9a-f]{40}", str(value or "")):
+                raise AdapterError(f"github: the {label} revision is invalid")
+        _, branch_ref = _request(
+            "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(branch)}", token=self.token,
+        )
+        branch_head = str((branch_ref.get("object") or {}).get("sha") or "")
+        if branch_head != candidate_sha:
+            raise AdapterError(
+                "github: the preview branch no longer carries this exact review; it cannot be re-applied over newer staged work"
+            )
+        _, current_ref = _request(
+            "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}", token=self.token,
+        )
+        current_sha = str((current_ref.get("object") or {}).get("sha") or "")
+        if not current_sha:
+            raise AdapterError("github: production branch has no head")
+        if current_sha == base_sha:
+            return {
+                "adapter": self.name, "rebased": False, "branch": branch,
+                "commit_sha": candidate_sha, "base_sha": base_sha, "paths": [],
+                "reason": "the review already sits on the current production head",
+            }
+
+        _, base_commit = _request("GET", f"{API}/repos/{self.repo}/commits/{urllib.parse.quote(base_sha)}", token=self.token)
+        _, candidate_commit = _request("GET", f"{API}/repos/{self.repo}/commits/{urllib.parse.quote(candidate_sha)}", token=self.token)
+        _, current_commit = _request("GET", f"{API}/repos/{self.repo}/commits/{urllib.parse.quote(current_sha)}", token=self.token)
+        base_tree = ((base_commit.get("commit") or {}).get("tree") or {}).get("sha")
+        candidate_tree = ((candidate_commit.get("commit") or {}).get("tree") or {}).get("sha")
+        current_tree = ((current_commit.get("commit") or {}).get("tree") or {}).get("sha")
+        if not (base_tree and candidate_tree and current_tree):
+            raise AdapterError("github: a reviewed revision has no source tree")
+
+        base_files = self._tree_files(base_tree)
+        candidate_files = self._tree_files(candidate_tree)
+        # The reviewed change is a fact about the two trees, never a file list
+        # supplied by the caller: whatever the candidate changed relative to its
+        # own pinned base is what moves, and nothing else.
+        reviewed = sorted(
+            path for path in set(base_files) | set(candidate_files)
+            if base_files.get(path, {}).get("sha") != candidate_files.get(path, {}).get("sha")
+        )
+        if not reviewed:
+            raise AdapterError("github: this review has no source changes to re-apply")
+        from .repo_changes import source_path_allowed
+
+        refused = [path for path in reviewed if not source_path_allowed(self.root, path)]
+        if refused:
+            raise AdapterError(
+                "github: this review changes paths the site may not publish: " + ", ".join(refused[:5])
+            )
+
+        changes: list[dict[str, Any]] = []
+        for path in reviewed:
+            target = candidate_files.get(path)
+            if target is None:
+                changes.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+            else:
+                changes.append({"path": path, "mode": target.get("mode") or "100644", "type": "blob", "sha": target["sha"]})
+        _, created_tree = _request(
+            "POST", f"{API}/repos/{self.repo}/git/trees", token=self.token,
+            payload={"base_tree": current_tree, "tree": changes},
+        )
+        tree_sha = created_tree.get("sha")
+        if not tree_sha:
+            raise AdapterError("github: failed to create the re-applied reviewer tree")
+        _, created_commit = _request(
+            "POST", f"{API}/repos/{self.repo}/git/commits", token=self.token,
+            payload={
+                "message": message[:200],
+                "tree": tree_sha,
+                "parents": [current_sha],
+            },
+        )
+        commit_sha = created_commit.get("sha")
+        if not commit_sha:
+            raise AdapterError("github: failed to create the re-applied review commit")
+        _, latest_ref = _request(
+            "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}", token=self.token,
+        )
+        if (latest_ref.get("object") or {}).get("sha") != current_sha:
+            raise AdapterError("github: production changed while the review was re-applied; rebuild it again")
+        _, latest_branch = _request(
+            "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(branch)}", token=self.token,
+        )
+        if (latest_branch.get("object") or {}).get("sha") != candidate_sha:
+            raise AdapterError("github: the preview branch changed while the review was re-applied; rebuild it again")
+        _request(
+            "PATCH", f"{API}/repos/{self.repo}/git/refs/heads/{urllib.parse.quote(branch)}", token=self.token,
+            payload={"sha": commit_sha, "force": True},
+        )
+        return {
+            "adapter": self.name,
+            "rebased": True,
+            "branch": branch,
+            "commit_sha": commit_sha,
+            "base_sha": current_sha,
+            "previous_commit_sha": candidate_sha,
+            "previous_base_sha": base_sha,
+            "paths": sorted(reviewed),
+        }
+
     def _tree_files(self, tree_sha: str) -> dict[str, dict[str, str]]:
         _, body = _request(
             "GET",
             f"{API}/repos/{self.repo}/git/trees/{urllib.parse.quote(tree_sha)}?recursive=1",
             token=self.token,
         )
+        if body.get("truncated"):
+            # A partial tree would silently drop files from the comparison.
+            raise AdapterError("github: this repository is too large to compare as one tree")
         return {
             item["path"]: item
             for item in body.get("tree", [])

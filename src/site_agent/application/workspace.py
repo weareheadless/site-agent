@@ -5483,9 +5483,128 @@ class ChatService:
         except SourceEditorError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 
+    def source_preview_rebuild(
+        self,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Re-apply one failed review to the current site and build it again.
+
+        A compiled preview is pinned to the exact base the review was prepared
+        from. When production moves underneath it, the same reviewed change no
+        longer compiles, and retrying that revision can never succeed. This
+        re-applies the reviewed change — the exact tree difference between its
+        base and its candidate — onto the current production head, points the
+        review at the resulting commit, and starts one fresh preview for it.
+        """
+        if body is not None and not isinstance(body, Mapping):
+            raise BridgeError("source rebuild body must be an object")
+        body = body or {}
+        try:
+            draft_id = int(body.get("draft_id"))
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("choose the review to rebuild") from exc
+        memory, _llm, _tenant_id = self._scope(tenant)
+        draft = memory.get_draft(draft_id)
+        if not isinstance(draft, Mapping):
+            raise BridgeError("this review no longer exists")
+        if draft.get("kind") not in {"merge", "rollback"} or draft.get("status") != "pending":
+            raise BridgeError("only a pending source review can be rebuilt")
+        meta = dict(draft.get("meta") or {})
+        preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+        candidate_sha = str(meta.get("candidate_sha") or meta.get("head_sha") or "").strip().lower()
+        base_sha = str(meta.get("base_sha") or "").strip().lower()
+        if not (re.fullmatch(r"[0-9a-f]{40}", candidate_sha) and re.fullmatch(r"[0-9a-f]{40}", base_sha)):
+            raise BridgeError("this review has no exact source revisions to re-apply")
+        if preview.get("requires_build") is not True:
+            raise BridgeError("this review does not need a compiled preview")
+
+        config = tenant.config if tenant is not None else self.config
+        site = (config or {}).get("site") if isinstance((config or {}).get("site"), Mapping) else {}
+        branch = str(meta.get("head") or site.get("preview_branch") or "preview")
+        deployer = self._source_deployer(tenant)
+        try:
+            latest = _owner_preview_job(getattr(deployer, "latest_preview", deployer.latest)(branch))
+        except Exception:  # noqa: BLE001 - a missing job is not a reason to refuse
+            latest = {}
+        if str(latest.get("commit") or "") == candidate_sha:
+            if latest.get("status") in {"queued", "running", "verifying"}:
+                raise BridgeError("this review is already building")
+            if latest.get("status") == "ready":
+                raise BridgeError("this review already has a ready preview")
+
+        adapter = self._merge_adapter(tenant, capability="reapply_review_candidate")
+        reapply = getattr(adapter, "reapply_review_candidate", None)
+        if not callable(reapply):
+            raise BridgeError("this site cannot re-apply a review onto the current version")
+        try:
+            applied = reapply(
+                candidate_sha=candidate_sha,
+                base_sha=base_sha,
+                branch=branch,
+                message=f"Re-apply reviewed change on the current website: {str(meta.get('summary') or '')[:120]}",
+            )
+        except Exception as exc:  # noqa: BLE001 - transport errors are owner-facing here
+            raise BridgeError(str(exc)[:500]) from exc
+        commit_sha = str(applied.get("commit_sha") or "").strip().lower()
+        new_base_sha = str(applied.get("base_sha") or "").strip().lower()
+        if not (re.fullmatch(r"[0-9a-f]{40}", commit_sha) and re.fullmatch(r"[0-9a-f]{40}", new_base_sha)):
+            raise BridgeError("the re-applied review has no exact source revision")
+
+        history = meta.get("rebased_from")
+        entries = [dict(item) for item in history if isinstance(item, Mapping)] if isinstance(history, list) else (
+            [dict(history)] if isinstance(history, Mapping) else []
+        )
+        if commit_sha != candidate_sha:
+            entries.append({
+                "candidate_sha": candidate_sha,
+                "base_sha": base_sha,
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            })
+            meta["rebased_from"] = entries
+        changed_paths = [str(path) for path in (applied.get("paths") or preview.get("changed_paths") or [])]
+        meta["head_sha"] = commit_sha
+        meta["base_sha"] = new_base_sha
+        meta["preview"] = {
+            "mode": "compile",
+            "status": "build_required",
+            "requires_build": True,
+            "changed_paths": changed_paths,
+            "reason": "Rendered source changes need an isolated compiled preview runtime.",
+            "head_sha": commit_sha,
+        }
+        # The build reads this review's own metadata to bind itself to one exact
+        # candidate, so the new revisions are persisted before it starts.
+        memory.update_draft_meta(draft_id, meta)
+        try:
+            job = deployer.start({
+                "branch": branch,
+                "commit": commit_sha,
+                "draft_id": draft_id,
+                "mode": "compiled_preview",
+            })
+        except Exception as exc:  # noqa: BLE001 - the review keeps the new revisions
+            raise BridgeError(str(exc)[:500]) from exc
+        job_id = str(job.get("id") or "") if isinstance(job, Mapping) else ""
+        meta["preview"].update({"status": "building", "job_id": job_id})
+        memory.update_draft_meta(draft_id, meta)
+        memory.record_action(
+            "source_review_rebuilt",
+            f"#{draft_id}: {candidate_sha[:12]} -> {commit_sha[:12]} on {new_base_sha[:12]}",
+        )
+        return {
+            "draft_id": draft_id,
+            "rebased": commit_sha != candidate_sha,
+            "commit": commit_sha,
+            "base_sha": new_base_sha,
+            "previous_commit": candidate_sha,
+            "changed_paths": changed_paths,
+            "job": _owner_preview_job(job) if isinstance(job, Mapping) else {},
+        }
+
     @staticmethod
     def _public_design_run(run: Mapping[str, Any], *, include_evidence: bool = False) -> dict[str, Any]:
-        snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}
         result = {
             "run_id": str(run.get("run_id") or ""),
             "mode": str(run.get("mode") or ""),
