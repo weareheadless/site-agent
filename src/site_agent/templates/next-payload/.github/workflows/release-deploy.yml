@@ -8,8 +8,10 @@ name: Release deploy
 # runtime identity the site is expected to match. Nothing is committed, nothing
 # is stored in the repository, and no per-tenant token is created by hand.
 #
-# Disabled by default while parity is proven: run it from the Actions tab.
+# Every approved change lands on main, so a push to main is the deploy trigger.
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
