@@ -410,6 +410,9 @@ def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(
             (b'const src="/assets/owner.webp";', "application/javascript", f'const src="{mount}/assets/owner.webp";'),
             (b'background:url(/assets/owner.webp)', "text/css", f'background:url({mount}/assets/owner.webp)'),
             (b'{\\"src\\":\\"/assets/owner.webp\\"}', "text/html", '{\\"src\\":\\"' + mount + '/assets/owner.webp\\"}'),
+            # An inline style keeps its quotes entity-escaped in the served HTML.
+            (b'<div style="background-image:url(&quot;/assets/owner.webp&quot;)">', "text/html",
+             f'<div style="background-image:url(&quot;{mount}/assets/owner.webp&quot;)">'),
         ]
         for body, content_type, expected in samples:
             assert service._rewrite_runtime_assets(body, content_type, job).decode() == expected

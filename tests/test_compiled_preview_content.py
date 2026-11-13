@@ -14,7 +14,7 @@ def _gateway(draft_revision="a", rows=None):
         require_authoring_contract=lambda: CONTRACT,
         list=lambda *args, **kwargs: rows if rows is not None else [{"id": 1}],
         read=lambda collection, identifier, **kwargs: dict(draft),
-        read_global=lambda slug, **kwargs: {"slug": slug, "_status": "published"},
+        read_global=lambda slug, **kwargs: {"siteName": "Site", "_status": "published"},
         read_media=lambda identifier, **kwargs: {"id": identifier},
     )
 
@@ -73,8 +73,37 @@ def test_preview_does_not_publish_a_global_that_was_never_published():
     """
     gateway = _gateway()
     gateway.read_global = lambda slug, **kwargs: (
-        {"slug": slug, "_status": "published"} if slug == "navigation"
+        {"items": [{"key": "primary.about"}], "_status": "published"} if slug == "navigation"
         else {"address": {}, "_status": "draft"}
     )
     snapshot = canonical_preview_snapshot(gateway, [])
     assert [item["slug"] for item in snapshot["globals"]] == ["navigation"]
+
+
+def test_preview_carries_a_global_the_live_site_already_renders():
+    """A never-published global is what production shows, so the preview shows it.
+
+    Oceanic's navigation global was saved but never published. Its public read
+    returns the saved items with `_status: draft`, and every live page renders
+    them, so a preview that skipped the global showed a header with no menu.
+    """
+    gateway = _gateway()
+    def read_global(slug, **kwargs):
+        if slug == "navigation":
+            return {"id": 1, "_status": "draft", "globalType": "navigation",
+                    "items": [{"key": "primary.about", "label": "About", "href": "/about"}]}
+        return {"id": 1, "_status": "published", "siteName": "OceanicVibes"}
+    gateway.read_global = read_global
+    snapshot = canonical_preview_snapshot(gateway, [])
+    by_slug = {item["slug"]: item for item in snapshot["globals"]}
+    assert by_slug["navigation"]["locales"]["en"]["items"][0]["label"] == "About"
+    assert by_slug["siteSettings"]["locales"]["en"]["siteName"] == "OceanicVibes"
+
+
+def test_preview_still_skips_a_global_with_nothing_saved():
+    gateway = _gateway()
+    gateway.read_global = lambda slug, **kwargs: (
+        {"id": 1, "_status": "draft", "globalType": slug, "items": []} if slug == "navigation"
+        else {"id": 1, "_status": "draft", "siteName": "", "logo": None, "address": {}}
+    )
+    assert canonical_preview_snapshot(gateway, [])["globals"] == []
