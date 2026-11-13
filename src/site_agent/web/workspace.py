@@ -11,7 +11,7 @@ The route prefix remains configurable because the first customer still uses
 from __future__ import annotations
 
 import asyncio
-
+import datetime
 import hmac
 import re
 import urllib.error
@@ -530,6 +530,55 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/growth/opportunities")
+    def workspace_growth_opportunities(request: Request, status: str | None = None,
+                                       cursor: str | None = None, limit: int = 50):
+        tenant = require_service(request)
+        if not 1 <= limit <= 100:
+            raise HTTPException(status_code=400, detail="limit must be between 1 and 100")
+        try:
+            return service.growth_opportunities(tenant=tenant, status=status, cursor=cursor, limit=limit)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/growth/opportunities/{{opportunity_id}}/decision")
+    async def workspace_growth_opportunity_decision(opportunity_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.decide_crawlseo_opportunity(
+                opportunity_id, body, tenant=tenant, owner_actor_id=authenticated_owner_actor(request, tenant))
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/growth/tasks/{{task_id}}")
+    def workspace_growth_task(task_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.crawlseo_task(task_id, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/growth/tasks/{{task_id}}")
+    async def workspace_growth_task_confirmation(task_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.confirm_crawlseo_task(
+                task_id, body, tenant=tenant, owner_actor_id=authenticated_owner_actor(request, tenant))
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/growth/budget")
     def workspace_crawlseo_research_budget(request: Request):
         tenant = require_service(request)
@@ -585,19 +634,27 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/seo/analytics")
-    def workspace_seo_analytics(request: Request, days: int = 28):
+    def workspace_seo_analytics(request: Request, days: int | None = None):
         tenant = require_service(request)
         providers = tenant.config.get("providers") if tenant is not None and isinstance(tenant.config.get("providers"), dict) else {}
         crawlseo = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), dict) else {}
         if crawlseo.get("research_authority") == "crawlseo":
-            # GA4/GSC measurements belong to CrawlSEO after cutover. The v1
-            # connector does not expose analytics reports, so never query the
-            # old HelloAda Google client as a hidden fallback.
-            return {
-                "authority": "crawlseo", "capability": "analytics.read", "status": "unsupported",
-                "ga4": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
-                "gsc": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
-            }
+            # GA4/GSC measurements belong to CrawlSEO after cutover. Read its
+            # saved observations; never query the old HelloAda Google client as
+            # a hidden fallback, and never fabricate an empty success.
+            start_date = end_date = None
+            if days is not None:
+                if not 1 <= days <= 366:
+                    raise HTTPException(status_code=400, detail="days must be between 1 and 366")
+                end = datetime.datetime.now(datetime.timezone.utc).date()
+                start_date = (end - datetime.timedelta(days=days - 1)).isoformat()
+                end_date = end.isoformat()
+            try:
+                payload = service.crawlseo_performance(tenant=tenant, start_date=start_date, end_date=end_date)
+            except BridgeError as exc:
+                return {"authority": "crawlseo", "capability": "analytics.read", "status": "unavailable",
+                        "reason": str(exc)[:240], "ga4": None, "gsc": None}
+            return {"authority": "crawlseo", "capability": "analytics.read", "status": "available", **payload}
         try:
             return analytics_for(tenant).report(days=days)
         except AnalyticsError as exc:

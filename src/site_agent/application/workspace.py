@@ -2191,6 +2191,119 @@ class ChatService:
                    if row.provider_id == "crawlseo"]
         return {"tenant": tenant_id, "actions": actions}
 
+    def crawlseo_connector(self, *, tenant: Tenant | None = None) -> tuple[Any, str]:
+        """The connector service and the site binding it must be called with.
+
+        The site is the provisioning receipt's project site, never the tenant's
+        own site id: the connector reads a project-owned site and rejects a
+        caller that names a different one.
+        """
+        if tenant is None or self.registry is None or self.registry.tenants.get(tenant.tenant_id) is not tenant:
+            raise BridgeError("tenant is not authorized")
+        service = tenant.context.get("crawlseo_service")
+        state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+        crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        site_id = str(tenant.context.get("connector_site_id") or crawlseo_state.get("site_id") or "").strip()
+        if service is None or not site_id:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        return service, site_id
+
+    def _crawlseo_generation(self, service: Any, site_id: str) -> int:
+        capabilities = service.connector_capabilities(site_id)
+        binding = capabilities.get("binding") if isinstance(capabilities.get("binding"), Mapping) else {}
+        generation = binding.get("generation")
+        if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+            raise BridgeError("CrawlSEO connector binding is invalid")
+        return generation
+
+    def growth_opportunities(self, *, tenant: Tenant | None = None, status: str | None = None,
+                             cursor: str | None = None, limit: int = 50) -> dict[str, Any]:
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        try:
+            return service.connector_opportunities(site_id, limit=limit, cursor=cursor, status=status)
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def decide_crawlseo_opportunity(self, opportunity_id: str, body: Mapping[str, Any], *,
+                                    tenant: Tenant | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
+        """Relay one owner decision; the human identity never comes from the body."""
+        from .growth_delivery import require_owner_actor
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        operation = str(body.get("operation") or "").strip()
+        if operation not in {"accept", "park", "reject"}:
+            raise BridgeError("opportunity decision must be accept, park or reject")
+        idempotency_key = str(body.get("idempotencyKey") or "").strip()
+        confirmation_ref = str(body.get("confirmationRef") or "").strip()
+        if not idempotency_key or not confirmation_ref:
+            raise BridgeError("an opportunity decision needs an idempotency key and a confirmation reference")
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        payload: dict[str, Any] = {
+            "siteId": site_id,
+            "generation": self._crawlseo_generation(service, site_id),
+            "idempotencyKey": idempotency_key,
+            "confirmedBy": owner_actor_id,
+            "confirmationRef": confirmation_ref,
+            "operation": operation,
+            "expectedUpdatedAt": body.get("expectedUpdatedAt"),
+        }
+        for key in ("expectedDecisionId", "reason"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                payload[key] = value.strip()
+        try:
+            return service.connector_opportunity_operation(opportunity_id, payload)
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_task(self, task_id: str, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        try:
+            return service.connector_task(site_id, task_id)
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def confirm_crawlseo_task(self, task_id: str, body: Mapping[str, Any], *,
+                              tenant: Tenant | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
+        """Relay the owner's delivery confirmation for one Task, never an agent's."""
+        from .growth_delivery import require_owner_actor
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        status = str(body.get("status") or "").strip()
+        expected_status = str(body.get("expectedStatus") or "").strip()
+        opportunity_id = str(body.get("opportunityId") or "").strip()
+        idempotency_key = str(body.get("idempotencyKey") or "").strip()
+        confirmation_ref = str(body.get("confirmationRef") or "").strip()
+        if not opportunity_id or not idempotency_key or not confirmation_ref:
+            raise BridgeError("a task confirmation needs its opportunity, an idempotency key and a confirmation reference")
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        payload: dict[str, Any] = {
+            "siteId": site_id,
+            "generation": self._crawlseo_generation(service, site_id),
+            "idempotencyKey": idempotency_key,
+            "confirmedBy": owner_actor_id,
+            "confirmationRef": confirmation_ref,
+            "opportunityId": opportunity_id,
+            "expectedStatus": expected_status,
+            "status": status,
+        }
+        try:
+            return service.connector_confirm_task(task_id, payload)
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_performance(self, *, tenant: Tenant | None = None, start_date: str | None = None,
+                             end_date: str | None = None) -> dict[str, Any]:
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        try:
+            return service.connector_analytics(site_id, start_date=start_date, end_date=end_date)
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
     def intelligence_summary(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         if tenant is None or self.registry is None or self.registry.tenants.get(tenant.tenant_id) is not tenant:
             raise BridgeError("tenant is not authorized")

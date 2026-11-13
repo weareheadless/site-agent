@@ -1620,12 +1620,25 @@ def test_crawlseo_budget_policy_requires_authenticated_owner_and_uses_current_re
     memory.close()
 
 
-def test_crawlseo_authority_never_queries_legacy_google_analytics(monkeypatch, tmp_path):
+def test_crawlseo_authority_reads_the_connector_and_never_the_legacy_client(monkeypatch, tmp_path):
     memory = Memory(tmp_path / "crawlseo-analytics.db")
     config = {"providers": {"crawlseo": {"research_authority": "crawlseo", "enabled": True,
         "connector_url": "https://crawlseo.test/api/connector/v1"}}}
+
+    class Connector:
+        def connector_capabilities(self, site_id=None):
+            return {"schemaVersion": "1.0", "siteId": site_id, "projectId": "project-1",
+                    "binding": {"status": "active", "executor": "helloada", "generation": 1}}
+
+        def connector_analytics(self, site_id, start_date=None, end_date=None):
+            assert site_id == "crawl-site"
+            return {"schemaVersion": "1.0", "siteId": site_id, "projectId": "project-1",
+                    "requestedPeriod": {"startDate": "2026-11-05", "endDate": "2026-11-11"},
+                    "ga4": {"status": "available"}, "gsc": {"status": "available"}}
+
     tenant = Tenant("analytics-authority", config, memory, None,
-        {"google_platform": object()}, "analytics-token")
+        {"google_platform": object(), "crawlseo_service": Connector(), "connector_site_id": "crawl-site"},
+        "analytics-token")
     registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
     register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry), registry=registry)
@@ -1638,11 +1651,32 @@ def test_crawlseo_authority_never_queries_legacy_google_analytics(monkeypatch, t
         "headers": [(b"authorization", b"Bearer analytics-token")], "query_string": b""})
     response = route.endpoint(request)
 
-    assert response == {
-        "authority": "crawlseo", "capability": "analytics.read", "status": "unsupported",
-        "ga4": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
-        "gsc": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
-    }
+    assert response["authority"] == "crawlseo"
+    assert response["capability"] == "analytics.read"
+    assert response["status"] == "available"
+    assert response["requestedPeriod"] == {"startDate": "2026-11-05", "endDate": "2026-11-11"}
+    assert response["ga4"] == {"status": "available"}
+    memory.close()
+
+
+def test_crawlseo_authority_reports_an_unavailable_connector_instead_of_an_empty_report(tmp_path):
+    memory = Memory(tmp_path / "crawlseo-analytics-missing.db")
+    config = {"providers": {"crawlseo": {"research_authority": "crawlseo", "enabled": True,
+        "connector_url": "https://crawlseo.test/api/connector/v1"}}}
+    tenant = Tenant("analytics-missing", config, memory, None, {"google_platform": object()}, "missing-token")
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry), registry=registry)
+
+    from starlette.requests import Request
+    route = next(row for row in app.routes if getattr(row, "path", "") == "/api/workspace/seo/analytics")
+    request = Request({"type": "http", "method": "GET", "path": "/api/workspace/seo/analytics",
+        "headers": [(b"authorization", b"Bearer missing-token")], "query_string": b""})
+    response = route.endpoint(request)
+
+    assert response["status"] == "unavailable"
+    assert response["ga4"] is None and response["gsc"] is None
+    assert "connector is unavailable" in response["reason"]
     memory.close()
 
 
