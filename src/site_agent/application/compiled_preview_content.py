@@ -14,6 +14,32 @@ from ..hands.payload_gateway import PayloadMediaService
 
 _WEBSITE_COLLECTIONS = ("pages", "posts", "products", "categories")
 _WEBSITE_GLOBALS = ("navigation", "siteSettings")
+_GLOBAL_METADATA = frozenset({"id", "_status", "updatedAt", "createdAt", "globalType", "_helloadaRevision", "slug"})
+
+
+def _global_has_saved_content(document: Mapping[str, Any]) -> bool:
+    """Whether a public global read carries any value the owner saved.
+
+    A global that was never published answers a public read with its last saved
+    value and `_status: draft`, and the live site renders that value: Oceanic's
+    navigation has never been published, so production shows its saved items
+    while a preview that dropped the global showed no menu at all. A global with
+    nothing saved is still skipped, because seeding it would invent an empty row
+    the workspace never stored and the canonical schema rejects it. This reads
+    only whether a value exists; it never interprets what the value means.
+    """
+    for key, value in document.items():
+        if key in _GLOBAL_METADATA:
+            continue
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, bool) and value:
+            return True
+        if isinstance(value, (list, dict)) and value:
+            return True
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value:
+            return True
+    return False
 
 
 def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> dict[str, Any]:
@@ -51,14 +77,12 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
                 record(collection, locale, document)
         # Every rendered page reads the shared globals, so the preview needs
         # them even when the candidate does not touch them. A candidate draft
-        # below replaces the published value for that locale. A global that was
-        # only ever saved as a draft has no published content to copy: writing
-        # it as published would invent content the workspace never stored, and
-        # the canonical schema rejects it (a required field like the business
-        # name is empty because the owner never filled it).
+        # below replaces the published value for that locale. What the public
+        # read returns is what the live site renders, draft status or not; a
+        # global with nothing saved is skipped rather than invented.
         for slug in _WEBSITE_GLOBALS:
             document = gateway.read_global(slug, draft=False, locale=locale)
-            if isinstance(document, Mapping) and document.get("_status") == "published":
+            if isinstance(document, Mapping) and _global_has_saved_content(document):
                 globals_.setdefault(slug, {"slug": slug, "locales": {}})["locales"][locale] = dict(document)
 
     for effect in effects:

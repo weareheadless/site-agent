@@ -1055,7 +1055,16 @@ class SourceDeploymentService:
             kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")
         ):
             return body
-        pattern = re.compile(r'''(?P<prefix>\\?["']|url\(\s*["']?)(?P<asset>''' + "|".join(re.escape(root) for root in roots) + ")")
+        # A URL written inside an HTML attribute can arrive with its quotes
+        # entity-escaped (`style="background-image:url(&quot;/x.jpg&quot;)"`),
+        # which the quote-only prefix never matched: the hero image kept its
+        # site-root URL and 404'd outside the preview mount while the document
+        # still reported the picture in its markup.
+        quote = r'(?:&quot;|&#39;|&#x27;|\\?["\'])'
+        pattern = re.compile(
+            r"(?P<prefix>" + quote + r"|url\(\s*(?:" + quote + r")?)(?P<asset>"
+            + "|".join(re.escape(root) for root in roots) + ")"
+        )
         return pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8")).encode("utf-8")
 
     @staticmethod
