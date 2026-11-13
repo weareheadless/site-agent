@@ -1,0 +1,149 @@
+name: Release deploy
+
+# Deploy one exact commit from this repository, without a stored credential.
+#
+# The job proves what it is — repository, branch, commit and this workflow file
+# — with a GitHub OIDC token, and the platform returns the material for this one
+# run: the tenant's Worker secrets, the Cloudflare account credential and the
+# runtime identity the site is expected to match. Nothing is committed, nothing
+# is stored in the repository, and no per-tenant token is created by hand.
+#
+# Disabled by default while parity is proven: run it from the Actions tab.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: release-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+
+      - name: Pin the release toolchain
+        run: |
+          npm install --global npm@11.13.0
+          echo "NODE_BIN=$(dirname "$(command -v node)")" >> "$GITHUB_ENV"
+          echo "NPM_BIN=$(dirname "$(command -v npm)")" >> "$GITHUB_ENV"
+          python3 -m pip install --quiet pyyaml
+
+      - name: Fetch this run's deploy material
+        env:
+          OIDC_AUDIENCE: helloada-deploy
+          API: https://api.helloada.app/v1
+        run: |
+          set -euo pipefail
+          TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$OIDC_AUDIENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
+          curl -sS --fail-with-body -X POST "$API/control-plane/websites/$TENANT/deploy-credentials" \
+            -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" \
+            -o "$RUNNER_TEMP/deploy.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          deploy = json.loads((root / "deploy.json").read_text(encoding="utf-8"))
+          release = json.loads(Path(".github/helloada-release.json").read_text(encoding="utf-8"))
+          source_sha = os.environ["GITHUB_SHA"]
+          if deploy["sourceSha"] != source_sha:
+              raise SystemExit("the platform issued material for a different commit")
+          if deploy["tenant"] != release["tenant"]:
+              raise SystemExit("the platform issued material for a different tenant")
+          customer = dict(release["customer"])
+          contract = {
+              name: deploy["identity"][name]
+              for name in ("contentContract", "payloadCore", "schemaRevision", "schemaIdentity", "migrationHead")
+          }
+          for name, value in contract.items():
+              if value is None:
+                  raise SystemExit(f"the platform did not report the registered {name}")
+              if customer.get(name) not in (None, value):
+                  raise SystemExit(f"the repository release identity disagrees on {name}")
+              customer[name] = value
+          if not deploy.get("sharedRuntimeFingerprint"):
+              raise SystemExit("the platform did not report the deployed runtime fingerprint")
+          cloudflare = root / "cloudflare.env"
+          cloudflare.write_text(
+              f"CLOUDFLARE_API_TOKEN={deploy['cloudflare']['apiToken']}\n"
+              f"CLOUDFLARE_ACCOUNT_ID={deploy['cloudflare']['accountId']}\n",
+              encoding="utf-8",
+          )
+          cloudflare.chmod(0o600)
+          profile = root / "host-credentials.yaml"
+          profile.write_text(
+              "credentials:\n  cloudflare:\n"
+              f"    env_file: {cloudflare}\n"
+              "    api_token_env: CLOUDFLARE_API_TOKEN\n"
+              "    account_id_env: CLOUDFLARE_ACCOUNT_ID\n",
+              encoding="utf-8",
+          )
+          runtime = root / "runtime.env"
+          runtime.write_text(
+              "".join(f"{name}={value}\n" for name, value in deploy["workerSecrets"].items())
+              + f"HELLOADA_HANDOFF_PUBLIC_KEY={deploy.get('handoffPublicKey') or ''}\n",
+              encoding="utf-8",
+          )
+          runtime.chmod(0o600)
+          manifest = {
+              "schema": 1,
+              "credentialProfile": str(profile),
+              "nodeBin": os.environ["NODE_BIN"],
+              "nodeVersion": release["nodeVersion"],
+              "npmBin": os.environ["NPM_BIN"],
+              "npmVersion": release["npmVersion"],
+              "releaseRoot": str(root / "releases"),
+              "connectionGate": {
+                  "apiUrl": "https://api.helloada.app/v1",
+                  "config": str(root / "absent.yaml"),
+                  "envFile": str(runtime),
+              },
+              "tenantEnvFile": str(runtime),
+              "customers": {deploy["tenant"]: customer},
+          }
+          (root / "releases").mkdir(exist_ok=True)
+          (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+          (root / "expected-contract.json").write_text(json.dumps(contract, indent=1), encoding="utf-8")
+          (root / "expected-runtime").write_text(deploy["sharedRuntimeFingerprint"], encoding="utf-8")
+          PY
+
+      - name: Deploy the exact commit
+        run: |
+          set -euo pipefail
+          CONTROL_SHA=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["controlSha"])')
+          git clone --quiet --filter=blob:none https://github.com/weareheadless/site-agent.git "$RUNNER_TEMP/control"
+          git -C "$RUNNER_TEMP/control" checkout --quiet "$CONTROL_SHA"
+          python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
+            --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
+            --ref "$GITHUB_SHA" \
+            --release-id "ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --release-purpose website \
+            --shared-runtime-fingerprint "$(cat "$RUNNER_TEMP/expected-runtime")" \
+            --expected-contract "$RUNNER_TEMP/expected-contract.json" \
+            --manifest "$RUNNER_TEMP/manifest.json" \
+            --source-dir "$GITHUB_WORKSPACE" \
+            --release-root "$RUNNER_TEMP/releases" \
+            --runner
+
+      - name: Keep the release receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-receipt
+          path: ${{ runner.temp }}/releases
+          if-no-files-found: ignore
+          retention-days: 14

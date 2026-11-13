@@ -1077,6 +1077,110 @@ p.detail {{ margin: 0; color: #a9abb2; }}
     if control_prefix:
         control_prefix = "/" + control_prefix.strip("/")
 
+        @app.post(f"{control_prefix}/{{website_id}}/deploy-credentials")
+        def control_plane_deploy_credentials(website_id: str, request: Request):
+            """Issue one run's deploy material to the tenant's own repository.
+
+            GitHub's OIDC token proves the repository, branch and exact commit,
+            and the workflow at that commit must still be the platform's
+            canonical deploy contract. Nothing long-lived is stored in the
+            repository, so a new tenant needs no credential created by hand.
+            """
+            from ..application.github_oidc import (
+                GitHubOIDCError,
+                verify,
+                verify_canonical_workflow,
+            )
+            from ..application.tenant_environment import (
+                auto_email_provisioning_enabled,
+                read_tenant_environment,
+                tenant_environment_path,
+                worker_runtime_secrets,
+            )
+            from ..credentials import cloudflare_api_token, cloudflare_env_names, credential_environment
+
+            if registry is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            tenant = registry.for_tenant_id(website_id)
+            if tenant is None:
+                raise HTTPException(status_code=404, detail="website was not found")
+            site = tenant.config.get("site") if isinstance(tenant.config.get("site"), dict) else {}
+            repository = str(site.get("repository") or "").strip().strip("/")
+            branch = str(site.get("branch") or "main").strip() or "main"
+            if not repository:
+                raise HTTPException(status_code=409, detail="this website has no deployable repository")
+            authorization = request.headers.get("authorization", "")
+            supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            intake = config.get("release_intake") if isinstance(config.get("release_intake"), dict) else {}
+            audience = str(intake.get("oidc_audience") or env.get("HELLOADA_DEPLOY_OIDC_AUDIENCE") or "helloada-deploy")
+            from ..credentials import github_api_token as _github_api_token
+            github_token = _github_api_token(config, env)
+            canonical = (
+                Path(__file__).resolve().parents[1]
+                / "templates/next-payload/.github/workflows/release-deploy.yml"
+            )
+            if not github_token or not canonical.is_file():
+                raise HTTPException(status_code=503, detail="deploy credential intake is not configured")
+            try:
+                claims = verify(supplied, audience=audience, repository=repository, branch=branch)
+                verify_canonical_workflow(
+                    repository, str(claims["sha"]), github_token, canonical.read_bytes(),
+                )
+            except GitHubOIDCError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
+            activation = site.get("runtime_activation") if isinstance(site.get("runtime_activation"), dict) else {}
+            contract = site.get("payload") if isinstance(site.get("payload"), dict) else {}
+            contract = contract.get("contract") if isinstance(contract.get("contract"), dict) else {}
+            if not contract.get("contract") or not contract.get("schemaIdentity"):
+                raise HTTPException(status_code=409, detail="this website has no registered runtime contract")
+            api_token = cloudflare_api_token(config, env)
+            account_name = cloudflare_env_names(config)[1]
+            account_id = str(credential_environment(config, env).get(account_name) or "")
+            if not api_token or not account_id:
+                raise HTTPException(status_code=503, detail="Cloudflare credentials are unavailable")
+            try:
+                environment = read_tenant_environment(
+                    tenant_environment_path(tenant.config_path, tenant.tenant_id)
+                )
+                secrets = worker_runtime_secrets(
+                    environment,
+                    tenant.tenant_id,
+                    {},
+                    auto_email_setup=auto_email_provisioning_enabled(tenant.config_path),
+                    mailflare_enabled=bool(environment.get("MAILFLARE_ADDRESS")),
+                )
+            except (OSError, ValueError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            source_sha = str(claims["sha"])
+            if tenant.memory is not None:
+                tenant.memory.record_action(
+                    "deploy_credentials",
+                    f"{claims.get('workflow')} {str(claims.get('run_id') or '')} {source_sha[:8]}",
+                )
+            return {
+                "tenant": tenant.tenant_id,
+                "repository": repository,
+                "branch": branch,
+                "sourceSha": source_sha,
+                "runId": str(claims.get("run_id") or ""),
+                "worker": str((site.get("source_deployment") or {}).get("worker_name") or ""),
+                "identity": {
+                    "contentContract": contract.get("contract"),
+                    "payloadCore": contract.get("coreVersion"),
+                    "schemaRevision": contract.get("schemaRevision"),
+                    "schemaIdentity": contract.get("schemaIdentity"),
+                    "migrationHead": contract.get("migrationHead"),
+                    "configurationIdentity": contract.get("configurationIdentity"),
+                    "locales": contract.get("locales"),
+                    "defaultLocale": contract.get("defaultLocale"),
+                },
+                "sharedRuntimeFingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
+                "controlSha": str(activation.get("control_sha") or ""),
+                "cloudflare": {"apiToken": api_token, "accountId": account_id},
+                "workerSecrets": secrets,
+                "handoffPublicKey": str(env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or ""),
+            }
+
         @app.get(f"{control_prefix}/{{website_id}}/growth/migration-plan")
         def control_plane_crawlseo_migration_plan(website_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)

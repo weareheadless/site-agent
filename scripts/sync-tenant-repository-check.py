@@ -48,6 +48,8 @@ CANONICAL = {
 # dependency verification and OpenNext build, with no deploy credential.
 RELEASE_WORKFLOW = ".github/workflows/release-build.yml"
 RELEASE_SOURCE = TEMPLATE / RELEASE_WORKFLOW
+DEPLOY_WORKFLOW = ".github/workflows/release-deploy.yml"
+DEPLOY_SOURCE = TEMPLATE / DEPLOY_WORKFLOW
 # Non-secret identity the rehearsal needs; derived from the release registry.
 RELEASE_MANIFEST = ".github/helloada-release.json"
 
@@ -64,6 +66,8 @@ MESSAGES = {
     "removed": "Retire the tenant-specific presentation check",
     "release-created": "Rehearse the release build on every candidate",
     "release-updated": "Update the release build rehearsal",
+    "deploy-created": "Deploy this repository without a stored credential",
+    "deploy-updated": "Update the credential-free deploy workflow",
     "manifest-created": "Pin this repository to its release identity",
     "manifest-updated": "Refresh the release identity",
 }
@@ -218,8 +222,11 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
     if gate_env:
         from site_agent.config import load_env_file
         handoff_public_key = str(load_env_file(gate_env, {}).get("HELLOADA_HANDOFF_PUBLIC_KEY") or "")
-    if not RELEASE_SOURCE.is_file():
-        raise GitHubError(f"canonical file is missing from the template: {RELEASE_WORKFLOW}")
+    for canonical_source, canonical_name in (
+        (RELEASE_SOURCE, RELEASE_WORKFLOW), (DEPLOY_SOURCE, DEPLOY_WORKFLOW),
+    ):
+        if not canonical_source.is_file():
+            raise GitHubError(f"canonical file is missing from the template: {canonical_name}")
     control_sha = str(
         __import__("subprocess").check_output(
             ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
@@ -256,6 +263,7 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                     MESSAGES["manifest-updated"],
                 ))
                 desired.append((RELEASE_WORKFLOW, RELEASE_SOURCE.read_bytes(), MESSAGES["release-updated"]))
+                desired.append((DEPLOY_WORKFLOW, DEPLOY_SOURCE.read_bytes(), MESSAGES["deploy-updated"]))
             for branch in branches:
                 for path, content, message in desired:
                     current = _remote_file(token, repository, branch, path)

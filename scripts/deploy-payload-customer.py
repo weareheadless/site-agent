@@ -983,7 +983,8 @@ def mailflare_migration_head(names: list[str]) -> str:
 
 
 def reconcile_mailflare_migrations(checkout: Path, customer: dict[str, Any],
-                                   env: dict[str, str], base: dict[str, str]) -> dict[str, Any]:
+                                   env: dict[str, str], base: dict[str, str],
+                                   *, read_only: bool = False) -> dict[str, Any]:
     """Apply the pinned SQL chain using Wrangler's rollback-aware D1 migration system."""
     migration_dir = checkout / ".mailflare/migrations"
     provenance = json.loads((checkout / ".mailflare/provenance.json").read_text())
@@ -1000,6 +1001,10 @@ def reconcile_mailflare_migrations(checkout: Path, customer: dict[str, Any],
     if len(set(applied)) != len(applied) or expected[:len(applied)] != applied:
         raise RuntimeError("Mailflare D1 migration ledger is not a prefix of the pinned schema")
     changed = applied != expected
+    if changed and read_only:
+        raise RuntimeError(
+            "the candidate changes the Mailflare schema; a content deploy cannot migrate it"
+        )
     if changed:
         command = [str(checkout / "node_modules/.bin/wrangler"), "d1", "migrations", "apply",
                    "MAILFLARE_DB", "--remote", "--config", "wrangler.jsonc"]
@@ -1430,28 +1435,6 @@ def provision_turnstile_for_tenant(
 
 
 
-def tenant_email_auto_provisioning_enabled(environment_path: Path) -> bool:
-    """Return the registered policy that permits a first Mailflare bootstrap release."""
-    import yaml
-
-    config_path = environment_path.with_name("config.yaml")
-    try:
-        tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (OSError, yaml.YAMLError) as error:
-        raise ValueError("registered tenant email provisioning policy is unavailable") from error
-    if not isinstance(tenant_config, dict):
-        raise ValueError("registered tenant configuration is invalid")
-    messages = tenant_config.get("messages")
-    email = messages.get("email") if isinstance(messages, dict) else None
-    provisioning = email.get("provisioning") if isinstance(email, dict) else None
-    return bool(
-        isinstance(email, dict)
-        and email.get("enabled") is True
-        and isinstance(provisioning, dict)
-        and provisioning.get("auto") is True
-    )
-
-
 def _registered_scheduler_memory(manifest: dict[str, Any], tenant: str):
     import yaml
     environment_path = tenant_environment_path(manifest, tenant)
@@ -1498,7 +1481,8 @@ def trigger_email_provisioning_after_worker_release(
     if not isinstance(customer, dict) or not customer.get("mailflareD1DatabaseId"):
         return {"state": "not-configured"}
     environment_path = tenant_environment_path(manifest, tenant)
-    if not tenant_email_auto_provisioning_enabled(environment_path):
+    from site_agent.application.tenant_environment import auto_email_provisioning_enabled
+    if not auto_email_provisioning_enabled(environment_path.with_name("config.yaml")):
         return {"state": "manual"}
     runtime_names = ("MAILFLARE_ADDRESS", "MAILFLARE_ZONE_ID", "MAILFLARE_ROUTING_STATUS")
     runtime_values = {name: str(value or "").strip() for name, value in read_tenant_environment(environment_path).items()
@@ -1523,61 +1507,33 @@ def trigger_email_provisioning_after_worker_release(
 
 
 def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
-    """Load only this registered tenant's explicit Worker secrets from its protected VPS env."""
-
+    """Load only this registered tenant's explicit Worker secrets from its protected env."""
     try:
-        from site_agent.application.tenant_registration import (
-            WORKER_SITE_AGENT_TOKEN_ENV,
-            tenant_token_env,
+        from site_agent.application.tenant_environment import (
+            auto_email_provisioning_enabled,
+            worker_runtime_secrets,
         )
 
-        worker_manifest_path = ROOT / "src/site_agent/templates/next-payload/template-manifest.json"
-        worker_manifest = json.loads(worker_manifest_path.read_text(encoding="utf-8"))
-        worker_token_env = str(worker_manifest.get("workerTokenEnv") or "").strip()
-        if worker_token_env != WORKER_SITE_AGENT_TOKEN_ENV:
-            raise ValueError("canonical Worker token binding differs from the tenant registration contract")
         registered_customers = manifest.get("customers")
         customer = registered_customers.get(tenant) if isinstance(registered_customers, dict) else None
         if not isinstance(customer, dict):
             raise ValueError("registered tenant release manifest entry is unavailable")
         environment_path = tenant_environment_path(manifest, tenant)
         values = read_tenant_environment(environment_path)
-        required = {"PAYLOAD_SECRET", tenant_token_env(tenant)}
-        if any(not values.get(key) for key in required):
-            raise ValueError("registered tenant runtime secrets are incomplete")
-        mailflare_names = ("MAILFLARE_ADDRESS", "MAILFLARE_ZONE_ID", "MAILFLARE_ROUTING_STATUS")
-        mailflare_values = {name: str(values.get(name) or "").strip() for name in mailflare_names}
-        mailflare_present = [bool(value) for value in mailflare_values.values()]
-        mailflare_enabled = bool(customer.get("mailflareD1DatabaseId"))
-        auto_email_setup = tenant_email_auto_provisioning_enabled(environment_path)
-        if any(mailflare_present) and not all(mailflare_present):
-            raise ValueError("registered tenant Mailflare runtime settings are incomplete")
-        if auto_email_setup and not mailflare_enabled:
-            raise ValueError("automatic email provisioning requires registered Mailflare resources")
-        if mailflare_enabled and not all(mailflare_present) and not auto_email_setup:
-            raise ValueError("registered Mailflare tenant runtime settings are incomplete")
-        if any(mailflare_present) and not mailflare_enabled:
-            raise ValueError("Mailflare runtime settings exist without registered Mailflare resources")
-        result = {
-            "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
-            worker_token_env: values[tenant_token_env(tenant)],
-        }
-        if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_ID")):
-            raise ValueError("registered tenant Resend sender credential is incomplete")
-        if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_DOMAIN_ID")):
-            raise ValueError("registered tenant Resend sender key is not bound to an exact domain")
-        if values.get("RESEND_API_KEY"):
-            result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
-        if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
-            result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
-        if all(mailflare_present):
-            result.update(mailflare_values)
-        for name in ("GA_MEASUREMENT_ID", "GOOGLE_SITE_VERIFICATION"):
-            if values.get(name):
-                result[name] = values[name]
-        return result
+        # A runner manifest carries the tenant's values but no registry config,
+        # and a content deploy never bootstraps email; the first Mailflare
+        # release stays in the platform lane.
+        auto_email_setup = (
+            False if manifest.get("tenantEnvFile")
+            else auto_email_provisioning_enabled(environment_path.with_name("config.yaml"))
+        )
+        return worker_runtime_secrets(
+            values, tenant, customer, auto_email_setup=auto_email_setup,
+        )
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error
+
+
 def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
     """Create a private, short-lived file for one immutable Worker upload."""
     descriptor, filename = tempfile.mkstemp(prefix=".worker-secrets-", suffix=".json", dir=directory)
@@ -1803,7 +1759,7 @@ def verify_worker_queue_consumers(
 
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
-                verify_only: bool = False) -> None:
+                verify_only: bool = False, runner: bool = False) -> None:
     rollout_mode = receipt.get("rolloutMode")
     if rollout_mode not in (None, "versioned", "atomic"):
         raise RuntimeError("release receipt has an unknown Worker rollout mode")
@@ -1897,20 +1853,27 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
                     "routes": presentation.get("routes"),
                     "checked": verify_preview_routes(customer, presentation, receipt["sourceSha"]),
                 }
-            stage("verify-connection")
-            activation_token = control_plane_token(gate["envFile"], base)
-            activation = (
-                gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
-                receipt["sourceSha"], activation_token,
-            )
-            if verify_only:
-                activate_tenant_runtime(*activation, receipt["currentVerification"])
+            if runner:
+                # The platform owns activation: it holds the control-plane
+                # credential, observes this deployment, and mounts the tenant
+                # itself. A runner never receives that credential.
+                stage("verify-connection")
+                receipt["activation"] = {"state": "deferred", "owner": "platform"}
             else:
-                activate_tenant_runtime(*activation)
-            run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
-                 "--config", gate["config"], "--env-file", gate["envFile"],
-                 "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
-                {**base, "PYTHONPATH": str(ROOT / "src")})
+                stage("verify-connection")
+                activation_token = control_plane_token(gate["envFile"], base)
+                activation = (
+                    gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
+                    receipt["sourceSha"], activation_token,
+                )
+                if verify_only:
+                    activate_tenant_runtime(*activation, receipt["currentVerification"])
+                else:
+                    activate_tenant_runtime(*activation)
+                run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
+                     "--config", gate["config"], "--env-file", gate["envFile"],
+                     "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
+                    {**base, "PYTHONPATH": str(ROOT / "src")})
         except (OSError, ValueError, RuntimeError) as error:
             receipt.setdefault("gateAttempts", []).append({"at": utc_now(), "error": str(error)})
             stage(receipt["stage"])
@@ -2187,6 +2150,10 @@ def main() -> int:
                         help="build this exact clean checkout instead of cloning the registered repository")
     parser.add_argument("--build-only", action="store_true",
                         help="rehearse the release build here and stop before any Cloudflare mutation")
+    parser.add_argument("--runner", action="store_true",
+                        help="deploy from this runner: schema, Turnstile, activation and schedulers stay platform-owned")
+    parser.add_argument("--expected-contract", type=Path,
+                        help="registered Payload contract a runner deploy must not change")
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     validate_toolchain_manifest(manifest)
@@ -2205,6 +2172,8 @@ def main() -> int:
     release_root = Path(args.release_root or manifest["releaseRoot"])
     if args.build_only and args.verify_only:
         parser.error("--build-only cannot recheck an already promoted release")
+    if args.runner and args.build_only:
+        parser.error("--runner deploys; it cannot be combined with --build-only")
     if not args.verify_only:
         # A rehearsal keeps no release history, so it needs the build's own
         # floor rather than the VPS headroom that protects the next queued run.
@@ -2405,6 +2374,20 @@ def main() -> int:
             (checkout / "src/generated/helloada-presentation.json").read_text(encoding="utf-8"))
         receipt["presentationInventory"] = validate_presentation_inventory(customer, generated_presentation)
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
+        if args.expected_contract is not None:
+            try:
+                expected = json.loads(args.expected_contract.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                raise RuntimeError("the expected Payload contract is unreadable") from error
+            if not isinstance(expected, dict) or not expected:
+                raise RuntimeError("the expected Payload contract is empty")
+            actual = {name: customer.get(name) for name in expected}
+            if actual != expected:
+                changed = sorted(name for name in expected if actual.get(name) != expected[name])
+                raise RuntimeError(
+                    "this change moves the registered Payload contract ("
+                    + ", ".join(changed) + "); the contract lane owns that"
+                )
         if not all(field in customer for field in ("configurationIdentity", "locales", "defaultLocale")):
             raise RuntimeError("generated candidate has no complete locale configuration identity")
         runtime_provenance["wranglerSha256"] = hashlib.sha256(
@@ -2573,9 +2556,17 @@ def main() -> int:
         )
         atomic_json(receipt_path, receipt)
         stage("provision-turnstile")
-        receipt["turnstile"] = provision_turnstile_for_tenant(
-            args.tenant, customer, wrangler, manifest, deploy_env,
-        )
+        if args.runner:
+            # Turnstile is platform-owned state: a runner cannot persist the
+            # widget pair where the next release will look for it.
+            receipt["turnstile"] = {
+                "state": "deferred",
+                "sitekey": str(wrangler.get("turnstileSiteKey") or ""),
+            }
+        else:
+            receipt["turnstile"] = provision_turnstile_for_tenant(
+                args.tenant, customer, wrangler, manifest, deploy_env,
+            )
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
         from site_agent.application.runtime_binding_delivery import binding_hashes
         receipt["runtimeBindings"] = binding_hashes(runtime_secrets)
@@ -2674,13 +2665,17 @@ def main() -> int:
             if not deployment or deployment.get("id") == before_deploy.get("id"):
                 raise RuntimeError("Cloudflare did not create a new deployment")
         receipt["deployment"] = deployment
-        verify_live(receipt, customer, manifest, deploy_env, base, stage)
+        verify_live(receipt, customer, manifest, deploy_env, base, stage, runner=args.runner)
         receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
         atomic_json(receipt_path, receipt)
         # Publish the completed receipt before waking reconcilers. They must
-        # never replace a bootstrap release still marked running.
+        # never replace a bootstrap release still marked running. A runner has
+        # no scheduler; the platform wakes these when it adopts the release.
         for key, wake in (("emailProvisioning", trigger_email_provisioning_after_worker_release),
                           ("seoProvisioning", trigger_seo_provisioning_after_worker_release)):
+            if args.runner:
+                receipt[key] = {"state": "deferred", "owner": "platform"}
+                continue
             try:
                 receipt[key] = wake(manifest, args.tenant)
             except Exception as exc:
