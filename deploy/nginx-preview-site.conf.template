@@ -1,0 +1,53 @@
+# A site's own preview origin.
+#
+# A compiled preview is a complete application. It is served here, at a signed
+# path, by the same service that runs the build: nothing rewrites its links, and
+# an address from an older workspace cannot collide with the app's routes.
+#
+# `__PREVIEW_HOST__` is replaced by deploy/add-preview-host.sh. The API creates
+# the DNS record from the tenant's `preview.host`; this file and its certificate
+# are host state.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __PREVIEW_HOST__;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name __PREVIEW_HOST__;
+
+    ssl_certificate /etc/letsencrypt/live/__PREVIEW_HOST__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__PREVIEW_HOST__/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # A preview serves a compiled site, not uploads; the workspace bridge owns
+    # media. Keep the ceiling small enough that a stray body cannot be used to
+    # hold a connection open.
+    client_max_body_size 8m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3014;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+        # A candidate streams RSC payloads and assets; buffering them adds a
+        # copy and delays the first byte the owner sees.
+        proxy_buffering off;
+    }
+}

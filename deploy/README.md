@@ -90,6 +90,35 @@ operator-only `--sync --tenant <id>` dry run reads that active health identity;
 uses the queued candidate identity or changes a database, Worker, content
 document, or schema. Finish with `--validate` before an API release.
 
+## A site's preview host
+
+A compiled preview is served at `preview.<site domain>`, not at the
+platform-wide preview host. The address is signed and host-independent, so the
+same build stays open on either origin and moving a site to its own host does
+not invalidate a link already handed out.
+
+Two pieces, in this order:
+
+1. Name the host in the tenant config:
+
+   ```yaml
+   preview:
+     host: preview.astridrincon.com
+   ```
+
+   On its next start the API creates the proxied DNS record for it, following
+   the address that already serves `HELLOADA_PREVIEW_DNS_HOST`.
+
+2. On the API host, once the record resolves, add the vhost and certificate:
+
+   ```bash
+   sudo deploy/add-preview-host.sh preview.astridrincon.com
+   ```
+
+The script is idempotent and keeps an existing certificate. The platform
+preview host (`HELLOADA_PREVIEW_HOST`) remains the default for any tenant that
+does not name one.
+
 ## HelloAda project-selector release
 
 HelloAda's own Worker uses this same timer and dispatcher; it is not deployed
