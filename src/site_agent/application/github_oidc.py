@@ -102,30 +102,13 @@ def verify(
     return dict(claims)
 
 
-_verified_workflows: dict[tuple[str, str], bool] = {}
+_verified_workflows: dict[tuple[str, str, str], bool] = {}
 
 
-def verify_canonical_workflow(
-    repository: str,
-    sha: str,
-    token: str,
-    canonical: bytes,
-    *,
-    workflow: str = DEPLOY_WORKFLOW,
-) -> None:
-    """Refuse a credential request from a workflow that is not the canonical one.
-
-    The OIDC token says which workflow asked, not what that file contains. Ada
-    can commit; a commit can rewrite a workflow. Reading the file at the exact
-    commit and comparing it with the platform's own bytes keeps a modified
-    workflow from borrowing the site's deploy identity.
-    """
-    key = (str(repository).lower(), str(sha))
-    if _verified_workflows.get(key):
-        return
-    quoted = urllib.parse.quote(workflow)
+def repo_file(repository: str, ref: str, path: str, token: str) -> bytes:
+    """Read one committed file at an exact ref through the GitHub API."""
     request = urllib.request.Request(
-        f"https://api.github.com/repos/{repository}/contents/{quoted}?ref={sha}",
+        f"https://api.github.com/repos/{repository}/contents/{urllib.parse.quote(path)}?ref={ref}",
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {token}",
@@ -136,10 +119,40 @@ def verify_canonical_workflow(
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
             document = json.load(response)
-        encoded = base64.b64decode(str(document.get("content") or ""))
+        if not isinstance(document, Mapping) or document.get("type") != "file":
+            raise GitHubOIDCError(f"{path} is not a committed file at {ref[:8]}")
+        return base64.b64decode(str(document.get("content") or ""))
+    except GitHubOIDCError:
+        raise
     except (OSError, ValueError, TypeError, urllib.error.HTTPError) as exc:
-        raise GitHubOIDCError("the deploy workflow could not be read for verification") from exc
-    if encoded != canonical:
+        raise GitHubOIDCError(f"{path} could not be read at {ref[:8]}") from exc
+
+
+def verify_canonical_workflow(
+    repository: str,
+    sha: str,
+    token: str,
+    *,
+    control_sha: str,
+    platform_repository: str = "weareheadless/site-agent",
+    workflow: str = DEPLOY_WORKFLOW,
+) -> None:
+    """Refuse a credential request from a workflow that is not the canonical one.
+
+    The OIDC token says which workflow asked, not what that file contains. Ada
+    can commit; a commit can rewrite a workflow. The file at the exact commit is
+    compared with the platform's own bytes at the control revision the
+    repository pins — so a modified workflow cannot borrow the site's identity,
+    and a pin that does not exist in the platform cannot vouch for anything.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", str(control_sha or "")):
+        raise GitHubOIDCError("the repository does not pin an exact control revision")
+    key = (str(repository).lower(), str(sha), str(control_sha))
+    if _verified_workflows.get(key):
+        return
+    requested = repo_file(repository, sha, workflow, token)
+    canonical = repo_file(platform_repository, control_sha, workflow, token)
+    if requested != canonical:
         raise GitHubOIDCError("the deploy workflow differs from the canonical contract")
     if len(_verified_workflows) > 512:
         _verified_workflows.clear()

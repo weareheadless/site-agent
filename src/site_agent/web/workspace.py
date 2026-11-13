@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import hmac
+import json
 import re
 import urllib.error
 import urllib.request
@@ -1088,6 +1089,7 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             """
             from ..application.github_oidc import (
                 GitHubOIDCError,
+                repo_file,
                 verify,
                 verify_canonical_workflow,
             )
@@ -1115,18 +1117,18 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             audience = str(intake.get("oidc_audience") or env.get("HELLOADA_DEPLOY_OIDC_AUDIENCE") or "helloada-deploy")
             from ..credentials import github_api_token as _github_api_token
             github_token = _github_api_token(config, env)
-            canonical = (
-                Path(__file__).resolve().parents[1]
-                / "templates/next-payload/.github/workflows/release-deploy.yml"
-            )
-            if not github_token or not canonical.is_file():
+            if not github_token:
                 raise HTTPException(status_code=503, detail="deploy credential intake is not configured")
             try:
                 claims = verify(supplied, audience=audience, repository=repository, branch=branch)
-                verify_canonical_workflow(
-                    repository, str(claims["sha"]), github_token, canonical.read_bytes(),
+                identity = json.loads(
+                    repo_file(repository, str(claims["sha"]), ".github/helloada-release.json", github_token)
                 )
-            except GitHubOIDCError as exc:
+                verify_canonical_workflow(
+                    repository, str(claims["sha"]), github_token,
+                    control_sha=str(identity.get("controlSha") or ""),
+                )
+            except (GitHubOIDCError, ValueError) as exc:
                 raise HTTPException(status_code=401, detail=str(exc)) from exc
             activation = site.get("runtime_activation") if isinstance(site.get("runtime_activation"), dict) else {}
             contract = site.get("payload") if isinstance(site.get("payload"), dict) else {}
