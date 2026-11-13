@@ -42,6 +42,9 @@ export function helloAdaWorkspacePath(path: string, method: string, search = '')
   if (suffix === '/checkpoints/restore' && method === 'POST') return `/workspace/checkpoints/restore${search}`
   if (suffix === '/worktree/discard' && method === 'POST') return `/workspace/worktree/discard${search}`
   if (suffix === '/source/preview' && ['GET', 'POST'].includes(method)) return `/workspace/source/preview${search}`
+  // Re-apply one stale review onto the current site and build it again. The
+  // review is named by the body, never by the path, because this writes source.
+  if (suffix === '/source/preview/rebuild' && method === 'POST') return `/workspace/source/preview/rebuild${search}`
   if (/^\/source\/preview\/(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/deploy|\/runtime(?:\/.*)?)?$/.test(suffix) && ['GET', 'POST'].includes(method)) return `/workspace${suffix}${search}`
   return undefined
 }

@@ -103,7 +103,13 @@ def preview_runtime_url(port: int, base_path: str, path: str = "") -> str:
     clean = str(path or "").lstrip("/")
     if ".." in Path(clean).parts:
         raise SourceDeploymentError("compiled preview path is invalid")
-    return f"http://127.0.0.1:{int(port)}{base}" + (f"/{clean}" if clean else "")
+    # The HTTP layer hands this over decoded. Next names its own chunks after
+    # route segments such as `[...slug]` and redirects the decoded form to the
+    # escaped one, so asking for the decoded form hands the browser a redirect
+    # it follows forever. Everything a path segment may legally carry stays as
+    # the build emitted it; only the characters Next escapes are escaped.
+    escaped = urllib.parse.quote(clean, safe="/!$&'()*+,;=:@~")
+    return f"http://127.0.0.1:{int(port)}{base}" + (f"/{escaped}" if escaped else "")
 
 
 class _DocumentAssets(HTMLParser):
