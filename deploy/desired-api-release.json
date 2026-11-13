@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261113-connector-refusal-message",
-    "sha": "4fbb2d8cdc9dd95ed6f046344599af4c6b81f297"
+    "id": "20261113-stale-review-rebuild",
+    "sha": "f80ba5b3316388e4f300810251e400db0d52cb88"
   }
 }
