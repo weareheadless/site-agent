@@ -123,15 +123,10 @@ class CloudflareDNSClient:
             return str(item.get("content") or "").strip().strip('"').strip()
 
         match = next((item for item in existing if _value(item) == content.strip()), None)
-        if match is None:
-            # A stale verification token from a previous attempt at the same
-            # name is replaced rather than stacked. Other TXT records at that
-            # name (SPF, DKIM, ownership codes) are unrelated and must never be
-            # overwritten.
-            match = next(
-                (item for item in existing if _value(item).startswith("google-site-verification=")),
-                None,
-            )
+        # Other TXT records at the same name are never rewritten: SPF, DKIM and
+        # ownership codes belong to other systems, and another verification
+        # owner's token is equally valid proof. Google accepts several tokens
+        # at one name, so a token that is missing is added, not substituted.
         body = {"type": "TXT", "name": name, "content": content, "ttl": ttl}
         if match:
             payload = self._request(f"/zones/{zone_id}/dns_records/{match['id']}", method="PUT", body=body)

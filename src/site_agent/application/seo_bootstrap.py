@@ -24,7 +24,12 @@ from ..hands.crawlseo import CrawlSEOClient
 from ..hands.crawlseo_connector_credentials import load_connector_environment, load_connector_runtime_environment
 from ..hands.cloudflare_worker import CloudflareWorkerError
 from ..hands.crawlseo_provisioning import CrawlSEOProvisioningError
-from .site_origin import SiteOriginError, normalize_site_origin, origins_equal
+from .site_origin import (
+    SiteOriginError,
+    normalize_site_origin,
+    origins_equal,
+    property_covers_domain,
+)
 from .seo_provisioning import (
     SeoProvisioningError,
     SeoProvisioningService,
@@ -95,26 +100,6 @@ def _site_domain(config: Mapping[str, Any], site_url: str) -> str:
     if raw:
         return raw
     return str(urlsplit(site_url).hostname or "").lower().rstrip(".")
-
-
-def _property_covers_domain(property_value: str, domain: str) -> bool:
-    """True when a Search Console property covers ``domain`` and its hosts.
-
-    A domain property (``sc-domain:example.com``) keeps covering a tenant when
-    its canonical host changes from ``example.com`` to ``www.example.com``. A
-    URL-prefix property belongs to one host and does not.
-    """
-    value = str(property_value or "").strip().lower().rstrip("/")
-    if not value or not domain:
-        return False
-    if value.startswith("sc-domain:"):
-        base = value[len("sc-domain:"):].strip().rstrip(".")
-    else:
-        try:
-            base = str(urlsplit(value).hostname or "").strip().lower().rstrip(".")
-        except ValueError:
-            return False
-    return bool(base) and (domain == base or domain.endswith("." + base))
 
 
 def _meta_content(value: str) -> str:
@@ -381,7 +366,7 @@ def auto_provision_seo(
         or state.get("gsc_property")
         or site_url
     ).strip()
-    property_covers_origin = _property_covers_domain(gsc_property, domain)
+    property_covers_origin = property_covers_domain(gsc_property, domain)
     if origin_changed and not property_covers_origin:
         gsc_property = site_url
     if gsc_property.lower().startswith("sc-domain:"):

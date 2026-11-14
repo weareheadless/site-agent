@@ -172,7 +172,7 @@ def test_crawlseo_client_missing_configuration_is_reported(tmp_path):
         service.crawlseo_client()
 
 
-def test_cloudflare_upsert_replaces_a_stale_record(monkeypatch):
+def test_cloudflare_upsert_keeps_another_owners_verification_token(monkeypatch):
     client = CloudflareDNSClient("token")
 
     recorded: list[tuple[str, str, dict | None]] = []
@@ -180,14 +180,16 @@ def test_cloudflare_upsert_replaces_a_stale_record(monkeypatch):
     def fake_request(path, *, method="GET", body=None):
         recorded.append((path, method, body))
         if method == "GET":
-            return {"success": True, "result": [{"id": "old", "content": "google-site-verification=stale"}]}
-        return {"success": True, "result": {"id": "old"}}
+            return {"success": True, "result": [{"id": "owner", "content": "google-site-verification=other-owner"}]}
+        return {"success": True, "result": {"id": "fresh"}}
 
     monkeypatch.setattr(client, "_request", fake_request)
     record_id = client.upsert_txt("zone-1", "example.test", "google-site-verification=fresh")
 
-    assert record_id == "old"
-    assert ("/zones/zone-1/dns_records/old", "PUT", {"type": "TXT", "name": "example.test", "content": "google-site-verification=fresh", "ttl": 120}) in recorded
+    assert record_id == "fresh"
+    assert all(method == "GET" or path == "/zones/zone-1/dns_records" for path, method, _ in recorded)
+    assert ("/zones/zone-1/dns_records", "POST",
+            {"type": "TXT", "name": "example.test", "content": "google-site-verification=fresh", "ttl": 120}) in recorded
 
 
 def test_cloudflare_upsert_never_overwrites_an_unrelated_txt_record(monkeypatch):

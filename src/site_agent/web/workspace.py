@@ -1589,14 +1589,19 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 raise HTTPException(status_code=400, detail="request body must be an object")
             public_url = str(
                 body.get("public_url")
-                or body.get("custom_domain")
                 or body.get("site_url")
+                or body.get("custom_domain")
                 or ""
             ).strip()
             if not public_url:
                 raise HTTPException(status_code=400, detail="public_url is required")
             try:
-                tenant = registry.update_site_origin(website_id, public_url, env=env)
+                tenant = registry.update_site_origin(
+                    website_id,
+                    public_url,
+                    custom_domain=str(body.get("custom_domain") or ""),
+                    env=env,
+                )
             except ConfigError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             state = tenant.context.get("seo_provisioning_state") or tenant.memory.kv_get("seo_provisioning_state", {}) or {}

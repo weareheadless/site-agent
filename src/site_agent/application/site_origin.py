@@ -59,4 +59,31 @@ def origins_equal(left: str, right: str) -> bool:
         return False
 
 
-__all__ = ["SiteOriginError", "normalize_site_origin", "origin_hostname", "origins_equal"]
+def property_covers_domain(property_value: str, domain: str) -> bool:
+    """True when a Search Console property covers ``domain`` and its hosts.
+
+    A domain property (``sc-domain:example.com``) keeps covering a tenant when
+    its canonical host changes from ``example.com`` to ``www.example.com``. A
+    URL-prefix property belongs to one host and does not.
+    """
+    value = str(property_value or "").strip().lower().rstrip("/")
+    host = str(domain or "").strip().lower().rstrip(".")
+    if not value or not host:
+        return False
+    if value.startswith("sc-domain:"):
+        base = value[len("sc-domain:"):].strip().rstrip(".")
+    else:
+        try:
+            base = str(urlsplit(value).hostname or "").strip().lower().rstrip(".")
+        except ValueError:
+            return False
+    return bool(base) and (host == base or host.endswith("." + base))
+
+
+__all__ = [
+    "SiteOriginError",
+    "normalize_site_origin",
+    "origin_hostname",
+    "origins_equal",
+    "property_covers_domain",
+]

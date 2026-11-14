@@ -37,7 +37,13 @@ from .growth_workflow import ensure_default_goal
 from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
 from .tenant_registration import tenant_token_env
-from .site_origin import SiteOriginError, normalize_site_origin, origin_hostname, origins_equal
+from .site_origin import (
+    SiteOriginError,
+    normalize_site_origin,
+    origin_hostname,
+    origins_equal,
+    property_covers_domain,
+)
 from .worker_origin import WorkerOriginError, canonical_worker_preview_url
 from .mailbox_identity import default_mailbox_identity
 from .email_management import email_is_externally_managed
@@ -808,6 +814,7 @@ class TenantRegistry:
         tenant_id: str,
         public_url: str,
         *,
+        custom_domain: str = "",
         env: Mapping[str, str] | None = None,
     ) -> Tenant:
         """Persist and reconcile a tenant's current public site origin.
@@ -816,6 +823,12 @@ class TenantRegistry:
         not a provider-specific branch.  The replacement runtime is rebuilt
         through the same startup path, which re-runs idempotent GA4, GSC, and
         CrawlSEO reconciliation for the new origin.
+
+        ``public_url`` is the canonical host the site is served from
+        (``https://www.example.com/``); ``custom_domain`` is the registered
+        domain the tenant is known by (``example.com``).  They differ whenever
+        the canonical host is a subdomain, and provider records (a CrawlSEO
+        site, a Search Console domain property) are keyed on the domain.
         """
         normalized = str(tenant_id or "").strip().lower()
         tenant = self.for_tenant_id(normalized)
@@ -825,6 +838,15 @@ class TenantRegistry:
             site_url = normalize_site_origin(public_url, field="public_url")
         except SiteOriginError as exc:
             raise ConfigError(str(exc)) from exc
+        registered = str(custom_domain or "").strip().lower().rstrip(".")
+        if registered:
+            try:
+                registered = origin_hostname(registered)
+            except SiteOriginError as exc:
+                raise ConfigError(str(exc)) from exc
+            public_host = origin_hostname(site_url)
+            if public_host != registered and not public_host.endswith("." + registered):
+                raise ConfigError("custom_domain must cover the public_url host")
         config_path = Path(str(tenant.config_path or "")).expanduser().resolve()
         if not str(tenant.config_path).strip() or not config_path.is_file():
             raise ConfigError("tenant configuration path is unavailable")
@@ -849,7 +871,9 @@ class TenantRegistry:
         site["preview_url"] = worker_preview_url
         site["public_url"] = site_url
         site["url"] = site_url
-        site["custom_domain"] = "" if origins_equal(worker_preview_url, site_url) else origin_hostname(site_url)
+        site["custom_domain"] = registered or (
+            "" if origins_equal(worker_preview_url, site_url) else origin_hostname(site_url)
+        )
         raw["site"] = site
 
         # Email follows the same registered-origin lifecycle as analytics only
@@ -876,11 +900,30 @@ class TenantRegistry:
 
         seo = raw.get("seo") if isinstance(raw.get("seo"), Mapping) else {}
         seo = dict(seo)
-        seo.update({"enabled": True, "source": "crawlseo", "site_url": site_url, "gsc_property": site_url})
         provisioning = seo.get("provisioning") if isinstance(seo.get("provisioning"), Mapping) else {}
         provisioning = dict(provisioning)
-        provisioning.update({"auto": True, "verification_method": str(provisioning.get("verification_method") or "meta")})
-        provisioning["gsc_property"] = site_url
+        # A property is a tenant fact, not an origin fact: a domain property
+        # keeps covering the tenant when its canonical host changes. Only a
+        # URL-prefix property, which belongs to one host, is replaced.
+        registered_domain = str(site.get("custom_domain") or "") or origin_hostname(site_url)
+        current_property = str(
+            provisioning.get("gsc_property") or seo.get("gsc_property") or ""
+        ).strip()
+        gsc_property = (
+            current_property
+            if property_covers_domain(current_property, registered_domain)
+            else site_url
+        )
+        seo.update({"enabled": True, "source": "crawlseo", "site_url": site_url, "gsc_property": gsc_property})
+        provisioning.update({
+            "auto": True,
+            "verification_method": (
+                "dns_txt"
+                if gsc_property.lower().startswith("sc-domain:")
+                else str(provisioning.get("verification_method") or "meta")
+            ),
+        })
+        provisioning["gsc_property"] = gsc_property
         seo["provisioning"] = provisioning
         raw["seo"] = seo
 
