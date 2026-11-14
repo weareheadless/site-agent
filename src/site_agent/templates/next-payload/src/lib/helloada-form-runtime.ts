@@ -11,6 +11,8 @@ type FormBindings = {
   HELLOADA_TURNSTILE_SECRET_KEY?: string
   MAILFLARE_DB?: MailflareD1
   MAILFLARE_ADDRESS?: string
+  SITE_AGENT_URL?: string
+  HELLOADA_SITE_AGENT_TOKEN?: string
 }
 
 export const messageRuntime = async () => {

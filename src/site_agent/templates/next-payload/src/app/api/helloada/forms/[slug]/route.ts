@@ -106,7 +106,7 @@ export async function POST(request: Request, { params }: RouteProps) {
     })
     // The enquiry is in the tenant's HelloAda inbox. The platform decides
     // whether the owner is warned about it.
-    await reportMailArrival({
+    await reportMailArrival(env, {
       messageId: result.messageId,
       subject: String(definition.title || slug),
       from: submission.contact.email,

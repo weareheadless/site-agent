@@ -29,6 +29,7 @@ type TenantEnv = StaticWebsiteEnv & {
   HELLOADA_TENANT_ID: string
   HELLOADA_HANDOFF_ISSUER: string
   HELLOADA_SITE_AGENT_TOKEN: string
+  SITE_AGENT_URL: string
   D1: MailflareD1
   HELLOADA_TURNSTILE_SECRET_KEY?: string
   HELLOADA_TURNSTILE_SITE_KEY: string
@@ -160,7 +161,7 @@ export default {
     // The mailbox belongs to the Worker; the owner's alert settings belong to
     // the platform. The Worker reports the arrival and never waits for it.
     const described = describeInboundMessage(message)
-    context.waitUntil(reportMailArrival({
+    context.waitUntil(reportMailArrival(env, {
       messageId: described.messageId,
       subject: described.subject,
       from: described.from,

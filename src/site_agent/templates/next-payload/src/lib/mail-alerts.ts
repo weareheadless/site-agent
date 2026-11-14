@@ -1,10 +1,21 @@
-import { helloAdaRuntime } from '@/lib/helloada-runtime'
-
 export type MailArrivalReport = {
   messageId: string
   subject?: string
   from?: string
   kind?: 'inbound' | 'enquiry'
+}
+
+/**
+ * The bindings one tenant needs to report a mail arrival.
+ *
+ * The report is read from the Worker environment that the handler already
+ * holds. The Cloudflare request context is not available in the Worker's own
+ * email and queue handlers, and a missing binding is never a reason to fail
+ * mail delivery.
+ */
+export type MailAlertEnv = {
+  SITE_AGENT_URL?: string
+  HELLOADA_SITE_AGENT_TOKEN?: string
 }
 
 /**
@@ -15,16 +26,16 @@ export type MailArrivalReport = {
  * whether anybody is warned and how. A failed report never blocks mail: the
  * message is already stored, and the report is only a notice.
  */
-export async function reportMailArrival(report: MailArrivalReport): Promise<void> {
-  const runtime = helloAdaRuntime()
-  if (!runtime.configured) return
+export async function reportMailArrival(env: MailAlertEnv, report: MailArrivalReport): Promise<void> {
+  const url = String(env?.SITE_AGENT_URL || '').replace(/\/$/, '')
+  const token = String(env?.HELLOADA_SITE_AGENT_TOKEN || '')
   const messageId = String(report.messageId || '').trim()
-  if (!messageId) return
+  if (!url || !token || !messageId) return
   try {
-    const response = await fetch(`${runtime.url}/workspace/mail/notification`, {
+    const response = await fetch(`${url}/workspace/mail/notification`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${runtime.token}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -35,9 +46,7 @@ export async function reportMailArrival(report: MailArrivalReport): Promise<void
       }),
     })
     if (!response.ok) {
-      console.error('helloada_mail_arrival_report_rejected', {
-        status: response.status,
-      })
+      console.error('helloada_mail_arrival_report_rejected', { status: response.status })
     }
   } catch (error) {
     console.error('helloada_mail_arrival_report_failed', {
