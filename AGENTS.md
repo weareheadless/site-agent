@@ -101,15 +101,15 @@ into every tenant's config.
 ## Invariants
 
 - A site mutation is either an explicit owner action or a pending draft.
-- Owner-editable copy belongs in Payload, not in a page component. Presentation
-  is source; wording, prices, course details, navigation labels and other
-  business text are content. A page that hardcodes them turns a copy edit into a
-  code change - a preview build, a merge and a full deploy - when the canonical
-  frontend (`src/app/(frontend)/[[...slug]]`, `force-dynamic`) would have served
-  the same edit from Payload with no build at all. A bespoke route may change
-  how a page looks; it must still read its copy through `@/lib/content`. If an
-  owner-visible string cannot be changed from Payload, the site is wrong, not
-  the release lane.
+- Payload holds CMS content only: articles, products, media and the collections
+  that own them. Page copy is not CMS content. Page text, prices, course
+  details and navigation labels are source, they live in the repository, and
+  Ada changes them like any other code: a reviewed source draft, a build, a
+  deploy. A CMS content publication builds nothing; a source change always
+  does. Never move page copy into Payload to avoid a build - two sources of
+  truth for one page's text costs more to manage than the build it saves, and a
+  design that is not made of generic blocks cannot be driven by them without
+  inventing block types per site.
 - Content recovery follows `docs/content-recovery.md`: every Payload write records the exact base version it replaced, restores are draft-only and CAS-verified, and discarding a design draft restores the content versions it replaced.
 - A pending visual build is reviewed in the Design tab; do not add raw preview
   links as a substitute for the review flow.
