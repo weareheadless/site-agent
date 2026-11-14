@@ -46,6 +46,7 @@ jobs:
         env:
           OIDC_AUDIENCE: helloada-deploy
           API: https://api.helloada.app/v1
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
@@ -98,12 +99,21 @@ jobs:
               encoding="utf-8",
           )
           cloudflare.chmod(0o600)
+          # The verified release tarball lives in the public platform
+          # repository. Anonymous reads from a shared runner address are rate
+          # limited, so the run's own short-lived token authenticates them.
+          github = root / "github.env"
+          github.write_text(f"GITHUB_TOKEN={os.environ['GITHUB_TOKEN']}\n", encoding="utf-8")
+          github.chmod(0o600)
           profile = root / "host-credentials.yaml"
           profile.write_text(
               "credentials:\n  cloudflare:\n"
               f"    env_file: {cloudflare}\n"
               "    api_token_env: CLOUDFLARE_API_TOKEN\n"
-              "    account_id_env: CLOUDFLARE_ACCOUNT_ID\n",
+              "    account_id_env: CLOUDFLARE_ACCOUNT_ID\n"
+              "  github:\n"
+              f"    env_file: {github}\n"
+              "    api_token_env: GITHUB_TOKEN\n",
               encoding="utf-8",
           )
           runtime = root / "runtime.env"
