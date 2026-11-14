@@ -44,6 +44,8 @@ def _app(tmp_path, bootstrap=None):
                         "migrationHead": "e" * 64,
                     },
                     "runtime_activation": {
+                        "release_id": "rel-20261113203000-shared-retry-route",
+                        "source_sha": "9" * 40,
                         "shared_runtime_fingerprint": DEPLOYED,
                         "control_sha": "f" * 40,
                     },
@@ -90,7 +92,10 @@ def _material(monkeypatch, *, identity=None):
     monkeypatch.setattr(credentials, "credential_environment", lambda config, env: {"ACCOUNT": "acct"})
     monkeypatch.setattr(tenant_environment, "tenant_environment_path",
                         lambda config_path, tenant_id: Path("/tmp/tenant.env"))
-    monkeypatch.setattr(tenant_environment, "read_tenant_environment", lambda path: {})
+    monkeypatch.setattr(
+        tenant_environment, "read_tenant_environment",
+        lambda path: {"HELLOADA_TURNSTILE_SITE_KEY": "turnstile-sitekey"},
+    )
     monkeypatch.setattr(tenant_environment, "worker_runtime_secrets",
                         lambda *args, **kwargs: {"PAYLOAD_SECRET": "x"})
     monkeypatch.setattr(tenant_environment, "auto_email_provisioning_enabled", lambda path: False)
@@ -105,7 +110,16 @@ def test_deploy_credentials_requires_an_oidc_token(tmp_path):
 
 
 def test_deploy_credentials_names_the_runtime_the_platform_ships(tmp_path, monkeypatch):
+    from site_agent.application import release_queue
+
     _material(monkeypatch)
+    monkeypatch.setattr(release_queue, "release_root", lambda config: tmp_path / "releases")
+    receipt = tmp_path / "releases" / "runs" / TENANT / "rel-20261113203000-shared-retry-route"
+    receipt.mkdir(parents=True)
+    (receipt / "receipt.json").write_text(json.dumps({
+        "releaseId": "rel-20261113203000-shared-retry-route",
+        "durableObjectLifecycle": {"identity": "e" * 64, "state": "reused", "appliedByReleaseId": "rel-1"},
+    }), encoding="utf-8")
     app = _app(tmp_path)
     with TestClient(app) as client:
         response = client.post(
@@ -119,6 +133,8 @@ def test_deploy_credentials_names_the_runtime_the_platform_ships(tmp_path, monke
     assert body["deployedSharedRuntimeFingerprint"] == DEPLOYED
     assert body["worker"] == "helloada-site-astridrincon"
     assert body["identity"]["schemaRevision"] == 13
+    assert body["turnstileSiteKey"] == "turnstile-sitekey"
+    assert body["durableObjectLifecycle"] == {"identity": "e" * 64, "releaseId": "rel-1"}
     assert body["cloudflare"]["accountId"] == "acct"
 
 

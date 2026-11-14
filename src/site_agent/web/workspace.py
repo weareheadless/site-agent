@@ -1157,6 +1157,37 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 raise HTTPException(status_code=401, detail=str(exc)) from exc
             return claims
 
+        def _proven_durable_object_lifecycle(
+            config: Mapping[str, Any], tenant: str, activation: Mapping[str, Any],
+        ) -> dict[str, str] | None:
+            """The exact Durable Object migration identity production already has.
+
+            A runner starts with no release history, so without this it cannot
+            tell a first release from an ordinary one and would re-apply a
+            lifecycle that is already live. The platform's own activation
+            receipt is the proof, and only a receipt that records an applied or
+            reused lifecycle is reported.
+            """
+            from ..application.release_queue import ReleaseQueueError, release_root
+
+            release_id = str(activation.get("release_id") or "")
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", release_id):
+                return None
+            try:
+                receipt = json.loads(
+                    (release_root(config) / "runs" / tenant / release_id / "receipt.json").read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeError, ValueError, ReleaseQueueError):
+                return None
+            lifecycle = receipt.get("durableObjectLifecycle") if isinstance(receipt, Mapping) else None
+            if not isinstance(lifecycle, Mapping) or lifecycle.get("state") not in {"applied", "reused"}:
+                return None
+            identity = str(lifecycle.get("identity") or "")
+            proven = lifecycle.get("appliedByReleaseId") if lifecycle.get("state") == "reused" else release_id
+            if not re.fullmatch(r"[0-9a-f]{64}", identity) or not isinstance(proven, str) or not proven:
+                return None
+            return {"identity": identity, "releaseId": proven}
+
         @app.post(f"{control_prefix}/{{website_id}}/deploy-credentials")
         def control_plane_deploy_credentials(website_id: str, request: Request):
             """Issue one run's deploy material to the tenant's own repository.
@@ -1216,6 +1247,7 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             except (OSError, ValueError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             source_sha = str(claims["sha"])
+            lifecycle = _proven_durable_object_lifecycle(config, tenant.tenant_id, activation)
             if tenant.memory is not None:
                 tenant.memory.record_action(
                     "deploy_credentials",
@@ -1242,6 +1274,8 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 "controlSha": platform_runtime["sourceSha"],
                 "deployedSharedRuntimeFingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
                 "deployedControlSha": str(activation.get("control_sha") or ""),
+                "turnstileSiteKey": str(environment.get("HELLOADA_TURNSTILE_SITE_KEY") or ""),
+                "durableObjectLifecycle": lifecycle,
                 "cloudflare": {"apiToken": api_token, "accountId": account_id},
                 "workerSecrets": secrets,
                 "handoffPublicKey": str(env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or ""),

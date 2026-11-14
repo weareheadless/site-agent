@@ -82,6 +82,9 @@ jobs:
               if customer.get(name) not in (None, value):
                   raise SystemExit(f"the repository release identity disagrees on {name}")
               customer[name] = value
+          if not deploy.get("turnstileSiteKey"):
+              raise SystemExit("the platform did not report the registered Turnstile sitekey")
+          customer["turnstileSiteKey"] = deploy["turnstileSiteKey"]
           if not deploy.get("sharedRuntimeFingerprint"):
               raise SystemExit("the platform did not report the runtime it ships")
           if not deploy.get("controlSha"):
@@ -139,6 +142,8 @@ jobs:
               "tenantEnvFile": str(runtime),
               "customers": {deploy["tenant"]: customer},
           }
+          if deploy.get("durableObjectLifecycle"):
+              manifest["durableObjectLifecycle"] = deploy["durableObjectLifecycle"]
           (root / "releases").mkdir(exist_ok=True)
           (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
           (root / "expected-contract.json").write_text(json.dumps(contract, indent=1), encoding="utf-8")

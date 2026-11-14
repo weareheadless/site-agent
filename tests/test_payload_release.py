@@ -1782,6 +1782,29 @@ def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
     }
 
 
+def test_platform_lifecycle_proof_turns_a_runner_atomic_deploy_into_an_upload():
+    identity = "a" * 64
+    assert release.proven_worker_rollout_mode(
+        "atomic", None, identity, {"identity": identity, "releaseId": "rel-20261113203000-shared-retry-route"},
+    ) == ("versioned", "rel-20261113203000-shared-retry-route")
+
+
+@pytest.mark.parametrize(
+    "rollout_mode,proven",
+    [
+        ("versioned", {"identity": "a" * 64, "releaseId": "rel-1"}),
+        ("atomic", None),
+        ("atomic", {"identity": "b" * 64, "releaseId": "rel-1"}),
+        ("atomic", {"identity": "a" * 64}),
+        ("atomic", {"identity": "a" * 64, "releaseId": ""}),
+    ],
+)
+def test_platform_lifecycle_proof_must_match_exactly(rollout_mode, proven):
+    assert release.proven_worker_rollout_mode(rollout_mode, "proven", "a" * 64, proven) == (
+        rollout_mode, "proven",
+    )
+
+
 def test_runner_manifest_binds_the_secrets_the_platform_already_selected(tmp_path):
     tenant = "site-ff8e9af06f56201f"
     runtime = tmp_path / "runtime.env"

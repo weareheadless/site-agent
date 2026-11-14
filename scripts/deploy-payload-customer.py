@@ -278,6 +278,30 @@ def durable_object_migration_identity(migrations: Any) -> str | None:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def proven_worker_rollout_mode(
+    rollout_mode: str,
+    applied_release: str | None,
+    migration_identity: str | None,
+    proven: Any,
+) -> tuple[str, str | None]:
+    """Let the platform's activation receipt stand in for a runner's history.
+
+    A runner starts with an empty release root, so the local scan cannot tell a
+    first release from an ordinary one. Only an exact matching identity counts,
+    and only when the local scan found no proof either way.
+    """
+    if (
+        rollout_mode == "atomic"
+        and isinstance(proven, Mapping)
+        and migration_identity is not None
+        and proven.get("identity") == migration_identity
+        and isinstance(proven.get("releaseId"), str)
+        and proven["releaseId"]
+    ):
+        return "versioned", proven["releaseId"]
+    return rollout_mode, applied_release
+
+
 def select_worker_rollout_mode(tenant_runs: Path,
                                migration_identity: str | None) -> tuple[str, str | None]:
     if migration_identity is None:
@@ -2476,6 +2500,10 @@ def main() -> int:
         rollout_mode, applied_lifecycle_release = select_worker_rollout_mode(
             directory.parent, lifecycle_identity,
         )
+        rollout_mode, applied_lifecycle_release = proven_worker_rollout_mode(
+            rollout_mode, applied_lifecycle_release, lifecycle_identity,
+            manifest.get("durableObjectLifecycle"),
+        )
         receipt["rolloutMode"] = rollout_mode
         if lifecycle_identity is None:
             receipt["durableObjectLifecycle"] = {"identity": None, "state": "not-required"}
@@ -2576,10 +2604,11 @@ def main() -> int:
         stage("provision-turnstile")
         if args.runner:
             # Turnstile is platform-owned state: a runner cannot persist the
-            # widget pair where the next release will look for it.
+            # widget pair where the next release will look for it, so the
+            # platform's registered sitekey is the only one it may publish.
             receipt["turnstile"] = {
                 "state": "deferred",
-                "sitekey": str(wrangler.get("turnstileSiteKey") or ""),
+                "sitekey": str(customer.get("turnstileSiteKey") or wrangler.get("turnstileSiteKey") or ""),
             }
         else:
             receipt["turnstile"] = provision_turnstile_for_tenant(
