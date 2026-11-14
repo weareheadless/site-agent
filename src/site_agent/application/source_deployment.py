@@ -676,8 +676,14 @@ class SourceDeploymentService:
         )
         return accepted is not None
 
-    def _candidate_build_run(self, repository: str, commit: str) -> dict[str, Any] | None:
-        """The newest candidate-build run for this exact commit."""
+    def _candidate_build_run(self, repository: str, commit: str,
+                             since: str = "") -> dict[str, Any] | None:
+        """The newest candidate-build run for this exact commit.
+
+        ``since`` excludes runs started before this candidate asked for one, so
+        a retried preview adopts the run it just requested instead of a stale
+        run that was built for another signed mount.
+        """
         token = github_api_token(self.config, self._resolved_env())
         if not token:
             return None
@@ -686,14 +692,31 @@ class SourceDeploymentService:
         runs = body.get("workflow_runs") if isinstance(body, Mapping) else None
         if not isinstance(runs, list):
             return None
+        cutoff = 0.0
+        if since:
+            try:
+                cutoff = datetime.fromisoformat(str(since).replace("Z", "+00:00")).timestamp() - 120
+            except ValueError:
+                cutoff = 0.0
         expected = f"candidate {commit}"
-        candidates = [
-            run for run in runs
-            if isinstance(run, Mapping)
-            and str(run.get("path") or "").endswith("release-build.yml")
-            and (str(run.get("display_title") or "").strip().lower() == expected
-                 or commit in str(run.get("display_title") or "").lower())
-        ]
+        candidates = []
+        for run in runs:
+            if not isinstance(run, Mapping):
+                continue
+            if not str(run.get("path") or "").endswith("release-build.yml"):
+                continue
+            title = str(run.get("display_title") or "")
+            if title.strip().lower() != expected and commit not in title.lower():
+                continue
+            if cutoff:
+                try:
+                    created = datetime.fromisoformat(
+                        str(run.get("created_at") or "").replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    continue
+                if created < cutoff:
+                    continue
+            candidates.append(run)
         if not candidates:
             return None
         run = max(candidates, key=lambda item: int(item.get("run_number") or 0))
@@ -777,54 +800,47 @@ class SourceDeploymentService:
         finally:
             shutil.rmtree(staging, ignore_errors=True)
 
-    def _adopt_runner_candidate_build(self, worktree: Path, job: dict[str, Any], commit: str,
-                                      timeout: int) -> bool:
-        """Serve the candidate the repository compiled, instead of compiling here.
+    @staticmethod
+    def _relocate_candidate_build(worktree: Path, repository: str) -> None:
+        """Point a repository build at the directory that will serve it.
 
-        Returns false for every reason it cannot be used, so the caller falls
-        back to the local build: a failed run, a missing artifact, a receipt
-        that names another commit or another mount.
+        Next bakes the build root into its server output: tracing manifests,
+        source maps, and the wasm module imports the worker resolves when it
+        starts. The run built under ``/home/runner/work/<repo>/<repo>``; this
+        host serves the same tree from its own worktree, so that root is
+        rewritten instead of leaving the worker pointing at a path that does
+        not exist here.
         """
-        repository = self._github_repository()
-        base_path = self._preview_base_path(job)
-        if not self._dispatch_candidate_build(repository, commit, base_path, job.get("draft_id")):
-            return False
-        deadline = time.monotonic() + max(60, min(int(timeout), 1_200))
-        appearance_deadline = time.monotonic() + 180
-        run: dict[str, Any] | None = None
-        while time.monotonic() < deadline:
-            run = self._candidate_build_run(repository, commit)
-            if run and run.get("status") == "completed":
-                break
-            if run is None and time.monotonic() > appearance_deadline:
-                # A dispatch that never produces a run means this repository
-                # cannot compile candidates yet; waiting out the build timeout
-                # would only delay the local fallback.
-                if self.memory is not None:
-                    self.memory.record_action(
-                        "preview_candidate_absent",
-                        f"{commit[:8]}: the repository did not start a candidate build",
-                    )
-                return False
-            time.sleep(10)
-        if not run or run.get("status") != "completed":
-            if self.memory is not None:
-                self.memory.record_action(
-                    "preview_candidate_timeout",
-                    f"{commit[:8]}: the repository did not finish the candidate build",
-                )
-            return False
-        if run.get("conclusion") != "success":
-            if self.memory is not None:
-                self.memory.record_action(
-                    "preview_candidate_failed",
-                    f"{commit[:8]}: {run.get('url') or 'the repository candidate build failed'}",
-                )
-            return False
+        name = str(repository or "").split("/")[-1]
+        if not name:
+            return
+        origin = f"/home/runner/work/{name}/{name}".encode()
+        target = str(worktree).encode()
+        if origin == target:
+            return
+        for path in (worktree / ".open-next").rglob("*"):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                body = path.read_bytes()
+            except OSError:
+                continue
+            if origin not in body:
+                continue
+            path.write_bytes(body.replace(origin, target))
+
+    def _adopt_candidate_artifacts(self, worktree: Path, repository: str, run_id: int,
+                                   commit: str, base_path: str) -> Any:
+        """Adopt one run's compiled candidate, or say why it cannot be used.
+
+        Returns true when the candidate is in place, ``"mismatch"`` when this
+        run compiled another commit or another signed mount (a newer run may
+        still be on its way), and false for a run whose artifacts are unusable.
+        """
         staging = Path(tempfile.mkdtemp(prefix="candidate-download-", dir=str(worktree.parent)))
         try:
             receipts = self._download_candidate_artifact(
-                repository, int(run["id"]), _CANDIDATE_RECEIPT_ARTIFACT, staging / "receipt.zip",
+                repository, run_id, _CANDIDATE_RECEIPT_ARTIFACT, staging / "receipt.zip",
             )
             if receipts is None:
                 return False
@@ -842,27 +858,86 @@ class SourceDeploymentService:
             if (receipt.get("sourceSha") != commit
                     or receipt.get("previewBasePath") != base_path
                     or receipt.get("status") != "built"):
-                if self.memory is not None:
-                    self.memory.record_action(
-                        "preview_candidate_rejected",
-                        f"{commit[:8]}: the artifact was not built for this candidate mount",
-                    )
-                return False
+                return "mismatch"
             archive = self._download_candidate_artifact(
-                repository, int(run["id"]), _CANDIDATE_BUILD_ARTIFACT, staging / "build.zip",
+                repository, run_id, _CANDIDATE_BUILD_ARTIFACT, staging / "build.zip",
             )
             if archive is None:
                 return False
             if not self._unpack_candidate_archive(archive, worktree, root=".open-next"):
                 return False
-            if self.memory is not None:
-                self.memory.record_action(
-                    "preview_candidate_built",
-                    f"{commit[:8]}: compiled by run {run['id']} and served here",
-                )
+            self._relocate_candidate_build(worktree, repository)
             return True
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+
+    def _adopt_runner_candidate_build(self, worktree: Path, job: dict[str, Any], commit: str,
+                                      timeout: int) -> bool:
+        """Serve the candidate the repository compiled, instead of compiling here.
+
+        Returns false for every reason it cannot be used, so the caller falls
+        back to the local build: a failed run, a missing artifact, a receipt
+        that names another commit or another mount.
+        """
+        repository = self._github_repository()
+        base_path = self._preview_base_path(job)
+        requested_at = _now()
+        if not self._dispatch_candidate_build(repository, commit, base_path, job.get("draft_id")):
+            return False
+        deadline = time.monotonic() + max(5, min(int(timeout), 1_200))
+        appearance_deadline = time.monotonic() + 180
+        rejected: set[int] = set()
+        while time.monotonic() < deadline:
+            run = self._candidate_build_run(repository, commit, since=requested_at)
+            if run is None:
+                if time.monotonic() > appearance_deadline:
+                    # A dispatch that never produces a run means this repository
+                    # cannot compile candidates yet; waiting out the build
+                    # timeout would only delay the local fallback.
+                    if self.memory is not None:
+                        self.memory.record_action(
+                            "preview_candidate_absent",
+                            f"{commit[:8]}: the repository did not start a candidate build",
+                        )
+                    return False
+                time.sleep(10)
+                continue
+            if run.get("status") != "completed":
+                time.sleep(10)
+                continue
+            if run.get("conclusion") != "success":
+                if self.memory is not None:
+                    self.memory.record_action(
+                        "preview_candidate_failed",
+                        f"{commit[:8]}: {run.get('url') or 'the repository candidate build failed'}",
+                    )
+                return False
+            if int(run["id"]) in rejected:
+                time.sleep(10)
+                continue
+            adopted = self._adopt_candidate_artifacts(
+                worktree, repository, int(run["id"]), commit, base_path,
+            )
+            if adopted is True:
+                if self.memory is not None:
+                    self.memory.record_action(
+                        "preview_candidate_built",
+                        f"{commit[:8]}: compiled by run {run['id']} and served here",
+                    )
+                return True
+            if adopted == "mismatch":
+                # This run compiled a different mount; a newer run for the same
+                # commit may still be on its way.
+                rejected.add(int(run["id"]))
+                time.sleep(10)
+                continue
+            return False
+        if self.memory is not None:
+            self.memory.record_action(
+                "preview_candidate_timeout",
+                f"{commit[:8]}: the repository did not finish the candidate build",
+            )
+        return False
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:

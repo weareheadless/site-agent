@@ -1444,7 +1444,7 @@ def test_a_repository_lane_preview_serves_the_candidate_its_run_compiled(tmp_pat
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-1", "runtime_base_path": mount}, commit, 60,
+            worktree, {"id": "preview-1", "runtime_base_path": mount}, commit, 5,
         ) is True
         assert (worktree / ".open-next" / "worker.js").is_file()
     finally:
@@ -1463,7 +1463,7 @@ def test_a_failed_candidate_run_leaves_the_local_build_to_compile(tmp_path, monk
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-2", "runtime_base_path": mount}, commit, 60,
+            worktree, {"id": "preview-2", "runtime_base_path": mount}, commit, 5,
         ) is False
         assert not (worktree / ".open-next").exists()
     finally:
@@ -1485,7 +1485,7 @@ def test_a_candidate_built_for_another_mount_is_not_served(tmp_path, monkeypatch
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-3", "runtime_base_path": mount}, commit, 60,
+            worktree, {"id": "preview-3", "runtime_base_path": mount}, commit, 5,
         ) is False
         assert not (worktree / ".open-next").exists()
     finally:
@@ -1517,3 +1517,38 @@ def test_only_the_repository_release_lane_compiles_previews_in_the_repository(tm
     finally:
         for service in services:
             service.close()
+
+
+def test_a_repository_build_is_relocated_to_the_worktree_that_serves_it(tmp_path):
+    """Next bakes its build root into the worker; the serving host rewrites it."""
+    import zipfile
+
+    worktree = tmp_path / "worktree"
+    (worktree / ".open-next" / "server-functions" / "default").mkdir(parents=True)
+    (worktree / ".open-next" / "worker.js").write_text("export default {}\n")
+    handler = worktree / ".open-next" / "server-functions" / "default" / "handler.mjs"
+    handler.write_text(
+        'import yoga_wasm from "/home/runner/work/tenant-site/tenant-site/.open-next/og/yoga.wasm?module"\n'
+    )
+    binary = worktree / ".open-next" / "assets" / "blob.bin"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"\x00/home/runner/work/tenant-site/tenant-site\x00")
+
+    source_deployment.SourceDeploymentService._relocate_candidate_build(
+        worktree, "weareheadless/tenant-site",
+    )
+    assert f'from "{worktree}/.open-next/og/yoga.wasm?module"' in handler.read_text()
+    assert b"/home/runner/" not in binary.read_bytes()
+    assert (worktree / ".open-next" / "worker.js").read_text() == "export default {}\n"
+
+
+def test_a_repository_build_is_not_relocated_for_another_repository(tmp_path):
+    worktree = tmp_path / "worktree"
+    handler = worktree / ".open-next" / "handler.mjs"
+    handler.parent.mkdir(parents=True)
+    body = 'import x from "/home/runner/work/other-site/other-site/x.wasm"\n'
+    handler.write_text(body)
+    source_deployment.SourceDeploymentService._relocate_candidate_build(
+        worktree, "weareheadless/tenant-site",
+    )
+    assert handler.read_text() == body
