@@ -1552,3 +1552,25 @@ def test_a_repository_build_is_not_relocated_for_another_repository(tmp_path):
         worktree, "weareheadless/tenant-site",
     )
     assert handler.read_text() == body
+
+
+def test_a_served_candidate_publishes_its_revision_inside_the_built_assets(tmp_path):
+    """The readiness check reads the address the browser would, under the mount."""
+    worktree = tmp_path / "worktree"
+    (worktree / ".open-next" / "assets").mkdir(parents=True)
+    mount = "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
+    job = {"id": "preview-1", "runtime_base_path": mount}
+    source_deployment.SourceDeploymentService._write_built_revision_marker(
+        worktree, job, "d" * 40,
+    )
+    marker = worktree / ".open-next" / "assets" / mount.strip("/") / "site-agent-revision.txt"
+    assert marker.read_text(encoding="utf-8") == ("d" * 40) + "\n"
+
+
+def test_a_candidate_without_a_built_asset_tree_writes_no_marker(tmp_path):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    source_deployment.SourceDeploymentService._write_built_revision_marker(
+        worktree, {"runtime_base_path": "/p/t/j/1799999999/0123456789abcdef"}, "e" * 40,
+    )
+    assert not (worktree / ".open-next").exists()

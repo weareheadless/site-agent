@@ -1231,6 +1231,22 @@ class SourceDeploymentService:
         marker.write_text(f"{commit.strip().lower()}\n", encoding="utf-8")
         return marker
 
+    @staticmethod
+    def _write_built_revision_marker(worktree: Path, job: Mapping[str, Any], commit: str) -> None:
+        """Publish the revision marker inside the artifact a run compiled.
+
+        The repository build finished before this host wrote its marker, so the
+        marker is also written into the served asset tree. The readiness check
+        then reads the same address the owner's browser would.
+        """
+        assets = worktree / ".open-next" / "assets"
+        base_path = str(job.get("runtime_base_path") or "").strip("/")
+        if not assets.is_dir() or not base_path:
+            return
+        target = assets / base_path / "site-agent-revision.txt"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"{commit.strip().lower()}\n", encoding="utf-8")
+
     def _verify_public_revision(self, base_url: str, expected_commit: str, *, label: str) -> dict[str, Any]:
         """Confirm that a runtime serves the exact built revision."""
         expected = str(expected_commit or "").strip().lower()
@@ -2124,7 +2140,25 @@ class SourceDeploymentService:
                 adopted = self._adopt_runner_candidate_build(worktree, job, commit, timeout)
             if adopted:
                 checks.append({"name": "candidate_build", "ok": True, "source": "repository_run"})
+                # The run compiled with the same overlay, but the source-level
+                # steps below (schema, content, inventory) read this tree, so
+                # the overlay is applied here too.
+                from .shared_runtime import apply_preview_runtime_overlay
+
+                payload_config = (self.config.get("site") or {}).get("payload") or {}
+                activation = payload_config.get("runtime_activation") or {}
+                runtime_fingerprint = str(activation.get("shared_runtime_fingerprint") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{64}", runtime_fingerprint):
+                    raise SourceDeploymentError(
+                        "the tenant has no activated shared runtime; release the site before previewing"
+                    )
+                apply_preview_runtime_overlay(
+                    worktree,
+                    package_root=Path(__file__).resolve().parents[1],
+                    runtime_fingerprint=runtime_fingerprint,
+                )
                 self._write_revision_marker(worktree, local_head)
+                self._write_built_revision_marker(worktree, job, local_head)
                 self._localize_preview_bindings(worktree, job)
                 npm = self._verify_toolchain(worktree)
                 self._mark_step(job, "dependencies")
