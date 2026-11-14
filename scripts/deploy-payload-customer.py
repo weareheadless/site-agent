@@ -2379,7 +2379,8 @@ def main() -> int:
             raise RuntimeError(f"release requires Node {manifest['nodeVersion']}")
         if run([str(Path(manifest["npmBin"], "npm")), "--version"], directory, base).strip() != manifest["npmVersion"]:
             raise RuntimeError(f"release requires npm {manifest['npmVersion']}")
-        receipt["previousDeployment"] = None if args.build_only else cloudflare_deployment(customer, deploy_env)
+        offline_build = args.build_only or args.preview_only
+        receipt["previousDeployment"] = None if offline_build else cloudflare_deployment(customer, deploy_env)
 
         stage("checkout")
         git_env = {**base, "GIT_SSH_COMMAND": github_ssh_command(profile, base)}
@@ -2401,7 +2402,7 @@ def main() -> int:
             dirty = run(["git", "status", "--porcelain"], checkout, base).strip()
             if dirty:
                 raise RuntimeError("source directory is dirty before the build: " + dirty[:240])
-            if not args.build_only:
+            if not offline_build:
                 remote = github_remote(customer["repository"], profile, base)
                 run(["git", "fetch", "--no-tags", remote, "+refs/heads/main:refs/remotes/origin/main"], checkout, git_env)
                 run(["git", "merge-base", "--is-ancestor", args.ref, "origin/main"], checkout, git_env)
