@@ -9,9 +9,12 @@ name: Release deploy
 # is stored in the repository, and no per-tenant token is created by hand.
 #
 # Every approved change lands on main, so a push to main is the deploy trigger.
+# A retry for a commit that is still main is requested as a repository dispatch.
 on:
   push:
     branches: [main]
+  repository_dispatch:
+    types: [helloada-release]
   workflow_dispatch:
 
 permissions:
@@ -49,6 +52,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          if [ -n "${{ github.event.client_payload.sha }}" ] && [ "${{ github.event.client_payload.sha }}" != "$GITHUB_SHA" ]; then
+            echo "the requested release commit is not this run's commit" >&2
+            exit 1
+          fi
           TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
           OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$OIDC_AUDIENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')

@@ -16,6 +16,8 @@ from typing import Any, Mapping
 # (verification runs before and after promotion) never moves the bar backwards.
 _STAGE_PROGRESS: tuple[tuple[str, float], ...] = (
     ("queued_on_vps", 0.03),
+    ("awaiting_github_deploy", 0.03),
+    ("github_run_running", 0.10),
     ("preflight", 0.05),
     ("credentials", 0.07),
     ("checkout", 0.10),
@@ -45,11 +47,12 @@ _STAGE_PROGRESS: tuple[tuple[str, float], ...] = (
 )
 
 _PHASES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("queued", "Queued", ("queued_on_vps",)),
+    ("queued", "Queued", ("queued_on_vps", "awaiting_github_deploy")),
     (
         "preparing",
         "Preparing the build",
         (
+            "github_run_running",
             "preflight",
             "credentials",
             "checkout",
@@ -92,6 +95,10 @@ _STAGE_PHASE = {
 
 _STAGE_LABELS = {
     "queued_on_vps": "Waiting for the release runner",
+    "awaiting_github_deploy": "Waiting for the repository deploy run",
+    "github_run_running": "The repository is deploying the approved change",
+    "github_run_failed": "The repository deploy run stopped",
+    "verified_by_repository_run": "The repository run is live",
     "preflight": "Checking the release",
     "credentials": "Checking release access",
     "checkout": "Reading the approved code",

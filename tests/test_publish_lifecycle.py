@@ -1,7 +1,8 @@
-"""Production approvals persist only through the central VPS release queue."""
+"""Production approvals persist through one release lane and are never built here."""
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -22,7 +23,7 @@ class HeldExecutor:
         pass
 
 
-def make_service(tmp_path, monkeypatch, jobs=None, *, draft_status="publishing"):
+def make_service(tmp_path, monkeypatch, jobs=None, *, draft_status="publishing", provider="vps"):
     monkeypatch.setattr(deployment, "ThreadPoolExecutor", HeldExecutor)
     release_root = tmp_path / "release-receipts"
     release_root.mkdir(exist_ok=True)
@@ -36,8 +37,8 @@ def make_service(tmp_path, monkeypatch, jobs=None, *, draft_status="publishing")
         memory.kv_set("source_preview_jobs", jobs)
     config = {
         "instance_name": "demo",
-        "deployment_pipeline": {"release_root": str(release_root)},
-        "site": {"branch": "main", "preview_branch": "preview"},
+        "deployment_pipeline": {"provider": provider, "release_root": str(release_root)},
+        "site": {"branch": "main", "preview_branch": "preview", "repository": "weareheadless/demo-web"},
     }
     return memory, deployment.SourceDeploymentService(config, env={}, memory=memory), draft_id, release_root
 
@@ -248,7 +249,7 @@ def test_approving_a_source_update_supersedes_an_older_pending_candidate(tmp_pat
     deployer = deployment.SourceDeploymentService(
         {
             "instance_name": "demo",
-            "deployment_pipeline": {"release_root": str(release_root)},
+            "deployment_pipeline": {"provider": "vps", "release_root": str(release_root)},
             "site": {"branch": "main", "preview_branch": "preview"},
         }, env={}, memory=memory,
     )
@@ -506,5 +507,124 @@ def test_a_refused_preview_reset_does_not_undo_a_live_release(tmp_path, monkeypa
     assert memory.list_drafts()[0]["status"] == "live"
     actions = [row.get("kind") for row in memory.recent_actions(limit=10)]
     assert "preview_reset_failed" in actions
+    service.close()
+    memory.close()
+
+
+def test_approval_hands_the_exact_commit_to_the_repository_run(tmp_path, monkeypatch):
+    """The default lane queues nothing: the merge push is the deploy trigger."""
+    memory, service, draft_id, _root = make_service(
+        tmp_path, monkeypatch, draft_status="pending", provider="github",
+    )
+    queued = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: queued.append(True))
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+    monkeypatch.setattr(service, "_require_github_release_lane", lambda _commit: None)
+
+    job = service.start(
+        {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id},
+        allow_production=True,
+    )
+
+    assert queued == []
+    assert job["status"] == "queued"
+    assert job["phase"] == "awaiting_github_deploy"
+    assert job["provider"] == "github"
+    assert job["tenant_id"] == "demo"
+    assert "release_id" not in job
+    assert memory.list_drafts()[0]["status"] == "publishing"
+    service.close()
+    memory.close()
+
+
+def test_the_repository_run_receipt_marks_the_approved_change_live(tmp_path, monkeypatch):
+    memory, service, draft_id, release_root = make_service(
+        tmp_path, monkeypatch, draft_status="pending", provider="github",
+    )
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+    monkeypatch.setattr(service, "_require_github_release_lane", lambda _commit: None)
+    job = service.start(
+        {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id},
+        allow_production=True,
+    )
+    receipt_path = release_root / "runs/demo/ci-43550410742-1/receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps({
+        "tenant": "demo",
+        "releaseId": "ci-43550410742-1",
+        "sourceSha": "a" * 40,
+        "status": "deployed",
+        "finishedAt": "2026-11-14T01:00:00+00:00",
+    }))
+
+    live = service.status(job["id"])
+
+    assert live["status"] == "deployed"
+    assert live["phase"] == "verified_by_repository_run"
+    assert live["release_id"] == "ci-43550410742-1"
+    assert memory.list_drafts()[0]["status"] == "live"
+    assert len(memory.list_publishes()) == 1
+    service.close()
+    memory.close()
+
+
+def test_a_failed_repository_run_stops_the_approved_change(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing", provider="github")
+    job = release_job(draft_id, status="queued", phase="awaiting_github_deploy", provider="github",
+                      github_checked_at=time.time(),
+                      github_run={"status": "completed", "conclusion": "failure", "url": "https://github.com/o/r/actions/runs/1"})
+    job.pop("release_id")
+    service._jobs["publish"] = job
+
+    failed = service.status("publish")
+
+    assert failed["status"] == "failed"
+    assert failed["phase"] == "github_run_failed"
+    assert "actions/runs/1" in failed["error"]
+    assert memory.list_drafts()[0]["status"] == "publish_failed"
+    service.close()
+    memory.close()
+
+
+def test_retry_asks_the_repository_to_run_the_same_commit(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed", provider="github")
+    job = release_job(draft_id, status="failed", provider="github")
+    job.pop("release_id")
+    service._jobs["failed-attempt"] = job
+    dispatched = []
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+    monkeypatch.setattr(service, "_require_github_release_lane", lambda _commit: None)
+    monkeypatch.setattr(service, "_dispatch_github_release", lambda commit: dispatched.append(commit))
+
+    retried = service.retry_release(draft_id)
+
+    assert dispatched == ["a" * 40]
+    assert retried["status"] == "queued"
+    assert retried["phase"] == "awaiting_github_deploy"
+    assert retried["id"] != "failed-attempt"
+    assert memory.list_drafts()[0]["status"] == "publishing"
+    service.close()
+    memory.close()
+
+
+def test_approval_is_refused_when_the_repository_has_no_canonical_release_lane(tmp_path, monkeypatch):
+    """A repository that cannot deploy must not be left waiting forever."""
+    from site_agent.application import github_oidc
+
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="pending", provider="github")
+    monkeypatch.setattr(service, "_head", lambda _branch: "a" * 40)
+
+    def missing(*args, **kwargs):
+        raise github_oidc.GitHubOIDCError(".github/workflows/release-deploy.yml could not be read at aaaaaaaa")
+
+    monkeypatch.setattr(github_oidc, "repo_file", missing)
+    monkeypatch.setattr(service, "_resolved_env", lambda: {"GITHUB_TOKEN": "token"})
+
+    with pytest.raises(SourceDeploymentError, match="sync-tenant-repository-check"):
+        service.start(
+            {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id},
+            allow_production=True,
+        )
+    assert memory.list_drafts()[0]["status"] == "pending"
     service.close()
     memory.close()

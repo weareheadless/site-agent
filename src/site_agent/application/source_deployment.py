@@ -1,8 +1,10 @@
-"""Build private previews and request production through the canonical VPS queue.
+"""Build private previews and release production through the repository's own run.
 
 The service has no production Cloudflare deployment capability. Owner approval
-commits the exact customer SHA to site-agent's central GitOps queue; the VPS
-release service builds, promotes and records the only production artifact.
+merges the exact customer SHA to the tenant repository's ``main``; by default
+that push starts the repository's own credential-free deploy workflow, and the
+receipt that run reports is the only production evidence this service projects.
+``deployment_pipeline.provider: vps`` selects the legacy central queue instead.
 """
 
 from __future__ import annotations
@@ -301,7 +303,7 @@ class SourceDeploymentService:
         self.memory.kv_set("source_preview_jobs", {str(row.get("id")): row for row in rows if row.get("id")})
 
     def _recover_production_jobs(self) -> None:
-        """Reconcile approvals only from the central VPS release receipt."""
+        """Reconcile approvals only from the release receipt their lane produces."""
         seen: set[Any] = set()
         drafts = {row["id"]: row for row in self.memory.list_drafts(limit=100_000)} if self.memory else {}
         for job in sorted(self._jobs.values(), key=lambda j: str(j.get("created_at") or ""), reverse=True):
@@ -313,6 +315,20 @@ class SourceDeploymentService:
             seen.add(draft_id)
             draft = drafts.get(draft_id)
             if draft and draft.get("status") not in {"pending", "approved", "publishing", "publish_failed"}:
+                continue
+            provider = str(job.get("provider") or ("vps" if job.get("release_id") else self._release_provider()))
+            if provider == "github":
+                if not str(job.get("commit") or "").strip() or not str(job.get("tenant_id") or "").strip():
+                    job.update(
+                        status="failed",
+                        ok=False,
+                        error="approved change has no durable repository release identity",
+                        updated_at=_now(),
+                    )
+                    if draft and draft.get("status") == "publishing":
+                        self.memory.update_draft_status(int(draft_id), "publish_failed")
+                    continue
+                self._refresh_release_job(job)
                 continue
             if not str(job.get("release_id") or "").strip() or not str(job.get("tenant_id") or "").strip():
                 job.update(
@@ -331,7 +347,10 @@ class SourceDeploymentService:
                 self.memory.record_action("publish_failed", f"#{draft_id}: process restarted before deployment was durably queued")
 
     def _refresh_release_job(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Project a VPS receipt; this service never builds or deploys production."""
+        """Project a release receipt; this service never builds or deploys production."""
+        provider = str(job.get("provider") or ("vps" if job.get("release_id") else self._release_provider()))
+        if provider == "github":
+            return self._refresh_github_release_job(job)
         release_id = str(job.get("release_id") or "")
         tenant = str(job.get("tenant_id") or "")
         if not release_id or not tenant:
@@ -400,6 +419,190 @@ class SourceDeploymentService:
         self._jobs[str(job.get("id") or "")] = job
         self._persist()
         return job
+
+    def reconcile_runner_release(self, commit: str, receipt: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Mark the approved change live from the receipt its own run reported.
+
+        Activation already mounted the runtime; this is the owner-visible half:
+        the draft becomes live and the preview branch advances to the delivered
+        commit. It is idempotent because the receipt is the same evidence.
+        """
+        normalized = str(commit or "").strip().lower()
+        with self._lock:
+            jobs = [
+                job for job in self._jobs.values()
+                if isinstance(job, dict)
+                and job.get("mode") == _PRODUCTION
+                and str(job.get("commit") or "").strip().lower() == normalized
+            ]
+            if not jobs:
+                return None
+            job = max(jobs, key=lambda item: str(item.get("created_at") or ""))
+            self._refresh_github_release_job(job)
+            return dict(job)
+
+    def _runner_receipt(self, tenant: str, commit: str) -> dict[str, Any] | None:
+        """The newest recorded repository-run receipt for this exact commit."""
+        if not tenant or not commit:
+            return None
+        try:
+            root = release_root(self.config) / "runs" / tenant
+        except ReleaseQueueError:
+            return None
+        found: list[tuple[str, dict[str, Any]]] = []
+        for path in root.glob("ci-*/receipt.json"):
+            if path.is_symlink():
+                continue
+            try:
+                receipt = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError):
+                continue
+            if (
+                isinstance(receipt, Mapping)
+                and receipt.get("tenant") == tenant
+                and receipt.get("sourceSha") == commit
+                and receipt.get("status") in {"deployed", "verified"}
+            ):
+                found.append((str(receipt.get("finishedAt") or path.parent.name), dict(receipt)))
+        return max(found, key=lambda item: item[0])[1] if found else None
+
+    def _github_run(self, repository: str, commit: str) -> dict[str, Any] | None:
+        """The newest deploy run GitHub reports for this exact commit, if any."""
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return None
+        query = urllib.parse.urlencode({"head_sha": commit, "per_page": 10})
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{repository}/actions/runs?{query}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "HelloAda-Release-Lane/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:
+                body = json.loads(response.read(1024 * 1024).decode("utf-8") or "{}")
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            return None
+        runs = body.get("workflow_runs") if isinstance(body, Mapping) else None
+        if not isinstance(runs, list):
+            return None
+        candidates = [
+            run for run in runs
+            if isinstance(run, Mapping)
+            and str(run.get("head_sha") or "").lower() == commit
+            and str(run.get("path") or "").endswith("release-deploy.yml")
+        ]
+        if not candidates:
+            return None
+        run = max(candidates, key=lambda item: int(item.get("run_number") or 0))
+        return {
+            "id": run.get("id"),
+            "status": str(run.get("status") or ""),
+            "conclusion": str(run.get("conclusion") or ""),
+            "url": str(run.get("html_url") or ""),
+        }
+
+    def _refresh_github_release_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Project the repository run's receipt for one approved commit.
+
+        The run builds, uploads, promotes and verifies; the platform only reads
+        the receipt it reported and the activation that receipt produced.
+        """
+        tenant = str(job.get("tenant_id") or "")
+        commit = str(job.get("commit") or "").strip().lower()
+        receipt = self._runner_receipt(tenant, commit)
+        if receipt is not None:
+            should_record = not bool(job.get("release_receipt_processed"))
+            job.update(
+                status="deployed",
+                phase="verified_by_repository_run",
+                ok=True,
+                live=True,
+                verified_commit=commit,
+                release_id=str(receipt.get("releaseId") or ""),
+                release_receipt_processed=True,
+                release_receipt={
+                    key: receipt.get(key)
+                    for key in ("pipelineSha", "uploadedVersion", "connectionVerifiedAt", "finishedAt")
+                    if receipt.get(key) is not None
+                },
+                updated_at=_now(),
+            )
+            job.pop("error", None)
+            if should_record:
+                self._record_production_publish(job, job)
+            draft = next((row for row in self.memory.list_drafts(limit=500)
+                if int(row.get("id") or 0) == int(job.get("draft_id") or 0)), None) if self.memory is not None else None
+            if isinstance(((draft or {}).get("meta") or {}).get("growth_package"), Mapping):
+                job.setdefault("growth_journal", {"status": "recording_pending"})
+            self._jobs[str(job.get("id") or "")] = job
+            self._persist()
+            return job
+
+        now = time.time()
+        if now - float(job.get("github_checked_at") or 0) >= 30:
+            try:
+                run = self._github_run(self._github_repository(), commit)
+            except SourceDeploymentError:
+                run = None
+            job["github_checked_at"] = now
+            if run is not None:
+                job["github_run"] = run
+        run = job.get("github_run") if isinstance(job.get("github_run"), Mapping) else None
+        if run is not None:
+            if run.get("status") == "completed" and run.get("conclusion") not in {"success", "neutral", "skipped"}:
+                job.update(
+                    status="failed",
+                    ok=False,
+                    phase="github_run_failed",
+                    error=(
+                        f"the repository release run {run.get('conclusion') or 'failed'}"
+                        f"{': ' + str(run.get('url')) if run.get('url') else ''}"
+                    )[:1_000],
+                    updated_at=_now(),
+                )
+                self._sync_publish_failure(job)
+            elif run.get("status") in {"in_progress", "queued", "waiting", "requested", "pending"}:
+                job.update(status="running", phase="github_run_running", updated_at=_now())
+        self._jobs[str(job.get("id") or "")] = job
+        self._persist()
+        return job
+
+    def _dispatch_github_release(self, commit: str) -> None:
+        """Ask the repository to run the deploy again for the same commit."""
+        repository = self._github_repository()
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            raise SourceDeploymentError("the platform cannot request a repository release run")
+        request = urllib.request.Request(
+            f"https://api.github.com/repos/{repository}/dispatches",
+            data=json.dumps({"event_type": "helloada-release", "client_payload": {"sha": commit}}).encode("utf-8"),
+            method="POST",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "User-Agent": "HelloAda-Release-Lane/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                if int(response.status) not in {201, 204}:
+                    raise SourceDeploymentError(
+                        f"the repository release run was not accepted ({response.status})"
+                    )
+        except urllib.error.HTTPError as exc:
+            raise SourceDeploymentError(
+                f"the repository release run was refused ({exc.code})"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise SourceDeploymentError(
+                f"the repository release run could not be requested: {type(exc).__name__}"
+            ) from exc
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:
@@ -487,6 +690,50 @@ class SourceDeploymentService:
             if isinstance(candidate, Mapping):
                 result.update(candidate)
         return result
+
+    def _release_provider(self) -> str:
+        """The one release lane the shell uses, never a per-tenant choice."""
+        pipeline = self.config.get("deployment_pipeline")
+        pipeline = pipeline if isinstance(pipeline, Mapping) else {}
+        provider = str(pipeline.get("provider") or "github").strip().lower()
+        if provider not in {"github", "vps"}:
+            raise SourceDeploymentError("deployment_pipeline.provider must be github or vps")
+        return provider
+
+    def _github_repository(self) -> str:
+        repository = str(self.site.get("repository") or "").strip()
+        if not re.fullmatch(r"weareheadless/[A-Za-z0-9_.-]+", repository):
+            raise SourceDeploymentError("managed tenant repository identity is unavailable")
+        return repository
+
+    def _require_github_release_lane(self, commit: str) -> None:
+        """Refuse an approval the repository cannot actually deploy.
+
+        The repository's own workflow is the only deploy path. A repository
+        without it would sit "awaiting deploy" forever, so the platform reads
+        the pinned identity and the workflow at this exact commit before the
+        approval is recorded. The fleet mechanism installs both; this is a
+        rollout guard, never a per-tenant step.
+        """
+        from .github_oidc import GitHubOIDCError, repo_file, verify_canonical_workflow
+
+        repository = self._github_repository()
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            raise SourceDeploymentError("the platform cannot read the repository release workflow")
+        try:
+            identity = json.loads(
+                repo_file(repository, commit, ".github/helloada-release.json", token)
+            )
+            verify_canonical_workflow(
+                repository, commit, token, control_sha=str(identity.get("controlSha") or ""),
+            )
+        except (GitHubOIDCError, ValueError) as exc:
+            raise SourceDeploymentError(
+                "the repository cannot deploy this commit yet: its release workflow is missing "
+                "or not the platform's canonical one; run "
+                "scripts/sync-tenant-repository-check.py --apply"
+            ) from exc
 
     def _branch(self, value: Any) -> str:
         branch = str(value or self.site.get("preview_branch") or "preview").strip()
@@ -1802,7 +2049,7 @@ class SourceDeploymentService:
                 "the site changed after this release failed; the approved change must be re-applied before it can be released"
             )
         return self.start(
-            {"mode": _PRODUCTION, "branch": "main", "commit": commit, "draft_id": approval},
+            {"mode": _PRODUCTION, "branch": "main", "commit": commit, "draft_id": approval, "retry": True},
             allow_production=True,
         )
 
@@ -1963,6 +2210,24 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("production release approval identity is invalid")
             if self._head(branch) != requested_commit:
                 raise SourceDeploymentError("approved source revision is no longer the exact main revision")
+            if self._release_provider() == "github":
+                self._require_github_release_lane(requested_commit)
+                # The approval already merged this exact commit to main, and
+                # that push is the deploy trigger. A retry asks the repository
+                # to run the same commit again; nothing is queued here.
+                if body.get("retry"):
+                    self._dispatch_github_release(requested_commit)
+                job.update({
+                    "tenant_id": str(self.config.get("instance_name") or ""),
+                    "provider": "github",
+                    "status": "queued",
+                    "phase": "awaiting_github_deploy",
+                })
+                self._jobs[job_id] = job
+                self._persist()
+                if self.memory is not None:
+                    self.memory.update_draft_status(approval_id, "publishing")
+                return dict(job)
             try:
                 receipt = request_release(self.config, self.env, requested_commit, approval_id=approval_id)
                 root = release_root(self.config)
@@ -1970,6 +2235,7 @@ class SourceDeploymentService:
                 raise SourceDeploymentError(str(exc)) from exc
             job.update({
                 "tenant_id": str(self.config.get("instance_name") or ""),
+                "provider": "vps",
                 "release_id": receipt["release_id"],
                 "control_sha": receipt["control_sha"],
                 "release_root": str(root),

@@ -489,7 +489,25 @@ tenant. A local site-agent change, a customer-repository push, or a direct
 
 ### Mandatory Payload/Worker release pipeline
 
-Commit the approved tenant's full 40-character customer SHA and a new release ID
+Every managed site releases through its own repository's GitHub run by default
+(`deployment_pipeline.provider: github`). The owner approval merges the exact
+approved commit to the tenant repository's `main`; that push starts
+`.github/workflows/release-deploy.yml`, which proves itself with GitHub OIDC,
+receives one run's deploy material, builds/uploads/promotes/verifies the exact
+commit and reports its receipt to the platform. The platform activates from
+that receipt and marks the approved change live; it never builds or deploys
+production itself. `scripts/sync-tenant-repository-check.py --apply` installs
+the workflow and the pinned release identity in every tenant repository, so a
+new tenant inherits the lane instead of being onboarded to it. A repository
+without the canonical workflow cannot be approved for release: the platform
+refuses the approval with the fleet-sync instruction instead of leaving the
+change waiting forever. Retrying a failed release asks the repository to run
+the same commit again (`repository_dispatch`) while that commit is still
+`main`; after `main` moves, the approved change must be re-applied.
+
+The legacy central queue remains selectable with
+`deployment_pipeline.provider: vps` for an isolated deployment. In that lane,
+commit the approved tenant's full 40-character customer SHA and a new release ID
 to `deploy/desired-releases.json` on the official `main` branch. The VPS
 `helloada-release.timer` polls that file through the configured GitHub SSH
 identity every minute. `helloada-release.service` snapshots the exact control

@@ -1345,6 +1345,17 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                     )
             except Exception:  # noqa: BLE001 - the activation is already durable
                 pass
+            try:
+                # The owner-visible half of activation: the approved draft
+                # becomes live from the receipt its own run reported. The
+                # remounted tenant owns the live memory handle.
+                activated = registry.for_tenant_id(website_id)
+                context = activated.context if activated is not None and isinstance(activated.context, dict) else {}
+                reconcile = getattr(context.get("source_deployment"), "reconcile_runner_release", None)
+                if callable(reconcile):
+                    reconcile(source_sha, receipt)
+            except Exception:  # noqa: BLE001 - activation is already durable
+                pass
             return {"activated": True, "releaseId": receipt["releaseId"],
                     "sourceSha": source_sha, "runtime": activation}
 

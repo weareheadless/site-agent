@@ -26,7 +26,7 @@ import jwt
 ISSUER = "https://token.actions.githubusercontent.com"
 JWKS_URL = f"{ISSUER}/.well-known/jwks"
 DEPLOY_WORKFLOW = ".github/workflows/release-deploy.yml"
-_ALLOWED_EVENTS = frozenset({"push", "workflow_dispatch"})
+_ALLOWED_EVENTS = frozenset({"push", "workflow_dispatch", "repository_dispatch"})
 _KEY_TTL_SECONDS = 300
 _keys: tuple[float, dict[str, Mapping[str, Any]]] | None = None
 

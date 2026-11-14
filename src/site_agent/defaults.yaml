@@ -18,10 +18,13 @@ credentials:
   # deployment.
   profile_file: /SOCIAL/configs/host-credentials.yaml
 
-# All managed production releases are committed to the source-controlled VPS
-# queue and executed by its systemd pipeline. No application service deploys a
-# Worker directly.
+# Every managed site releases through its own repository's GitHub run: the
+# approval merges the exact commit to main, that push starts the credential-free
+# deploy workflow, and the receipt the run reports is what the platform
+# activates. The release root is where those receipts are kept. The legacy
+# central VPS queue stays selectable for an isolated deployment.
 deployment_pipeline:
+  provider: github
   release_root: /SOCIAL/payload-releases
 
 design_engine:
