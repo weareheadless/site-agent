@@ -136,6 +136,7 @@ def verify_canonical_workflow(
     control_sha: str,
     platform_repository: str = "weareheadless/site-agent",
     workflow: str = DEPLOY_WORKFLOW,
+    platform_path: str | None = None,
 ) -> None:
     """Refuse a credential request from a workflow that is not the canonical one.
 
@@ -151,7 +152,10 @@ def verify_canonical_workflow(
     if _verified_workflows.get(key):
         return
     requested = repo_file(repository, sha, workflow, token)
-    canonical = repo_file(platform_repository, control_sha, workflow, token)
+    canonical = repo_file(
+        platform_repository, control_sha,
+        platform_path or f"src/site_agent/templates/next-payload/{workflow}", token,
+    )
     if requested != canonical:
         raise GitHubOIDCError("the deploy workflow differs from the canonical contract")
     if len(_verified_workflows) > 512:
