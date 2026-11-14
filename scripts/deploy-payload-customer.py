@@ -2180,9 +2180,11 @@ def main() -> int:
     if args.runner and args.build_only:
         parser.error("--runner deploys; it cannot be combined with --build-only")
     if not args.verify_only:
-        # A rehearsal keeps no release history, so it needs the build's own
-        # floor rather than the VPS headroom that protects the next queued run.
-        require_free_space(release_root, MINIMUM_BUILD_FREE_BYTES // (1024 ** 3) if args.build_only else None)
+        # A rehearsal keeps no release history, and a runner is an ephemeral
+        # host with nothing queued behind it, so both need the build's own floor
+        # rather than the VPS headroom that protects the next queued run.
+        floor = MINIMUM_BUILD_FREE_BYTES // (1024 ** 3) if (args.build_only or args.runner) else None
+        require_free_space(release_root, floor)
     directory = release_root / "runs" / args.tenant / args.release_id
     workspace = None
     workspace_path = None
