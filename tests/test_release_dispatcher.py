@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -20,12 +21,29 @@ API_SPEC = importlib.util.spec_from_file_location(
 )
 api_deploy = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api_deploy)
+REAL_RUNTIME_IDENTITY = api_deploy._runtime_identity
 
 
 @pytest.fixture(autouse=True)
 def _no_disk_gate(monkeypatch):
     """Unit tests deploy into a temporary root, not onto the release host."""
     monkeypatch.setattr(api_deploy, "MINIMUM_FREE_GIB", 0)
+    # Synthetic snapshots carry no canonical runtime tree. The identity writer
+    # is exercised against the real tree below.
+    monkeypatch.setattr(
+        api_deploy, "_runtime_identity",
+        lambda _source, sha, _python, _log: {
+            "schema": 1, "sourceSha": sha, "sharedRuntimeFingerprint": "a" * 64},
+    )
+
+
+def test_api_runtime_identity_names_the_bytes_the_wheel_is_built_from(monkeypatch):
+    from site_agent.application.shared_runtime import shared_runtime_fingerprint
+
+    monkeypatch.setattr(api_deploy, "_runtime_identity", REAL_RUNTIME_IDENTITY)
+    identity = api_deploy._runtime_identity(ROOT, "b" * 40, sys.executable, ROOT / ".pytest-runtime.log")
+    assert identity["sourceSha"] == "b" * 40
+    assert identity["sharedRuntimeFingerprint"] == shared_runtime_fingerprint(ROOT)
 
 
 def _fixture_build_environment(_source, temporary, _log):

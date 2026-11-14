@@ -156,6 +156,31 @@ def _verify_payload_template_bundle(site_packages: Path) -> None:
         raise RuntimeError("API wheel Payload ignore rules do not exclude generated Node/TypeScript files")
 
 
+def _runtime_identity(source_dir: Path, source_sha: str, python: str,
+                      log_path: Path) -> dict[str, Any]:
+    """Name the shared runtime this exact API source ships.
+
+    A tenant deploy is handed this identity so its build cannot produce a
+    different runtime than the platform is running. The fingerprint comes from
+    the candidate's own code and bytes, not from the installed release or a
+    manifest someone has to remember to update.
+    """
+    code = "\n".join((
+        "import json, pathlib",
+        "from site_agent.application.shared_runtime import shared_runtime_fingerprint",
+        "print(json.dumps(shared_runtime_fingerprint(pathlib.Path('.'))))",
+    ))
+    result = _run([python, "-c", code], cwd=source_dir,
+                  env={**os.environ, "PYTHONPATH": str(source_dir / "src")}, log_path=log_path)
+    try:
+        fingerprint = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError("API release cannot identify the shared runtime it ships") from exc
+    if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+        raise RuntimeError("API release cannot identify the shared runtime it ships")
+    return {"schema": 1, "sourceSha": source_sha, "sharedRuntimeFingerprint": fingerprint}
+
+
 def _set_current(current: Path, destination: Path) -> None:
     if current.exists() and not current.is_symlink():
         raise RuntimeError("API current release path is not a managed symlink")
@@ -486,6 +511,10 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         _run([python, "-m", "pip", "install", "--no-deps", "--no-index", "--target",
               str(site_packages), str(wheel)], cwd=source_dir, env=clean_env, log_path=log_path)
         _verify_payload_template_bundle(site_packages)
+        identity = _runtime_identity(source_dir, source_sha, python, log_path)
+        (staging / "runtime-identity.json").write_text(
+            json.dumps(identity, indent=1) + "\n", encoding="utf-8")
+        receipt["runtimeIdentity"] = identity
         smoke_env = {**clean_env, "PYTHONPATH": str(site_packages)}
         smoke_code = "\n".join((
             "import importlib.metadata as m, importlib.util, json, pathlib",

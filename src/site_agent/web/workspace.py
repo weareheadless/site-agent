@@ -1156,11 +1156,14 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             intake = config.get("release_intake") if isinstance(config.get("release_intake"), dict) else {}
             audience = str(intake.get("oidc_audience") or env.get("HELLOADA_DEPLOY_OIDC_AUDIENCE") or "helloada-deploy")
             from ..credentials import github_api_token as _github_api_token
+            try:
+                claims = verify(supplied, audience=audience, repository=repository, branch=branch)
+            except GitHubOIDCError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
             github_token = _github_api_token(config, env)
             if not github_token:
                 raise HTTPException(status_code=503, detail="deploy credential intake is not configured")
             try:
-                claims = verify(supplied, audience=audience, repository=repository, branch=branch)
                 identity = json.loads(
                     repo_file(repository, str(claims["sha"]), ".github/helloada-release.json", github_token)
                 )
@@ -1170,9 +1173,16 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 )
             except (GitHubOIDCError, ValueError) as exc:
                 raise HTTPException(status_code=401, detail=str(exc)) from exc
-            activation = site.get("runtime_activation") if isinstance(site.get("runtime_activation"), dict) else {}
-            contract = site.get("payload") if isinstance(site.get("payload"), dict) else {}
-            contract = contract.get("contract") if isinstance(contract.get("contract"), dict) else {}
+            from ..application.runtime_identity import RuntimeIdentityError, runtime_identity
+            try:
+                platform_runtime = runtime_identity(Path(__file__).resolve().parents[3])
+            except RuntimeIdentityError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            payload = site.get("payload") if isinstance(site.get("payload"), dict) else {}
+            activation = payload.get("runtime_activation") if isinstance(payload.get("runtime_activation"), dict) else {}
+            if not activation:
+                activation = site.get("runtime_activation") if isinstance(site.get("runtime_activation"), dict) else {}
+            contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
             if not contract.get("contract") or not contract.get("schemaIdentity"):
                 raise HTTPException(status_code=409, detail="this website has no registered runtime contract")
             api_token = cloudflare_api_token(config, env)
@@ -1216,8 +1226,10 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                     "locales": contract.get("locales"),
                     "defaultLocale": contract.get("defaultLocale"),
                 },
-                "sharedRuntimeFingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
-                "controlSha": str(activation.get("control_sha") or ""),
+                "sharedRuntimeFingerprint": platform_runtime["sharedRuntimeFingerprint"],
+                "controlSha": platform_runtime["sourceSha"],
+                "deployedSharedRuntimeFingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
+                "deployedControlSha": str(activation.get("control_sha") or ""),
                 "cloudflare": {"apiToken": api_token, "accountId": account_id},
                 "workerSecrets": secrets,
                 "handoffPublicKey": str(env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or ""),
