@@ -190,6 +190,28 @@ def test_cloudflare_upsert_replaces_a_stale_record(monkeypatch):
     assert ("/zones/zone-1/dns_records/old", "PUT", {"type": "TXT", "name": "example.test", "content": "google-site-verification=fresh", "ttl": 120}) in recorded
 
 
+def test_cloudflare_upsert_never_overwrites_an_unrelated_txt_record(monkeypatch):
+    client = CloudflareDNSClient("token")
+
+    recorded: list[tuple[str, str, dict | None]] = []
+
+    def fake_request(path, *, method="GET", body=None):
+        recorded.append((path, method, body))
+        if method == "GET":
+            return {"success": True, "result": [
+                {"id": "spf", "content": '"v=spf1 include:mailgun.org ~all"'},
+                {"id": "brevo", "content": '"brevo-code:0353a8f650ea535e66ba139208cb09f3"'},
+            ]}
+        return {"success": True, "result": {"id": "fresh"}}
+
+    monkeypatch.setattr(client, "_request", fake_request)
+    record_id = client.upsert_txt("zone-1", "example.test", "google-site-verification=fresh")
+
+    assert record_id == "fresh"
+    assert ("/zones/zone-1/dns_records", "POST",
+            {"type": "TXT", "name": "example.test", "content": "google-site-verification=fresh", "ttl": 120}) in recorded
+
+
 def test_cloudflare_client_requires_a_token():
     with pytest.raises(CloudflareDNSError):
         CloudflareDNSClient("")

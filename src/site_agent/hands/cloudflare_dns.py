@@ -118,11 +118,20 @@ class CloudflareDNSClient:
     def upsert_txt(self, zone_id: str, name: str, content: str, *, ttl: int = 120) -> str:
         """Create or refresh one TXT record; returns the record id."""
         existing = self.records(zone_id, record_type="TXT", name=name)
-        match = next((item for item in existing if str(item.get("content") or "").strip() == content.strip()), None)
-        if match is None and existing:
+
+        def _value(item: Mapping[str, Any]) -> str:
+            return str(item.get("content") or "").strip().strip('"').strip()
+
+        match = next((item for item in existing if _value(item) == content.strip()), None)
+        if match is None:
             # A stale verification token from a previous attempt at the same
-            # name is replaced rather than stacked.
-            match = existing[0]
+            # name is replaced rather than stacked. Other TXT records at that
+            # name (SPF, DKIM, ownership codes) are unrelated and must never be
+            # overwritten.
+            match = next(
+                (item for item in existing if _value(item).startswith("google-site-verification=")),
+                None,
+            )
         body = {"type": "TXT", "name": name, "content": content, "ttl": ttl}
         if match:
             payload = self._request(f"/zones/{zone_id}/dns_records/{match['id']}", method="PUT", body=body)

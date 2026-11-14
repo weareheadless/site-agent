@@ -201,6 +201,90 @@ def test_bootstrap_reconciles_a_custom_domain_as_a_new_current_origin(monkeypatc
     assert state["origin_history"][0]["site_url"] == "https://workspace-harmonie.workers.dev/"
 
 
+def test_domain_property_is_verified_with_dns_at_the_registered_domain(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    config["site"]["public_url"] = "https://www.casamigo.example/"
+    config["site"]["custom_domain"] = "casamigo.example"
+    config["seo"]["site_url"] = "https://www.casamigo.example/"
+    config["seo"]["gsc_property"] = "sc-domain:casamigo.example"
+    calls = []
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "site_url": kwargs["site_url"],
+                "domain": kwargs["domain"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_verified": True,
+                "gsc_verification_method": kwargs["verification_method"],
+                "ga4_property_id": "411596330",
+                "provisioning_state": "ready",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        config,
+        tenant_id="casamigo",
+        memory=FakeMemory(),
+    )
+
+    # The canonical host serves the site; the registrable domain is what
+    # CrawlSEO keys its single site record on.
+    assert calls[0]["domain"] == "casamigo.example"
+    assert calls[0]["gsc_property"] == "sc-domain:casamigo.example"
+    assert calls[0]["verification_method"] == "dns_txt"
+    assert state["state"] == "ready"
+
+
+def test_origin_change_keeps_a_domain_property_and_the_crawlseo_mapping(monkeypatch, tmp_path):
+    memory = FakeMemory({
+        "seo_provisioning_state": {
+            "state": "ready",
+            "site_url": "https://casamigo.workers.dev/",
+            "domain": "casamigo.workers.dev",
+            "gsc_property": "sc-domain:casamigo.example",
+            "gsc_verified": True,
+            "ga4_property_id": "411596330",
+            "crawlseo": {"site_id": "site-1", "project_id": "project-1"},
+        }
+    })
+    config = _config(tmp_path)
+    config["site"]["public_url"] = "https://www.casamigo.example/"
+    config["site"]["custom_domain"] = "casamigo.example"
+    config["seo"]["site_url"] = "https://www.casamigo.example/"
+    config["seo"]["gsc_property"] = "sc-domain:casamigo.example"
+    calls = []
+
+    class FailingProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            raise bootstrap.SeoProvisioningError("CrawlSEO unavailable")
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FailingProvisioning)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        config,
+        tenant_id="casamigo",
+        memory=memory,
+    )
+
+    assert calls[0]["gsc_property"] == "sc-domain:casamigo.example"
+    assert calls[0]["domain"] == "casamigo.example"
+    assert state["state"] == "error"
+    # An origin change is not a new site: the CrawlSEO binding must survive.
+    assert state["crawlseo"] == {"site_id": "site-1", "project_id": "project-1"}
+
+
 def test_enabled_seo_defaults_to_automatic_provisioning(monkeypatch, tmp_path):
     config = _config(tmp_path)
     config["seo"]["provisioning"].pop("auto", None)

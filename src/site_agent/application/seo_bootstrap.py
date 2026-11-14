@@ -82,6 +82,41 @@ def _site_url(config: Mapping[str, Any]) -> str:
         raise SeoProvisioningError(str(exc)) from exc
 
 
+def _site_domain(config: Mapping[str, Any], site_url: str) -> str:
+    """The bare domain a tenant is registered under.
+
+    The public URL is the canonical host (``www.example.com``); the domain a
+    tenant is provisioned under is the registrable domain (``example.com``).
+    CrawlSEO keeps one site per domain, so provisioning with the canonical host
+    created a second site for the same tenant.
+    """
+    site = _mapping(config.get("site"))
+    raw = str(site.get("custom_domain") or "").strip().lower().rstrip(".")
+    if raw:
+        return raw
+    return str(urlsplit(site_url).hostname or "").lower().rstrip(".")
+
+
+def _property_covers_domain(property_value: str, domain: str) -> bool:
+    """True when a Search Console property covers ``domain`` and its hosts.
+
+    A domain property (``sc-domain:example.com``) keeps covering a tenant when
+    its canonical host changes from ``example.com`` to ``www.example.com``. A
+    URL-prefix property belongs to one host and does not.
+    """
+    value = str(property_value or "").strip().lower().rstrip("/")
+    if not value or not domain:
+        return False
+    if value.startswith("sc-domain:"):
+        base = value[len("sc-domain:"):].strip().rstrip(".")
+    else:
+        try:
+            base = str(urlsplit(value).hostname or "").strip().lower().rstrip(".")
+        except ValueError:
+            return False
+    return bool(base) and (domain == base or domain.endswith("." + base))
+
+
 def _meta_content(value: str) -> str:
     value = str(value or "").strip()
     if value.lower().startswith("<meta"):
@@ -322,7 +357,7 @@ def auto_provision_seo(
         return state, resolved_env
 
     site_url = _site_url(config)
-    domain = str(urlsplit(site_url).hostname or "").lower().rstrip(".")
+    domain = _site_domain(config, site_url)
     project_name = str(
         provisioning.get("project_name")
         or config.get("display_name")
@@ -337,13 +372,21 @@ def auto_provision_seo(
         or seo.get("gsc_property")
         or ""
     ).strip()
-    # A URL-prefix property belongs to the current public origin. Never carry
-    # a previous domain's property into a new-domain verification attempt.
-    gsc_property = site_url if origin_changed else str(
+    # A property is a tenant fact, not an origin fact. A domain property keeps
+    # covering the tenant when its canonical host changes, so an origin change
+    # must not retire it. A URL-prefix property belongs to one host and cannot
+    # follow a new domain.
+    gsc_property = str(
         configured_gsc_property
         or state.get("gsc_property")
         or site_url
     ).strip()
+    property_covers_origin = _property_covers_domain(gsc_property, domain)
+    if origin_changed and not property_covers_origin:
+        gsc_property = site_url
+    if gsc_property.lower().startswith("sc-domain:"):
+        # Google verifies a domain property with DNS, never with a page tag.
+        method = "dns_txt"
     ga = _mapping(config.get("ga"))
     ga_property = str(
         provisioning.get("ga4_property_id")
@@ -379,9 +422,15 @@ def auto_provision_seo(
         "origin_history": history,
     }
     if origin_changed:
-        for key in ("gsc_verified", "gsc_verified_at", "gsc_pending", "gsc_meta_tag", "gsc_meta_identifier", "crawlseo", "crawlseo_pending"):
+        # The CrawlSEO project/site binding is an externally issued mapping and
+        # survives an origin change; only verification state tied to the old
+        # origin is discarded, and only when the property cannot follow it.
+        for key in ("gsc_pending", "gsc_meta_tag", "gsc_meta_identifier", "crawlseo_pending"):
             attempt.pop(key, None)
-        attempt["gsc_property"] = site_url
+        if not property_covers_origin:
+            for key in ("gsc_verified", "gsc_verified_at"):
+                attempt.pop(key, None)
+        attempt["gsc_property"] = gsc_property
         attempt["provisioning_state"] = "origin_changed"
     try:
         receipt = service.provision(
