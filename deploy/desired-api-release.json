@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261114-runner-deps",
-    "sha": "946021122f6796b25ac6ddb56d97686534b21ca0"
+    "id": "20261114-runner-platform-state",
+    "sha": "5a190a2d111ecd0877b6f99aae1d8d41ca476bbf"
   }
 }
