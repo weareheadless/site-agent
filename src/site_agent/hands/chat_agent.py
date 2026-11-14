@@ -80,6 +80,12 @@ def _opencode_bin(config: Mapping[str, Any]) -> str:
 
 
 def _history_brief(message: str, history: list[Mapping[str, Any]] | None) -> str:
+    """Carry the durable conversation into one owner turn.
+
+    The conversation is recorded in the tenant's message store and is the only
+    memory a turn can rely on. An OpenCode session belongs to the disposable
+    builder worktree and cannot outlive the turn, so it is never resumed.
+    """
     if not history:
         return message
     lines = []
@@ -112,19 +118,17 @@ def run_turn(
             raise RuntimeError("the registered tenant environment file is unavailable")
         tenant_env_path = str(candidate)
 
-    memory = context.get("memory")
-    conversation_id = context.get("_delegated_conversation_id")
-    # The session belongs to the agent home of the turn that created it. A
-    # different home cannot resolve an older id, so the key names the design.
-    session_key = f"chat_session:owner-turn:{conversation_id}" if conversation_id else ""
-    session_id = str(memory.kv_get(session_key, "")) if (memory is not None and session_key) else ""
-    brief = message if session_id else _history_brief(message, history)
+    # The owner's durable conversation is this turn's memory. The OpenCode
+    # session that used to carry it lived in the disposable builder worktree,
+    # so it never outlived the turn: once a session id existed the durable
+    # history was dropped, and a failed turn left the next turn with nothing
+    # to continue.
+    brief = _history_brief(message, history)
 
     result = opencode_runner.run_owner_turn(
         context,
         job_id,
         brief,
-        session_id=session_id or None,
         message=message,
         extra_config={"mcp": _workspace_tool_config(
             config,
@@ -138,12 +142,8 @@ def run_turn(
     reply = str(result.get("reply") or "").strip()
     if not reply:
         raise RuntimeError("the chat agent returned no message")
-    new_session = str(result.get("session_id") or "").strip()
-    if memory is not None and session_key and new_session:
-        memory.kv_set(session_key, new_session)
     return {
         "reply": reply,
-        "session_id": new_session,
         "changed": bool(result.get("changed")),
         "merge_draft_id": result.get("merge_draft_id"),
         "preview": result.get("preview"),

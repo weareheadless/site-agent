@@ -6001,7 +6001,6 @@ def run_owner_turn(
     job_id: int,
     brief: str,
     *,
-    session_id: str | None = None,
     message: str | None = None,
     extra_config: dict[str, Any] | None = None,
     instructions_suffix: str = "",
@@ -6014,6 +6013,10 @@ def run_owner_turn(
     to bridge and no service the caller cannot reach. When the turn ends, the
     host validates the exact working tree, commits it to the preview branch and
     prepares the review draft.
+
+    One turn never resumes an earlier turn's session: the OpenCode session
+    store belongs to the disposable builder worktree, so an earlier session
+    cannot exist here. The owner's conversation reaches the turn in the brief.
     """
     config = context["config"]
     memory = context.get("memory")
@@ -6032,7 +6035,7 @@ def run_owner_turn(
         result = run_opencode_turn(
             clone, brief, config,
             progress=progress,
-            session_id=session_id or None,
+            session_id=None,
             memory=memory,
             agent_name="build",
             reply_mode="final_message",
