@@ -1832,6 +1832,16 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
         if active_version != receipt["uploadedVersion"]:
             raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
+        if runner:
+            # A runner's receipt is the only evidence the platform will see, so
+            # it records the same verified version identity a read-only
+            # re-verification would produce.
+            deployment, active_version, uploaded_identity, active_identity = (
+                resolve_verified_active_worker(customer, deploy_env, receipt["uploadedVersion"])
+            )
+            record_current_verification(
+                receipt, deployment, active_version, uploaded_identity, active_identity,
+            )
     cron_contract = receipt.get("cronTriggers")
     if not isinstance(cron_contract, dict) or cron_contract.get("desired") != ["*/5 * * * *", "0 2 * * *"]:
         raise RuntimeError("release receipt has no exact message and Mailflare schedule contract")
