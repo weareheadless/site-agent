@@ -64,69 +64,65 @@ class FakeCrawlSEO:
         return []
 
 
-def test_crawlseo_defaults_and_enabled_settings_are_validated():
+def test_crawlseo_shell_defaults_are_shared_and_mapping_comes_from_the_credential():
     config, _ = load(env={})
     assert config["providers"]["crawlseo"] == {
-        "enabled": False,
-        "url": "",
-        "token_env": "CRAWLSEO_SERVICE_TOKEN",
-        "connector_token_env": "",
-        "connector_url": "",
+        "url": "https://crawlseo.helloada.app/mcp",
+        "connector_url": "https://crawlseo.helloada.app/crawlseo/api/connector/v1",
+        "connector_token_env": "CRAWLSEO_CONNECTOR_TOKEN",
         "research_authority": "local",
         "timeout_seconds": 30,
         "max_response_bytes": 2097152,
     }
-    disabled = CrawlSEOSettings.from_config(config, env={})
-    assert disabled.enabled is False
+    unmapped = CrawlSEOSettings.from_config(config, env={})
+    assert unmapped.enabled is False
+    assert CrawlSEOClient.from_config(config, env={}) is None
+    # A credential CrawlSEO issued for this tenant is the only mapping needed.
+    mapped = CrawlSEOSettings.from_config(config, env={"CRAWLSEO_SERVICE_TOKEN": "issued"})
+    assert mapped.enabled is True
+    assert mapped.token == "issued"
 
-    authoritative = {"providers": {"crawlseo": {"enabled": True, "url": "https://crawlseo.example/mcp",
-        "connector_url": "https://crawlseo.example/api/connector/v1", "research_authority": "crawlseo",
-        "token_env": "CRAWLSEO_TOKEN"}}}
-    settings = CrawlSEOSettings.from_config(authoritative, env={"CRAWLSEO_TOKEN": "secret"})
+    authoritative = {"providers": {"crawlseo": {"url": "https://crawlseo.example/mcp",
+        "connector_url": "https://crawlseo.example/api/connector/v1", "research_authority": "crawlseo"}}}
+    settings = CrawlSEOSettings.from_config(authoritative, env={"CRAWLSEO_SERVICE_TOKEN": "secret"})
     assert settings.research_authority == "crawlseo"
     assert settings.connector_url.endswith("/api/connector/v1")
     authoritative["providers"]["crawlseo"]["connector_token_env"] = "CRAWLSEO_READ_TOKEN"
     separate = CrawlSEOSettings.from_config(authoritative, env={
-        "CRAWLSEO_TOKEN": "legacy-mcp-secret", "CRAWLSEO_READ_TOKEN": "connector-read-secret",
+        "CRAWLSEO_SERVICE_TOKEN": "legacy-mcp-secret", "CRAWLSEO_READ_TOKEN": "connector-read-secret",
     })
     assert separate.token == "legacy-mcp-secret"
     assert separate.connector_token == "connector-read-secret"
     assert "connector-read-secret" not in repr(separate)
-    with pytest.raises(ConfigError, match="CRAWLSEO_READ_TOKEN"):
-        CrawlSEOSettings.from_config(authoritative, env={"CRAWLSEO_TOKEN": "legacy-mcp-secret"})
     authoritative["providers"]["crawlseo"]["connector_token_env"] = "NOT-A-VALID-ENV-NAME"
     with pytest.raises(ConfigError, match="connector_token_env"):
         CrawlSEOSettings.from_config(authoritative, env={
-            "CRAWLSEO_TOKEN": "legacy-mcp-secret", "CRAWLSEO_READ_TOKEN": "connector-read-secret",
+            "CRAWLSEO_SERVICE_TOKEN": "legacy-mcp-secret", "CRAWLSEO_READ_TOKEN": "connector-read-secret",
         })
     authoritative["providers"]["crawlseo"]["connector_token_env"] = "CRAWLSEO_READ_TOKEN"
     authoritative["providers"]["crawlseo"]["connector_url"] = "https://crawlseo.example/api/connector/v2"
     with pytest.raises(ConfigError, match="connector_url"):
-        CrawlSEOSettings.from_config(authoritative, env={"CRAWLSEO_TOKEN": "secret", "CRAWLSEO_READ_TOKEN": "read"})
+        CrawlSEOSettings.from_config(authoritative, env={"CRAWLSEO_SERVICE_TOKEN": "secret", "CRAWLSEO_READ_TOKEN": "read"})
 
     enabled = {
         "providers": {
             "crawlseo": {
-                "enabled": True,
                 "url": "https://crawlseo.example/mcp",
-                "token_env": "CRAWLSEO_TOKEN",
                 "timeout_seconds": 4,
                 "max_response_bytes": 1024,
             }
         }
     }
-    settings = CrawlSEOSettings.from_config(enabled, env={"CRAWLSEO_TOKEN": "secret"})
+    settings = CrawlSEOSettings.from_config(enabled, env={"CRAWLSEO_SERVICE_TOKEN": "secret"})
     assert settings.enabled is True
     assert settings.timeout_seconds == 4
     assert settings.max_response_bytes == 1024
     assert settings.token == "secret"
     assert "secret" not in repr(settings)
 
-    with pytest.raises(ConfigError, match="not set"):
-        CrawlSEOSettings.from_config(enabled, env={})
     enabled["providers"]["crawlseo"]["max_response_bytes"] = 20 * 1024 * 1024
     with pytest.raises(ConfigError, match="max_response_bytes"):
-        CrawlSEOSettings.from_config(enabled, env={"CRAWLSEO_TOKEN": "secret"})
+        CrawlSEOSettings.from_config(enabled, env={"CRAWLSEO_SERVICE_TOKEN": "secret"})
 
 
 def test_crawlseo_hand_adapter_uses_only_fixed_tools_and_auth_header():

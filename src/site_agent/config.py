@@ -90,12 +90,20 @@ class CrawlSEOSettings:
     ) -> "CrawlSEOSettings":
         env = os.environ if env is None else env
         provider = (config.get("providers") or {}).get("crawlseo") or {}
-        enabled = bool(provider.get("enabled", False))
-        token_env = str(provider.get("token_env") or CRAWLSEO_DEFAULT_TOKEN_ENV).strip()
-        if not enabled:
+        provider = provider if isinstance(provider, Mapping) else {}
+        token_env = str(
+            (config.get("env") or {}).get("crawlseo_service_token") or CRAWLSEO_DEFAULT_TOKEN_ENV
+        ).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise ConfigError("env.crawlseo_service_token must be a valid environment variable name")
+        token = str(env.get(token_env, "") or "")
+        if not token:
+            # The shell holds one CrawlSEO connection. A tenant is mapped by the
+            # credential CrawlSEO issued for its project; without one the tenant
+            # is simply unmapped, which is not a configuration error.
             return cls(
                 enabled=False,
-                url=str(provider.get("url") or ""),
+                url="",
                 token_env=token_env,
                 connector_token_env="",
                 connector_url="",
@@ -119,8 +127,7 @@ class CrawlSEOSettings:
 
         raw_connector_url = str(provider.get("connector_url") or "")
         connector_url = raw_connector_url.strip()
-        configured_connector_token_env = str(provider.get("connector_token_env") or "").strip()
-        connector_token_env = configured_connector_token_env or token_env
+        connector_token_env = str(provider.get("connector_token_env") or "").strip() or token_env
         research_authority = str(provider.get("research_authority") or "local").strip().lower()
         if research_authority not in {"local", "crawlseo"}:
             raise ConfigError("providers.crawlseo.research_authority must be local or crawlseo")
@@ -147,8 +154,6 @@ class CrawlSEOSettings:
                 or not connector.path.startswith("/") or connector.path.endswith("/")):
                 raise ConfigError("providers.crawlseo.connector_url must be the versioned /api/connector/v1 HTTP(S) endpoint, optionally under a safe mount prefix")
 
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-            raise ConfigError("providers.crawlseo.token_env must be a valid environment variable name")
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", connector_token_env):
             raise ConfigError("providers.crawlseo.connector_token_env must be a valid environment variable name")
 
@@ -172,21 +177,9 @@ class CrawlSEOSettings:
                 f"providers.crawlseo.max_response_bytes must be between 1 and {CRAWLSEO_MAX_RESPONSE_BYTES}"
             )
 
-        mapped_env = str((config.get("env") or {}).get("crawlseo_service_token") or "").strip()
-        if mapped_env and token_env == CRAWLSEO_DEFAULT_TOKEN_ENV:
-            token_env = mapped_env
-            if not configured_connector_token_env:
-                connector_token_env = token_env
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
-            raise ConfigError("providers.crawlseo.token_env must be a valid environment variable name")
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", connector_token_env):
-            raise ConfigError("providers.crawlseo.connector_token_env must be a valid environment variable name")
-        token = str(env.get(token_env, "") or "")
-        if not token:
-            raise ConfigError(f"CrawlSEO provider is enabled but {token_env} is not set")
         connector_token = str(env.get(connector_token_env, "") or "")
-        if connector_url and not connector_token:
-            raise ConfigError(f"CrawlSEO connector is configured but {connector_token_env} is not set")
+        if research_authority == "crawlseo" and not connector_token:
+            raise ConfigError(f"CrawlSEO research authority requires {connector_token_env} to be set")
 
         return cls(
             enabled=True,
@@ -202,9 +195,25 @@ class CrawlSEOSettings:
         )
 
 
-def crawlseo_configured(config: dict[str, Any]) -> bool:
-    """Return whether the instance opted into the CrawlSEO provider."""
-    return bool(((config.get("providers") or {}).get("crawlseo") or {}).get("enabled", False))
+def crawlseo_configured(config: dict[str, Any], env: dict[str, str] | None = None) -> bool:
+    """Return whether this tenant is mapped to the shell's CrawlSEO connection."""
+    source = os.environ if env is None else env
+    token_env = str(
+        (config.get("env") or {}).get("crawlseo_service_token") or CRAWLSEO_DEFAULT_TOKEN_ENV
+    ).strip()
+    return bool(str(source.get(token_env, "") or "").strip())
+
+
+def apply_crawlseo_mapping(config: dict[str, Any], env: Mapping[str, str]) -> bool:
+    """Record whether the tenant is mapped to the shell's CrawlSEO connection.
+
+    ``enabled`` is derived, never configured: the connection belongs to the
+    shell and a tenant is mapped by the credential CrawlSEO issued for it.
+    """
+    providers = config.setdefault("providers", {})
+    provider = providers.setdefault("crawlseo", {})
+    provider["enabled"] = crawlseo_configured(config, dict(env))
+    return provider["enabled"]
 
 
 def validate_media_config(config: dict[str, Any], env: dict[str, str] | None = None) -> None:
@@ -598,6 +607,20 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+def shell_defaults() -> dict[str, Any]:
+    """Return the shell configuration every tenant inherits."""
+    return yaml.safe_load(_defaults_path().read_text()) or {}
+
+
+def effective_config(override: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge one tenant's own configuration over the shell defaults.
+
+    Tenant files hold only what is genuinely theirs - identity, isolation and
+    the mappings an external app issued. Everything else comes from here.
+    """
+    return deep_merge(shell_defaults(), dict(override))
+
+
 def apply_vision_defaults(config: dict[str, Any]) -> dict[str, Any]:
     """Let every tenant analyze owner images with its own conversation model.
 
@@ -626,7 +649,7 @@ def load(
     validate_integrations: bool = True,
 ):
     env = os.environ if env is None else env
-    defaults = yaml.safe_load(_defaults_path().read_text()) or {}
+    defaults = shell_defaults()
     if config_path is not None:
         path = Path(config_path)
         if not path.is_file():

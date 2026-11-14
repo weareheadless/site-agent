@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from ..config import ConfigError, CrawlSEOSettings
+from ..config import ConfigError, CrawlSEOSettings, effective_config
 from .seo_bootstrap import load_tenant_environment
 from ..core.research_authority import CONNECTOR_DISPATCH_HOLD_KEY
 from ..hands.crawlseo_connector_credentials import CONNECTOR_RUNTIME_TOKEN_ENV, load_connector_runtime_environment
@@ -146,13 +146,20 @@ def _capability_binding(capabilities: Mapping[str, Any], site_id: str, project_i
 
 
 def _updated_config(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the tenant file with only its own authority decision changed.
+
+    The connector URL belongs to the shell; a tenant file records the research
+    authority decision and the credential stage it may dispatch with.
+    """
+    provider = (effective_config(config).get("providers") or {}).get("crawlseo") or {}
+    if not str(provider.get("connector_url") or "").strip():
+        raise CrawlSEOActivationError("managed CrawlSEO connector must be configured before authority activation")
     updated = dict(config)
     providers = dict(config.get("providers") or {})
-    provider = providers.get("crawlseo")
-    if not isinstance(provider, Mapping) or provider.get("enabled") is not True or not provider.get("connector_url"):
-        raise CrawlSEOActivationError("managed CrawlSEO connector must be configured before authority activation")
-    active = dict(provider)
+    active = dict(providers.get("crawlseo") or {})
     active["research_authority"] = "crawlseo"
+    # The read/write runtime credential is the tenant's own stage, not shell
+    # configuration: it records which credential this tenant may dispatch with.
     active["connector_token_env"] = CONNECTOR_RUNTIME_TOKEN_ENV
     providers["crawlseo"] = active
     updated["providers"] = providers
@@ -208,14 +215,20 @@ def _prepare(tenant: Any, plan: Mapping[str, Any], request: Mapping[str, str], e
     from .seo_bootstrap import load_tenant_environment
     merged = load_tenant_environment(config, env, require_connector=False)
     try:
-        settings = CrawlSEOSettings.from_config(updated, merged)
+        before = CrawlSEOSettings.from_config(effective_config(config), merged)
+        settings = CrawlSEOSettings.from_config(effective_config(updated), merged)
     except ConfigError as exc:
         raise CrawlSEOActivationError("proposed authority config is invalid") from exc
-    if (settings.research_authority != "crawlseo" or settings.connector_token_env != CONNECTOR_RUNTIME_TOKEN_ENV
-            or settings.token_env != str((config.get("providers") or {}).get("crawlseo", {}).get("token_env") or "CRAWLSEO_SERVICE_TOKEN")):
+    if not before.enabled or not settings.enabled:
+        raise CrawlSEOActivationError("CrawlSEO connector is not mapped for this tenant")
+    if (settings.research_authority != "crawlseo"
+            or settings.connector_token_env != CONNECTOR_RUNTIME_TOKEN_ENV
+            or settings.token_env != before.token_env
+            or settings.url != before.url
+            or settings.connector_url != before.connector_url):
         raise CrawlSEOActivationError("proposed authority config did not preserve MCP settings")
     project_id = _project_id(plan)
-    binding = _probe(updated, merged, site_id, project_id, client_factory or _client)
+    binding = _probe(effective_config(updated), merged, site_id, project_id, client_factory or _client)
     return path, config, raw, updated, _dump(updated), site_id, project_id, inventory, binding
 
 

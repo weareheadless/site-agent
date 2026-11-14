@@ -251,11 +251,12 @@ providers:
     poll_interval_seconds: 2
     preparation_timeout_seconds: 600
   crawlseo:
-    enabled: false
-    url: ""
-    token_env: CRAWLSEO_SERVICE_TOKEN
-    connector_token_env: "" # defaults to token_env; set separately to preserve the legacy MCP credential during migration
-    connector_url: ""
+    # One app-to-app connection owned by the shell. A tenant is mapped by the
+    # credential CrawlSEO issued for its project (crawlseo.env) and needs no
+    # provider settings of its own; without a credential it is simply unmapped.
+    url: https://crawlseo.helloada.app/mcp
+    connector_url: https://crawlseo.helloada.app/crawlseo/api/connector/v1
+    connector_token_env: CRAWLSEO_CONNECTOR_TOKEN
     research_authority: local
     timeout_seconds: 30
     max_response_bytes: 2097152

@@ -18,7 +18,7 @@ def _use_service(config: dict[str, Any], service: Any | None, operation: Callabl
     # public sense facade useful for one-off callers without retaining a thread.
     client = CrawlSEOClient.from_config(config)
     if client is None:
-        raise RuntimeError("CrawlSEO source requires an enabled providers.crawlseo configuration")
+        raise RuntimeError("CrawlSEO source requires a tenant mapped to the shell CrawlSEO connection")
     application = CrawlSEOApplicationService(client)
     try:
         return operation(application)

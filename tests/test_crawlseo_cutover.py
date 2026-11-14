@@ -37,7 +37,7 @@ CAPABILITIES = {
 }
 
 
-def _config(tmp_path, *, connector_url=""):
+def _config(tmp_path, *, connector_url="https://crawlseo.example/api/connector/v1"):
     return {
         "instance_name": "tenant-a",
         "data_dir": str(tmp_path / "tenant-a" / "data"),
@@ -166,6 +166,7 @@ def test_preview_preserves_mcp_and_authority_and_rejects_other_origin(tmp_path):
 def test_distinct_mcp_and_connector_mounts_and_plan_without_remote_binding(tmp_path):
     tenant = _tenant(tmp_path)
     tenant.config["providers"]["crawlseo"]["url"] = "https://crawlseo.example/mcp"
+    tenant.config["providers"]["crawlseo"]["connector_url"] = "https://crawlseo.example/crawlseo/api/connector/v1"
     Path(tenant.config_path).write_text(yaml.safe_dump(tenant.config, sort_keys=False), encoding="utf-8")
     _install(tenant)
     plan = {"tenant": "tenant-a", "snapshotHash": SNAPSHOT, "siteId": "site-1", "projectId": "project-1"}

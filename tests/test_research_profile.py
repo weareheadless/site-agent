@@ -29,7 +29,6 @@ CONFIG: dict[str, Any] = {
         },
         "article_research": {"enabled": True, "min_interval_days": 7},
     },
-    "providers": {"crawlseo": {"enabled": True, "url": "https://crawlseo.helloada.app/mcp", "token_env": "CRAWLSEO_SERVICE_TOKEN"}},
 }
 
 
@@ -65,9 +64,6 @@ def test_sync_research_profile_pushes_the_read_only_configuration(monkeypatch: p
             return {"revision": 4}
 
     monkeypatch.setattr(seo_bootstrap.CrawlSEOClient, "from_config", classmethod(lambda cls, config, env=None: FakeClient()))
-    monkeypatch.setattr(
-        seo_bootstrap, "credential_profile", lambda config, name: {"connector_url": "https://crawlseo.example/crawlseo/api/connector/v1"}
-    )
     result = seo_bootstrap.sync_research_profile(
         CONFIG,
         {"CRAWLSEO_SERVICE_TOKEN": "cseo_mcp", "CRAWLSEO_CONNECTOR_TOKEN": "cseo_connector"},
@@ -81,12 +77,12 @@ def test_sync_research_profile_pushes_the_read_only_configuration(monkeypatch: p
     assert calls["payload"]["researchPolicy"]["providers"] == ["reddit", "news"]
 
 
-def test_sync_research_profile_skips_without_a_connector_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(seo_bootstrap, "credential_profile", lambda config, name: {})
+def test_sync_research_profile_skips_an_unmapped_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(seo_bootstrap.CrawlSEOClient, "from_config", classmethod(lambda cls, config, env=None: None))
     result = seo_bootstrap.sync_research_profile(
         CONFIG, {"CRAWLSEO_SERVICE_TOKEN": "cseo_mcp"}, {"crawlseo": {"site_id": "site-1"}}, "oceanicvibes"
     )
-    assert result == {"state": "skipped", "reason": "connector_url_not_configured"}
+    assert result == {"state": "skipped", "reason": "crawlseo_unmapped"}
 
 
 def test_connector_runtime_token_is_written_to_a_protected_file(tmp_path) -> None:

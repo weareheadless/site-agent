@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from ..credentials import credential_environment, credential_profile
+from ..config import CRAWLSEO_DEFAULT_TOKEN_ENV, apply_crawlseo_mapping, effective_config
+from ..credentials import credential_environment
 from ..hands.crawlseo import CrawlSEOClient
 from ..hands.crawlseo_connector_credentials import load_connector_environment, load_connector_runtime_environment
 from ..hands.cloudflare_worker import CloudflareWorkerError
@@ -43,10 +44,15 @@ def _persist_credentials(config, receipt, resolved_env):
             raise SeoProvisioningError("CrawlSEO returned a token without an environment name")
         write_token_env(_credential_directory(config), name, token)
         resolved_env[name] = token
+        # The shell reads one canonical variable regardless of the name the
+        # credential was issued under.
+        resolved_env[CRAWLSEO_DEFAULT_TOKEN_ENV] = token
     connector = str(receipt.get("connector_credential_token") or "").strip()
     if connector:
         write_connector_runtime_token(_credential_directory(config), connector)
         resolved_env["CRAWLSEO_CONNECTOR_TOKEN"] = connector
+    if isinstance(config, dict):
+        apply_crawlseo_mapping(config, resolved_env)
 
 
 def _now() -> str:
@@ -215,25 +221,17 @@ def sync_research_profile(
     site_id = str(crawlseo.get("site_id") or "").strip()
     if not site_id:
         return {"state": "skipped", "reason": "crawlseo_site_missing"}
-    profile = credential_profile(config, "crawlseo")
-    provider = dict(_mapping(_mapping(config.get("providers")).get("crawlseo")))
-    connector_url = str(provider.get("connector_url") or profile.get("connector_url") or "").strip()
-    if not connector_url:
+    provider = dict(_mapping(_mapping(effective_config(config).get("providers")).get("crawlseo")))
+    if not str(provider.get("connector_url") or "").strip():
         return {"state": "skipped", "reason": "connector_url_not_configured"}
-    provider["connector_url"] = connector_url
-    provider["connector_token_env"] = "CRAWLSEO_CONNECTOR_TOKEN"
-    effective = {
-        **dict(config),
-        "providers": {**_mapping(config.get("providers")), "crawlseo": provider},
-    }
     try:
-        client = CrawlSEOClient.from_config(effective, dict(env))
+        client = CrawlSEOClient.from_config(effective_config(config), dict(env))
         if client is None:
-            return {"state": "skipped", "reason": "crawlseo_disabled"}
+            return {"state": "skipped", "reason": "crawlseo_unmapped"}
         current = client.connector_policy(site_id)
         policy_view = current.get("policy") if isinstance(current.get("policy"), Mapping) else current
         payload = build_research_profile(
-            effective,
+            config,
             site_id=site_id,
             tenant_id=tenant_id,
             expected_revision=int(policy_view.get("revision") or 0),
@@ -259,6 +257,7 @@ def load_tenant_environment(
     """Load host credentials and a previously issued tenant token."""
     resolved = credential_environment(config, os.environ if env is None else env)
     token_file = _credential_directory(config) / "crawlseo.env"
+    issued: list[str] = []
     if token_file.is_file():
         try:
             for line in token_file.read_text(encoding="utf-8").splitlines():
@@ -267,13 +266,24 @@ def load_tenant_environment(
                 name, value = line.split("=", 1)
                 if name.strip() and value.strip():
                     resolved[name.strip()] = value.strip()
+                    issued.append(name.strip())
         except (OSError, UnicodeError):
             pass
+    # Provisioning historically named the issued credential after the tenant.
+    # The shell reads one canonical variable, so publish the mapping there.
+    if issued and not str(resolved.get(CRAWLSEO_DEFAULT_TOKEN_ENV) or "").strip():
+        canonical = [name for name in issued if name.startswith("CRAWLSEO_TOKEN_")]
+        if len(canonical) == 1:
+            resolved[CRAWLSEO_DEFAULT_TOKEN_ENV] = resolved[canonical[0]]
     # Keep the narrowly managed connector credential separate from, and
     # authoritative over, the legacy CrawlSEO MCP credential file.
     if require_connector:
         resolved.update(load_connector_environment(config))
     resolved.update(load_connector_runtime_environment(config))
+    # ``providers.crawlseo.enabled`` is derived from the credential that is
+    # actually present, so no tenant file can turn the shell connection off.
+    if isinstance(config, dict):
+        apply_crawlseo_mapping(config, resolved)
     return resolved
 
 

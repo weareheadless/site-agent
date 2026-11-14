@@ -614,7 +614,9 @@ def _build_runtime(args: argparse.Namespace):
     # Tenant credentials are intentionally kept in the shared host profile.
     # Resolve them once after loading the tenant config and pass the resolved
     # environment to every trusted runtime adapter, including Payload.
-    raw_env = credential_environment(config, raw_env)
+    from .application.seo_bootstrap import load_tenant_environment
+
+    raw_env = load_tenant_environment(config, raw_env)
     memory = Memory(data_dir(config) / "memory.db")
     ensure_default_goal(memory)
     llm = Client(config, memory, env=raw_env)

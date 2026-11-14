@@ -56,7 +56,7 @@ class Runtime:
             object.__setattr__(self, "home_service", HomeService(self.memory, self.config))
         if self.owner_action_service is None:
             object.__setattr__(self, "owner_action_service", OwnerActionService(self.memory))
-        if self.crawlseo_client is None and self.crawlseo_service is None and crawlseo_configured(self.config):
+        if self.crawlseo_client is None and self.crawlseo_service is None and crawlseo_configured(self.config, self.env):
             try:
                 object.__setattr__(self, "crawlseo_client", CrawlSEOClient.from_config(self.config, self.env))
             except CrawlSEOConfigurationError:

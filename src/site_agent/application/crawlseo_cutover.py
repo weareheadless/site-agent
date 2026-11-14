@@ -13,7 +13,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from ..config import ConfigError, CrawlSEOSettings
+from ..config import ConfigError, CrawlSEOSettings, effective_config
 from ..hands.crawlseo_connector_credentials import (
     CONNECTOR_TOKEN_ENV,
     load_connector_environment,
@@ -130,21 +130,29 @@ def _plan_project_identity(tenant: Any, plan: Mapping[str, Any]) -> str:
 
 
 def _updated_config(config: Mapping[str, Any], request: Mapping[str, str]) -> dict[str, Any]:
+    """Stage the managed read-only credential on top of the shell connector.
+
+    The connector URL belongs to the shell; a tenant file may only record the
+    credential stage it has reached.
+    """
+    current = (effective_config(config).get("providers") or {}).get("crawlseo") or {}
+    connector_url = str(current.get("connector_url") or "").strip()
+    if not connector_url:
+        raise CrawlSEOConfigurationCutoverError("CrawlSEO connector is not configured by the shell")
+    if connector_url != request["connectorUrl"]:
+        raise CrawlSEOConfigurationCutoverError(
+            "connector URL must stay on the CrawlSEO origin configured by the shell"
+        )
+    if current.get("token_env") == request["connectorTokenEnv"]:
+        raise CrawlSEOConfigurationCutoverError("managed connector token must be separate from the existing MCP token")
+    provider = dict((config.get("providers") or {}).get("crawlseo") or {})
+    if provider.get("connector_token_env") == request["connectorTokenEnv"]:
+        return dict(config)
+    provider["connector_token_env"] = request["connectorTokenEnv"]
     updated = dict(config)
     providers = dict(config.get("providers") or {})
-    current = providers.get("crawlseo")
-    if not isinstance(current, Mapping) or current.get("enabled") is not True:
-        raise CrawlSEOConfigurationCutoverError("CrawlSEO MCP must already be enabled before connector preparation")
-    provider = dict(current)
-    token_env = str(provider.get("token_env") or "CRAWLSEO_SERVICE_TOKEN").strip()
-    if token_env == request["connectorTokenEnv"]:
-        raise CrawlSEOConfigurationCutoverError("managed connector token must be separate from the existing MCP token")
-    provider["connector_url"] = request["connectorUrl"]
-    provider["connector_token_env"] = request["connectorTokenEnv"]
     providers["crawlseo"] = provider
     updated["providers"] = providers
-    if provider.get("research_authority") != current.get("research_authority"):
-        raise CrawlSEOConfigurationCutoverError("read-only connector preparation cannot change research authority")
     return updated
 
 
@@ -247,7 +255,7 @@ def _prepared(
     if request["expectedConfigHash"] != _digest(raw_bytes):
         raise CrawlSEOConfigurationCutoverError("tenant config changed; refresh config hash before preparing connector config")
     updated = _updated_config(config, request)
-    _validate_connector_origin(config, request["connectorUrl"])
+    _validate_connector_origin(effective_config(config), request["connectorUrl"])
     proposed_bytes = _config_bytes(updated)
     managed_env = load_connector_environment(config)
     if not managed_env.get(request["connectorTokenEnv"]):
@@ -257,19 +265,19 @@ def _prepared(
     if not merged_env.get(request["connectorTokenEnv"]):
         raise CrawlSEOConfigurationCutoverError("managed read-only connector credential is missing")
     try:
-        settings = CrawlSEOSettings.from_config(updated, merged_env)
+        before = CrawlSEOSettings.from_config(effective_config(config), merged_env)
+        settings = CrawlSEOSettings.from_config(effective_config(updated), merged_env)
     except ConfigError as exc:
         raise CrawlSEOConfigurationCutoverError("proposed CrawlSEO connector config is invalid") from exc
-    existing_provider = config["providers"]["crawlseo"]
     if (
         settings.connector_url != request["connectorUrl"]
         or settings.connector_token_env != request["connectorTokenEnv"]
-        or settings.token_env != str(existing_provider.get("token_env") or "CRAWLSEO_SERVICE_TOKEN")
-        or settings.research_authority != str(existing_provider.get("research_authority") or "local")
+        or settings.token_env != before.token_env
+        or settings.research_authority != before.research_authority
     ):
         raise CrawlSEOConfigurationCutoverError("proposed config does not preserve the existing CrawlSEO authority and MCP settings")
     project_id = _plan_project_identity(tenant, plan)
-    binding = _probe_capabilities(updated, merged_env, site_id, project_id, client_factory)
+    binding = _probe_capabilities(effective_config(updated), merged_env, site_id, project_id, client_factory)
     return request, site_id, path, config, updated, raw_bytes, proposed_bytes, merged_env, binding
 
 
@@ -285,8 +293,8 @@ def build_connector_configuration(
     request, site_id, _path, config, updated, raw_bytes, proposed_bytes, _env, binding = _prepared(
         tenant, plan, body, dict(env or {}), client_factory or _default_client_factory,
     )
-    before = config["providers"]["crawlseo"]
-    after = updated["providers"]["crawlseo"]
+    before = (effective_config(config).get("providers") or {}).get("crawlseo") or {}
+    after = (effective_config(updated).get("providers") or {}).get("crawlseo") or {}
     return {
         "valid": True,
         "mode": request["mode"],

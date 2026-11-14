@@ -857,8 +857,8 @@ class CrawlSEOClient:
         self.close()
 
 
-def configured(config: dict[str, Any]) -> bool:
-    return crawlseo_configured(config)
+def configured(config: dict[str, Any], env: dict[str, str] | None = None) -> bool:
+    return crawlseo_configured(config, env)
 
 
 __all__ = [

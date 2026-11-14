@@ -229,7 +229,8 @@ def test_activation_configures_authority_but_preserves_freeze_and_paid_hold(tmp_
     class Registry:
         tenants = {"tenant-a": tenant}
         def reload_tenant(self, tenant_id, config_path, **kwargs):
-            config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+            from site_agent.config import effective_config
+            config = effective_config(yaml.safe_load(Path(config_path).read_text(encoding="utf-8")))
             memory = Memory(Path(config_path).with_name("memory.db"))
             service = SimpleNamespace(connector_capabilities=lambda _site_id: CAPABILITIES)
             replacement = SimpleNamespace(tenant_id=tenant_id, config_path=config_path, config=config,
@@ -297,7 +298,8 @@ def test_activation_recovers_config_cas_before_saved_receipt(tmp_path, monkeypat
     class Registry:
         tenants = {"tenant-a": tenant}
         def reload_tenant(self, tenant_id, config_path, **kwargs):
-            config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+            from site_agent.config import effective_config
+            config = effective_config(yaml.safe_load(Path(config_path).read_text(encoding="utf-8")))
             memory = Memory(Path(config_path).with_name("memory.db"))
             memory.kv_set("crawlseo_migration:producer_freeze", {
                 "active": True, "registrationsVerified": True, "pendingDrain": False,
@@ -342,7 +344,8 @@ def test_saved_activation_checkpoint_retries_runtime_verification(tmp_path):
         def reload_tenant(self, tenant_id, config_path, **kwargs):
             if self.fail:
                 raise RuntimeError("reload temporarily failed")
-            config = yaml.safe_load(Path(config_path).read_text(encoding="utf-8"))
+            from site_agent.config import effective_config
+            config = effective_config(yaml.safe_load(Path(config_path).read_text(encoding="utf-8")))
             memory = Memory(Path(config_path).with_name("memory.db"))
             memory.kv_set("crawlseo_migration:producer_freeze", {
                 "active": True, "registrationsVerified": True, "pendingDrain": False,

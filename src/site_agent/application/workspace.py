@@ -26,7 +26,7 @@ from urllib.parse import unquote
 
 import yaml
 
-from ..config import ConfigError, CrawlSEOSettings, deep_merge, load
+from ..config import ConfigError, CrawlSEOSettings, deep_merge, effective_config, load
 from ..core.article_routes import public_article_path
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
@@ -2881,7 +2881,7 @@ class ChatService:
                         dict(getattr(self.registry, "_env", {}) or {}),
                         require_connector=False,
                     )
-                    runtime_settings = CrawlSEOSettings.from_config(disk_config, runtime_env)
+                    runtime_settings = CrawlSEOSettings.from_config(effective_config(disk_config), runtime_env)
                     frozen = freeze_status
                     saved_binding = activation_receipt.get("binding") if isinstance(activation_receipt.get("binding"), Mapping) else {}
                     current_binding = remote.get("binding") if isinstance(remote.get("binding"), Mapping) else {}
