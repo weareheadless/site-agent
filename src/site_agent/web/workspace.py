@@ -1334,11 +1334,17 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 )
             except (BootstrapError, TenantRegistrationError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
-            if tenant.memory is not None:
-                tenant.memory.record_action(
-                    "deploy_receipt",
-                    f"{claims.get('workflow')} {str(claims.get('run_id') or '')} {source_sha[:8]} activated",
-                )
+            try:
+                # Activation remounts the tenant runtime, which can close the
+                # memory handle this request started with. The audit line is
+                # never a reason to fail a release the platform has activated.
+                if tenant.memory is not None:
+                    tenant.memory.record_action(
+                        "deploy_receipt",
+                        f"{claims.get('workflow')} {str(claims.get('run_id') or '')} {source_sha[:8]} activated",
+                    )
+            except Exception:  # noqa: BLE001 - the activation is already durable
+                pass
             return {"activated": True, "releaseId": receipt["releaseId"],
                     "sourceSha": source_sha, "runtime": activation}
 
