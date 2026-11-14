@@ -2231,6 +2231,8 @@ def main() -> int:
                         help="rehearse the release build here and stop before any Cloudflare mutation")
     parser.add_argument("--preview-base-path", metavar="PATH",
                         help="compile this build under the signed preview mount the platform minted")
+    parser.add_argument("--preview-only", action="store_true",
+                        help="compile one preview candidate and stop before any release-only step")
     parser.add_argument("--runner", action="store_true",
                         help="deploy from this runner: schema, Turnstile, activation and schedulers stay platform-owned")
     parser.add_argument("--expected-contract", type=Path,
@@ -2255,13 +2257,17 @@ def main() -> int:
         parser.error("--build-only cannot recheck an already promoted release")
     if args.runner and args.build_only:
         parser.error("--runner deploys; it cannot be combined with --build-only")
-    if args.preview_base_path and not args.build_only:
-        parser.error("--preview-base-path compiles a preview candidate; it cannot deploy")
+    if args.preview_only and not args.preview_base_path:
+        parser.error("--preview-only compiles the signed preview mount it is given")
+    if args.preview_base_path and not args.preview_only:
+        parser.error("--preview-base-path compiles a preview candidate; it cannot release")
+    if args.preview_only and (args.runner or args.verify_only or args.build_only):
+        parser.error("--preview-only cannot be combined with a release mode")
     if not args.verify_only:
         # A rehearsal keeps no release history, and a runner is an ephemeral
         # host with nothing queued behind it, so both need the build's own floor
         # rather than the VPS headroom that protects the next queued run.
-        floor = MINIMUM_BUILD_FREE_BYTES // (1024 ** 3) if (args.build_only or args.runner) else None
+        floor = MINIMUM_BUILD_FREE_BYTES // (1024 ** 3) if (args.build_only or args.preview_only or args.runner) else None
         require_free_space(release_root, floor)
     directory = release_root / "runs" / args.tenant / args.release_id
     workspace = None
@@ -2594,6 +2600,27 @@ def main() -> int:
             checkout, build_env)
         mailflare_provenance = json.loads((checkout / ".mailflare/provenance.json").read_text())
         run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
+        if args.preview_only:
+            # A preview needs the compiled application and nothing else. The
+            # Mailflare composition, the dry-run bundle and the artifact hashes
+            # describe a production release, not a candidate the owner renders.
+            unexpected_changes = tracked_changes_outside_runtime_overlay(
+                checkout,
+                runtime_provenance["changedPaths"] + ["next.config.mjs"],
+                base,
+                generated_untracked_roots=(".helloada-source-preview.next.mjs",),
+            )
+            if unexpected_changes:
+                raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
+            receipt.update({
+                "status": "built",
+                "stage": "preview-built",
+                "cloudflareMutations": [],
+                "finishedAt": utc_now(),
+            })
+            atomic_json(receipt_path, receipt)
+            print(f"[release] PREVIEW_BUILT receipt={receipt_path}", flush=True)
+            return 0
         run([node, str(mailflare_builder), "--tenant-root", str(checkout), "--compose-assets"],
             checkout, build_env)
         if customer.get("presentationProfile") == "static":
@@ -2623,11 +2650,8 @@ def main() -> int:
         # post-upload artifact comparison fail with "no compiled custom
         # Worker" even though the bundle had just been built.
         unexpected_changes = tracked_changes_outside_runtime_overlay(
-            checkout,
-            runtime_provenance["changedPaths"] + (["next.config.mjs"] if args.preview_base_path else []),
-            base,
-            generated_untracked_roots=(".mailflare", "public/helloada-release.json")
-            + ((".helloada-source-preview.next.mjs",) if args.preview_base_path else ()),
+            checkout, runtime_provenance["changedPaths"], base,
+            generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
         )
         if unexpected_changes:
             raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
