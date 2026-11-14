@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261114-deploy-receipt",
-    "sha": "408eca687dbe520853db6c76a4f4160feaa217dd"
+    "id": "20261114-runner-secrets",
+    "sha": "f8d0dc11a70ee39ca6507a6f405d073c26ab3277"
   }
 }
