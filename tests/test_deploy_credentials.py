@@ -18,7 +18,16 @@ DEPLOYED = "b" * 64
 CONTROL = "c" * 40
 
 
-def _app(tmp_path):
+class _Bootstrap:
+    def __init__(self):
+        self.activated = []
+
+    def activate_runtime_after_health(self, tenant_id, *, release_id, source_sha, verification=None):
+        self.activated.append((tenant_id, release_id, source_sha))
+        return {"tenant_id": tenant_id, "release_id": release_id, "source_sha": source_sha}
+
+
+def _app(tmp_path, bootstrap=None):
     tenant = Tenant(
         TENANT,
         {
@@ -57,6 +66,7 @@ def _app(tmp_path):
         registry=registry,
         control_prefix="/v1/control-plane/websites",
         control_token="control-secret",
+        bootstrap=bootstrap,
     )
     return app
 
@@ -139,3 +149,62 @@ def test_runtime_identity_reads_the_release_it_was_installed_from(tmp_path):
     }
     with pytest.raises(runtime_identity.RuntimeIdentityError):
         runtime_identity.runtime_identity(tmp_path / "absent")
+
+
+def test_deploy_receipt_is_stored_and_activated(tmp_path, monkeypatch):
+    from site_agent.application import deploy_receipt, release_queue
+
+    _material(monkeypatch)
+    monkeypatch.setattr(release_queue, "release_root", lambda config: tmp_path / "releases")
+    bootstrap = _Bootstrap()
+    app = _app(tmp_path, bootstrap=bootstrap)
+    receipt = {
+        "schema": 2,
+        "tenant": TENANT,
+        "releaseId": "ci-7-1",
+        "sourceSha": "1" * 40,
+        "status": "deployed",
+        "stage": "awaiting-browser-verification",
+        "sharedRuntimeFingerprint": FINGERPRINT,
+        "health": {"ok": True, "releaseSha": "1" * 40},
+        "currentVerification": {"releaseId": "ci-7-1", "sourceSha": "1" * 40},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            f"/v1/control-plane/websites/{TENANT}/deploy-receipt",
+            headers={"Authorization": "Bearer oidc-token"},
+            json={"receipt": receipt},
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["releaseId"] == "ci-7-1"
+    assert bootstrap.activated == [(TENANT, "ci-7-1", "1" * 40)]
+    stored = json.loads(
+        (tmp_path / "releases" / "runs" / TENANT / "ci-7-1" / "receipt.json").read_text(encoding="utf-8")
+    )
+    assert stored["currentVerification"]["releaseId"] == "ci-7-1"
+
+
+def test_deploy_receipt_refuses_a_release_for_another_runtime(tmp_path, monkeypatch):
+    from site_agent.application import release_queue
+
+    _material(monkeypatch)
+    monkeypatch.setattr(release_queue, "release_root", lambda config: tmp_path / "releases")
+    app = _app(tmp_path, bootstrap=_Bootstrap())
+    receipt = {
+        "tenant": TENANT,
+        "releaseId": "ci-7-1",
+        "sourceSha": "1" * 40,
+        "status": "deployed",
+        "stage": "awaiting-browser-verification",
+        "sharedRuntimeFingerprint": "d" * 64,
+        "health": {"ok": True, "releaseSha": "1" * 40},
+        "currentVerification": {"releaseId": "ci-7-1"},
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            f"/v1/control-plane/websites/{TENANT}/deploy-receipt",
+            headers={"Authorization": "Bearer oidc-token"},
+            json={"receipt": receipt},
+        )
+    assert response.status_code == 409
+    assert "shared runtime" in response.json()["detail"]

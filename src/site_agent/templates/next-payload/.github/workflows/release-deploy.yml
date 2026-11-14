@@ -145,6 +145,7 @@ jobs:
             echo "the platform revision $CONTROL_SHA predates the credential-free deploy lane" >&2
             exit 1
           fi
+          export HELLOADA_PIPELINE_SHA="$CONTROL_SHA"
           python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
             --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
             --ref "$GITHUB_SHA" \
@@ -156,6 +157,31 @@ jobs:
             --source-dir "$GITHUB_WORKSPACE" \
             --release-root "$RUNNER_TEMP/releases" \
             --runner
+
+      - name: Report the release to the platform
+        run: |
+          set -euo pipefail
+          TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
+          RECEIPT=$(find "$RUNNER_TEMP/releases/runs/$TENANT" -name receipt.json -print -quit)
+          if [ -z "$RECEIPT" ]; then
+            echo "the release wrote no receipt" >&2
+            exit 1
+          fi
+          python3 - "$RECEIPT" > "$RUNNER_TEMP/receipt-body.json" <<'PY'
+          import json, sys
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              print(json.dumps({"receipt": json.load(stream)}))
+          PY
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=helloada-deploy" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
+          if ! curl -sS --fail-with-body -X POST "https://api.helloada.app/v1/control-plane/websites/$TENANT/deploy-receipt" \
+            -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" \
+            --data-binary @"$RUNNER_TEMP/receipt-body.json" -o "$RUNNER_TEMP/activation.json"; then
+            echo "the platform did not accept this release receipt:" >&2
+            cat "$RUNNER_TEMP/activation.json" >&2 || true
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/activation.json"
 
       - name: Keep the release receipt
         if: always()

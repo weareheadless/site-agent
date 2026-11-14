@@ -1118,9 +1118,8 @@ p.detail {{ margin: 0; color: #a9abb2; }}
     if control_prefix:
         control_prefix = "/" + control_prefix.strip("/")
 
-        @app.post(f"{control_prefix}/{{website_id}}/deploy-credentials")
-        def control_plane_deploy_credentials(website_id: str, request: Request):
-            """Issue one run's deploy material to the tenant's own repository.
+        def require_repository_run(request: Request, *, repository: str, branch: str) -> dict[str, Any]:
+            """Prove this request is the tenant repository's own canonical run.
 
             GitHub's OIDC token proves the repository, branch and exact commit,
             and the workflow at that commit must still be the platform's
@@ -1133,6 +1132,40 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 verify,
                 verify_canonical_workflow,
             )
+            from ..credentials import github_api_token as _github_api_token
+
+            authorization = request.headers.get("authorization", "")
+            supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            intake = config.get("release_intake") if isinstance(config.get("release_intake"), dict) else {}
+            audience = str(intake.get("oidc_audience") or env.get("HELLOADA_DEPLOY_OIDC_AUDIENCE") or "helloada-deploy")
+            try:
+                claims = verify(supplied, audience=audience, repository=repository, branch=branch)
+            except GitHubOIDCError as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
+            github_token = _github_api_token(config, env)
+            if not github_token:
+                raise HTTPException(status_code=503, detail="deploy credential intake is not configured")
+            try:
+                identity = json.loads(
+                    repo_file(repository, str(claims["sha"]), ".github/helloada-release.json", github_token)
+                )
+                verify_canonical_workflow(
+                    repository, str(claims["sha"]), github_token,
+                    control_sha=str(identity.get("controlSha") or ""),
+                )
+            except (GitHubOIDCError, ValueError) as exc:
+                raise HTTPException(status_code=401, detail=str(exc)) from exc
+            return claims
+
+        @app.post(f"{control_prefix}/{{website_id}}/deploy-credentials")
+        def control_plane_deploy_credentials(website_id: str, request: Request):
+            """Issue one run's deploy material to the tenant's own repository.
+
+            GitHub's OIDC token proves the repository, branch and exact commit,
+            and the workflow at that commit must still be the platform's
+            canonical deploy contract. Nothing long-lived is stored in the
+            repository, so a new tenant needs no credential created by hand.
+            """
             from ..application.tenant_environment import (
                 auto_email_provisioning_enabled,
                 read_tenant_environment,
@@ -1151,28 +1184,7 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             branch = str(site.get("branch") or "main").strip() or "main"
             if not repository:
                 raise HTTPException(status_code=409, detail="this website has no deployable repository")
-            authorization = request.headers.get("authorization", "")
-            supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-            intake = config.get("release_intake") if isinstance(config.get("release_intake"), dict) else {}
-            audience = str(intake.get("oidc_audience") or env.get("HELLOADA_DEPLOY_OIDC_AUDIENCE") or "helloada-deploy")
-            from ..credentials import github_api_token as _github_api_token
-            try:
-                claims = verify(supplied, audience=audience, repository=repository, branch=branch)
-            except GitHubOIDCError as exc:
-                raise HTTPException(status_code=401, detail=str(exc)) from exc
-            github_token = _github_api_token(config, env)
-            if not github_token:
-                raise HTTPException(status_code=503, detail="deploy credential intake is not configured")
-            try:
-                identity = json.loads(
-                    repo_file(repository, str(claims["sha"]), ".github/helloada-release.json", github_token)
-                )
-                verify_canonical_workflow(
-                    repository, str(claims["sha"]), github_token,
-                    control_sha=str(identity.get("controlSha") or ""),
-                )
-            except (GitHubOIDCError, ValueError) as exc:
-                raise HTTPException(status_code=401, detail=str(exc)) from exc
+            claims = require_repository_run(request, repository=repository, branch=branch)
             from ..application.runtime_identity import RuntimeIdentityError, runtime_identity
             try:
                 platform_runtime = runtime_identity(Path(__file__).resolve().parents[3])
@@ -1234,6 +1246,67 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 "workerSecrets": secrets,
                 "handoffPublicKey": str(env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or ""),
             }
+
+        @app.post(f"{control_prefix}/{{website_id}}/deploy-receipt")
+        async def control_plane_deploy_receipt(website_id: str, request: Request):
+            """Record the receipt a repository's own deploy run produced.
+
+            The run already built, uploaded, promoted and verified the exact
+            commit. Keeping its receipt in the platform's release store is what
+            lets the runtime activation, the workspace projection and the
+            preview branch read one immutable truth instead of a runner's
+            temporary directory.
+            """
+            from ..application.deploy_receipt import DeployReceiptError, record_runner_receipt
+            from ..application.release_queue import ReleaseQueueError, release_root
+            from ..application.runtime_identity import RuntimeIdentityError, runtime_identity
+
+            if registry is None or bootstrap is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            tenant = registry.for_tenant_id(website_id)
+            if tenant is None:
+                raise HTTPException(status_code=404, detail="website was not found")
+            site = tenant.config.get("site") if isinstance(tenant.config.get("site"), dict) else {}
+            repository = str(site.get("repository") or "").strip().strip("/")
+            branch = str(site.get("branch") or "main").strip() or "main"
+            if not repository:
+                raise HTTPException(status_code=409, detail="this website has no deployable repository")
+            claims = require_repository_run(request, repository=repository, branch=branch)
+            try:
+                platform_runtime = runtime_identity(Path(__file__).resolve().parents[3])
+            except RuntimeIdentityError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+            if not isinstance(body, dict) or not isinstance(body.get("receipt"), dict):
+                raise HTTPException(status_code=400, detail="a release receipt is required")
+            source_sha = str(claims["sha"])
+            try:
+                receipt = record_runner_receipt(
+                    release_root(config), tenant.tenant_id, body["receipt"],
+                    source_sha=source_sha,
+                    runtime_fingerprint=platform_runtime["sharedRuntimeFingerprint"],
+                )
+            except (DeployReceiptError, ReleaseQueueError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            try:
+                activation = bootstrap.activate_runtime_after_health(
+                    tenant.tenant_id,
+                    release_id=str(receipt["releaseId"]),
+                    source_sha=source_sha,
+                    verification=receipt["currentVerification"],
+                )
+            except (BootstrapError, TenantRegistrationError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if tenant.memory is not None:
+                tenant.memory.record_action(
+                    "deploy_receipt",
+                    f"{claims.get('workflow')} {str(claims.get('run_id') or '')} {source_sha[:8]} activated",
+                )
+            return {"activated": True, "releaseId": receipt["releaseId"],
+                    "sourceSha": source_sha, "runtime": activation}
 
         @app.get(f"{control_prefix}/{{website_id}}/growth/migration-plan")
         def control_plane_crawlseo_migration_plan(website_id: str, request: Request):
