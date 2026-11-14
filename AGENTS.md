@@ -46,6 +46,58 @@ responsibility split, what this retires, and the decisions that are still open.
 The older intake-and-generation plans in `docs/` are archival context for
 existing generated tenants; they are not the current owner journey.
 
+## One app, many tenants
+
+Site-Agent is one application. A tenant is configuration plus isolated
+resources, never a case in the code. Every behavior, route, job, template,
+release step and integration belongs to the app and applies to every tenant
+identically; the tenant id is a parameter, not a branch.
+
+Legitimately per-tenant, and nothing else:
+
+- identity: tenant id, display name, repository, Worker name, public domain;
+- isolation: D1, R2, queues, Worker secrets, the tenant's credential store;
+- mappings an external app issued for that tenant, such as its CrawlSEO
+  project/site id and client token.
+
+Everything else is shell configuration: `src/site_agent/defaults.yaml`, the site
+template in `src/site_agent/templates/next-payload`, and the release scripts.
+It must be identical for every tenant. A key copied into every tenant config
+with the same value is shell configuration in the wrong place; move it instead
+of maintaining the copies.
+
+Integrations are app-to-app. Site-Agent holds one connection to CrawlSEO and one
+to the AI provider; a tenant is mapped inside that app once and is then reached
+at runtime, like any other backend. A release never provisions, repairs,
+re-verifies or re-tokenizes an integration, and no integration URL, token or
+enable flag is duplicated per tenant.
+
+Rollout is inheritance, not migration. A change lands in the template and
+defaults, and the fleet mechanism installs it everywhere
+(`scripts/sync-tenant-repository-check.py` for repository bytes). There is no
+pilot-then-wave plan, no per-tenant onboarding to a mechanism, and no "do
+casamigo, then oceanicvibes". A tenant that needs a separate step to receive a
+platform change means the mechanism is wrong.
+
+Prove it on a disposable tenant, never on a customer. A release or lane change
+is exercised end to end against a scratch tenant repository before any customer
+push. Finding the failure on a customer is the defect, not the test.
+
+Before writing a change, answer:
+
+1. Does this apply to every tenant identically?
+2. Is the only per-tenant part identity, isolation, or an externally issued
+   mapping?
+3. Did this change create a tenant config key, flag, env var, release step or
+   rollout list?
+4. Would a tenant receive this by inheritance, with no edit of its own?
+
+A `no` to 1, 2 or 4, or a `yes` to 3, means the change is in the wrong layer.
+Recognise the pattern in its usual disguises: a per-tenant switch that turns a
+behavior on or off, a release step that provisions an integration, a wave of
+tenants to migrate, a fix proven only on one tenant, and the same value written
+into every tenant's config.
+
 ## Invariants
 
 - A site mutation is either an explicit owner action or a pending draft.
@@ -61,8 +113,8 @@ existing generated tenants; they are not the current owner journey.
 - Chat jobs are durable. A job may disappear from the active-jobs list after it
   finishes, but it must remain inspectable by its ID and conversation.
 - Preview URLs must work under the deployment mount point, currently `/ada/`.
-- Site-specific assumptions belong in instance configuration, not generic
-  validation or service code.
+- A tenant is configuration and isolation, never a case in the code; see
+  "One app, many tenants".
 - Plugins and MCP providers must call application services and contracts. They
   must not call route functions or access `Memory.conn` directly.
 - Owner dashboards are functional workspaces: no marketing hero/H1 occupying
