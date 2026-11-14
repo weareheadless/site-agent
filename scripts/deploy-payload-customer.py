@@ -2335,9 +2335,9 @@ def main() -> int:
         from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command, github_api_token
         profile = {"credentials": {"profile_file": manifest["credentialProfile"]}}
         cloudflare = dict(credential_profile(profile, "cloudflare"))
-        if args.build_only:
-            # A rehearsal must be able to prove the build without any deploy
-            # credential; nothing below this point may reach Cloudflare.
+        if args.build_only or args.preview_only:
+            # A rehearsal and a preview candidate must both prove the build
+            # without any deploy credential; nothing below may reach Cloudflare.
             cloudflare = {}
         elif not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
