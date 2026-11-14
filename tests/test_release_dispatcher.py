@@ -93,7 +93,7 @@ def test_api_deploy_failure_receipt_has_health_diagnostics(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="did not pass"):
         api_deploy.deploy(source, "a" * 40, "candidate", root, "/venv/python", "http://health")
     receipt = json.loads((root / "runs/api/candidate/receipt.json").read_text())
-    assert receipt["healthCheck"]["attempts"] == 180
+    assert receipt["healthCheck"]["attempts"] == api_deploy.HEALTH_ATTEMPTS
     assert receipt["healthCheck"]["secondsWaited"] >= 0
     assert receipt["failedUnitLogPath"].endswith("failed-unit.log")
 

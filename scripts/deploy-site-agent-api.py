@@ -244,7 +244,10 @@ def _prune_release_store(releases: Path, current: Path, sources: Path,
 # Tenant runtimes make a cold API start take minutes on a loaded host. The
 # window is a ceiling for failure, not a latency budget: a release that never
 # becomes healthy must still roll back.
-def _health_check(url: str, attempts: int = 600) -> int:
+HEALTH_ATTEMPTS = 600
+
+
+def _health_check(url: str, attempts: int = HEALTH_ATTEMPTS) -> int:
     for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
@@ -531,7 +534,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
             health_attempts = _health_check(health_url)
         except Exception:
             failed_log = _capture_failed_unit_log(receipt_path.parent / "failed-unit.log")
-            receipt["healthCheck"] = {"attempts": 180, "secondsWaited": round(time.monotonic() - health_started, 1)}
+            receipt["healthCheck"] = {"attempts": HEALTH_ATTEMPTS, "secondsWaited": round(time.monotonic() - health_started, 1)}
             if failed_log:
                 receipt["failedUnitLogPath"] = failed_log
             raise
