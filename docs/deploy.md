@@ -92,6 +92,15 @@ the URL alone, the frame carries no cookie, the service refuses any address
 whose signature does not verify, and an expired build says so on a page instead
 of returning a machine error.
 
+Next resolves `basePath` at build time, so the signed mount is part of the
+build and every preview is a compile of its own. A tenant whose releases run in
+its own repository compiles that preview there: the platform mints the mount,
+dispatches `helloada-candidate`, and the run uploads the compiled application
+and the receipt naming the commit and the mount. This host downloads both,
+verifies them, and only starts the runtime. If the run fails, never appears, or
+reports another mount, the host compiles the candidate itself — the repository
+build removes work, never the ability to preview.
+
 One install of the product per machine, one instance directory per site.
 Code lives in `/opt/site-agent`, site instances live in `/SOCIAL/configs/<site>/`.
 
