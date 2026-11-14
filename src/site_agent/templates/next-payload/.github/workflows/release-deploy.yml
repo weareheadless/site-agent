@@ -82,7 +82,15 @@ jobs:
                   raise SystemExit(f"the repository release identity disagrees on {name}")
               customer[name] = value
           if not deploy.get("sharedRuntimeFingerprint"):
-              raise SystemExit("the platform did not report the deployed runtime fingerprint")
+              raise SystemExit("the platform did not report the runtime it ships")
+          if not deploy.get("controlSha"):
+              raise SystemExit("the platform did not report the revision it ships")
+          deployed = deploy.get("deployedSharedRuntimeFingerprint") or ""
+          if deployed and deployed != deploy["sharedRuntimeFingerprint"]:
+              print(
+                  f"::warning::this release moves the shared runtime "
+                  f"{deployed[:12]} -> {deploy['sharedRuntimeFingerprint'][:12]}"
+              )
           cloudflare = root / "cloudflare.env"
           cloudflare.write_text(
               f"CLOUDFLARE_API_TOKEN={deploy['cloudflare']['apiToken']}\n"
@@ -130,9 +138,13 @@ jobs:
       - name: Deploy the exact commit
         run: |
           set -euo pipefail
-          CONTROL_SHA=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["controlSha"])')
+          CONTROL_SHA=$(python3 -c 'import json,os;print(json.load(open(os.environ["RUNNER_TEMP"]+"/deploy.json"))["controlSha"])')
           git clone --quiet --filter=blob:none https://github.com/weareheadless/site-agent.git "$RUNNER_TEMP/control"
           git -C "$RUNNER_TEMP/control" checkout --quiet "$CONTROL_SHA"
+          if ! grep -q -- '--runner' "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py"; then
+            echo "the platform revision $CONTROL_SHA predates the credential-free deploy lane" >&2
+            exit 1
+          fi
           python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
             --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
             --ref "$GITHUB_SHA" \

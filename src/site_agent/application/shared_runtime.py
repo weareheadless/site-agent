@@ -593,7 +593,11 @@ def apply_shared_runtime_overlay(
             raise SharedRuntimeError("expected shared runtime fingerprint is invalid")
     runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
     if expected_fingerprint is not None and expected_fingerprint != runtime_fingerprint:
-        raise SharedRuntimeError("expected shared runtime fingerprint does not match control bytes")
+        raise SharedRuntimeError(
+            f"the platform asked for shared runtime {expected_fingerprint[:12]}, which "
+            f"does not match the runtime this control revision builds "
+            f"({runtime_fingerprint[:12]}); the runtime lane owns that move"
+        )
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
                                shared_vars, version_match.group(1), runtime_fingerprint)
 
