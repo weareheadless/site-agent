@@ -2871,3 +2871,25 @@ def test_provisioning_modules_cannot_mutate_worker_secrets_directly():
         if "CloudflareWorkerSecretsClient" in text or "put_secret(" in text:
             offenders.append(path.name)
     assert offenders == [], offenders
+
+
+def test_a_preview_candidate_is_compiled_under_the_signed_mount_it_is_served_from(tmp_path):
+    """Next resolves basePath at build time, so the mount is part of the build."""
+    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
+    mount = "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
+    release.apply_preview_base_path(tmp_path, mount)
+    assert (tmp_path / ".helloada-source-preview.next.mjs").read_text(
+        encoding="utf-8") == "export default { reactStrictMode: true }\n"
+    body = (tmp_path / "next.config.mjs").read_text(encoding="utf-8")
+    assert f'basePath: "{mount}"' in body
+    assert f'assetPrefix: "{mount}"' in body
+
+
+@pytest.mark.parametrize("mount", ["", "/preview/tenant", "/p/tenant/1799999999",
+                                   "/p/tenant-preview/../../etc/1799999999/0123456789abcdef",
+                                   "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/short"])
+def test_a_preview_candidate_refuses_a_mount_the_platform_did_not_sign(tmp_path, mount):
+    (tmp_path / "next.config.mjs").write_text("export default {}\n")
+    with pytest.raises(RuntimeError):
+        release.apply_preview_base_path(tmp_path, mount)
+    assert (tmp_path / "next.config.mjs").read_text(encoding="utf-8") == "export default {}\n"

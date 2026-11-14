@@ -26,6 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from datetime import datetime, timezone
@@ -62,6 +63,13 @@ _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
+# The repository compiles a preview candidate when the platform asks it to, so
+# this host serves the artifact instead of paying for a second compile. The
+# event, the run title and the artifact names are the whole contract between
+# `application/source_deployment.py` and `templates/next-payload/.github`.
+_CANDIDATE_BUILD_EVENT = "helloada-candidate"
+_CANDIDATE_BUILD_ARTIFACT = "candidate-open-next"
+_CANDIDATE_RECEIPT_ARTIFACT = "candidate-receipt"
 # A compiled candidate is a complete application, so it is served from its own
 # origin at a signed path (application/preview_host.py) instead of a route
 # inside the workspace app. The build's Next basePath is that exact path, and
@@ -603,6 +611,258 @@ class SourceDeploymentService:
             raise SourceDeploymentError(
                 f"the repository release run could not be requested: {type(exc).__name__}"
             ) from exc
+
+    def _candidate_build_enabled(self) -> bool:
+        """Whether this host asks the repository to compile a preview candidate.
+
+        A tenant whose releases already run in its own repository has a runner
+        that can compile the exact candidate the owner reviews. This host keeps
+        its own compile as the fallback, so the setting only ever removes work.
+        """
+        configured = self.settings.get("remote_preview_build")
+        if configured is not None:
+            return bool(configured)
+        if self._release_provider() != "github":
+            return False
+        return bool(str(self.site.get("repository") or "").strip())
+
+    def _github_json(self, url: str, token: str, *, method: str = "GET",
+                     body: Mapping[str, Any] | None = None) -> Mapping[str, Any] | None:
+        """One GitHub API read or write, returning no body on a refused call."""
+        data = json.dumps(dict(body)).encode("utf-8") if body is not None else None
+        request = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {token}",
+                "User-Agent": "HelloAda-Preview-Candidate/1.0",
+                "X-GitHub-Api-Version": "2022-11-28",
+                **({"Content-Type": "application/json"} if data is not None else {}),
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                raw = response.read(4 * 1024 * 1024)
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return None
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, Mapping) else None
+
+    def _dispatch_candidate_build(self, repository: str, commit: str, base_path: str,
+                                  draft_id: Any) -> bool:
+        """Ask the repository to compile the preview the owner is about to see.
+
+        The run carries the signed mount the platform already minted for this
+        candidate, so the build it produces is servable here without this host
+        compiling anything.
+        """
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return False
+        accepted = self._github_json(
+            f"https://api.github.com/repos/{repository}/dispatches", token, method="POST",
+            body={
+                "event_type": _CANDIDATE_BUILD_EVENT,
+                "client_payload": {"sha": commit, "basePath": base_path,
+                                   "draftId": str(draft_id or "")},
+            },
+        )
+        return accepted is not None
+
+    def _candidate_build_run(self, repository: str, commit: str) -> dict[str, Any] | None:
+        """The newest candidate-build run for this exact commit."""
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return None
+        query = urllib.parse.urlencode({"event": "repository_dispatch", "per_page": 30})
+        body = self._github_json(f"https://api.github.com/repos/{repository}/actions/runs?{query}", token)
+        runs = body.get("workflow_runs") if isinstance(body, Mapping) else None
+        if not isinstance(runs, list):
+            return None
+        expected = f"candidate {commit}"
+        candidates = [
+            run for run in runs
+            if isinstance(run, Mapping)
+            and str(run.get("path") or "").endswith("release-build.yml")
+            and (str(run.get("display_title") or "").strip().lower() == expected
+                 or commit in str(run.get("display_title") or "").lower())
+        ]
+        if not candidates:
+            return None
+        run = max(candidates, key=lambda item: int(item.get("run_number") or 0))
+        return {
+            "id": int(run.get("id") or 0),
+            "status": str(run.get("status") or ""),
+            "conclusion": str(run.get("conclusion") or ""),
+            "url": str(run.get("html_url") or ""),
+        }
+
+    def _download_candidate_artifact(self, repository: str, run_id: int, name: str,
+                                     destination: Path) -> Path | None:
+        """Download one run artifact to an exact private path, following its redirect once."""
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return None
+        listing = self._github_json(
+            f"https://api.github.com/repos/{repository}/actions/runs/{run_id}/artifacts", token,
+        )
+        artifacts = listing.get("artifacts") if isinstance(listing, Mapping) else None
+        if not isinstance(artifacts, list):
+            return None
+        match = next((item for item in artifacts
+                      if isinstance(item, Mapping) and str(item.get("name") or "") == name), None)
+        if match is None or not match.get("id"):
+            return None
+        archive = destination
+        try:
+            opener = urllib.request.build_opener(_BrowserOwnedRedirects())
+            request = urllib.request.Request(
+                f"https://api.github.com/repos/{repository}/actions/artifacts/{int(match['id'])}/zip",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                         "User-Agent": "HelloAda-Preview-Candidate/1.0"},
+            )
+            try:
+                opener.open(request, timeout=30)
+                return None
+            except urllib.error.HTTPError as exc:
+                if exc.code not in {301, 302, 303, 307, 308}:
+                    return None
+                location = str(exc.headers.get("Location") or "")
+            if not location.startswith("https://"):
+                return None
+            with urllib.request.urlopen(location, timeout=120) as response, archive.open("wb") as stream:
+                shutil.copyfileobj(response, stream, length=1024 * 1024)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            archive.unlink(missing_ok=True)
+            return None
+        return archive if archive.is_file() and archive.stat().st_size else None
+
+    @staticmethod
+    def _unpack_candidate_archive(archive: Path, worktree: Path, *, root: str) -> bool:
+        """Place one artifact's ``root`` directory into the candidate worktree.
+
+        ``actions/upload-artifact`` archives a single directory relative to that
+        directory, so the compiled tree can arrive either as ``root/...`` or as
+        its own contents at the archive root. Both are the same build.
+        """
+        staging = Path(tempfile.mkdtemp(prefix="candidate-artifact-", dir=str(worktree.parent)))
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                for member in bundle.infolist():
+                    target = (staging / member.filename).resolve()
+                    if not str(target).startswith(str(staging.resolve()) + os.sep):
+                        return False
+                bundle.extractall(staging)
+            found = staging / root
+            if not found.is_dir():
+                nested = [path for path in staging.iterdir() if path.is_dir()]
+                found = next((path / root for path in nested if (path / root).is_dir()), found)
+            if not found.is_dir() and (staging / "worker.js").is_file():
+                found = staging
+            if not found.is_dir():
+                return False
+            destination = worktree / root
+            shutil.rmtree(destination, ignore_errors=True)
+            shutil.move(str(found), str(destination))
+            return destination.is_dir()
+        except (OSError, zipfile.BadZipFile, ValueError):
+            return False
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    def _adopt_runner_candidate_build(self, worktree: Path, job: dict[str, Any], commit: str,
+                                      timeout: int) -> bool:
+        """Serve the candidate the repository compiled, instead of compiling here.
+
+        Returns false for every reason it cannot be used, so the caller falls
+        back to the local build: a failed run, a missing artifact, a receipt
+        that names another commit or another mount.
+        """
+        repository = self._github_repository()
+        base_path = self._preview_base_path(job)
+        if not self._dispatch_candidate_build(repository, commit, base_path, job.get("draft_id")):
+            return False
+        deadline = time.monotonic() + max(60, min(int(timeout), 1_200))
+        appearance_deadline = time.monotonic() + 180
+        run: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            run = self._candidate_build_run(repository, commit)
+            if run and run.get("status") == "completed":
+                break
+            if run is None and time.monotonic() > appearance_deadline:
+                # A dispatch that never produces a run means this repository
+                # cannot compile candidates yet; waiting out the build timeout
+                # would only delay the local fallback.
+                if self.memory is not None:
+                    self.memory.record_action(
+                        "preview_candidate_absent",
+                        f"{commit[:8]}: the repository did not start a candidate build",
+                    )
+                return False
+            time.sleep(10)
+        if not run or run.get("status") != "completed":
+            if self.memory is not None:
+                self.memory.record_action(
+                    "preview_candidate_timeout",
+                    f"{commit[:8]}: the repository did not finish the candidate build",
+                )
+            return False
+        if run.get("conclusion") != "success":
+            if self.memory is not None:
+                self.memory.record_action(
+                    "preview_candidate_failed",
+                    f"{commit[:8]}: {run.get('url') or 'the repository candidate build failed'}",
+                )
+            return False
+        staging = Path(tempfile.mkdtemp(prefix="candidate-download-", dir=str(worktree.parent)))
+        try:
+            receipts = self._download_candidate_artifact(
+                repository, int(run["id"]), _CANDIDATE_RECEIPT_ARTIFACT, staging / "receipt.zip",
+            )
+            if receipts is None:
+                return False
+            try:
+                with zipfile.ZipFile(receipts) as bundle:
+                    name = next((item for item in bundle.namelist()
+                                 if item.endswith("/receipt.json") or item == "receipt.json"), "")
+                    receipt = json.loads(bundle.read(name).decode("utf-8")) if name else None
+            except (OSError, zipfile.BadZipFile, KeyError, UnicodeError, ValueError):
+                receipt = None
+            finally:
+                receipts.unlink(missing_ok=True)
+            if not isinstance(receipt, Mapping):
+                return False
+            if (receipt.get("sourceSha") != commit
+                    or receipt.get("previewBasePath") != base_path
+                    or receipt.get("status") != "built"):
+                if self.memory is not None:
+                    self.memory.record_action(
+                        "preview_candidate_rejected",
+                        f"{commit[:8]}: the artifact was not built for this candidate mount",
+                    )
+                return False
+            archive = self._download_candidate_artifact(
+                repository, int(run["id"]), _CANDIDATE_BUILD_ARTIFACT, staging / "build.zip",
+            )
+            if archive is None:
+                return False
+            if not self._unpack_candidate_archive(archive, worktree, root=".open-next"):
+                return False
+            if self.memory is not None:
+                self.memory.record_action(
+                    "preview_candidate_built",
+                    f"{commit[:8]}: compiled by run {run['id']} and served here",
+                )
+            return True
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:
@@ -1243,12 +1503,14 @@ class SourceDeploymentService:
             probe.bind(("127.0.0.1", 0))
             return int(probe.getsockname()[1])
 
-    def _prepare_preview_runtime(self, worktree: Path, job: dict[str, Any]) -> None:
-        """Point the disposable build at the signed path its runtime is served from."""
-        original = worktree / "next.config.mjs"
-        retained = worktree / ".helloada-source-preview.next.mjs"
-        if original.is_symlink() or not original.is_file() or retained.exists():
-            raise SourceDeploymentError("compiled preview needs the exact managed Next config")
+    def _localize_preview_bindings(self, worktree: Path, job: dict[str, Any]) -> None:
+        """Point the disposable runtime at local bindings instead of production.
+
+        The compiled output names its bindings; the values behind those names
+        are what make a preview isolated. This half of the preview preparation
+        never touches the build, so it applies to a candidate compiled here and
+        to one compiled by the repository's own run.
+        """
         worker_path = worktree / "wrangler.jsonc"
         worker = json.loads(worker_path.read_text(encoding="utf-8"))
         databases = [item for item in worker.get("d1_databases") or [] if item.get("binding") == "D1"]
@@ -1269,9 +1531,30 @@ class SourceDeploymentService:
                              "vars": {key: value for key, value in (worker.get("vars") or {}).items()
                                       if key in public_vars or key.startswith("NEXT_PUBLIC_")}})
         worker_path.write_text(json.dumps(local_worker, indent=2) + "\n", encoding="utf-8")
+        public = worktree / "public"
+        job["public_asset_roots"] = [f"/{item.name}" + ("/" if item.is_dir() else "")
+                                    for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
+
+    @staticmethod
+    def _preview_base_path(job: Mapping[str, Any]) -> str:
         base_path = str(job.get("runtime_base_path") or "")
         if not base_path.startswith(_PREVIEW_PATH_PREFIX) or ".." in base_path.split("/"):
             raise SourceDeploymentError("compiled preview has no signed runtime path")
+        return base_path
+
+    def _bake_preview_base_path(self, worktree: Path, job: dict[str, Any]) -> None:
+        """Mount the build at the signed path it is served from.
+
+        Next resolves ``basePath`` and ``assetPrefix`` at build time, so the
+        path is written into the managed Next config before the build starts.
+        A candidate the repository built already carries it; this runs only
+        when this host compiles the preview.
+        """
+        original = worktree / "next.config.mjs"
+        retained = worktree / ".helloada-source-preview.next.mjs"
+        if original.is_symlink() or not original.is_file() or retained.exists():
+            raise SourceDeploymentError("compiled preview needs the exact managed Next config")
+        base_path = self._preview_base_path(job)
         original.rename(retained)
         original.write_text(
             "import original from './.helloada-source-preview.next.mjs'\n"
@@ -1280,9 +1563,11 @@ class SourceDeploymentService:
             f" return {{ ...config, basePath: {json.dumps(base_path)}, assetPrefix: {json.dumps(base_path)} }}\n"
             "}\n", encoding="utf-8",
         )
-        public = worktree / "public"
-        job["public_asset_roots"] = [f"/{item.name}" + ("/" if item.is_dir() else "")
-                                    for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
+
+    def _prepare_preview_runtime(self, worktree: Path, job: dict[str, Any]) -> None:
+        """Prepare a preview this host compiles: local bindings and signed path."""
+        self._localize_preview_bindings(worktree, job)
+        self._bake_preview_base_path(worktree, job)
 
     @staticmethod
     def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any]) -> bytes:
@@ -1754,49 +2039,67 @@ class SourceDeploymentService:
         try:
             checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id"),
                           **({"design_run_id": run_id} if run_id else {})))
-            # Compile exactly what the release will build: the shared runtime
-            # copies replace tenant copies and the retired files are removed
-            # before any typecheck, lint or Next build runs.
-            self._mark_step(job, "overlay")
-            from .shared_runtime import apply_preview_runtime_overlay
+            # A tenant whose releases run in its own repository can compile the
+            # candidate there. That build carries the signed mount the platform
+            # already minted, so this host serves it instead of paying for a
+            # second compile. Every failure falls back to the local build.
+            self._mark_step(job, "candidate-build")
+            adopted = False
+            if not run_id and self._candidate_build_enabled():
+                adopted = self._adopt_runner_candidate_build(worktree, job, commit, timeout)
+            if adopted:
+                checks.append({"name": "candidate_build", "ok": True, "source": "repository_run"})
+                self._write_revision_marker(worktree, local_head)
+                self._localize_preview_bindings(worktree, job)
+                npm = self._verify_toolchain(worktree)
+                self._mark_step(job, "dependencies")
+                checks.extend(self.ensure_dependencies(
+                    worktree, timeout=timeout, preview_secret=preview_secret, npm=npm,
+                ))
+            else:
+                # Compile exactly what the release will build: the shared runtime
+                # copies replace tenant copies and the retired files are removed
+                # before any typecheck, lint or Next build runs.
+                self._mark_step(job, "overlay")
+                from .shared_runtime import apply_preview_runtime_overlay
 
-            payload_config = (self.config.get("site") or {}).get("payload") or {}
-            activation = payload_config.get("runtime_activation") or {}
-            runtime_fingerprint = str(activation.get("shared_runtime_fingerprint") or "").strip().lower()
-            if not re.fullmatch(r"[0-9a-f]{64}", runtime_fingerprint):
-                raise SourceDeploymentError(
-                    "the tenant has no activated shared runtime; release the site before previewing"
+                payload_config = (self.config.get("site") or {}).get("payload") or {}
+                activation = payload_config.get("runtime_activation") or {}
+                runtime_fingerprint = str(activation.get("shared_runtime_fingerprint") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{64}", runtime_fingerprint):
+                    raise SourceDeploymentError(
+                        "the tenant has no activated shared runtime; release the site before previewing"
+                    )
+                runtime_overlay = apply_preview_runtime_overlay(
+                    worktree,
+                    package_root=Path(__file__).resolve().parents[1],
+                    runtime_fingerprint=runtime_fingerprint,
                 )
-            runtime_overlay = apply_preview_runtime_overlay(
-                worktree,
-                package_root=Path(__file__).resolve().parents[1],
-                runtime_fingerprint=runtime_fingerprint,
-            )
-            checks.append({
-                "name": "shared_runtime_overlay",
-                "ok": True,
-                "copied": len(runtime_overlay["copied"]),
-                "removed": len(runtime_overlay["removed"]),
-            })
-            self._write_revision_marker(worktree, local_head)
-            npm = self._verify_toolchain(worktree)
-            self._mark_step(job, "dependencies")
-            checks.extend(self.ensure_dependencies(
-                worktree, timeout=timeout, preview_secret=preview_secret, npm=npm,
-            ))
-            # The candidate compiles the same generated contract the release
-            # ships: schema identity, Wrangler pins and the committed-route
-            # inventory. This runs before the preview rewrites Wrangler for its
-            # isolated local bindings.
-            self._mark_step(job, "generate-payload-contract")
-            contract_generator = (Path(__file__).resolve().parents[1]
-                                  / "templates/next-payload/scripts/generate-payload-contract.mjs")
-            checks.append(self._check(
-                ["node", "--import", "tsx", str(contract_generator), f"--site-root={worktree}"],
-                worktree, "generate_payload_contract", timeout, preview_secret=preview_secret,
-                env_extra={"HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_fingerprint},
-            ))
-            self._prepare_preview_runtime(worktree, job)
+                checks.append({
+                    "name": "shared_runtime_overlay",
+                    "ok": True,
+                    "copied": len(runtime_overlay["copied"]),
+                    "removed": len(runtime_overlay["removed"]),
+                })
+                self._write_revision_marker(worktree, local_head)
+                npm = self._verify_toolchain(worktree)
+                self._mark_step(job, "dependencies")
+                checks.extend(self.ensure_dependencies(
+                    worktree, timeout=timeout, preview_secret=preview_secret, npm=npm,
+                ))
+                # The candidate compiles the same generated contract the release
+                # ships: schema identity, Wrangler pins and the committed-route
+                # inventory. This runs before the preview rewrites Wrangler for its
+                # isolated local bindings.
+                self._mark_step(job, "generate-payload-contract")
+                contract_generator = (Path(__file__).resolve().parents[1]
+                                      / "templates/next-payload/scripts/generate-payload-contract.mjs")
+                checks.append(self._check(
+                    ["node", "--import", "tsx", str(contract_generator), f"--site-root={worktree}"],
+                    worktree, "generate_payload_contract", timeout, preview_secret=preview_secret,
+                    env_extra={"HELLOADA_SHARED_RUNTIME_FINGERPRINT": runtime_fingerprint},
+                ))
+                self._prepare_preview_runtime(worktree, job)
             local_secrets = worktree / ".dev.vars"
             fd = os.open(local_secrets, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -1813,14 +2116,15 @@ class SourceDeploymentService:
             else:
                 job["content_authority"] = self._content_inventory(checkout, worktree, timeout, preview_secret)
             self._mark_step(job, "typecheck")
-            checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
-            # The release gate is typecheck plus the OpenNext build; it never
-            # runs lint. Linting here would fail a preview on canonical runtime
-            # files that ship unchanged, so keep the gates identical.
-            # OpenNext invokes the managed Next build itself. A separate build
-            # here compiles the same candidate twice before the owner sees it.
-            self._mark_step(job, "build")
-            checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
+            if not adopted:
+                checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
+                # The release gate is typecheck plus the OpenNext build; it never
+                # runs lint. Linting here would fail a preview on canonical runtime
+                # files that ship unchanged, so keep the gates identical.
+                # OpenNext invokes the managed Next build itself. A separate build
+                # here compiles the same candidate twice before the owner sees it.
+                self._mark_step(job, "build")
+                checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
 
             if run_id:
                 store = getattr(self.design_service, "output_artifact_store", None)

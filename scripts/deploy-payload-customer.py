@@ -70,6 +70,36 @@ def atomic_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+PREVIEW_MOUNT = re.compile(
+    r"^/p/[A-Za-z0-9][A-Za-z0-9._:-]{0,120}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"/[0-9]{9,13}/[0-9a-f]{16}$"
+)
+
+
+def apply_preview_base_path(checkout: Path, base_path: str) -> None:
+    """Compile a candidate under the signed mount its preview is served from.
+
+    Next resolves ``basePath`` and ``assetPrefix`` at build time, so a preview
+    that lives under a signed mount cannot be compiled without it. The platform
+    mints that mount before it asks for the build, and the receipt records it so
+    the host that serves the artifact can prove it serves this exact candidate.
+    """
+    if not PREVIEW_MOUNT.fullmatch(str(base_path or "")):
+        raise RuntimeError("the preview mount is not a signed preview path")
+    original = checkout / "next.config.mjs"
+    retained = checkout / ".helloada-source-preview.next.mjs"
+    if original.is_symlink() or not original.is_file() or retained.exists():
+        raise RuntimeError("preview build needs the exact managed Next config")
+    original.rename(retained)
+    original.write_text(
+        "import original from './.helloada-source-preview.next.mjs'\n"
+        "export default async (phase, context) => {\n"
+        " const config = typeof original === 'function' ? await original(phase, context) : original\n"
+        f" return {{ ...config, basePath: {json.dumps(base_path)}, assetPrefix: {json.dumps(base_path)} }}\n"
+        "}\n", encoding="utf-8",
+    )
+
+
 def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
     """Run migrations through the site's pinned, package-managed Payload entrypoint."""
     return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
@@ -2199,6 +2229,8 @@ def main() -> int:
                         help="build this exact clean checkout instead of cloning the registered repository")
     parser.add_argument("--build-only", action="store_true",
                         help="rehearse the release build here and stop before any Cloudflare mutation")
+    parser.add_argument("--preview-base-path", metavar="PATH",
+                        help="compile this build under the signed preview mount the platform minted")
     parser.add_argument("--runner", action="store_true",
                         help="deploy from this runner: schema, Turnstile, activation and schedulers stay platform-owned")
     parser.add_argument("--expected-contract", type=Path,
@@ -2223,6 +2255,8 @@ def main() -> int:
         parser.error("--build-only cannot recheck an already promoted release")
     if args.runner and args.build_only:
         parser.error("--runner deploys; it cannot be combined with --build-only")
+    if args.preview_base_path and not args.build_only:
+        parser.error("--preview-base-path compiles a preview candidate; it cannot deploy")
     if not args.verify_only:
         # A rehearsal keeps no release history, and a runner is an ephemeral
         # host with nothing queued behind it, so both need the build's own floor
@@ -2535,6 +2569,11 @@ def main() -> int:
         if unexpected_changes:
             raise RuntimeError("dependency/type checks changed non-runtime source: " + ", ".join(unexpected_changes))
 
+        if args.preview_base_path:
+            apply_preview_base_path(checkout, args.preview_base_path)
+            receipt["previewBasePath"] = args.preview_base_path
+            atomic_json(receipt_path, receipt)
+
         stage("build")
         mailflare_source = json.loads((ROOT / "packages/helloada-mailflare/UPSTREAM.json").read_text())
         marker = {"sourceSha": args.ref, "pipelineSha": receipt["pipelineSha"],
@@ -2584,8 +2623,11 @@ def main() -> int:
         # post-upload artifact comparison fail with "no compiled custom
         # Worker" even though the bundle had just been built.
         unexpected_changes = tracked_changes_outside_runtime_overlay(
-            checkout, runtime_provenance["changedPaths"], base,
-            generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
+            checkout,
+            runtime_provenance["changedPaths"] + (["next.config.mjs"] if args.preview_base_path else []),
+            base,
+            generated_untracked_roots=(".mailflare", "public/helloada-release.json")
+            + ((".helloada-source-preview.next.mjs",) if args.preview_base_path else ()),
         )
         if unexpected_changes:
             raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))

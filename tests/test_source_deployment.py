@@ -1394,3 +1394,126 @@ def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
         server.shutdown()
     assert verified == ["/", "/courses"]
     assert f"{mount}/" not in seen
+
+
+def _candidate_artifacts(directory: Path, *, sha: str, mount: str, layout: str = "directory"):
+    """The two artifacts a repository candidate build reports."""
+    import zipfile
+
+    build = directory / f"build-{layout}.zip"
+    with zipfile.ZipFile(build, "w") as bundle:
+        name = ".open-next/worker.js" if layout == "directory" else "worker.js"
+        bundle.writestr(name, "export default {}\n")
+    receipt = directory / "receipt.zip"
+    with zipfile.ZipFile(receipt, "w") as bundle:
+        bundle.writestr(
+            "runs/tenant/ci-1-1/receipt.json",
+            json.dumps({"sourceSha": sha, "previewBasePath": mount, "status": "built"}),
+        )
+    return build, receipt
+
+
+def _adopting_service(tmp_path, *, run, mount, build, receipt, monkeypatch):
+    service = source_deployment.SourceDeploymentService({
+        "deployment_pipeline": {"provider": "github"},
+        "site": {"clone_path": str(tmp_path), "repository": "weareheadless/tenant-site"},
+    })
+    monkeypatch.setattr(source_deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_dispatch_candidate_build", lambda *args, **kwargs: True)
+    monkeypatch.setattr(service, "_candidate_build_run", lambda *args, **kwargs: dict(run))
+    monkeypatch.setattr(
+        service, "_download_candidate_artifact",
+        lambda repository, run_id, name, destination: (
+            build if name == source_deployment._CANDIDATE_BUILD_ARTIFACT else receipt
+        ),
+    )
+    return service
+
+
+@pytest.mark.parametrize("layout", ["directory", "contents"])
+def test_a_repository_lane_preview_serves_the_candidate_its_run_compiled(tmp_path, monkeypatch, layout):
+    """The host serves the compiled candidate instead of compiling it again."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    mount = "/p/tenant-preview/1799999999/0123456789abcdef"
+    commit = "a" * 40
+    build, receipt = _candidate_artifacts(tmp_path, sha=commit, mount=mount, layout=layout)
+    service = _adopting_service(
+        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        run={"id": 7, "status": "completed", "conclusion": "success", "url": ""},
+    )
+    try:
+        assert service._adopt_runner_candidate_build(
+            worktree, {"id": "preview-1", "runtime_base_path": mount}, commit, 60,
+        ) is True
+        assert (worktree / ".open-next" / "worker.js").is_file()
+    finally:
+        service.close()
+
+
+def test_a_failed_candidate_run_leaves_the_local_build_to_compile(tmp_path, monkeypatch):
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    mount = "/p/tenant-preview/1799999999/0123456789abcdef"
+    commit = "b" * 40
+    build, receipt = _candidate_artifacts(tmp_path, sha=commit, mount=mount)
+    service = _adopting_service(
+        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        run={"id": 8, "status": "completed", "conclusion": "failure", "url": "https://example/run"},
+    )
+    try:
+        assert service._adopt_runner_candidate_build(
+            worktree, {"id": "preview-2", "runtime_base_path": mount}, commit, 60,
+        ) is False
+        assert not (worktree / ".open-next").exists()
+    finally:
+        service.close()
+
+
+def test_a_candidate_built_for_another_mount_is_not_served(tmp_path, monkeypatch):
+    """A build carries one signed mount; serving another candidate's build is refused."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    mount = "/p/tenant-preview/1799999999/0123456789abcdef"
+    commit = "c" * 40
+    build, receipt = _candidate_artifacts(
+        tmp_path, sha=commit, mount="/p/another-job/1799999999/0123456789abcdef",
+    )
+    service = _adopting_service(
+        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        run={"id": 9, "status": "completed", "conclusion": "success", "url": ""},
+    )
+    try:
+        assert service._adopt_runner_candidate_build(
+            worktree, {"id": "preview-3", "runtime_base_path": mount}, commit, 60,
+        ) is False
+        assert not (worktree / ".open-next").exists()
+    finally:
+        service.close()
+
+
+def test_only_the_repository_release_lane_compiles_previews_in_the_repository(tmp_path):
+    """The lane decides, and a tenant cannot opt into a second build path."""
+    services = [
+        source_deployment.SourceDeploymentService({
+            "deployment_pipeline": {"provider": "github"},
+            "site": {"clone_path": str(tmp_path), "repository": "weareheadless/tenant-site"},
+        }),
+        source_deployment.SourceDeploymentService({
+            "deployment_pipeline": {"provider": "vps"},
+            "site": {"clone_path": str(tmp_path), "repository": "weareheadless/tenant-site"},
+        }),
+        source_deployment.SourceDeploymentService({
+            "deployment_pipeline": {"provider": "github"},
+            "site": {"clone_path": str(tmp_path), "repository": "weareheadless/tenant-site"},
+            "source_deployment": {"remote_preview_build": False},
+        }),
+        source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}}),
+    ]
+    try:
+        assert [service._candidate_build_enabled() for service in services] == [
+            True, False, False, False,
+        ]
+    finally:
+        for service in services:
+            service.close()

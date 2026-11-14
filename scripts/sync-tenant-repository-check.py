@@ -44,13 +44,14 @@ CANONICAL = {
     ".github/workflows/presentation-check.yml": TEMPLATE / ".github/workflows/presentation-check.yml",
 }
 
-# The release build rehearsal: the shared-runtime overlay, contract generation,
-# dependency verification and OpenNext build, with no deploy credential.
+# The candidate build: the shared-runtime overlay, contract generation,
+# dependency verification and an OpenNext build under the signed preview mount
+# the platform minted, with no deploy credential.
 RELEASE_WORKFLOW = ".github/workflows/release-build.yml"
 RELEASE_SOURCE = TEMPLATE / RELEASE_WORKFLOW
 DEPLOY_WORKFLOW = ".github/workflows/release-deploy.yml"
 DEPLOY_SOURCE = TEMPLATE / DEPLOY_WORKFLOW
-# Non-secret identity the rehearsal needs; derived from the release registry.
+# Non-secret identity the candidate build needs; derived from the release registry.
 RELEASE_MANIFEST = ".github/helloada-release.json"
 
 # A tenant-specific check that the canonical one supersedes. Only files this
@@ -64,8 +65,8 @@ MESSAGES = {
     "created": "Add the canonical presentation check",
     "updated": "Update the presentation check to the canonical version",
     "removed": "Retire the tenant-specific presentation check",
-    "release-created": "Rehearse the release build on every candidate",
-    "release-updated": "Update the release build rehearsal",
+    "release-created": "Compile preview candidates in the repository",
+    "release-updated": "Update the candidate build the platform asks for",
     "deploy-created": "Deploy this repository without a stored credential",
     "deploy-updated": "Update the credential-free deploy workflow",
     "manifest-created": "Pin this repository to its release identity",
