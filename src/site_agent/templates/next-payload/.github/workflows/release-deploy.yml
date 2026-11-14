@@ -51,9 +51,13 @@ jobs:
           TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
           OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$OIDC_AUDIENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
-          curl -sS --fail-with-body -X POST "$API/control-plane/websites/$TENANT/deploy-credentials" \
+          if ! curl -sS --fail-with-body -X POST "$API/control-plane/websites/$TENANT/deploy-credentials" \
             -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" \
-            -o "$RUNNER_TEMP/deploy.json"
+            -o "$RUNNER_TEMP/deploy.json"; then
+            echo "deploy credential intake refused this run:" >&2
+            cat "$RUNNER_TEMP/deploy.json" >&2 || true
+            exit 1
+          fi
           python3 - <<'PY'
           import json, os
           from pathlib import Path
