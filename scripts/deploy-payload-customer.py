@@ -2609,7 +2609,8 @@ def main() -> int:
                 checkout,
                 runtime_provenance["changedPaths"] + ["next.config.mjs"],
                 base,
-                generated_untracked_roots=(".helloada-source-preview.next.mjs",),
+                generated_untracked_roots=(".helloada-source-preview.next.mjs",
+                                           ".mailflare", "public/helloada-release.json"),
             )
             if unexpected_changes:
                 raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
