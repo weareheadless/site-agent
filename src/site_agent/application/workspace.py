@@ -4912,15 +4912,15 @@ class ChatService:
         except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
         memory, _llm, _tenant_id = self._scope(tenant)
-        memory.record_action("publish_retry", f"#{draft_id}: {str(job.get('release_id') or 'new attempt')} queued from the workspace")
+        memory.record_action("publish_retry", f"#{draft_id}: {str(job.get('release_id') or 'new attempt')} requested from the workspace")
         return self.publication(tenant=tenant)
 
     def publication(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Report the owner-visible state of the current production release.
 
-        The projection is the central VPS receipt, never a local build state: a
-        release is live when the pipeline says it is live, and it is stopped
-        with the pipeline's own reason when it stops.
+        The projection is the release receipt, never a local build state: a
+        release is live when its lane says it is live, and it is stopped with
+        the lane's own reason when it stops.
         """
         from .release_progress import phase_steps, release_progress
 
