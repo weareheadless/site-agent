@@ -2300,8 +2300,9 @@ def main() -> int:
         stage("checkout")
         git_env = {**base, "GIT_SSH_COMMAND": github_ssh_command(profile, base)}
         # Only a release that clones its own source needs the host SSH identity;
-        # a runner builds the checkout it was given.
-        needs_ssh = args.source_dir is None or not args.build_only
+        # a runner builds the checkout it was given and fetches a public
+        # repository over HTTPS.
+        needs_ssh = args.source_dir is None
         if needs_ssh and not git_env["GIT_SSH_COMMAND"]:
             raise RuntimeError("declared GitHub SSH identity is missing")
         if args.source_dir is not None:
