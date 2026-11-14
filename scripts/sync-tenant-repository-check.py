@@ -72,6 +72,10 @@ MESSAGES = {
     "manifest-updated": "Refresh the release identity",
 }
 
+# GitHub skips push workflows whose head commit says so. The fleet files are
+# infrastructure, not a release.
+SKIP_CI = " [skip ci]"
+
 
 class GitHubError(RuntimeError):
     """The GitHub API refused or failed a request."""
@@ -128,7 +132,11 @@ def _write(
     *, message: str = "",
 ) -> None:
     payload: dict[str, Any] = {
-        "message": message or MESSAGES["updated" if sha else "created"],
+        # Installing fleet files must not release the site. The deploy workflow
+        # triggers on push to main, and the commit that adds it would otherwise
+        # deploy whatever main already held - an old tree on a tenant whose live
+        # Worker came from somewhere else. Real releases are owner approvals.
+        "message": (message or MESSAGES["updated" if sha else "created"]) + SKIP_CI,
         "content": base64.b64encode(content).decode(),
         "branch": branch,
     }
@@ -140,7 +148,7 @@ def _write(
 def _remove(token: str, repository: str, branch: str, path: str, sha: str) -> None:
     _request(
         "DELETE", f"/repos/{repository}/contents/{urllib.parse.quote(path)}", token,
-        {"message": MESSAGES["removed"], "sha": sha, "branch": branch},
+        {"message": MESSAGES["removed"] + SKIP_CI, "sha": sha, "branch": branch},
     )
 
 
