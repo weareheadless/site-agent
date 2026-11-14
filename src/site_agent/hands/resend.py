@@ -12,6 +12,8 @@ from typing import Any
 
 API = "https://api.resend.com"
 
+_EMAIL_ADDRESS = re.compile(r"^[^@\s]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+
 
 class ResendError(RuntimeError):
     """A Resend API or DNS preflight error safe for provisioning diagnostics."""
@@ -301,4 +303,79 @@ class ResendProvisioner:
         return identity, token
 
 
-__all__ = ["ResendCredentialError", "ResendError", "ResendProvisioner", "ResendVerificationPending"]
+class ResendSender:
+    """Send one tenant's ordinary mail with that tenant's restricted key.
+
+    The management key provisions domains and keys; it never sends a tenant's
+    mail. A sending key is scoped to one verified domain, so it can only post
+    as that tenant. Every send carries an idempotency key so a retried
+    request cannot deliver the same alert twice.
+    """
+
+    def __init__(self, api_key: str, *, timeout_seconds: float = 25.0) -> None:
+        self._api_key = str(api_key or "").strip()
+        self._timeout = float(timeout_seconds)
+        if not self._api_key:
+            raise ResendError("The tenant Resend sending credential is unavailable")
+
+    def send_message(
+        self,
+        *,
+        tenant: str,
+        operation_id: str,
+        sender: str,
+        recipient: str,
+        subject: str,
+        text: str,
+    ) -> str:
+        """Send one message and return the provider's message identity."""
+        tenant_id = str(tenant or "").strip()
+        operation = str(operation_id or "").strip()
+        idempotency_key = f"helloada:{tenant_id}:{operation}"
+        if not tenant_id or not operation or len(idempotency_key) > 256:
+            raise ResendError("The email operation identity is invalid")
+        if not _EMAIL_ADDRESS.match(str(sender or "").strip()):
+            raise ResendError("The tenant sender address is invalid")
+        if not _EMAIL_ADDRESS.match(str(recipient or "").strip()):
+            raise ResendError("The email recipient address is invalid")
+        if not str(subject or "").strip() or not str(text or "").strip():
+            raise ResendError("The email subject and body are required")
+        request = urllib.request.Request(
+            API + "/emails",
+            data=json.dumps({
+                "from": str(sender).strip(),
+                "to": [str(recipient).strip()],
+                "subject": str(subject).strip(),
+                "text": str(text),
+            }).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Idempotency-Key": idempotency_key,
+                "User-Agent": "site-agent/0.1 (+https://helloada.app)",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                payload = json.loads(response.read(64 * 1024).decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code >= 500 or exc.code in {408, 409}:
+                raise ResendError(f"Resend returned an ambiguous response (HTTP {exc.code})") from exc
+            raise ResendError(f"Resend rejected the email (HTTP {exc.code})") from exc
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as exc:
+            raise ResendError("Resend did not confirm whether it accepted the email") from exc
+        identity = str(payload.get("id") or "").strip() if isinstance(payload, Mapping) else ""
+        if not identity:
+            raise ResendError("Resend accepted the request but did not return a message identity")
+        return identity
+
+
+__all__ = [
+    "ResendCredentialError",
+    "ResendError",
+    "ResendProvisioner",
+    "ResendSender",
+    "ResendVerificationPending",
+]

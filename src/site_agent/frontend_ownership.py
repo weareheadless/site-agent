@@ -79,7 +79,7 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/lib/helloada-form-runtime.ts", "src/lib/helloada-handoff.ts",
     "src/lib/helloada-preview-claims.ts", "src/lib/helloada-preview-renderer.tsx",
     "src/lib/helloada-preview.ts", "src/lib/helloada-runtime.ts", "src/lib/helloada-upstream.ts",
-    "src/lib/mailflare-inbox.ts", "src/lib/mailflare-provisioning-api.ts",
+    "src/lib/mail-alerts.ts", "src/lib/mailflare-inbox.ts", "src/lib/mailflare-provisioning-api.ts",
     "src/lib/message-notifications.ts", "src/lib/message-processing.ts", "src/lib/messages-api.ts",
     "src/lib/messages-service.ts", "src/lib/owner-message-draft-hash.ts", "src/lib/calendar.ts",
     "src/lib/payload-field-match.ts", "src/lib/payload-hash.ts", "src/lib/payload-locale.ts",

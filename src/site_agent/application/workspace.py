@@ -40,6 +40,7 @@ from .tenant_registration import tenant_token_env
 from .site_origin import SiteOriginError, normalize_site_origin, origin_hostname, origins_equal
 from .worker_origin import WorkerOriginError, canonical_worker_preview_url
 from .mailbox_identity import default_mailbox_identity
+from .email_management import email_is_externally_managed
 
 
 class BridgeError(ValueError):
@@ -851,18 +852,25 @@ class TenantRegistry:
         site["custom_domain"] = "" if origins_equal(worker_preview_url, site_url) else origin_hostname(site_url)
         raw["site"] = site
 
-        # Email follows the same registered-origin lifecycle as analytics.
-        # Keep one stable mailbox local part and derive its domain at runtime;
-        # persisting an old full address here would strand the mailbox after a
-        # custom-domain change.
+        # Email follows the same registered-origin lifecycle as analytics only
+        # while the platform manages this tenant's mail. A tenant whose mail is
+        # managed elsewhere keeps its registered mailbox: deriving the mailbox
+        # from the site origin would hand that domain's mail to the platform,
+        # and the domain change is not a reason to take it over.
         messages = raw.get("messages") if isinstance(raw.get("messages"), Mapping) else {}
         messages = dict(messages)
         email = messages.get("email") if isinstance(messages.get("email"), Mapping) else {}
         email = dict(email)
         email.setdefault("enabled", True)
-        email.update(default_mailbox_identity(normalized, str(site.get("custom_domain") or "")))
         provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), Mapping) else {}
-        email["provisioning"] = {**dict(provisioning), "auto": True}
+        if email_is_externally_managed(raw):
+            email["provisioning"] = {**dict(provisioning), "auto": False}
+        else:
+            # Keep one stable mailbox local part and derive its domain at
+            # runtime; persisting an old full address here would strand the
+            # mailbox after a custom-domain change.
+            email.update(default_mailbox_identity(normalized, str(site.get("custom_domain") or "")))
+            email["provisioning"] = {**dict(provisioning), "auto": True}
         messages["email"] = email
         raw["messages"] = messages
 
@@ -5243,6 +5251,130 @@ class ChatService:
             raise BridgeError(f"frontend restoration preview could not be started: {str(exc)[:400]}") from exc
         memory.record_action("rollback_preview", f"{target_sha[:12]} -> draft #{draft_id}")
         return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview_job}
+
+    def email_settings(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return the registered mail-management settings for one tenant."""
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        from .email_management import email_settings_view
+
+        return email_settings_view(tenant.config)
+
+    def update_email_settings(
+        self,
+        body: Mapping[str, Any],
+        *,
+        tenant: Tenant | None = None,
+        owner_actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Persist the owner's mail-management settings and reconcile the tenant.
+
+        The registered settings are the only authority for who owns a tenant's
+        mail. An externally managed tenant is never provisioned afterwards,
+        whatever its DNS records look like.
+        """
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        from .email_management import EmailManagementError, email_settings_view, validate_email_settings_update
+        from .growth_delivery import require_owner_actor
+
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        try:
+            requested = validate_email_settings_update(body, tenant.config)
+        except EmailManagementError as exc:
+            raise BridgeError(str(exc)) from exc
+
+        config_path = Path(str(tenant.config_path or "")).expanduser().resolve()
+        if not str(tenant.config_path or "").strip() or not config_path.is_file():
+            raise BridgeError("tenant configuration path is unavailable")
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise BridgeError("tenant configuration is unreadable") from exc
+        if not isinstance(raw, dict):
+            raise BridgeError("tenant configuration root must be an object")
+
+        messages = raw.get("messages") if isinstance(raw.get("messages"), Mapping) else {}
+        messages = dict(messages)
+        email = messages.get("email") if isinstance(messages.get("email"), Mapping) else {}
+        email = dict(email)
+        email["enabled"] = True
+        email["management"] = {"mode": requested["mode"], "provider": requested["provider"]}
+        email["alerts"] = requested["alerts"]
+        email["provisioning"] = requested["provisioning"]
+        messages["email"] = email
+        raw["messages"] = messages
+
+        from .tenant_registration import TenantRegistrationService
+
+        try:
+            TenantRegistrationService._replace_config(config_path, raw)
+        except Exception as exc:
+            raise BridgeError(f"tenant configuration could not be saved: {str(exc)[:200]}") from exc
+
+        values = dict(getattr(self.registry, "_env", {}) or {})
+        token_env = str(tenant.api_token_env or tenant_token_env(tenant.tenant_id)).strip()
+        values[token_env] = tenant.api_token
+        try:
+            reloaded = self.registry.reload_tenant(
+                tenant.tenant_id,
+                str(config_path),
+                api_token=tenant.api_token,
+                api_token_env=token_env,
+                env=values,
+            )
+        except Exception as exc:
+            raise BridgeError(f"tenant runtime could not be reconciled: {str(exc)[:200]}") from exc
+
+        notice: dict[str, Any] = {"state": "not_applicable"}
+        if requested["mode"] == "external":
+            notice = self._deliver_external_notice(reloaded)
+        return {"settings": email_settings_view(reloaded.config), "notice": notice}
+
+    def _deliver_external_notice(self, tenant: Tenant) -> dict[str, Any]:
+        """Tell the owner that their domain mail is handled outside HelloAda."""
+        from .mail_alerts import MailAlertError, MailAlertService
+
+        try:
+            return MailAlertService(
+                tenant.config,
+                tenant_id=tenant.tenant_id,
+                tenant_config_path=tenant.config_path,
+                memory=tenant.memory,
+            ).external_notice()
+        except MailAlertError as exc:
+            # The setting is saved either way; a failed notice is reported,
+            # never silently dropped and never retried into a second mail.
+            return {"state": "failed", "error": str(exc)[:300]}
+
+    def notify_mail(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Handle one tenant report that mail arrived in its HelloAda inbox.
+
+        The tenant Worker owns the mailbox and reports the arrival; the
+        platform decides whether the owner is warned and how.
+        """
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        from .mail_alerts import MailAlertError, MailAlertService
+
+        message_id = str(body.get("messageId") or body.get("message_id") or "").strip()
+        if not message_id or len(message_id) > 200:
+            raise BridgeError("messageId is required")
+        subject = str(body.get("subject") or "").strip()[:200]
+        sender = str(body.get("from") or body.get("sender") or "").strip()[:200]
+        try:
+            receipt = MailAlertService(
+                tenant.config,
+                tenant_id=tenant.tenant_id,
+                tenant_config_path=tenant.config_path,
+                memory=tenant.memory,
+            ).inbound_alert(message_id=message_id, subject=subject, sender=sender)
+        except MailAlertError as exc:
+            raise BridgeError(str(exc)) from exc
+        return {"alert": receipt}
 
     def analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         if tenant is None:

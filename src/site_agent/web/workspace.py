@@ -626,6 +626,46 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/settings/email")
+    def workspace_email_settings(request: Request):
+        """Read one tenant's registered mail-management settings."""
+        tenant = require_service(request)
+        try:
+            return service.email_settings(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put(f"{prefix}/settings/email")
+    async def workspace_update_email_settings(request: Request):
+        """Change who owns the tenant's mail and how the owner is warned."""
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        actor = authenticated_owner_actor(request, tenant)
+        try:
+            return service.update_email_settings(body, tenant=tenant, owner_actor_id=actor)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/mail/notification")
+    async def workspace_mail_notification(request: Request):
+        """Handle one tenant report that mail arrived in its HelloAda inbox."""
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.notify_mail(body, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/seo/insights")
     def workspace_seo_insights(request: Request, limit: int = 12):
         tenant = require_service(request)
@@ -1436,6 +1476,32 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                     "crawlseo_ready": bool(state.get("crawlseo")),
                 },
             }
+
+        @app.get(f"{control_prefix}/{{website_id}}/settings/email")
+        def control_plane_email_settings(website_id: str, request: Request):
+            """Read one website's registered mail-management settings."""
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.email_settings(tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.put(f"{control_prefix}/{{website_id}}/settings/email")
+        async def control_plane_update_email_settings(website_id: str, request: Request):
+            """Change who owns the website's mail and how the owner is warned."""
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.update_email_settings(
+                    body, tenant=tenant, owner_actor_id="helloada:control-plane",
+                )
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/bootstrap")
         async def control_plane_bootstrap(website_id: str, request: Request):

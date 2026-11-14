@@ -79,6 +79,8 @@ def auto_email_provisioning_enabled(config_path: str | Path) -> bool:
     """Return the registered policy that permits a first Mailflare bootstrap release."""
     import yaml
 
+    from .email_management import email_is_externally_managed
+
     path = Path(config_path).expanduser()
     try:
         tenant_config = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -86,6 +88,10 @@ def auto_email_provisioning_enabled(config_path: str | Path) -> bool:
         raise TenantEnvironmentError("registered tenant email provisioning policy is unavailable") from error
     if not isinstance(tenant_config, dict):
         raise TenantEnvironmentError("registered tenant configuration is invalid")
+    # An externally managed tenant keeps its own mail. The platform never
+    # provisions it, whatever the domain's records look like later on.
+    if email_is_externally_managed(tenant_config):
+        return False
     messages = tenant_config.get("messages")
     email = messages.get("email") if isinstance(messages, dict) else None
     provisioning = email.get("provisioning") if isinstance(email, dict) else None

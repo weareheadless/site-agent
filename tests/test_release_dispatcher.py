@@ -42,7 +42,7 @@ def test_api_health_check_uses_extended_window_and_exact_contract(monkeypatch):
         def read(self, _size): return b'{"ok": true}'
     monkeypatch.setattr(api_deploy.urllib.request, "urlopen", lambda *_a, **_k: Response())
     assert api_deploy._health_check("http://health") == 1
-    assert api_deploy._health_check.__defaults__ == (180,)
+    assert api_deploy._health_check.__defaults__ == (600,)
 
 
 def test_api_health_failure_log_capture_is_best_effort_and_bounded(tmp_path, monkeypatch):

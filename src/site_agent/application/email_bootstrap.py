@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment, resend_api_key
 from ..hands.cloudflare_email import CloudflareEmailClient
 from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
+from .email_management import email_is_externally_managed
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
 from .mailbox_identity import PLATFORM_EMAIL_DOMAIN
 from .runtime_binding_delivery import RuntimeBindingError, deliver_runtime_bindings
@@ -289,6 +290,10 @@ def prepare_email_plan(
     email = _mapping(messages.get("email"))
     provisioning = _mapping(email.get("provisioning"))
     resolved_env = credential_environment(config, env)
+    if email_is_externally_managed(config):
+        raise EmailProvisioningError(
+            "This tenant's mail is managed outside HelloAda; the platform does not plan or provision it"
+        )
     domain_override = str(_mapping(policy_overrides).get("emailDomain") or "").strip()
     domain = _validated_email_domain(domain_override) if domain_override else _configured_email_domain(config)
     if not domain:
@@ -425,6 +430,19 @@ def auto_provision_email(
     resolved_env = credential_environment(config, env)
     previous = memory.kv_get("email_provisioning_state", {}) if memory is not None else {}
     state = copy.deepcopy(dict(previous)) if isinstance(previous, Mapping) else {}
+
+    if email_is_externally_managed(config):
+        # The tenant's mail is managed elsewhere. No provider write of any kind
+        # is allowed for it, whatever the domain's records look like now.
+        result = {
+            **state,
+            "state": "externally_managed",
+            "tenant": tenant_id,
+            "lastAttemptAt": _now(),
+        }
+        if memory is not None:
+            memory.kv_set("email_provisioning_state", result)
+        return result, resolved_env
 
     if messages.get("enabled") is False or email.get("enabled") is not True or provisioning.get("auto") is not True:
         result = {**state, "state": "disabled", "lastAttemptAt": _now()}

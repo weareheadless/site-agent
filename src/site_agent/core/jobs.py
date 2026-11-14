@@ -977,6 +977,12 @@ def _seo_provisioning(context: dict[str, Any]) -> dict[str, str]:
 
 
 def _email_provisioning_enabled(config: Mapping[str, Any]) -> bool:
+    from ..application.email_management import email_is_externally_managed
+
+    # A tenant whose mail is managed elsewhere is never provisioned by the
+    # platform, whatever its DNS records look like at the time.
+    if email_is_externally_managed(config):
+        return False
     messages = config.get("messages") if isinstance(config.get("messages"), Mapping) else {}
     email = messages.get("email") if isinstance(messages, Mapping) else {}
     provisioning = email.get("provisioning") if isinstance(email, Mapping) else {}

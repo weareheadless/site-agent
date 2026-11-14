@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 
 import { validateHelloAdaFormSubmission, helloAdaIdempotencyKey } from '@weareheadless/helloada-payload-core/messages'
 import { writeMailflareFormMessage } from '@/lib/mailflare-inbox'
+import { reportMailArrival } from '@/lib/mail-alerts'
 import {
   messageRuntime,
   tenantIdentity,
@@ -102,6 +103,14 @@ export async function POST(request: Request, { params }: RouteProps) {
       sourcePage,
       fields: fields as Array<{ key: string; label?: string; mapsTo?: string; type?: string }>,
       submission,
+    })
+    // The enquiry is in the tenant's HelloAda inbox. The platform decides
+    // whether the owner is warned about it.
+    await reportMailArrival({
+      messageId: result.messageId,
+      subject: String(definition.title || slug),
+      from: submission.contact.email,
+      kind: 'enquiry',
     })
     return NextResponse.json({ accepted: true, receiptId: result.messageId }, { status: 202, headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
