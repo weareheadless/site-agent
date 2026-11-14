@@ -4952,6 +4952,7 @@ class ChatService:
             # the truthful live identity, but there is no progress to show.
             return {
                 "release": None,
+                "siteUrl": self._public_site_url(tenant),
                 "live": {
                     "sha": str(activation.get("source_sha") or ""),
                     "releaseId": str(activation.get("release_id") or ""),
@@ -4983,6 +4984,7 @@ class ChatService:
                 "error": str(job.get("error") or "")[:600],
                 "live": status in {"deployed", "verified"},
             },
+            "siteUrl": self._public_site_url(tenant),
             "live": {
                 "sha": str(activation.get("source_sha") or ""),
                 "releaseId": str(activation.get("release_id") or ""),
@@ -4993,6 +4995,24 @@ class ChatService:
             "steps": phase_steps(),
             "latestPublish": published,
         }
+
+    @staticmethod
+    def _public_site_url(tenant: Any) -> str:
+        """The address the owner's live site answers at.
+
+        The workspace itself runs on the platform host, so a root-relative
+        link would open the platform instead of the tenant. The registered
+        public address is the tenant's own identity; the preview address is
+        only a fallback for a site that has no domain yet.
+        """
+        config = getattr(tenant, "config", None)
+        site = config.get("site") if isinstance(config, Mapping) else None
+        site = site if isinstance(site, Mapping) else {}
+        for key in ("url", "preview_url"):
+            value = str(site.get(key) or "").strip()
+            if value.startswith(("https://", "http://")):
+                return value.rstrip("/")
+        return ""
 
     @staticmethod
     def _latest_publish(memory: Any) -> dict[str, Any] | None:

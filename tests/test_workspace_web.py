@@ -4050,3 +4050,21 @@ def test_a_site_brings_its_own_preview_host(monkeypatch):
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
     assert calls == ["preview.astridrincon.com", "preview.helloda.app"]
+
+
+def test_the_workspace_links_to_the_tenants_own_site_not_the_platform():
+    """The workspace runs on the platform host; "/" is the platform, not the site."""
+    from types import SimpleNamespace
+
+    from site_agent.application.workspace import ChatService
+
+    def url_for(site):
+        return ChatService._public_site_url(SimpleNamespace(config={"site": site}))
+
+    assert url_for({"url": "https://astridrincon.com/"}) == "https://astridrincon.com"
+    assert url_for({"preview_url": "https://helloada-x.weareheadless.workers.dev"}) == (
+        "https://helloada-x.weareheadless.workers.dev"
+    )
+    assert url_for({"url": "not-a-url", "preview_url": "https://x.example"}) == "https://x.example"
+    assert url_for({}) == ""
+    assert ChatService._public_site_url(SimpleNamespace(config={})) == ""
