@@ -103,6 +103,21 @@ def auto_email_provisioning_enabled(config_path: str | Path) -> bool:
     )
 
 
+# The exact names a Worker may receive as secrets. A runner manifest carries
+# values that were already selected, so this list is also what it may bind.
+WORKER_SECRET_NAMES = (
+    "PAYLOAD_SECRET",
+    "HELLOADA_SITE_AGENT_TOKEN",
+    "RESEND_API_KEY",
+    "HELLOADA_TURNSTILE_SECRET_KEY",
+    "MAILFLARE_ADDRESS",
+    "MAILFLARE_ZONE_ID",
+    "MAILFLARE_ROUTING_STATUS",
+    "GA_MEASUREMENT_ID",
+    "GOOGLE_SITE_VERIFICATION",
+)
+
+
 def worker_runtime_secrets(
     values: Mapping[str, str],
     tenant_id: str,

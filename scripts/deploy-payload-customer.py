@@ -1525,6 +1525,16 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
             raise ValueError("registered tenant release manifest entry is unavailable")
         environment_path = tenant_environment_path(manifest, tenant)
         values = read_tenant_environment(environment_path)
+        if manifest.get("tenantEnvFile"):
+            # The platform already selected this tenant's Worker secrets and the
+            # runner wrote them verbatim; the file carries exactly what may be
+            # bound into the Worker, under the names the Worker reads.
+            from site_agent.application.tenant_environment import WORKER_SECRET_NAMES
+
+            selected = {name: values[name] for name in WORKER_SECRET_NAMES if values.get(name)}
+            if not selected.get("PAYLOAD_SECRET") or not selected.get(WORKER_SITE_AGENT_TOKEN_ENV):
+                raise ValueError("the runner's tenant runtime secrets are incomplete")
+            return selected
         # A runner manifest carries the tenant's values but no registry config,
         # and a content deploy never bootstraps email; the first Mailflare
         # release stays in the platform lane.

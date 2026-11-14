@@ -1782,6 +1782,50 @@ def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
     }
 
 
+def test_runner_manifest_binds_the_secrets_the_platform_already_selected(tmp_path):
+    tenant = "site-ff8e9af06f56201f"
+    runtime = tmp_path / "runtime.env"
+    runtime.write_text(
+        "PAYLOAD_SECRET=payload-secret-for-test\n"
+        "HELLOADA_SITE_AGENT_TOKEN=site-agent-token-for-test\n"
+        "MAILFLARE_ADDRESS=contact@example.com\n"
+        "MAILFLARE_ZONE_ID=zone-id-for-test\n"
+        "MAILFLARE_ROUTING_STATUS=active\n"
+        "HELLOADA_TURNSTILE_SECRET_KEY=turnstile-secret\n"
+        "HELLOADA_HANDOFF_PUBLIC_KEY=public-key\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "tenantEnvFile": str(runtime),
+        "connectionGate": {"envFile": str(runtime)},
+        "customers": {tenant: {"mailflareD1DatabaseId": "mailflare-d1-for-test"}},
+    }
+
+    secrets = release.tenant_runtime_secrets(manifest, tenant)
+
+    assert secrets == {
+        "PAYLOAD_SECRET": "payload-secret-for-test",
+        "HELLOADA_SITE_AGENT_TOKEN": "site-agent-token-for-test",
+        "MAILFLARE_ADDRESS": "contact@example.com",
+        "MAILFLARE_ZONE_ID": "zone-id-for-test",
+        "MAILFLARE_ROUTING_STATUS": "active",
+        "HELLOADA_TURNSTILE_SECRET_KEY": "turnstile-secret",
+    }
+
+
+def test_runner_manifest_without_the_worker_token_is_refused(tmp_path):
+    tenant = "site-ff8e9af06f56201f"
+    runtime = tmp_path / "runtime.env"
+    runtime.write_text("PAYLOAD_SECRET=payload-secret-for-test\n", encoding="utf-8")
+    manifest = {
+        "tenantEnvFile": str(runtime),
+        "connectionGate": {"envFile": str(runtime)},
+        "customers": {tenant: {"mailflareD1DatabaseId": "mailflare-d1-for-test"}},
+    }
+    with pytest.raises(RuntimeError, match="runtime secrets are incomplete"):
+        release.tenant_runtime_secrets(manifest, tenant)
+
+
 def test_automatic_email_bootstrap_releases_worker_without_mailbox_secrets_and_wakes_scheduler(tmp_path):
     from site_agent.core.memory import Memory
 
