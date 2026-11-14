@@ -2359,7 +2359,7 @@ def main() -> int:
             base["npm_config_cache"] = str(workspace_path / "npm-cache")
             base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
-        if not args.build_only:
+        if not (args.build_only or args.preview_only):
             if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
                 raise RuntimeError("declared Cloudflare profile is incomplete")
             workers_dev_provisioner(customer, deploy_env)
