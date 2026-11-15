@@ -253,6 +253,59 @@ def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
 
 
+def _tenant_model_registry(count: int = 2) -> dict:
+    return {
+        "customers": {
+            f"site-{index}": {"sharedRuntimeUpdate": "manual"}
+            for index in range(count)
+        }
+    }
+
+
+def test_a_runtime_move_cannot_be_hand_queued_for_one_tenant():
+    """The pilot shape the tenant model forbids: one customer's build carrying a
+    platform change. Ordinary owner releases omit the fingerprint and inherit
+    whatever runtime the control plane builds."""
+    fingerprint = "b" * 64
+    request = {
+        "id": "rel-20261115175500-growth-bridge",
+        "sha": SHA,
+        "sharedRuntimeFingerprint": fingerprint,
+    }
+    with pytest.raises(ValueError, match="fleet-wide"):
+        queue.validate_queue({"schema": 1, "releases": {"site-0": request}}, _tenant_model_registry())
+
+
+def test_a_runtime_move_is_fleet_wide_or_written_by_the_planner():
+    fingerprint = "b" * 64
+    registry = _tenant_model_registry()
+    fleet = {
+        tenant: {"id": "rel-20261115175500-growth-bridge", "sha": SHA,
+                 "sharedRuntimeFingerprint": fingerprint}
+        for tenant in registry["customers"]
+    }
+    queue.validate_queue({"schema": 1, "releases": fleet}, registry)
+    # The rollout planner stamps runtime-<timestamp>-<nonce>; its bounded batches
+    # are the only subset the queue accepts.
+    planned = {
+        "site-0": {"id": "runtime-20261115175500-1a2b3c4d", "sha": SHA,
+                   "sharedRuntimeFingerprint": fingerprint}
+    }
+    queue.validate_queue({"schema": 1, "releases": planned}, registry)
+
+
+def test_runtime_moves_in_one_queue_must_name_one_fingerprint():
+    registry = _tenant_model_registry()
+    releases = {
+        "site-0": {"id": "runtime-20261115175500-1a2b3c4d", "sha": SHA,
+                   "sharedRuntimeFingerprint": "b" * 64},
+        "site-1": {"id": "runtime-20261115175500-1a2b3c4d", "sha": SHA,
+                   "sharedRuntimeFingerprint": "c" * 64},
+    }
+    with pytest.raises(ValueError, match="one fingerprint"):
+        queue.validate_queue({"schema": 1, "releases": releases}, registry)
+
+
 def test_api_release_queue_requires_one_immutable_source_identity():
     api_deploy.validate_api_queue(json.loads((ROOT / "deploy/desired-api-release.json").read_text()))
     assert api_deploy.validate_api_queue({"schema": 1, "release": {"id": "api-1", "sha": SHA}}) == {

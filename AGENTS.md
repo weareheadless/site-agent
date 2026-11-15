@@ -98,6 +98,31 @@ behavior on or off, a release step that provisions an integration, a wave of
 tenants to migrate, a fix proven only on one tenant, and the same value written
 into every tenant's config.
 
+### Where the rule is enforced
+
+Prose does not fail a build, so these checks do. Quote them instead of arguing
+about the principle:
+
+- **No platform route in the tenant runtime.**
+  `templates/next-payload/tests/growth-workspace-paths.test.mjs` fails if the bridge maps
+  a canonical namespace; `helloAdaWorkspacePath` answers `undefined` for it and
+  the bridge returns `workspace_route_not_owned`, naming the site-agent. A
+  route reachable from `helloada.app` belongs to the app and the site-agent,
+  never to a tenant build.
+- **No hand-queued per-tenant runtime move.**
+  `validate_queue` in `scripts/reconcile-payload-releases.py` refuses a
+  `sharedRuntimeFingerprint` for a subset of tenants unless the identity is a
+  planner batch (`runtime-<timestamp>-<nonce>`). An ordinary owner release
+  carries no fingerprint and inherits whatever the control plane builds.
+- **Proof on a disposable tenant.**
+  `scripts/prove-lane.py --lane <lane>` resolves a tenant flagged
+  `disposable` in `deploy/payload-customers.json`, refuses a customer, and
+  records the answering layer next to the receipts; the API receipt carries
+  `laneProof`. A lane that cannot be proven there is unproven, not fine.
+- **No tenant-scoped release step.** `deploy/desired-releases.json` is the only
+  per-tenant release surface, and it exists because each tenant has its own
+  immutable commit. Nothing else may be per-tenant.
+
 ## Invariants
 
 - A site mutation is either an explicit owner action or a pending draft.

@@ -130,6 +130,27 @@ def validate_queue(queue: dict, registry: dict) -> None:
                 or migration["fromLedgerIdentity"] == migration["targetMigrationHead"]
             ):
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
+    # A runtime move is fleet-wide. The rollout planner stamps its own batches
+    # with a runtime-<timestamp>-<nonce> identity; a hand-queued subset under an
+    # owner release identity is a pilot by another name, and it is refused here
+    # before any build starts. Ordinary owner releases carry no fingerprint and
+    # pick up whatever runtime the control plane currently builds.
+    runtime_requests = {
+        tenant: request for tenant, request in queue["releases"].items()
+        if isinstance(request, dict) and "sharedRuntimeFingerprint" in request
+    }
+    if runtime_requests:
+        fingerprints = {str(request["sharedRuntimeFingerprint"]) for request in runtime_requests.values()}
+        if len(fingerprints) != 1:
+            raise ValueError("shared-runtime moves in one queue must name one fingerprint")
+        planned = all(
+            re.fullmatch(r"runtime-\d{14}-[0-9a-f]{8}", str(request["id"]))
+            for request in runtime_requests.values()
+        )
+        if not planned and set(runtime_requests) != set(registry["customers"]):
+            raise ValueError(
+                "a shared-runtime move is fleet-wide; a subset may only be queued by the runtime rollout"
+            )
     policies = {
         tenant: customer.get("sharedRuntimeUpdate", "automatic")
         for tenant, customer in registry["customers"].items()

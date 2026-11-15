@@ -27,12 +27,16 @@ test('the bridge uses server-authenticated actor, never browser headers or JSON'
   await assert.doesNotReject(import('data:text/javascript;base64,' + Buffer.from(javascript).toString('base64')))
 })
 
-test('owner research-budget updates forward the authenticated Payload actor through the PUT bridge', () => {
+test('the tenant runtime refuses Growth writes by naming the owning layer', () => {
   const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts', import.meta.url), 'utf8')
   const handler = source.slice(source.indexOf('export async function PUT('))
-  assert.match(handler, /path !== '\/growth\/budget'/)
-  assert.match(handler, /authenticateHelloAdaRequest\(request\)/)
-  assert.match(handler, /fetchHelloAdaUpstream\(`\/api\/helloada\$\{path\}`, request, `payload:\$\{tenantId\(\)\}:\$\{text\(auth\.user\.id\)\}`\)/)
+  // A miss must not read as a broken connector: it names the site-agent, so the
+  // next debugging step is the platform, not a tenant build.
+  assert.match(handler, /return workspaceRouteNotOwned\(path\)/)
+  assert.doesNotMatch(handler, /growth\/budget/)
+  const response = source.slice(source.indexOf('const workspaceRouteNotOwned'), source.indexOf('const text ='))
+  assert.match(response, /error: 'workspace_route_not_owned'/)
+  assert.match(response, /owner: 'site-agent'/)
 })
 
 test('owner CrawlSEO preparation decisions forward the authenticated Payload actor through the POST bridge', () => {

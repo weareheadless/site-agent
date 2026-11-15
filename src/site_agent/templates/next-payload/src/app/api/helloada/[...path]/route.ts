@@ -41,6 +41,18 @@ export const dynamic = 'force-dynamic'
 type RouteProps = { params: Promise<{ path?: string[] }> }
 
 const errorResponse = (message: string, status = 400) => NextResponse.json({ error: 'helloada_bridge_error', message }, { status })
+/**
+ * A path this tenant build does not own. The owner-visible sentence names the
+ * layer, because "HelloAda service is unavailable" reads like a broken
+ * connector and sends everyone to the wrong repository.
+ */
+const workspaceRouteNotOwned = (path: string) => NextResponse.json({
+  error: 'workspace_route_not_owned',
+  message: 'This route belongs to the site-agent, not to this website build. '
+    + 'The tenant runtime predates it; the platform must serve it.',
+  route: path,
+  owner: 'site-agent',
+}, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
 
 /** Payload pending records are durable; this notification accelerates analysis. */
 const scheduleMediaAnalysis = (mediaId: unknown): void => {
@@ -492,7 +504,7 @@ export async function GET(request: Request, { params }: RouteProps) {
     return NextResponse.json({ language, defaultLanguage: 'en', supportedLanguages: ['en', 'es', 'fr'] })
   }
   const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
-  return upstream || errorResponse('HelloAda service is unavailable', 503)
+  return upstream || workspaceRouteNotOwned(path)
 }
 
 
@@ -903,14 +915,12 @@ export async function POST(request: Request, { params }: RouteProps) {
     }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
-  return upstream || errorResponse('HelloAda service is unavailable', 503)
+  return upstream || workspaceRouteNotOwned(path)
 }
 
 export async function PUT(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
-  if (path !== '/growth/budget' && path !== '/growth/research-policy') return errorResponse('unsupported HelloAda update route', 404)
-  const auth = await authenticateHelloAdaRequest(request)
-  if (!auth) return errorResponse('authentication_required', 401)
-  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
-  return upstream || errorResponse('HelloAda service is unavailable', 503)
+  // Growth budgets and research policy are site-agent state; this runtime owns
+  // no update route of its own any more.
+  return workspaceRouteNotOwned(path)
 }

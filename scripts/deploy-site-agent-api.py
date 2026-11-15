@@ -270,6 +270,44 @@ def _prune_release_store(releases: Path, current: Path, sources: Path,
 # window is a ceiling for failure, not a latency budget: a release that never
 # becomes healthy must still roll back.
 HEALTH_ATTEMPTS = 600
+API_BASE_URL = "http://127.0.0.1:3014/v1"
+CONTROL_ENV_FILE = Path("/SOCIAL/configs/site-agent-api/.env")
+
+
+def _lane_proof(source_dir: Path) -> dict[str, Any]:
+    """Record whether a lane is provable on a disposable tenant.
+
+    The proof runs after activation because it exercises the live route. It is
+    recorded, never fatal: rolling a healthy API back because no disposable
+    tenant is mapped would take the platform down for a missing test fixture.
+    A refused proof still names the layer and the missing prerequisite in the
+    receipt, so "it worked on a customer site" can never stand in for it.
+    """
+    try:
+        # The candidate's own bytes describe this release, not the host venv.
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "lane_proof", source_dir / "src/site_agent/application/lane_proof.py"
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("lane proof module is missing from the candidate source")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        registry = json.loads(
+            (source_dir / "deploy/payload-customers.json").read_text(encoding="utf-8")
+        )
+        token = ""
+        if CONTROL_ENV_FILE.is_file():
+            for line in CONTROL_ENV_FILE.read_text(encoding="utf-8").splitlines():
+                name, separator, value = line.partition("=")
+                if separator and name.strip() == "HELLOADA_CONTROL_PLANE_TOKEN":
+                    token = value.strip().strip('"').strip("'")
+        tenant = module.proof_tenant(registry)
+        return module.prove_lane("growth", tenant=tenant, api_url=API_BASE_URL, token=token)
+    except Exception as error:  # noqa: BLE001 - the receipt must record, not fail the release
+        refused = type(error).__name__ == "LaneProofError"
+        return {"outcome": "unproven", "reason": str(error) if refused else type(error).__name__}
 
 
 def _health_check(url: str, attempts: int = HEALTH_ATTEMPTS) -> int:
@@ -568,6 +606,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
                 receipt["failedUnitLogPath"] = failed_log
             raise
         receipt["healthCheck"] = {"attempts": health_attempts, "secondsWaited": round(time.monotonic() - health_started, 1)}
+        receipt["laneProof"] = _lane_proof(source_dir)
         try:
             receipt["retention"] = _prune_release_store(
                 releases, current, root / "api-sources", previous=prior_path)
