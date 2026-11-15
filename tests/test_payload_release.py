@@ -249,6 +249,72 @@ WORKER_CONFIG = {
 }
 
 
+def _build_cache_tree(root: Path) -> Path:
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "page.tsx").write_text("export default 1\n", encoding="utf-8")
+    (root / "public").mkdir()
+    (root / "public" / "index.html").write_text("<h1>one</h1>\n", encoding="utf-8")
+    (root / ".open-next" / "assets" / "_next").mkdir(parents=True)
+    (root / ".open-next" / "worker.js").write_text("worker\n", encoding="utf-8")
+    (root / ".open-next" / "assets" / "_next" / "chunk.js").write_text("chunk\n", encoding="utf-8")
+    (root / ".open-next" / "assets" / "index.html").write_text("<h1>one</h1>\n", encoding="utf-8")
+    (root / ".next" / "server").mkdir(parents=True)
+    (root / ".next" / "server" / "app-paths-manifest.json").write_text("{}\n", encoding="utf-8")
+    return root
+
+
+def test_the_build_cache_key_describes_the_app_not_the_content(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    identities = {"node": "22.23.3", "contract": "c"}
+    key = release.build_cache_key(root, fingerprint="a" * 64, identities=identities)
+    (root / "public" / "index.html").write_text("<h1>two</h1>\n", encoding="utf-8")
+    assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) == key
+    (root / "src" / "page.tsx").write_text("export default 2\n", encoding="utf-8")
+    assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) != key
+    # A runtime change invalidates the compile even when app bytes are equal.
+    assert release.build_cache_key(root, fingerprint="b" * 64, identities=identities) != key
+
+
+def test_reusing_a_compile_reconciles_public_files_and_keeps_next_assets(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    release.store_build_cache(tmp_path / "cache" / "key", root, key="key", source_sha=SHA)
+    (root / "public" / "index.html").write_text("<h1>two</h1>\n", encoding="utf-8")
+    (root / "public" / "new.html").write_text("<h1>new</h1>\n", encoding="utf-8")
+    cached = json.loads((tmp_path / "cache" / "key" / "meta.json").read_text())
+    assert cached["publicPaths"] == ["index.html"]
+
+    checkout = tmp_path / "checkout"
+    shutil.copytree(tmp_path / "cache" / "key" / "open-next", checkout / ".open-next")
+    (checkout / "public").mkdir()
+    (checkout / "public" / "index.html").write_text("<h1>two</h1>\n", encoding="utf-8")
+    (checkout / "public" / "new.html").write_text("<h1>new</h1>\n", encoding="utf-8")
+    release.reconcile_public_assets(checkout, cached["publicPaths"])
+    release.verify_public_assets(checkout)
+    assert (checkout / ".open-next/assets/index.html").read_text() == "<h1>two</h1>\n"
+    assert (checkout / ".open-next/assets/new.html").read_text() == "<h1>new</h1>\n"
+    assert (checkout / ".open-next/assets/_next/chunk.js").read_text() == "chunk\n"
+
+
+def test_a_reused_compile_cannot_claim_public_bytes_it_does_not_ship(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    release.store_build_cache(tmp_path / "cache" / "key", root, key="key", source_sha=SHA)
+    checkout = tmp_path / "checkout"
+    shutil.copytree(tmp_path / "cache" / "key" / "open-next", checkout / ".open-next")
+    (checkout / "public").mkdir()
+    (checkout / "public" / "index.html").write_text("<h1>unshipped</h1>\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="differs from its public source"):
+        release.verify_public_assets(checkout)
+
+
+def test_a_tenant_keeps_only_its_latest_compiled_application(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    cache = tmp_path / "cache"
+    release.store_build_cache(cache / "old", root, key="old", source_sha=SHA)
+    release.store_build_cache(cache / "new", root, key="new", source_sha=SHA)
+    assert sorted(path.name for path in cache.iterdir()) == ["new"]
+    assert json.loads((cache / "new" / "meta.json").read_text())["sourceSha"] == SHA
+
+
 def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
 

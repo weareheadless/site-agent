@@ -62,6 +62,128 @@ def ensure_build_capacity(path: Path) -> None:
         )
 
 
+# A content-only release changes public/ and the presentation inventory; the
+# compiled Next application is identical, so the previous compile is reused
+# instead of paid for again. Everything that can affect the compile is hashed.
+BUILD_CACHE_EXCLUDED = frozenset({
+    ".git", "node_modules", ".next", ".open-next", ".wrangler", ".mailflare", "public",
+})
+
+
+def build_cache_key(
+    checkout: Path,
+    *,
+    fingerprint: str,
+    identities: Mapping[str, Any],
+) -> str:
+    """One key for the exact app bytes this release would compile."""
+    digest = hashlib.sha256()
+    digest.update(b"helloada-build-cache-v1\0")
+    digest.update(str(fingerprint or "").encode("utf-8") + b"\0")
+    for path in sorted(checkout.rglob("*")):
+        relative = path.relative_to(checkout)
+        if relative.parts and relative.parts[0] in BUILD_CACHE_EXCLUDED:
+            continue
+        if path.is_symlink():
+            # A linked source still changes the build; hash where it points
+            # instead of failing a release over a layout choice.
+            digest.update(str(relative).encode("utf-8") + b"\0symlink\0")
+            digest.update(os.readlink(path).encode("utf-8") + b"\0")
+            continue
+        if not path.is_file():
+            continue
+        digest.update(str(relative).encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    digest.update(
+        json.dumps(dict(identities), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    return digest.hexdigest()
+
+
+def _public_paths(root: Path) -> list[str]:
+    public = root / "public"
+    if not public.is_dir():
+        return []
+    return sorted(
+        str(path.relative_to(public)) for path in public.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+
+
+def store_build_cache(entry: Path, checkout: Path, *, key: str, source_sha: str) -> None:
+    """Keep exactly one compiled application per tenant.
+
+    The next content-only release is the only reader, so an older key has no
+    use and is pruned rather than accumulated.
+    """
+    cache_root = entry.parent
+    cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for existing in cache_root.iterdir():
+        if existing.name != entry.name:
+            shutil.rmtree(existing, ignore_errors=True)
+    staging = cache_root / f".{key}.staging"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    shutil.copytree(checkout / ".open-next", staging / "open-next")
+    # The release reads the compiled route manifest; keep it with the artifact
+    # so a reused build can still be inspected without a compile.
+    manifest = checkout / ".next" / "server" / "app-paths-manifest.json"
+    if not manifest.is_file():
+        raise RuntimeError("compiled route manifest is missing")
+    (staging / "next").mkdir()
+    shutil.copyfile(manifest, staging / "next" / "app-paths-manifest.json")
+    (staging / "meta.json").write_text(json.dumps({
+        "key": key,
+        "sourceSha": source_sha,
+        "publicPaths": _public_paths(checkout),
+        "storedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }, indent=2) + "\n", encoding="utf-8")
+    shutil.rmtree(entry, ignore_errors=True)
+    staging.rename(entry)
+
+
+def reconcile_public_assets(checkout: Path, previous_public_paths: list[str]) -> None:
+    """Put this release's public files into the restored compiled assets.
+
+    The compile keeps `_next` and the worker bundle; only the files that came
+    from `public/` move. Removing the previous list first means a deleted page
+    cannot linger inside the artifact.
+    """
+    assets = checkout / ".open-next" / "assets"
+    if not assets.is_dir():
+        raise RuntimeError("the cached build has no compiled asset tree")
+    for relative in previous_public_paths:
+        target = (assets / relative).resolve()
+        if assets.resolve() not in target.parents:
+            raise RuntimeError("cached public asset path escapes the asset tree")
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+    public = checkout / "public"
+    if not public.is_dir():
+        return
+    for path in public.rglob("*"):
+        if path.is_symlink():
+            raise RuntimeError(f"public asset must be a regular file: {path}")
+        if not path.is_file():
+            continue
+        target = assets / path.relative_to(public)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+
+
+def verify_public_assets(checkout: Path) -> None:
+    """Every public file must be in the artifact with its exact bytes."""
+    assets = checkout / ".open-next" / "assets"
+    for relative in _public_paths(checkout):
+        shipped = assets / relative
+        if not shipped.is_file() or shipped.is_symlink():
+            raise RuntimeError(f"compiled artifact is missing a public file: {relative}")
+        if hashlib.sha256(shipped.read_bytes()).digest() != hashlib.sha256(
+            (checkout / "public" / relative).read_bytes()
+        ).digest():
+            raise RuntimeError(f"compiled artifact differs from its public source: {relative}")
+
+
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(".tmp")
@@ -2359,7 +2481,12 @@ def main() -> int:
             checkout = workspace_path / "source"
             temporary_root = workspace_path / "temporary"
             temporary_root.mkdir(mode=0o700)
-            base["npm_config_cache"] = str(workspace_path / "npm-cache")
+            # The package cache is content-addressed by npm and verified against
+            # the lockfile integrity on every install, so it survives the
+            # disposable workspace. A cold install was a minute per release.
+            npm_cache = release_root / "npm-cache"
+            npm_cache.mkdir(parents=True, exist_ok=True, mode=0o700)
+            base["npm_config_cache"] = str(npm_cache)
             base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not (args.build_only or args.preview_only):
@@ -2605,7 +2732,75 @@ def main() -> int:
         run([node, str(mailflare_builder), "--tenant-root", str(checkout), "--npm-bin", npm],
             checkout, build_env)
         mailflare_provenance = json.loads((checkout / ".mailflare/provenance.json").read_text())
-        run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
+        # A release that only changed public files changes no compiled byte:
+        # reuse the previous compile, reconcile this release's public files into
+        # it, and prove every one of them. Anything the key cannot explain falls
+        # back to the full build.
+        build_cache_entry: Path | None = None
+        reused_build = False
+        cacheable = not (args.preview_only or args.preview_base_path or os.environ.get("HELLOADA_NO_BUILD_CACHE"))
+        build_key = ""
+        if cacheable:
+            try:
+                build_key = build_cache_key(
+                    checkout,
+                    fingerprint=runtime_provenance["fingerprint"],
+                    identities={
+                        "node": manifest["nodeVersion"], "npm": manifest["npmVersion"],
+                        "payloadCore": customer["payloadCore"],
+                        "contentContract": customer["contentContract"],
+                        "schemaRevision": customer["schemaRevision"],
+                        "schemaIdentity": customer["schemaIdentity"],
+                        "migrationHead": customer["migrationHead"],
+                        "mailflareCommit": mailflare_source["commit"],
+                        "mailflarePatchSet": mailflare_source["integrationPatchSet"],
+                        "publicUrl": args.public_url or "",
+                        "siteName": args.site_name or "",
+                    },
+                )
+            except (OSError, RuntimeError, ValueError) as error:  # noqa: BLE001 - a cache is never a release gate
+                build_key = ""
+                receipt["buildCache"] = {"hit": False, "refused": type(error).__name__}
+                print(f"[release] build-cache disabled ({type(error).__name__})", flush=True)
+            if build_key:
+                build_cache_entry = release_root / "build-cache" / args.tenant / build_key
+            if (build_cache_entry is not None and (build_cache_entry / "meta.json").is_file()
+                    and (build_cache_entry / "open-next").is_dir()):
+                try:
+                    cached = json.loads((build_cache_entry / "meta.json").read_text(encoding="utf-8"))
+                    target = checkout / ".open-next"
+                    shutil.rmtree(target, ignore_errors=True)
+                    shutil.copytree(build_cache_entry / "open-next", target)
+                    route_manifest = build_cache_entry / "next" / "app-paths-manifest.json"
+                    if not route_manifest.is_file():
+                        raise RuntimeError("cached build has no route manifest")
+                    (checkout / ".next" / "server").mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(route_manifest, checkout / ".next" / "server" / "app-paths-manifest.json")
+                    reconcile_public_assets(checkout, list(cached.get("publicPaths") or []))
+                    verify_public_assets(checkout)
+                    reused_build = True
+                    receipt["buildCache"] = {
+                        "hit": True, "key": build_key, "fromSourceSha": cached.get("sourceSha"),
+                    }
+                    print(f"[release] build-cache hit tenant={args.tenant} key={build_key[:12]}", flush=True)
+                except (OSError, ValueError, RuntimeError) as error:
+                    shutil.rmtree(checkout / ".open-next", ignore_errors=True)
+                    receipt["buildCache"] = {"hit": False, "key": build_key,
+                                             "refused": type(error).__name__}
+                    print(f"[release] build-cache refused ({type(error).__name__}); rebuilding", flush=True)
+        if not reused_build:
+            run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
+            if build_cache_entry is not None:
+                try:
+                    # Only cache a build the reuse path can prove: if the
+                    # artifact does not carry every public file, a later hit
+                    # would be refused anyway and the cache would be noise.
+                    verify_public_assets(checkout)
+                    store_build_cache(build_cache_entry, checkout, key=build_key, source_sha=args.ref)
+                    receipt["buildCache"] = {"hit": False, "key": build_key}
+                except (OSError, RuntimeError) as error:  # noqa: BLE001 - a cache is never a release gate
+                    print(f"[release] build-cache store skipped ({type(error).__name__})", flush=True)
+                    receipt["buildCache"] = {"hit": False, "stored": False}
         if args.preview_only:
             # A preview needs the compiled application and nothing else. The
             # Mailflare composition, the dry-run bundle and the artifact hashes

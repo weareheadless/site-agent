@@ -180,6 +180,26 @@ ephemeral secret file. Cloudflare API credentials must include Turnstile Sites W
 permissions. A missing permission or mismatched existing resource fails the
 release before promotion; no manual dashboard setup or test key is accepted.
 
+## Reusing a compile
+
+A release that changed only `public/` and the presentation inventory changes no
+compiled byte, so the release lane keeps the previous tenant build under
+`build-cache/<tenant>/<key>` and restores it instead of paying for the OpenNext
+compile again. The key is a hash of the whole app tree as it is built — overlay
+applied, contract generated — excluding `public/`, plus the shared-runtime
+fingerprint, node/npm versions, Payload contract identities and the pinned
+Mailflare source. Any change to those inputs misses the cache and builds.
+
+A reuse is not trusted on the strength of the key: this release's public files
+are removed from the restored asset tree, recopied from source, and every file
+is compared byte for byte before the release continues (and the static profile
+still verifies its full declaration). A failed check falls back to the full
+build. One compiled application is kept per tenant. `HELLOADA_NO_BUILD_CACHE=1`
+disables the path for a release.
+
+The package cache under `npm-cache/` is content-addressed and verified by npm
+against the lockfile, so it is shared across disposable build workspaces.
+
 ## Release command
 
 Ordinary owner-approved updates resolve the existing tenant from
