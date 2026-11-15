@@ -141,6 +141,21 @@ test('the package carries the vendor type shim it needs', () => {
   assert.match(actions, /^\/\/ @ts-nocheck/)
 })
 
+test('the mailbox shell leaves the brand to the control plane', () => {
+  // The workspace header above the mailbox already renders the HelloAda mark
+  // and name. A second sidebar brand is either a duplicate or a broken icon
+  // path the control plane does not serve, so the shell keeps only its
+  // collapse control.
+  const header = read('src/components/sidebar-header.tsx')
+  assert.doesNotMatch(header, /<img/, 'sidebar header renders a brand image')
+  assert.doesNotMatch(header, /iconUrl/, 'sidebar header reads a branding icon')
+  assert.doesNotMatch(header, /branding\.appName/, 'sidebar header renders a brand name')
+  assert.match(header, /TextAlignJustify/, 'sidebar header keeps its collapse control')
+
+  const footer = read('src/components/sidebar-footer.tsx')
+  assert.doesNotMatch(footer, /<PoweredBy \/>/, 'sidebar footer still renders the vendor credit')
+})
+
 test('every internal link and router push goes through the mailbox base', async () => {
   const walk = async (directory) => {
     const files = []
