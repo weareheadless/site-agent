@@ -260,6 +260,7 @@ def _build_cache_tree(root: Path) -> Path:
     (root / ".open-next" / "assets" / "index.html").write_text("<h1>one</h1>\n", encoding="utf-8")
     (root / ".next" / "server").mkdir(parents=True)
     (root / ".next" / "server" / "app-paths-manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "helloada-frontend.json").write_text('{"files": {}}\n', encoding="utf-8")
     return root
 
 
@@ -273,6 +274,17 @@ def test_the_build_cache_key_describes_the_app_not_the_content(tmp_path):
     assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) != key
     # A runtime change invalidates the compile even when app bytes are equal.
     assert release.build_cache_key(root, fingerprint="b" * 64, identities=identities) != key
+
+
+def test_a_page_import_does_not_invalidate_the_compile(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    identities = {"node": "22.23.3"}
+    key = release.build_cache_key(root, fingerprint="a" * 64, identities=identities)
+    (root / "helloada-frontend.json").write_text('{"files": {"/index.html": "x"}}\n', encoding="utf-8")
+    assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) == key
+    # Anything that is application source still invalidates it.
+    (root / "wrangler.jsonc").write_text("{}\n", encoding="utf-8")
+    assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) != key
 
 
 def test_reusing_a_compile_reconciles_public_files_and_keeps_next_assets(tmp_path):

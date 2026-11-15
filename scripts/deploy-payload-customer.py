@@ -68,6 +68,11 @@ def ensure_build_capacity(path: Path) -> None:
 BUILD_CACHE_EXCLUDED = frozenset({
     ".git", "node_modules", ".next", ".open-next", ".wrangler", ".mailflare", "public",
 })
+# Release metadata, not application source: the presentation inventory lists the
+# public files (excluded anyway), carries the imported source identity and is
+# validated and shipped fresh by every release, so an owner's page import does
+# not pay for a compile.
+BUILD_CACHE_IGNORED_FILES = frozenset({"helloada-frontend.json"})
 
 
 def build_cache_key(
@@ -83,6 +88,8 @@ def build_cache_key(
     for path in sorted(checkout.rglob("*")):
         relative = path.relative_to(checkout)
         if relative.parts and relative.parts[0] in BUILD_CACHE_EXCLUDED:
+            continue
+        if str(relative) in BUILD_CACHE_IGNORED_FILES:
             continue
         if path.is_symlink():
             # A linked source still changes the build; hash where it points
