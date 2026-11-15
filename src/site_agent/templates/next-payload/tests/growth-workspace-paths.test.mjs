@@ -49,6 +49,26 @@ test('the bridge maps one decision and one task, and refuses a wrong method', as
   assert.equal(helloAdaWorkspacePath('/api/helloada/growth/tasks/cmu123abc', 'DELETE'), undefined)
 })
 
+test('the bridge maps one-click handoff, one group and the growth ledger', async () => {
+  const { helloAdaWorkspacePath } = await load()
+  assert.equal(
+    helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc_-x/open', 'POST'),
+    '/workspace/growth/opportunities/cmu123abc_-x/open',
+  )
+  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc/open', 'GET'), undefined)
+  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/a%2Fb/open', 'POST'), undefined)
+  assert.equal(
+    helloAdaWorkspacePath('/api/helloada/growth/groups', 'POST', '?fresh=1'),
+    '/workspace/growth/groups?fresh=1',
+  )
+  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/groups', 'GET'), undefined)
+  assert.equal(
+    helloAdaWorkspacePath('/api/helloada/growth/bindings', 'GET', '?state=live'),
+    '/workspace/growth/bindings?state=live',
+  )
+  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/bindings', 'POST'), undefined)
+})
+
 test('the bridge does not extend an id into another path segment', async () => {
   const { helloAdaWorkspacePath } = await load()
   // A caller cannot smuggle a second segment or an encoded separator through

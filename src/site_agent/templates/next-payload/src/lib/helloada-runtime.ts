@@ -16,6 +16,13 @@ export function helloAdaWorkspacePath(path: string, method: string, search = '')
   if (suffix === '/growth/opportunities' && method === 'GET') return `/workspace/growth/opportunities${search}`
   const opportunityDecision = suffix.match(/^\/growth\/opportunities\/([A-Za-z0-9_-]{1,120})\/decision$/)
   if (opportunityDecision && method === 'POST') return `/workspace/growth/opportunities/${opportunityDecision[1]}/decision${search}`
+  // One click hands the finding to Ada, and a technical selection becomes one
+  // group; the owner then reads the ledger that names each state. Same opaque
+  // id shape as the decision queue.
+  const opportunityOpen = suffix.match(/^\/growth\/opportunities\/([A-Za-z0-9_-]{1,120})\/open$/)
+  if (opportunityOpen && method === 'POST') return `/workspace/growth/opportunities/${opportunityOpen[1]}/open${search}`
+  if (suffix === '/growth/groups' && method === 'POST') return `/workspace/growth/groups${search}`
+  if (suffix === '/growth/bindings' && method === 'GET') return `/workspace/growth/bindings${search}`
   const growthTask = suffix.match(/^\/growth\/tasks\/([A-Za-z0-9_-]{1,120})$/)
   if (growthTask && ['GET', 'POST'].includes(method)) return `/workspace/growth/tasks/${growthTask[1]}${search}`
   if (method === 'POST' && suffix === '/growth/check') return `/workspace/growth/check${search}`
