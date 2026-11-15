@@ -4,10 +4,14 @@ import { stripTypeScriptTypes } from 'node:module'
 import test from 'node:test'
 
 /**
- * The tenant bridge is a contract, not a passthrough: only the paths named
- * here reach the site-agent. A Growth route the UI calls but the bridge does
- * not map is a 503 in the owner's browser, which is how the decision queue
- * first failed. These cases pin the whole opportunity/task surface.
+ * Growth is not a tenant-runtime surface.
+ *
+ * The site-agent owns the CrawlSEO connector, the task queue and the ledger,
+ * and the HelloAda control plane reaches all of it for every tenant through
+ * its own authenticated gateway. When this bridge carried a second copy of
+ * that contract, a tenant built before a route shipped answered 503 for it,
+ * which is how the one-click handoff first failed. These cases keep the
+ * contract in exactly one place.
  */
 const load = async () => {
   const source = readFileSync(new URL('../src/lib/helloada-runtime.ts', import.meta.url), 'utf8')
@@ -16,72 +20,43 @@ const load = async () => {
   return import('data:text/javascript;base64,' + Buffer.from(javascript).toString('base64'))
 }
 
-test('the bridge maps the opportunity queue with its filters', async () => {
+test('the bridge does not carry the Growth contract', async () => {
   const { helloAdaWorkspacePath } = await load()
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/opportunities', 'GET', '?status=detected&limit=100'),
-    '/workspace/growth/opportunities?status=detected&limit=100',
-  )
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/opportunities', 'POST'),
-    undefined,
-  )
+  const paths = [
+    ['/api/helloada/growth', 'GET'],
+    ['/api/helloada/growth/opportunities', 'GET'],
+    ['/api/helloada/growth/opportunities/cmu123abc/open', 'POST'],
+    ['/api/helloada/growth/opportunities/cmu123abc/decision', 'POST'],
+    ['/api/helloada/growth/groups', 'POST'],
+    ['/api/helloada/growth/bindings', 'GET'],
+    ['/api/helloada/growth/tasks/cmu123abc', 'GET'],
+    ['/api/helloada/growth/articles/45', 'GET'],
+    ['/api/helloada/growth/actions/42/decision', 'POST'],
+    ['/api/helloada/growth/check', 'POST'],
+    ['/api/helloada/growth/budget', 'GET'],
+    ['/api/helloada/growth/research-policy', 'GET'],
+  ]
+  for (const [path, method] of paths) {
+    assert.equal(helloAdaWorkspacePath(path, method), undefined, `${method} ${path}`)
+  }
 })
 
-test('the bridge maps one decision and one task, and refuses a wrong method', async () => {
-  const { helloAdaWorkspacePath } = await load()
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc_-x/decision', 'POST'),
-    '/workspace/growth/opportunities/cmu123abc_-x/decision',
-  )
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc/decision', 'GET'),
-    undefined,
-  )
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/tasks/cmu123abc', 'GET'),
-    '/workspace/growth/tasks/cmu123abc',
-  )
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/tasks/cmu123abc', 'POST'),
-    '/workspace/growth/tasks/cmu123abc',
-  )
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/tasks/cmu123abc', 'DELETE'), undefined)
-})
-
-test('the bridge maps one-click handoff, one group and the growth ledger', async () => {
-  const { helloAdaWorkspacePath } = await load()
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc_-x/open', 'POST'),
-    '/workspace/growth/opportunities/cmu123abc_-x/open',
-  )
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/cmu123abc/open', 'GET'), undefined)
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/a%2Fb/open', 'POST'), undefined)
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/groups', 'POST', '?fresh=1'),
-    '/workspace/growth/groups?fresh=1',
-  )
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/groups', 'GET'), undefined)
-  assert.equal(
-    helloAdaWorkspacePath('/api/helloada/growth/bindings', 'GET', '?state=live'),
-    '/workspace/growth/bindings?state=live',
-  )
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/bindings', 'POST'), undefined)
-})
-
-test('the bridge does not extend an id into another path segment', async () => {
-  const { helloAdaWorkspacePath } = await load()
-  // A caller cannot smuggle a second segment or an encoded separator through
-  // the id, because the shape is anchored and the id charset excludes `/`.
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/tasks/one/two', 'GET'), undefined)
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/a%2Fb/decision', 'POST'), undefined)
-  assert.equal(helloAdaWorkspacePath('/api/helloada/growth/opportunities/../decision', 'POST'), undefined)
-})
-
-test('the bridge keeps mapping the saved analytics observations', async () => {
+test('the bridge still maps the surfaces a tenant really owns', async () => {
   const { helloAdaWorkspacePath } = await load()
   assert.equal(
     helloAdaWorkspacePath('/api/helloada/seo/analytics', 'GET', '?days=28'),
     '/workspace/seo/analytics?days=28',
   )
+  assert.equal(
+    helloAdaWorkspacePath('/api/helloada/growth', 'GET'),
+    undefined,
+  )
+})
+
+test('the bridge does not extend an id into another path segment', async () => {
+  const { helloAdaWorkspacePath } = await load()
+  // The remaining mapped ids keep the same anchored shape, so a caller cannot
+  // smuggle a second segment or an encoded separator through one.
+  assert.equal(helloAdaWorkspacePath('/api/helloada/conversations/1/two', 'GET'), undefined)
+  assert.equal(helloAdaWorkspacePath('/api/helloada/conversations/a%2Fb', 'GET'), undefined)
 })

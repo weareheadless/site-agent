@@ -22,26 +22,23 @@ test('request-time Worker bindings win over stale process environment', () => {
   assert.equal(api.helloAdaRuntime().url, 'https://api.example/v1')
 })
 
-test('shared bridge forwards explicit Growth checks and refuses unknown methods and paths', () => {
+test('shared bridge forwards the owner workspace and refuses unknown methods and paths', () => {
   const api = runtime({})
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'POST'), '/workspace/growth/check')
+  // Growth belongs to the site-agent and reaches it through the control plane;
+  // a tenant build must not have to carry that contract.
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'POST'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/source/preview', 'GET', '?branch=preview'), '/workspace/source/preview?branch=preview')
   const compiled = '/source/preview/6782629d-412a-425b-99f1-1c19c8a5efbf/runtime/_next/static/chunk.js'
   assert.equal(api.helloAdaWorkspacePath(`/api/helloada${compiled}`, 'GET'), `/workspace${compiled}`)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/source/preview/not-a-job/runtime/', 'GET'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/media/analyze', 'POST'), '/workspace/media/analyze')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/media/analyze', 'GET'), undefined)
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/articles/45', 'GET'), '/workspace/growth/articles/45')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'GET'), '/workspace/growth/budget')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'PUT'), '/workspace/growth/budget')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/research-policy', 'GET'), '/workspace/growth/research-policy')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/research-policy', 'PUT'), '/workspace/growth/research-policy')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/actions/42/decision', 'POST'), '/workspace/growth/actions/42/decision')
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/actions/not-an-id/decision', 'POST'), undefined)
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'POST'), undefined)
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/articles/not-an-id', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/articles/45', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/actions/42/decision', 'POST'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/opportunities', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/bindings', 'GET'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/atelier/growth/check', 'POST'), undefined)
-  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'GET'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/ada', 'GET', '?job_id=42'), '/workspace/chat/jobs/42')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'POST'), '/workspace/drafts/42/approve')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'GET'), undefined)

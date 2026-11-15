@@ -3,29 +3,12 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 /** One method/path contract for shared UI additions and thin tenant bridges. */
 export function helloAdaWorkspacePath(path: string, method: string, search = ''): string | undefined {
   const suffix = path.replace(/^\/api\/helloada(?=\/|$)/, '') || '/'
-  if (method === 'GET' && ['/connection', '/growth', '/seo/analytics', '/seo/insights', '/seo/evidence'].includes(suffix)) return `/workspace${suffix}${search}`
-  const growthArticle = suffix.match(/^\/growth\/articles\/([0-9]+)$/)
-  if (method === 'GET' && growthArticle) return `/workspace/growth/articles/${growthArticle[1]}${search}`
-  if (suffix === '/growth/budget' && ['GET', 'PUT'].includes(method)) return `/workspace/growth/budget${search}`
-  if (suffix === '/growth/research-policy' && ['GET', 'PUT'].includes(method)) return `/workspace/growth/research-policy${search}`
-  const crawlseoActionDecision = suffix.match(/^\/growth\/actions\/([0-9]+)\/decision$/)
-  if (crawlseoActionDecision && method === 'POST') return `/workspace/growth/actions/${crawlseoActionDecision[1]}/decision${search}`
-  // Opportunity work: the decision queue, one explicit decision and one task.
-  // Ids are opaque to this bridge, so they are only checked for shape and
-  // escaped; the connector decides what they mean.
-  if (suffix === '/growth/opportunities' && method === 'GET') return `/workspace/growth/opportunities${search}`
-  const opportunityDecision = suffix.match(/^\/growth\/opportunities\/([A-Za-z0-9_-]{1,120})\/decision$/)
-  if (opportunityDecision && method === 'POST') return `/workspace/growth/opportunities/${opportunityDecision[1]}/decision${search}`
-  // One click hands the finding to Ada, and a technical selection becomes one
-  // group; the owner then reads the ledger that names each state. Same opaque
-  // id shape as the decision queue.
-  const opportunityOpen = suffix.match(/^\/growth\/opportunities\/([A-Za-z0-9_-]{1,120})\/open$/)
-  if (opportunityOpen && method === 'POST') return `/workspace/growth/opportunities/${opportunityOpen[1]}/open${search}`
-  if (suffix === '/growth/groups' && method === 'POST') return `/workspace/growth/groups${search}`
-  if (suffix === '/growth/bindings' && method === 'GET') return `/workspace/growth/bindings${search}`
-  const growthTask = suffix.match(/^\/growth\/tasks\/([A-Za-z0-9_-]{1,120})$/)
-  if (growthTask && ['GET', 'POST'].includes(method)) return `/workspace/growth/tasks/${growthTask[1]}${search}`
-  if (method === 'POST' && suffix === '/growth/check') return `/workspace/growth/check${search}`
+  if (method === 'GET' && ['/connection', '/seo/analytics', '/seo/insights', '/seo/evidence'].includes(suffix)) return `/workspace${suffix}${search}`
+  // Growth is not a tenant-runtime surface. The site-agent owns the connector,
+  // the task queue and the ledger, and the HelloAda control plane reaches them
+  // for every tenant through its own authenticated gateway. Carrying a second
+  // copy of that contract here only let an old tenant build answer 503 for a
+  // route the app already shipped.
   if (method === 'POST' && suffix === '/media/analyze') return `/workspace/media/analyze${search}`
   if (method === 'POST' && /^\/messages\/[0-9]+\/draft-with-ada$/.test(suffix)) return `/workspace/messages/reply-draft${search}`
   if (suffix === '/ada' && method === 'POST') return `/workspace/chat${search}`
