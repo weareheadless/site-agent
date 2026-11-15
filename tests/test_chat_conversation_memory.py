@@ -34,6 +34,9 @@ def _captured_turn(monkeypatch, context, history):
         return {"reply": "Ada's answer.", "changed": False}
 
     monkeypatch.setattr(opencode_runner, "run_owner_turn", fake_run_owner_turn)
+    # The turn resolves the CLI before dispatching; these cases are about the
+    # brief, so the host's builder binary is not part of the fixture.
+    monkeypatch.setattr(opencode_runner, "opencode_bin", lambda config: "/bin/true")
     chat_agent.run_turn(context, 7, "essaie a nouveau", history, progress=None)
     return captured
 
