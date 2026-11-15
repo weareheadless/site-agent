@@ -220,7 +220,11 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
     if old_vars.get("HELLOADA_TENANT_ID") != tenant_id:
         raise SharedRuntimeError("tenant Wrangler identity differs from the registered tenant")
     site_agent_url = old_vars.get("SITE_AGENT_URL")
-    public_url = old_vars.get("NEXT_PUBLIC_SITE_URL")
+    # The platform's deploy material carries the tenant's current public
+    # address. The repository value is only a fallback for a checkout built
+    # without it, so a domain attached after the last commit still reaches the
+    # build that serves it.
+    public_url = str(shared_vars.get("HELLOADA_PUBLIC_SITE_URL") or "").strip() or old_vars.get("NEXT_PUBLIC_SITE_URL")
     if not isinstance(site_agent_url, str) or not urlsplit(site_agent_url).hostname:
         raise SharedRuntimeError("tenant Site-Agent URL is not explicitly configured")
     parsed_public_url = urlsplit(str(public_url or ""))
@@ -258,7 +262,10 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
         "NEXT_PUBLIC_SITE_URL": public_url,
         "HELLOADA_TENANT_ID": tenant_id,
     }
-    if isinstance(old_vars.get("HELLOADA_SITE_NAME"), str) and old_vars["HELLOADA_SITE_NAME"].strip():
+    requested_name = str(shared_vars.get("HELLOADA_SITE_NAME") or "").strip()
+    if requested_name:
+        tenant_identity["HELLOADA_SITE_NAME"] = requested_name
+    elif isinstance(old_vars.get("HELLOADA_SITE_NAME"), str) and old_vars["HELLOADA_SITE_NAME"].strip():
         tenant_identity["HELLOADA_SITE_NAME"] = old_vars["HELLOADA_SITE_NAME"]
     for key, value in tenant_identity.items():
         merged_vars[key] = value

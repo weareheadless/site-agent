@@ -65,7 +65,8 @@ class CloudflareDNSClient:
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise CloudflareDNSError(f"Cloudflare DNS request failed: {type(exc).__name__}") from exc
 
-    def zone_id(self, zone_name: str) -> str:
+    def zone(self, zone_name: str) -> dict[str, Any]:
+        """Return the active Cloudflare zone this account controls."""
         name = str(zone_name or "").strip().rstrip(".")
         if not name:
             raise CloudflareDNSError("zone name is required")
@@ -79,12 +80,15 @@ class CloudflareDNSClient:
         # contract, so never decide by taking the first result.
         active = [item for item in results if str(item.get("status") or "") == "active"]
         if len(active) == 1:
-            return str(active[0].get("id") or "")
+            return dict(active[0])
         if len(results) == 1:
-            return str(results[0].get("id") or "")
+            return dict(results[0])
         raise CloudflareDNSError(f"zone is ambiguous: {name}")
 
-    def zone_id_for_hostname(self, hostname: str) -> str:
+    def zone_id(self, zone_name: str) -> str:
+        return str(self.zone(zone_name).get("id") or "")
+
+    def zone_for_hostname(self, hostname: str) -> dict[str, Any]:
         """Resolve the authoritative Cloudflare zone for a hostname.
 
         Looking up ``example.com`` by taking everything after the first dot
@@ -95,14 +99,17 @@ class CloudflareDNSClient:
         value = str(hostname or "").strip().lower().rstrip(".")
         labels = [part for part in value.split(".") if part]
         if len(labels) < 2:
-            return self.zone_id(value)
+            return self.zone(value)
         for index in range(0, len(labels) - 1):
             candidate = ".".join(labels[index:])
             try:
-                return self.zone_id(candidate)
+                return self.zone(candidate)
             except CloudflareDNSError:
                 continue
         raise CloudflareDNSError(f"zone not found: {value}")
+
+    def zone_id_for_hostname(self, hostname: str) -> str:
+        return str(self.zone_for_hostname(hostname).get("id") or "")
 
     def records(self, zone_id: str, *, record_type: str = "", name: str = "") -> list[dict[str, Any]]:
         query = [f"per_page=100"]

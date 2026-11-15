@@ -2229,6 +2229,9 @@ def main() -> int:
                         help="build this exact clean checkout instead of cloning the registered repository")
     parser.add_argument("--build-only", action="store_true",
                         help="rehearse the release build here and stop before any Cloudflare mutation")
+    parser.add_argument("--public-url",
+                        help="canonical public origin the site is compiled for; defaults to the checkout")
+    parser.add_argument("--site-name", help="display name compiled into the site identity")
     parser.add_argument("--preview-base-path", metavar="PATH",
                         help="compile this build under the signed preview mount the platform minted")
     parser.add_argument("--preview-only", action="store_true",
@@ -2424,6 +2427,8 @@ def main() -> int:
             {**customer, "tenantId": args.tenant},
             shared_vars={
                 "HELLOADA_HANDOFF_PUBLIC_KEY": host_runtime_values.get("HELLOADA_HANDOFF_PUBLIC_KEY", ""),
+                **({"HELLOADA_PUBLIC_SITE_URL": args.public_url} if args.public_url else {}),
+                **({"HELLOADA_SITE_NAME": args.site_name} if args.site_name else {}),
             },
             expected_fingerprint=args.shared_runtime_fingerprint,
         )

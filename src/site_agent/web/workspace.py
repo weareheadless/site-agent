@@ -1275,6 +1275,11 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 "deployedSharedRuntimeFingerprint": str(activation.get("shared_runtime_fingerprint") or ""),
                 "deployedControlSha": str(activation.get("control_sha") or ""),
                 "turnstileSiteKey": str(environment.get("HELLOADA_TURNSTILE_SITE_KEY") or ""),
+                # The address the site is compiled for. It comes from the
+                # tenant record, not the repository, so a domain attached after
+                # the last build is picked up by the next one.
+                "publicUrl": str(site.get("public_url") or site.get("url") or "").strip(),
+                "siteName": str(tenant.config.get("display_name") or "").strip(),
                 "durableObjectLifecycle": lifecycle,
                 "cloudflare": {"apiToken": api_token, "accountId": account_id},
                 "workerSecrets": secrets,
@@ -1617,6 +1622,99 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                     "crawlseo_ready": bool(state.get("crawlseo")),
                 },
             }
+
+        @app.get(f"{control_prefix}/{{website_id}}/identity")
+        def control_plane_identity(website_id: str, request: Request):
+            """The tenant's current public identity, resolved from its record."""
+            from ..application.site_identity import site_identity
+
+            tenant = require_control_tenant(request, website_id)
+            return site_identity(tenant.tenant_id, tenant.config).to_dict()
+
+        @app.get(f"{control_prefix}/{{website_id}}/settings")
+        def control_plane_site_settings(website_id: str, request: Request):
+            """Read one website's identity, domain, mail and SEO settings."""
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.site_settings(tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.patch(f"{control_prefix}/{{website_id}}/settings")
+        async def control_plane_update_site_settings(website_id: str, request: Request):
+            """Rename one website in its tenant record.
+
+            The display name is identity, not page copy: it is compiled into the
+            site and shown by the workspace and the mailbox. The slug is the
+            owner's URL key and is not writable here.
+            """
+            tenant = require_control_tenant(request, website_id)
+            if registry is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            if "slug" in body:
+                raise HTTPException(status_code=400, detail="slug_read_only")
+            if "name" not in body:
+                raise HTTPException(status_code=400, detail="name is required")
+            if not isinstance(body.get("name"), str):
+                raise HTTPException(status_code=400, detail="name must be a string")
+            try:
+                updated = registry.update_site_name(tenant.tenant_id, body["name"])
+            except ConfigError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            from ..application.site_identity import site_identity
+
+            return site_identity(updated.tenant_id, updated.config).to_dict()
+
+        @app.post(f"{control_prefix}/{{website_id}}/settings/domain")
+        async def control_plane_attach_domain(website_id: str, request: Request):
+            """Attach a domain the platform controls in Cloudflare to this Worker.
+
+            The operation is explicit: a hostname owned by another Worker or an
+            existing DNS record is reported as a conflict unless the caller asks
+            to take it over or replace it.
+            """
+            from ..application.site_domain import SiteDomainError
+
+            tenant = require_control_tenant(request, website_id)
+            if registry is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            domain = str(body.get("domain") or "").strip()
+            if not domain:
+                raise HTTPException(status_code=400, detail="domain is required")
+            canonical = str(body.get("canonical") or "www").strip().lower()
+            replace_dns = bool(body.get("replaceDns") or body.get("replace_dns"))
+            takeover = bool(body.get("takeover"))
+            try:
+                return registry.attach_domain(
+                    tenant.tenant_id,
+                    domain,
+                    canonical=canonical,
+                    replace_dns=replace_dns,
+                    takeover=takeover,
+                    env=env,
+                )
+            except SiteDomainError as exc:
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail={
+                        "error": str(exc),
+                        "conflict": exc.conflict.to_dict() if exc.conflict else None,
+                    },
+                ) from exc
+            except ConfigError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.get(f"{control_prefix}/{{website_id}}/settings/email")
         def control_plane_email_settings(website_id: str, request: Request):

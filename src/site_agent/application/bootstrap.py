@@ -293,7 +293,24 @@ class WebsiteBootstrapService:
         with self._lock:
             state = self._read_state(normalized)
             self._refresh_release_state(state)
-            return self._public_state(state)
+            result = self._public_state(state)
+        # Receipts are evidence of what happened at bootstrap time; the current
+        # addresses come from the tenant record, so a renamed Worker or an
+        # attached domain is visible without rewriting history.
+        result["identity"] = self._identity(normalized)
+        return result
+
+    def _identity(self, tenant_id: str) -> dict[str, str] | None:
+        from .site_identity import site_identity
+
+        config_path = self.root / tenant_id / "config.yaml"
+        try:
+            tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            return None
+        if not isinstance(tenant_config, Mapping):
+            return None
+        return site_identity(tenant_id, tenant_config).to_dict()
 
     def _adoption_worker_origin(self, tenant_id: str, receipt: Mapping[str, Any]) -> tuple[str, str]:
         config_path = self.root / tenant_id / "config.yaml"

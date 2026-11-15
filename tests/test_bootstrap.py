@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi.testclient import TestClient
 
 from site_agent.application.bootstrap import WebsiteBootstrapService
@@ -268,6 +269,35 @@ def test_bootstrap_status_is_durable_before_worker_starts(tmp_path):
         assert registered["tenant_id"] == "demo"
         assert state["status"] == "queued"
         assert state["step"] == "requested"
+    finally:
+        service.close()
+        registry.close()
+
+
+def test_bootstrap_status_projects_the_current_identity(tmp_path):
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    try:
+        registration.register("demo", display_name="Demo")
+        tenant_config = tmp_path / "websites" / "demo" / "config.yaml"
+        document = yaml.safe_load(tenant_config.read_text(encoding="utf-8"))
+        document["site"] = {
+            "public_url": "https://www.demo.example/",
+            "custom_domain": "demo.example",
+            "preview_url": "https://helloada-demo.weareheadless.workers.dev",
+            "source_deployment": {"worker_name": "helloada-demo"},
+        }
+        tenant_config.write_text(yaml.safe_dump(document), encoding="utf-8")
+
+        state = service.status("demo")
+
+        # The receipt still describes the bootstrap run; the identity is the
+        # tenant's current record, so a rename or domain attach is visible.
+        assert state["identity"]["adminUrl"] == "https://www.demo.example/admin"
+        assert state["identity"]["workerName"] == "helloada-demo"
+        assert state["identity"]["registeredDomain"] == "demo.example"
     finally:
         service.close()
         registry.close()

@@ -944,6 +944,131 @@ class TenantRegistry:
             env=values,
         )
 
+    def site_settings(self, tenant: Tenant) -> dict[str, Any]:
+        """One read of everything the website settings surface shows."""
+        from .email_management import email_settings_view
+        from .site_domain import SiteDomainService
+        from .site_identity import site_identity
+
+        identity = site_identity(tenant.tenant_id, tenant.config)
+        domain = SiteDomainService(tenant.config, self._env).status(identity)
+        state: Mapping[str, Any] = {}
+        if isinstance(tenant.context.get("seo_provisioning_state"), Mapping):
+            state = tenant.context["seo_provisioning_state"]
+        elif tenant.memory is not None:
+            stored = tenant.memory.kv_get("seo_provisioning_state", {})
+            state = stored if isinstance(stored, Mapping) else {}
+        crawlseo = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        return {
+            "identity": identity.to_dict(),
+            "domain": domain,
+            "email": email_settings_view(tenant.config),
+            "seo": {
+                "state": state.get("state") or state.get("provisioning_state") or "pending",
+                "siteUrl": state.get("site_url") or identity.public_url,
+                "gscProperty": state.get("gsc_property") or "",
+                "gscVerified": bool(state.get("gsc_verified")),
+                "projectId": crawlseo.get("project_id") or "",
+                "siteId": crawlseo.get("site_id") or "",
+            },
+            "capabilities": {
+                "attachDomain": bool(identity.worker_name),
+                "buyDomain": False,
+            },
+        }
+
+    def update_site_name(self, tenant_id: str, name: str) -> dict[str, Any]:
+        """Rename a website in its tenant record.
+
+        The display name is tenant identity, not page content: it is what the
+        compiled site, the workspace navigation and the mailbox all show. The
+        slug stays the owner's URL key and the tenant id stays immutable.
+        """
+        from .tenant_registration import TenantRegistrationService
+
+        tenant = self.for_tenant_id(tenant_id)
+        if tenant is None:
+            raise ConfigError("tenant was not found")
+        display_name = " ".join(str(name or "").split())
+        if not display_name or len(display_name) > 120:
+            raise ConfigError("website name must be between 1 and 120 characters")
+        config_path = Path(str(tenant.config_path or "")).expanduser().resolve()
+        if not str(tenant.config_path).strip() or not config_path.is_file():
+            raise ConfigError("tenant configuration path is unavailable")
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError("tenant configuration is unreadable") from exc
+        if not isinstance(raw, dict):
+            raise ConfigError("tenant configuration root must be an object")
+        if str(raw.get("display_name") or "").strip() == display_name:
+            return tenant
+        raw["display_name"] = display_name
+        TenantRegistrationService._replace_config(config_path, raw)
+        values = dict(self._env)
+        token_env = str(tenant.api_token_env or tenant_token_env(tenant.tenant_id)).strip()
+        values[token_env] = tenant.api_token
+        return self.reload_tenant(
+            tenant.tenant_id,
+            str(config_path),
+            api_token=tenant.api_token,
+            api_token_env=token_env,
+            env=values,
+        )
+
+    def attach_domain(
+        self,
+        tenant_id: str,
+        domain: str,
+        *,
+        canonical: str = "www",
+        replace_dns: bool = False,
+        takeover: bool = False,
+        env: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Attach a domain the platform controls in Cloudflare to the tenant.
+
+        The record changes first-class: the registered domain and canonical
+        origin are written through the same reconcile path as any other origin
+        change, then the Worker is asked to rebuild so its compiled identity
+        matches the address it is served from.
+        """
+        from .site_domain import SiteDomainService, request_site_rebuild
+        from .site_identity import site_identity
+
+        tenant = self.for_tenant_id(tenant_id)
+        if tenant is None:
+            raise ConfigError("tenant was not found")
+        values = dict(self._env)
+        if env:
+            values.update(env)
+        identity = site_identity(tenant.tenant_id, tenant.config)
+        service = SiteDomainService(tenant.config, values)
+        attached = service.attach(
+            domain=domain,
+            worker_name=identity.worker_name,
+            canonical=canonical,
+            replace_dns=replace_dns,
+            takeover=takeover,
+        )
+        updated = self.update_site_origin(
+            tenant.tenant_id,
+            attached["publicUrl"],
+            custom_domain=attached["registeredDomain"],
+            env=env,
+        )
+        current = site_identity(updated.tenant_id, updated.config)
+        serving = service.probe(current.public_url)
+        return {
+            "state": "attached" if serving.get("ok") else "pending",
+            "identity": current.to_dict(),
+            "domain": SiteDomainService(updated.config, values).status(current),
+            "attached": attached["attached"],
+            "kept": attached["kept"],
+            "serving": serving,
+            "rebuild": request_site_rebuild(updated.config, values),
+        }
+
     @staticmethod
     def _start_scheduler(tenant: Tenant) -> None:
         """Start tenant maintenance jobs without blocking API startup on providers."""
@@ -5314,6 +5439,12 @@ class ChatService:
             raise BridgeError(f"frontend restoration preview could not be started: {str(exc)[:400]}") from exc
         memory.record_action("rollback_preview", f"{target_sha[:12]} -> draft #{draft_id}")
         return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview_job}
+
+    def site_settings(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return one website's identity, domain, mail and SEO settings."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        return self.registry.site_settings(tenant)
 
     def email_settings(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return the registered mail-management settings for one tenant."""
