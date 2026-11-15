@@ -692,6 +692,50 @@ def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_pa
     assert str(key) in str(fetch[1]["ssh_command"])
 
 
+def test_ensure_clone_repairs_a_single_branch_refspec_before_fetching(tmp_path, monkeypatch):
+    # A clone that tracks only main cannot lease the preview branch it pushes,
+    # and never refreshes origin/preview for a stacked follow-up build.
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    config = {"site": {"repository": "acme/site", "clone_path": str(clone)}}
+    calls = []
+
+    def fake_git(_clone, *args, **kwargs):
+        calls.append(args)
+        if args[:3] == ("config", "--get-all", "remote.origin.fetch"):
+            return "+refs/heads/main:refs/remotes/origin/main\n"
+        return ""
+
+    monkeypatch.setattr(runner, "_git", fake_git)
+
+    runner.ensure_clone(config)
+
+    assert (
+        "config", "--replace-all", "remote.origin.fetch", runner._FULL_FETCH_REFSPEC
+    ) in calls
+    fetch_index = next(index for index, args in enumerate(calls) if args[:2] == ("fetch", "origin"))
+    assert calls.index(("config", "--replace-all", "remote.origin.fetch", runner._FULL_FETCH_REFSPEC)) < fetch_index
+
+
+def test_ensure_clone_leaves_a_canonical_refspec_alone(tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    config = {"site": {"repository": "acme/site", "clone_path": str(clone)}}
+    calls = []
+
+    def fake_git(_clone, *args, **kwargs):
+        calls.append(args)
+        if args[:3] == ("config", "--get-all", "remote.origin.fetch"):
+            return f"{runner._FULL_FETCH_REFSPEC}\n"
+        return ""
+
+    monkeypatch.setattr(runner, "_git", fake_git)
+
+    runner.ensure_clone(config)
+
+    assert not any(args[:2] == ("config", "--replace-all") for args in calls)
+
+
 def test_build_base_ref_stacks_on_pending_merge(tmp_path):
     memory = Memory(tmp_path / "m.db")
     assert runner._build_base_ref(memory) == "origin/main"

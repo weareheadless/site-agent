@@ -35,6 +35,7 @@ class RunnerError(RuntimeError):
 
 
 PREVIEW_BRANCH = "preview"
+_FULL_FETCH_REFSPEC = "+refs/heads/*:refs/remotes/origin/*"
 _MAX_OPENCODE_ARG_PROMPT_BYTES = 100_000
 
 
@@ -217,6 +218,24 @@ def discard_worktree(config: dict[str, Any]) -> dict[str, Any]:
     return worktree_status(config)
 
 
+def _ensure_all_branches_tracked(clone: Path) -> None:
+    """One fetch refspec for every branch the builder may name.
+
+    ``--force-with-lease`` resolves its expected value through the remote's
+    fetch refspec. A single-branch clone names only ``main``, so a
+    fully-qualified preview destination has no tracking ref and the push is
+    refused as stale information — the owner gets no review. The same refspec
+    also leaves ``origin/preview`` frozen, so a follow-up build stacks on a
+    preview nobody refreshed. Repair the clone once, in place.
+    """
+    try:
+        current = _git(clone, "config", "--get-all", "remote.origin.fetch").split()
+    except RunnerError:
+        current = []
+    if current != [_FULL_FETCH_REFSPEC]:
+        _git(clone, "config", "--replace-all", "remote.origin.fetch", _FULL_FETCH_REFSPEC)
+
+
 def ensure_clone(config: dict[str, Any], progress=None) -> Path:
     site = config.get("site") or {}
     clone = Path(str(site.get("clone_path", "")).strip())
@@ -235,6 +254,7 @@ def ensure_clone(config: dict[str, Any], progress=None) -> Path:
     _git(clone, "config", "user.name", "Ada (site-agent)")
     _git(clone, "config", "user.email", "ada@site-agent.local")
     _git(clone, "remote", "set-url", "origin", _origin_url(repo, config, credential_env), ssh_command=ssh_command)
+    _ensure_all_branches_tracked(clone)
     if progress:
         progress("syncing with GitHub")
     _git(clone, "fetch", "origin", "--prune", token=token, timeout=180, ssh_command=ssh_command)
