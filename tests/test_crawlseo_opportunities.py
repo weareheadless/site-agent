@@ -125,6 +125,10 @@ def test_task_confirmation_and_analytics_are_bounded_and_analytics_allowlisted()
     assert result["ga4"]["data"]["top_pages"] == [{"path": "/", "views": 40}]
     assert result["ga4"]["data"]["sources"][0]["source"] == "Organic Search"
     assert result["ga4"]["data"]["organic_queries"][0]["query"] == "sample query"
+    assert result["ga4"]["history"]["coverage"] == {"startDate": "2026-08-17", "endDate": "2026-11-14", "days": 90}
+    assert result["ga4"]["history"]["daily"][0] == {"date": "2026-11-03", "sessions": 1, "activeUsers": 1, "screenPageViews": 1, "eventCount": 3}
+    assert result["ga4"]["data"]["history"]["channels"][0] == {"channel": "Organic Search", "sessions": 3, "users": 3, "engagementRate": 0.5}
+    assert "accessToken" not in encoded
     assert result["gsc"]["queries"][0]["device"] == "DESKTOP"
     assert result["gsc"]["queries"][0]["country"] == "usa"
     assert result["gsc"]["rowCount"] == {"queries": 1, "pages": 1}

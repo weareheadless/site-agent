@@ -461,7 +461,8 @@ class CrawlSEOApplicationService:
         if status not in {"available", "missing", "invalid"} or (status == "available") != (clean_data is not None):
             raise CrawlSEOApplicationError("CrawlSEO GA4 availability does not match its metrics")
         return {"status": status, "propertyId": prop, "observedAt": observed, "coverage": coverage,
-                "data": clean_data, "snapshotId": cls._analytics_nullable_text(value.get("snapshotId"), "GA4 snapshotId"),
+                "data": clean_data, "history": cls._analytics_history(value.get("history")),
+                "snapshotId": cls._analytics_nullable_text(value.get("snapshotId"), "GA4 snapshotId"),
                 "connection": cls._analytics_connection(value.get("connection")),
                 "latestSync": cls._analytics_sync(value.get("latestSync"))}
 
@@ -493,12 +494,17 @@ class CrawlSEOApplicationService:
     def _analytics_ga4_data(cls, value: Any) -> dict[str, Any] | None:
         if not isinstance(value, Mapping) or not isinstance(value.get("current_week"), Mapping):
             raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metrics")
-        fields = ("current_week", "previous_week", "delta_pct", "top_pages", "sources", "organic_queries")
+        fields = ("current_week", "previous_week", "delta_pct", "top_pages", "sources", "organic_queries", "history")
         result: dict[str, Any] = {}
         for field in fields:
             if field not in value:
                 continue
             item = value[field]
+            if field == "history":
+                history = cls._analytics_history(item)
+                if history is not None:
+                    result[field] = history
+                continue
             if field in {"current_week", "previous_week", "delta_pct"}:
                 if not isinstance(item, Mapping):
                     raise CrawlSEOApplicationError("invalid CrawlSEO GA4 metric map")
@@ -512,8 +518,57 @@ class CrawlSEOApplicationService:
         return result or None
 
     @classmethod
+    def _analytics_history(cls, value: Any) -> dict[str, Any] | None:
+        """The 90-day GA4 capture: daily rows and dimension tables, bounded."""
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GA4 history")
+        coverage = value.get("coverage")
+        if not isinstance(coverage, Mapping):
+            raise CrawlSEOApplicationError("invalid CrawlSEO GA4 history coverage")
+        start = cls._analytics_date(coverage.get("startDate"), "history startDate")
+        end = cls._analytics_date(coverage.get("endDate"), "history endDate")
+        days = coverage.get("days")
+        if start > end or isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 400:
+            raise CrawlSEOApplicationError("invalid CrawlSEO GA4 history coverage")
+        return {
+            "coverage": {"startDate": start, "endDate": end, "days": days},
+            "daily": cls._analytics_history_rows(value.get("daily"), ("date", "sessions", "activeUsers", "screenPageViews", "eventCount"), ("date",), "daily"),
+            "pages": cls._analytics_history_rows(value.get("pages"), ("path", "views", "sessions"), ("path",), "pages"),
+            "channels": cls._analytics_history_rows(value.get("channels"), ("channel", "sessions", "users", "engagementRate"), ("channel",), "channels"),
+            "devices": cls._analytics_history_rows(value.get("devices"), ("device", "sessions", "users"), ("device",), "devices"),
+            "countries": cls._analytics_history_rows(value.get("countries"), ("country", "sessions", "users"), ("country",), "countries"),
+            "events": cls._analytics_history_rows(value.get("events"), ("event", "count"), ("event",), "events"),
+        }
+
+    @classmethod
+    def _analytics_history_rows(cls, value: Any, fields: tuple[str, ...], text_fields: tuple[str, ...],
+                                label: str) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > 10_000:
+            raise CrawlSEOApplicationError(f"invalid CrawlSEO GA4 history {label}")
+        rows: list[dict[str, Any]] = []
+        for row in value:
+            if not isinstance(row, Mapping) or any(key not in row for key in fields):
+                raise CrawlSEOApplicationError(f"invalid CrawlSEO GA4 history {label} row")
+            clean: dict[str, Any] = {}
+            for key in fields:
+                item = row[key]
+                if key in text_fields:
+                    clean[key] = cls._analytics_date(item, f"history {key}") if key == "date" else cls._analytics_text(item, f"history {key}")
+                elif isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+                    raise CrawlSEOApplicationError(f"invalid CrawlSEO GA4 history {label} value")
+                else:
+                    clean[key] = item
+            rows.append(clean)
+        return rows
+
+    @classmethod
     def _metric_map(cls, value: Mapping[str, Any], *, allow_empty: bool = False, allow_null: bool = False) -> dict[str, Any]:
-        allowed = {"activeUsers", "totalUsers", "sessions", "screenPageViews"}
+        allowed = {"activeUsers", "newUsers", "totalUsers", "sessions", "engagedSessions",
+                   "engagementRate", "screenPageViews", "eventCount", "averageSessionDuration"}
         result = {}
         for key, item in value.items():
             if key in allowed:
