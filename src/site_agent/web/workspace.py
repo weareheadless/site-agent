@@ -557,6 +557,38 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/growth/opportunities/{{opportunity_id}}/open")
+    def workspace_growth_opportunity_open(opportunity_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.open_crawlseo_opportunity(
+                opportunity_id, tenant=tenant, owner_actor_id=authenticated_owner_actor(request, tenant))
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/growth/groups")
+    async def workspace_growth_group_open(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.open_crawlseo_group(
+                body, tenant=tenant, owner_actor_id=authenticated_owner_actor(request, tenant))
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/growth/bindings")
+    def workspace_growth_bindings(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.crawlseo_growth_bindings(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/growth/tasks/{{task_id}}")
     def workspace_growth_task(task_id: str, request: Request):
         tenant = require_service(request)

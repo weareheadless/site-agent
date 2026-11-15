@@ -131,3 +131,73 @@ def test_a_tenant_without_a_connector_binding_is_refused():
     service = ChatService(registry=SimpleNamespace(tenants={"oceanicvibes": tenant}))
     with pytest.raises(BridgeError, match="connector is unavailable"):
         service.crawlseo_task("task-1", tenant=tenant)
+
+
+class FoundConnector(Connector):
+    """A connector with one technical finding and one content finding."""
+
+    def __init__(self):
+        super().__init__()
+        self.status = {"task-opp-tech": "todo", "task-opp-content": "todo"}
+
+    def connector_opportunities(self, site_id, limit=50, cursor=None, status=None):
+        def row(identifier, kind):
+            return {"id": identifier, "type": kind, "status": "detected", "title": f"Finding {identifier}",
+                    "summary": "Evidence-backed finding.", "pageUrl": f"https://example.test/{identifier}",
+                    "updatedAt": "2026-11-15T10:00:00.000Z", "recommendationDecision": {"decisionId": "d-1"},
+                    "scoreInputs": {}, "queries": [], "tasks": []}
+        return {"schemaVersion": "1.0", "siteId": site_id, "projectId": "project-1",
+                "opportunities": [row("opp-tech", "O8_structured_data_gap"), row("opp-content", "O3_content_gap")],
+                "counts": {"detected": 2, "total": 2}, "nextCursor": None}
+
+    def connector_opportunity_operation(self, opportunity_id, operation):
+        self.calls.append(("decision", opportunity_id, dict(operation)))
+        task_id = f"task-{opportunity_id}"
+        return {"opportunityId": opportunity_id, "status": "accepted", "taskId": task_id}
+
+    def connector_task(self, site_id, task_id):
+        return {"task": {"id": task_id, "status": self.status.get(task_id, "todo")}}
+
+    def connector_confirm_task(self, task_id, confirmation):
+        self.calls.append(("confirm", task_id, dict(confirmation)))
+        self.status[task_id] = confirmation["status"]
+        return {"taskId": task_id, "status": confirmation["status"]}
+
+
+def _opened_service(tmp_path):
+    from site_agent.core.memory import Memory
+
+    memory = Memory(tmp_path / "memory.db")
+    connector = FoundConnector()
+    context = {"crawlseo_service": connector, "seo_provisioning_state": {"crawlseo": {"site_id": "site-1"}}}
+    tenant = SimpleNamespace(tenant_id="oceanicvibes", context=context, memory=memory,
+                             config={}, registry=None)
+    service = ChatService(registry=SimpleNamespace(tenants={"oceanicvibes": tenant}))
+    return service, tenant, connector, memory
+
+
+def test_one_click_hands_a_technical_finding_to_ada_and_starts_its_task(tmp_path, monkeypatch):
+    service, tenant, connector, memory = _opened_service(tmp_path)
+
+    def enqueue(body, *, tenant=None):
+        conversation = memory.create_conversation(title="Brief")
+        job = memory.enqueue_chat_job(conversation, body["message"], display_message=body["message"])
+        return {"conversation_id": conversation, "job_id": job}
+
+    monkeypatch.setattr(service, "enqueue", enqueue)
+    result = service.open_crawlseo_opportunity("opp-tech", tenant=tenant, owner_actor_id="payload:owner-1")
+    assert result["taskId"] == "task-opp-tech"
+    assert connector.status["task-opp-tech"] == "in_progress"
+    assert result["conversationId"]
+    board = service.crawlseo_growth_bindings(tenant=tenant)
+    assert board["bindings"][0]["opportunityId"] == "opp-tech"
+    memory.close()
+
+
+def test_group_endpoint_refuses_content_members_server_side(tmp_path, monkeypatch):
+    service, tenant, _connector, memory = _opened_service(tmp_path)
+    monkeypatch.setattr(service, "enqueue", lambda body, tenant=None: {"conversation_id": 1, "job_id": 1})
+    with pytest.raises(BridgeError, match="only technical"):
+        service.open_crawlseo_group({"opportunityIds": ["opp-tech", "opp-content"]}, tenant=tenant,
+                                    owner_actor_id="payload:owner-1")
+    memory.close()

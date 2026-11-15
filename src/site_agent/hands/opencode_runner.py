@@ -3674,6 +3674,14 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
             kind="merge",
             meta=meta,
         )
+    # A draft produced in a one-click Growth conversation carries the CrawlSEO
+    # task binding into its approval, where publication is the delivery evidence.
+    try:
+        from ..application.growth_open import bind_draft
+
+        bind_draft(memory, draft_id, context.get("_chat_job_id"))
+    except Exception:
+        pass
     if isinstance(revision, Mapping):
         initiative_id = int(revision["initiativeId"])
         initiative = next((

@@ -2400,6 +2400,122 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
             raise BridgeError(str(exc)[:400]) from exc
 
+    def open_crawlseo_opportunity(self, opportunity_id: str, *, tenant: Tenant | None = None,
+                                  owner_actor_id: str | None = None) -> dict[str, Any]:
+        """Send one accepted CrawlSEO finding to Ada as a single brief.
+
+        The owner clicked once. The connector task is accepted (or reused), Ada
+        is given the finding in a conversation, and the local binding is only
+        the record that joins the task, the conversation and its draft.
+        """
+        from .growth_delivery import require_owner_actor
+        from .growth_open import GrowthOpenError, open_opportunity
+
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        if tenant is None:
+            raise BridgeError("tenant is not authorized")
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        try:
+            generation = self._crawlseo_generation(service, site_id)
+            return open_opportunity(
+                service, tenant.memory, tenant,
+                opportunity_id=str(opportunity_id),
+                site_id=site_id,
+                generation=generation,
+                actor=str(owner_actor_id),
+                enqueue=lambda body: self.enqueue(body, tenant=tenant),
+            )
+        except GrowthOpenError as exc:
+            raise BridgeError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def open_crawlseo_group(self, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+                            owner_actor_id: str | None = None) -> dict[str, Any]:
+        """Group only technical findings into one Ada conversation and release."""
+        from .growth_delivery import require_owner_actor
+        from .growth_open import GrowthOpenError, open_group
+
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        if tenant is None:
+            raise BridgeError("tenant is not authorized")
+        opportunity_ids = body.get("opportunityIds")
+        if not isinstance(opportunity_ids, list):
+            raise BridgeError("opportunityIds must be a list")
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        try:
+            generation = self._crawlseo_generation(service, site_id)
+            return open_group(
+                service, tenant.memory, tenant,
+                opportunity_ids=[str(item) for item in opportunity_ids],
+                site_id=site_id,
+                generation=generation,
+                actor=str(owner_actor_id),
+                enqueue=lambda body: self.enqueue(body, tenant=tenant),
+            )
+        except GrowthOpenError as exc:
+            raise BridgeError(str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - connector detail stays behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_growth_bindings(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """The five-state work view bound to CrawlSEO tasks.
+
+        Reads the connector for each task so a recrawl that verified the outcome
+        is visible without a reopen click. A release queued by approval is settled
+        by its own deployment receipt, read-only.
+        """
+        from .growth_open import deliver_tasks, pending_releases, read_bindings, task_ids_for
+
+        if tenant is None:
+            raise BridgeError("tenant is not authorized")
+        service, site_id = self.crawlseo_connector(tenant=tenant)
+        memory = tenant.memory
+        statuses: dict[str, str] = {}
+        for task_id in task_ids_for(memory):
+            try:
+                current = service.connector_task(site_id, task_id)
+                task = current.get("task") if isinstance(current, Mapping) else None
+                if isinstance(task, Mapping) and task.get("status"):
+                    statuses[task_id] = str(task["status"])
+            except Exception:
+                # One unreadable task must not hide the board.
+                continue
+
+        def reconcile() -> None:
+            releases = pending_releases(memory)
+            if not releases:
+                return
+            deployer = tenant.context.get("source_deployment") if isinstance(tenant.context, Mapping) else None
+            lookup = getattr(deployer, "for_draft", None)
+            if not callable(lookup):
+                return
+            generation = self._crawlseo_generation(service, site_id)
+            for row in releases:
+                receipt = lookup(int(row.get("draftId") or 0))
+                if not isinstance(receipt, Mapping) or receipt.get("status") != "deployed":
+                    continue
+                tasks = [dict(item) for item in row.get("tasks") or [] if isinstance(item, Mapping)]
+                deliver_tasks(
+                    service, memory,
+                    site_id=site_id,
+                    generation=generation,
+                    tasks=tasks,
+                    actor=str(row.get("confirmedBy") or "owner"),
+                    reference=f"growth:draft:{row.get('draftId')}",
+                    links={key: str(receipt.get(key) or "") for key in ("commit", "commit_sha", "url", "live_url")
+                           if isinstance(receipt.get(key), str) and receipt.get(key)},
+                )
+
+        return read_bindings(memory, tenant.config if tenant else {},
+                             task_statuses=statuses, reconcile=reconcile)
+
     def decide_crawlseo_opportunity(self, opportunity_id: str, body: Mapping[str, Any], *,
                                     tenant: Tenant | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
         """Relay one owner decision; the human identity never comes from the body."""
@@ -4841,6 +4957,17 @@ class ChatService:
                 f"#{normalized_id} [{kind}] {draft.get('title') or ''}".strip(),
             )
         result.setdefault("published", dict(published) if published else None)
+        # Publication is the delivery evidence for a one-click Growth finding.
+        # A queued release stays publishing until its own receipt settles it.
+        try:
+            from .growth_open import publication_hook
+
+            publication_hook(tenant.context if tenant is not None else None, draft, result,
+                             actor=owner_actor_id)
+        except Exception:
+            # Delivery reporting is retried by the bindings read; it must never
+            # turn a proven publication into a failed approval.
+            pass
         return result
 
     def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
@@ -4991,6 +5118,12 @@ class ChatService:
             from .growth_candidates import wake_growth_pending
 
             wake_growth_pending(memory)
+        try:
+            from .growth_open import cancel_binding_for_draft
+
+            cancel_binding_for_draft(memory, normalized_id)
+        except Exception:
+            pass
         return {"ok": True, "draft_id": normalized_id, "status": "discarded", "content_restore": content_restore}
 
     def _restore_draft_content(self, draft: Mapping[str, Any], tenant: Tenant) -> dict[str, Any]:
