@@ -277,22 +277,36 @@ def test_the_build_cache_key_describes_the_app_not_the_content(tmp_path):
 
 def test_reusing_a_compile_reconciles_public_files_and_keeps_next_assets(tmp_path):
     root = _build_cache_tree(tmp_path)
-    release.store_build_cache(tmp_path / "cache" / "key", root, key="key", source_sha=SHA)
+    entry = tmp_path / "cache" / "key"
+    release.store_build_cache(entry, root, key="key", source_sha=SHA)
     (root / "public" / "index.html").write_text("<h1>two</h1>\n", encoding="utf-8")
     (root / "public" / "new.html").write_text("<h1>new</h1>\n", encoding="utf-8")
-    cached = json.loads((tmp_path / "cache" / "key" / "meta.json").read_text())
-    assert cached["publicPaths"] == ["index.html"]
 
     checkout = tmp_path / "checkout"
-    shutil.copytree(tmp_path / "cache" / "key" / "open-next", checkout / ".open-next")
-    (checkout / "public").mkdir()
+    (checkout / "public").mkdir(parents=True)
     (checkout / "public" / "index.html").write_text("<h1>two</h1>\n", encoding="utf-8")
     (checkout / "public" / "new.html").write_text("<h1>new</h1>\n", encoding="utf-8")
-    release.reconcile_public_assets(checkout, cached["publicPaths"])
-    release.verify_public_assets(checkout)
+    cached = release.restore_build_cache(entry, checkout)
+    assert cached["publicPaths"] == ["index.html"]
     assert (checkout / ".open-next/assets/index.html").read_text() == "<h1>two</h1>\n"
     assert (checkout / ".open-next/assets/new.html").read_text() == "<h1>new</h1>\n"
     assert (checkout / ".open-next/assets/_next/chunk.js").read_text() == "chunk\n"
+    assert (checkout / ".next/server/app-paths-manifest.json").read_text() == "{}\n"
+
+
+def test_a_damaged_cached_compile_is_refused(tmp_path):
+    root = _build_cache_tree(tmp_path)
+    entry = tmp_path / "cache" / "key"
+    release.store_build_cache(entry, root, key="key", source_sha=SHA)
+    (entry / "open-next" / "assets" / "_next" / "chunk.js").write_text("tampered\n", encoding="utf-8")
+
+    checkout = tmp_path / "checkout"
+    (checkout / "public").mkdir(parents=True)
+    (checkout / "public" / "index.html").write_text("<h1>one</h1>\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="differs from what was stored"):
+        release.restore_build_cache(entry, checkout)
+    # The next release can still be built; only the reuse is refused.
+    assert not (checkout / ".next/server/app-paths-manifest.json").exists()
 
 
 def test_a_reused_compile_cannot_claim_public_bytes_it_does_not_ship(tmp_path):

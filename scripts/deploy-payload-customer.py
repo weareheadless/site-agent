@@ -100,6 +100,14 @@ def build_cache_key(
     return digest.hexdigest()
 
 
+def tree_digest(root: Path) -> str:
+    """One digest over every file and path below `root`."""
+    digest = hashlib.sha256()
+    for relative, value in sorted(file_hashes(root).items()):
+        digest.update(relative.encode("utf-8") + b"\0" + value.encode("ascii") + b"\0")
+    return digest.hexdigest()
+
+
 def _public_paths(root: Path) -> list[str]:
     public = root / "public"
     if not public.is_dir():
@@ -136,10 +144,35 @@ def store_build_cache(entry: Path, checkout: Path, *, key: str, source_sha: str)
         "key": key,
         "sourceSha": source_sha,
         "publicPaths": _public_paths(checkout),
+        # The restore proves the copied tree still is the stored tree, so a
+        # damaged cache falls back to a build instead of shipping a broken app.
+        "artifactDigest": tree_digest(staging / "open-next"),
         "storedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }, indent=2) + "\n", encoding="utf-8")
     shutil.rmtree(entry, ignore_errors=True)
     staging.rename(entry)
+
+
+def restore_build_cache(entry: Path, checkout: Path) -> dict[str, Any]:
+    """Put one stored compile back, prove it, and return its stored receipt."""
+    cached = json.loads((entry / "meta.json").read_text(encoding="utf-8"))
+    if not (entry / "open-next").is_dir():
+        raise RuntimeError("cached build has no compiled application")
+    target = checkout / ".open-next"
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(entry / "open-next", target)
+    if tree_digest(target) != cached.get("artifactDigest"):
+        raise RuntimeError("cached build differs from what was stored")
+    # The release reads the compiled route manifest; keep it with the artifact
+    # so a reused build can still be inspected without a compile.
+    route_manifest = entry / "next" / "app-paths-manifest.json"
+    if not route_manifest.is_file():
+        raise RuntimeError("cached build has no route manifest")
+    (checkout / ".next" / "server").mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(route_manifest, checkout / ".next" / "server" / "app-paths-manifest.json")
+    reconcile_public_assets(checkout, list(cached.get("publicPaths") or []))
+    verify_public_assets(checkout)
+    return cached
 
 
 def reconcile_public_assets(checkout: Path, previous_public_paths: list[str]) -> None:
@@ -2767,17 +2800,7 @@ def main() -> int:
             if (build_cache_entry is not None and (build_cache_entry / "meta.json").is_file()
                     and (build_cache_entry / "open-next").is_dir()):
                 try:
-                    cached = json.loads((build_cache_entry / "meta.json").read_text(encoding="utf-8"))
-                    target = checkout / ".open-next"
-                    shutil.rmtree(target, ignore_errors=True)
-                    shutil.copytree(build_cache_entry / "open-next", target)
-                    route_manifest = build_cache_entry / "next" / "app-paths-manifest.json"
-                    if not route_manifest.is_file():
-                        raise RuntimeError("cached build has no route manifest")
-                    (checkout / ".next" / "server").mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(route_manifest, checkout / ".next" / "server" / "app-paths-manifest.json")
-                    reconcile_public_assets(checkout, list(cached.get("publicPaths") or []))
-                    verify_public_assets(checkout)
+                    cached = restore_build_cache(build_cache_entry, checkout)
                     reused_build = True
                     receipt["buildCache"] = {
                         "hit": True, "key": build_key, "fromSourceSha": cached.get("sourceSha"),

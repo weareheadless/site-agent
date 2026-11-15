@@ -190,12 +190,21 @@ applied, contract generated — excluding `public/`, plus the shared-runtime
 fingerprint, node/npm versions, Payload contract identities and the pinned
 Mailflare source. Any change to those inputs misses the cache and builds.
 
-A reuse is not trusted on the strength of the key: this release's public files
-are removed from the restored asset tree, recopied from source, and every file
-is compared byte for byte before the release continues (and the static profile
-still verifies its full declaration). A failed check falls back to the full
-build. One compiled application is kept per tenant. `HELLOADA_NO_BUILD_CACHE=1`
-disables the path for a release.
+A reuse is not trusted on the strength of the key: the copied tree is compared
+against the digest recorded when it was stored, this release's public files are
+removed from the restored asset tree and recopied from source, and every one of
+them is compared byte for byte before the release continues (and the static
+profile still verifies its full declaration). A failed check falls back to the
+full build. One compiled application is kept per tenant.
+`HELLOADA_NO_BUILD_CACHE=1` disables the path for a release.
+
+The cache holds the OpenNext output and nothing else, taken before Mailflare
+composition. Mailflare's client and server chunks are built fresh for every
+release and their hashed names are not stable between two builds of the same
+source, so a release artifact always differs from another release in
+`.mailflare/**` and `.open-next/assets/mail/**` — two full builds differ there
+too. Artifact hashes therefore compare releases, not compiles; everything
+outside those paths is the same compiled application, byte for byte.
 
 The package cache under `npm-cache/` is content-addressed and verified by npm
 against the lockfile, so it is shared across disposable build workspaces.
