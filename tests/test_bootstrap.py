@@ -1465,7 +1465,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     # its home is committed source, so the release declares no website yet.
     assert config["site"]["website_present"] is False
     assert (site_dir / "src/app/(frontend)/page.tsx").is_file()
-    assert config["site"]["payload"]["contract"]["sharedRuntimeFingerprint"] == template_manifest["sharedRuntimeFingerprint"]
+    assert "sharedRuntimeFingerprint" not in config["site"]["payload"]["contract"]
     assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["migrationHead"] == template_manifest["migrationHead"]
@@ -1966,3 +1966,36 @@ def test_host_bootstrap_fails_closed_on_an_unrecognized_tenant_unit(tmp_path):
         retire(unit_dir, runner=systemctl)
     assert systemctl.mutations == []
     assert unit_path.exists()
+
+
+def test_bootstrap_payload_contract_is_the_identity_activation_accepts(tmp_path):
+    """The contract bootstrap writes is the contract runtime activation reads.
+
+    A fingerprint in that block used to make every fresh bootstrap fail at
+    activate-runtime with "unsupported fields", after the Worker was already
+    live: the writer and the reader disagreed about what a contract is.
+    """
+    import json as json_module
+
+    from site_agent.application.bootstrap import payload_contract_identity
+    from site_agent.application.tenant_registration import supported_payload_contract_keys
+
+    manifest = json_module.loads(
+        (Path(__file__).resolve().parents[1]
+         / "src/site_agent/templates/next-payload/template-manifest.json").read_text(encoding="utf-8")
+    )
+    contract = payload_contract_identity({
+        "contract": manifest["contentContract"],
+        "coreVersion": manifest["payloadCore"],
+        "schemaRevision": manifest["schemaRevision"],
+        "schemaIdentity": manifest["schemaIdentity"],
+        "migrationHead": manifest["migrationHead"],
+        "locales": manifest["locales"],
+        "defaultLocale": manifest["defaultLocale"],
+        "collections": {"media": ["alt", "caption"]},
+        "sharedRuntimeFingerprint": manifest["sharedRuntimeFingerprint"],
+    })
+    assert set(contract) <= supported_payload_contract_keys()
+    assert "sharedRuntimeFingerprint" not in contract
+    assert contract["defaultLocale"] in contract["locales"]
+    assert contract["media_fields"] == ["alt", "caption"]

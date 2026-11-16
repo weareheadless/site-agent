@@ -43,6 +43,21 @@ _RUNTIME_ACTIVATION_UNSET = object()
 
 _RETIRED_CONTRACT_KEYS = frozenset({"adminVersion"})
 
+# The Payload contract a tenant runtime may carry: the schema identity it
+# verified, plus the locale, media and module metadata the workspace reads.
+# Anything else is a second contract by another name and is refused, so the
+# writer and the reader name the same keys here instead of drifting.
+PAYLOAD_CONTRACT_IDENTITY_KEYS = frozenset({
+    "contract", "coreVersion", "schemaRevision", "schemaIdentity", "migrationHead",
+})
+PAYLOAD_CONTRACT_LOCALE_KEYS = frozenset({"configurationIdentity", "locales", "defaultLocale"})
+PAYLOAD_CONTRACT_OPTIONAL_KEYS = frozenset({"media_fields", "collections", "globals"})
+
+
+def supported_payload_contract_keys() -> frozenset[str]:
+    """Every key a tenant Payload contract may carry."""
+    return PAYLOAD_CONTRACT_IDENTITY_KEYS | PAYLOAD_CONTRACT_LOCALE_KEYS | PAYLOAD_CONTRACT_OPTIONAL_KEYS
+
 
 class TenantRegistrationError(ValueError):
     """A website workspace cannot be provisioned safely."""
@@ -373,11 +388,8 @@ class TenantRegistrationService:
                 runtime_activation = RuntimeActivation.from_mapping(runtime_activation.to_dict())
             except (TypeError, ValueError) as exc:
                 raise TenantRegistrationError("runtime activation binding is invalid") from exc
-        expected_keys = {
-            "contract", "coreVersion", "schemaRevision",
-            "schemaIdentity", "migrationHead",
-        }
-        locale_keys = {"configurationIdentity", "locales", "defaultLocale"}
+        expected_keys = PAYLOAD_CONTRACT_IDENTITY_KEYS
+        locale_keys = PAYLOAD_CONTRACT_LOCALE_KEYS
         if set(runtime_identity) not in (expected_keys, expected_keys | locale_keys):
             raise TenantRegistrationError("verified Payload runtime identity is incomplete")
         identity = {key: runtime_identity[key] for key in expected_keys}
@@ -456,9 +468,7 @@ class TenantRegistrationService:
                     key: value for key, value in contract.items()
                     if key not in _RETIRED_CONTRACT_KEYS
                 }
-                allowed_keys = expected_keys | {
-                    "media_fields", "locales", "defaultLocale", "configurationIdentity", "collections", "globals",
-                }
+                allowed_keys = supported_payload_contract_keys()
                 if set(contract) - allowed_keys:
                     raise TenantRegistrationError("tenant Payload contract has unsupported fields")
                 for key in ("collections", "globals"):

@@ -51,6 +51,25 @@ from .tenant_registration import (
 from .runtime_activation import RuntimeActivation
 
 
+def payload_contract_identity(payload_contract: Mapping[str, Any]) -> dict[str, Any]:
+    """The tenant Payload contract: exactly the identity the Worker verified.
+
+    The shared runtime fingerprint is a separate runtime fact carried by the
+    release receipt and the Worker health. Activation refuses a contract that
+    mixes the two, so this is the only writer of the contract block.
+    """
+    return {
+        "contract": payload_contract["contract"],
+        "coreVersion": payload_contract["coreVersion"],
+        "schemaRevision": payload_contract["schemaRevision"],
+        "schemaIdentity": payload_contract["schemaIdentity"],
+        "migrationHead": payload_contract["migrationHead"],
+        "locales": list(payload_contract["locales"]),
+        "defaultLocale": payload_contract["defaultLocale"],
+        "media_fields": list(payload_contract["collections"]["media"]),
+    }
+
+
 class BootstrapError(RuntimeError):
     """A customer website cannot be bootstrapped safely."""
 
@@ -1479,17 +1498,7 @@ class WebsiteBootstrapService:
                 "url": worker_url,
                 "token_env": token_env,
                 "api_prefix": "/api/workspace",
-                "contract": {
-                    "sharedRuntimeFingerprint": payload_contract["sharedRuntimeFingerprint"],
-                    "contract": payload_contract["contract"],
-                    "coreVersion": payload_contract["coreVersion"],
-                    "schemaRevision": payload_contract["schemaRevision"],
-                    "schemaIdentity": payload_contract["schemaIdentity"],
-                    "migrationHead": payload_contract["migrationHead"],
-                    "locales": payload_contract["locales"],
-                    "defaultLocale": payload_contract["defaultLocale"],
-                    "media_fields": list(payload_contract["collections"]["media"]),
-                },
+                "contract": payload_contract_identity(payload_contract),
             },
             "source_deployment": {
                 "clone_path": str(site_dir),
