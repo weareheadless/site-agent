@@ -44,6 +44,9 @@ export default buildConfig({
         Logo: '@/components/admin/HelloAdaAdminLogo#HelloAdaAdminLogo',
         Icon: '@/components/admin/HelloAdaAdminLogo#HelloAdaAdminIcon',
       },
+      // The owner runs the site from helloada.app, so the way back there is
+      // the first item in the nav on every admin screen.
+      beforeNavLinks: ['@/components/admin/HelloAdaBackToWorkspace#HelloAdaBackToWorkspace'],
     },
     meta: {
       titleSuffix: ' — HelloAda',

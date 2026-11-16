@@ -79,6 +79,38 @@ body {
   border-color: var(--helloada-soft-line);
 }
 
+// The way back to the owner's workspace sits above the content links: this
+// admin is where advanced editing happens, not where the site is run.
+.helloada-admin-back {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 8px 10px;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 8px;
+  background: var(--theme-elevation-100);
+  color: var(--helloada-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: border-color 160ms var(--helloada-ease), background-color 160ms var(--helloada-ease);
+
+  &:hover,
+  &:focus-visible {
+    border-color: var(--helloada-accent);
+    background: var(--theme-elevation-150);
+    color: var(--helloada-ink);
+  }
+}
+
+.helloada-admin-back__arrow {
+  color: var(--helloada-accent);
+  font-size: 15px;
+  line-height: 1;
+}
+
 .template-default__wrap {
   background: var(--theme-bg);
 }
