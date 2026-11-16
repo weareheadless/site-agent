@@ -51,6 +51,22 @@ from .tenant_registration import (
 from .runtime_activation import RuntimeActivation
 
 
+def receipt_proves_live_home(receipt: Mapping[str, Any]) -> bool:
+    """True when a verified release receipt proves the site has a home page.
+
+    `websitePresent` describes Payload content, not whether a website exists: a
+    site whose home page is committed source publishes a verified "/" route and
+    no Payload page content. The release verifies every declared route returns
+    a real response before it records the inventory, so a declared home route
+    is the same evidence as a published Payload homepage.
+    """
+    if receipt.get("websitePresent") is True:
+        return True
+    inventory = receipt.get("presentationInventory")
+    routes = inventory.get("routes") if isinstance(inventory, Mapping) else None
+    return any(isinstance(route, Mapping) and str(route.get("path") or "") == "/" for route in routes or ())
+
+
 def payload_contract_identity(payload_contract: Mapping[str, Any]) -> dict[str, Any]:
     """The tenant Payload contract: exactly the identity the Worker verified.
 
@@ -917,7 +933,7 @@ class WebsiteBootstrapService:
                 step="ready",
                 diagnostic="",
                 workspace_ready=True,
-                website_live=receipt.get("websitePresent") is True,
+                website_live=receipt_proves_live_home(receipt),
                 deployment_receipt={
                     key: receipt.get(key)
                     for key in ("pipelineSha", "uploadedVersion", "connectionVerifiedAt", "finishedAt")

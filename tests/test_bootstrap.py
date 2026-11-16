@@ -1999,3 +1999,19 @@ def test_bootstrap_payload_contract_is_the_identity_activation_accepts(tmp_path)
     assert "sharedRuntimeFingerprint" not in contract
     assert contract["defaultLocale"] in contract["locales"]
     assert contract["media_fields"] == ["alt", "caption"]
+
+
+def test_a_committed_home_route_proves_a_live_site():
+    """A source-presentation site is live without any published Payload page."""
+    from site_agent.application.bootstrap import receipt_proves_live_home
+
+    assert receipt_proves_live_home({"websitePresent": True})
+    assert receipt_proves_live_home({
+        "websitePresent": False,
+        "presentationInventory": {"profile": "payload", "routes": [{"path": "/"}]},
+    })
+    assert not receipt_proves_live_home({
+        "websitePresent": False,
+        "presentationInventory": {"profile": "payload", "routes": [{"path": "/blog"}]},
+    })
+    assert not receipt_proves_live_home({"websitePresent": False})
