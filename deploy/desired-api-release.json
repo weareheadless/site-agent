@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261116-api-admin-back-link",
-    "sha": "00ac8fc9c1f2defe3ccc7a329deab46a4bc168a6"
+    "id": "20261116-api-runtime-fingerprint-fix",
+    "sha": "ed8b7acaf2ee3804cb22cef5d997105902eaa3de"
   }
 }
