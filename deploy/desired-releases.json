@@ -25,6 +25,13 @@
       "id": "rel-20261113140000-preview-rebuild-bridge",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
     },
+    "site-be8225c72f3ba01a": {
+      "id": "rel-20261116025716-f5809087",
+      "initializeSchema": {
+        "migrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
+      },
+      "sha": "012b1eadb5fb3d9f1a991a796706486bb61906f8"
+    },
     "site-ff8e9af06f56201f": {
       "id": "rel-20261115175500-growth-bridge",
       "sha": "75487d9077bbaf3d37961cec24d486de0bdd7c5c"
