@@ -28,20 +28,6 @@ const routeMetadata = (title: string, description: string, image?: string, canon
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const path = await routePath(params)
   const postRoute = postSlugForPath(path)
-  if (!postRoute && path === '/') {
-    try {
-      const home = await getPageBySlug('home')
-      if (!home) {
-        const fallback = await getSiteSettings().catch(() => ({} as Record<string, unknown>))
-        return routeMetadata(
-          String(fallback.defaultSeoTitle || fallback.siteName || 'HelloAda site').trim(),
-          String(fallback.defaultSeoDescription || fallback.description || '').trim(),
-        )
-      }
-    } catch {
-      return routeMetadata('HelloAda site', '')
-    }
-  }
   const settings = await getSiteSettings()
   if (postRoute?.kind === 'index') {
     const title = String(settings.journalTitle || settings.defaultSeoTitle || settings.siteName || '').trim()
@@ -70,18 +56,6 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PublicRoute({ params }: Props) {
   const path = await routePath(params)
   const postRoute = postSlugForPath(path)
-  if (!postRoute && path === '/') {
-    let home: Awaited<ReturnType<typeof getPageBySlug>>
-    try {
-      home = await getPageBySlug('home')
-    } catch {
-      home = undefined
-    }
-    // A Payload site without a published home is not a website. Never render
-    // replacement copy: the release gate requires real published content, and
-    // a missing page fails closed like any other missing document.
-    if (!home) notFound()
-  }
   if (postRoute?.kind === 'index') {
     const [posts, settings] = await Promise.all([getPublishedPosts(), getSiteSettings()])
     if (path !== articleIndexPath()) throw new Error('Articles listing route configuration is inconsistent.')

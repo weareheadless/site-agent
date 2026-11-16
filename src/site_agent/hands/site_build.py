@@ -322,7 +322,7 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
     if managed_payload:
         for relative in (
             "payload.config.ts", "src/app/(frontend)/layout.tsx",
-            "src/app/(frontend)/[[...slug]]/page.tsx",
+            "src/app/(frontend)/[...slug]/page.tsx",
         ):
             if not (workspace / relative).is_file():
                 raise SiteBuildError(f"managed Payload workspace is missing its canonical route shell: {relative}")

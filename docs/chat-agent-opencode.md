@@ -54,7 +54,7 @@ frontend restores:
   `mailflare-*.ts`, `worker.ts`), package pins and build/runtime configuration
   (`package.json`, `next.config.*`, `wrangler.jsonc`, `src/helloada.config.ts`,
   `.helloada-managed.json`), the shared route shell
-  (`src/app/(frontend)/layout.tsx`, `[[...slug]]/page.tsx`) and every file
+  (`src/app/(frontend)/layout.tsx`, `[...slug]/page.tsx`) and every file
   `deploy/shared-runtime-overlay.json` copies. A test asserts that the overlay
   cannot drift from this list.
 

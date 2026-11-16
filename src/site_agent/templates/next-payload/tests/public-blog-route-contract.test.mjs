@@ -10,7 +10,7 @@ const read = relative => readFileSync(path.join(root, relative), 'utf8')
 test('new sites use one canonical /blog route family through the shared resolver', () => {
   const config = read('src/helloada.config.ts')
   const routes = read('src/lib/content-routes.ts')
-  const route = read('src/app/(frontend)/[[...slug]]/page.tsx')
+  const route = read('src/app/(frontend)/[...slug]/page.tsx')
   assert.match(config, /postsIndex:\s*'\/blog'/)
   assert.match(config, /postDetail:\s*'\/blog'/)
   assert.match(routes, /createHelloAdaPublicRouteResolver/)

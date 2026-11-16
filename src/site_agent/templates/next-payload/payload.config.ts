@@ -35,7 +35,16 @@ export const cloudflare = await getPayloadCloudflareContext() as unknown as {
 export default buildConfig({
   admin: {
     user: 'users',
-    theme: 'dark',
+    // The owner's admin is HelloAda, not Payload: the same light work surfaces,
+    // brand mark and type as helloada.app. Palette and type live in
+    // `src/app/(payload)/custom.scss`, which the shared runtime ships.
+    theme: 'light',
+    components: {
+      graphics: {
+        Logo: '@/components/admin/HelloAdaAdminLogo#HelloAdaAdminLogo',
+        Icon: '@/components/admin/HelloAdaAdminLogo#HelloAdaAdminIcon',
+      },
+    },
     meta: {
       titleSuffix: ' — HelloAda',
       applicationName: 'HelloAda',

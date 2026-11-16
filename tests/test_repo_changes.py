@@ -17,7 +17,7 @@ def test_next_react_ownership_is_a_non_widenable_upper_bound():
     assert writable("src/app/(frontend)/excursions/page.tsx", broad, frontend_only=True)
     assert writable("src/content/site.ts", broad, frontend_only=True)
     # Platform source stays outside the boundary whatever the pattern says.
-    assert not writable("src/app/(frontend)/[[...slug]]/page.tsx", broad, frontend_only=True)
+    assert not writable("src/app/(frontend)/[...slug]/page.tsx", broad, frontend_only=True)
     assert not writable("src/lib/content.ts", broad, frontend_only=True)
     assert not writable("payload.config.ts", broad, frontend_only=True)
     assert not writable("package.json", broad, frontend_only=True)

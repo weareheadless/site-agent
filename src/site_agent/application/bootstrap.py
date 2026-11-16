@@ -1534,22 +1534,27 @@ class WebsiteBootstrapService:
         raw["messages"] = messages
         raw["scheduler"] = {**_mapping(raw.get("scheduler")), "enabled": True}
         raw["editorial"] = {**_mapping(raw.get("editorial")), "enabled": True}
+        # Measurement follows a registered domain, not a Worker preview host: a
+        # new site is reachable only on its workers.dev origin until the owner
+        # attaches a domain, and Search Console cannot verify a property the
+        # owner does not control. `update_site_origin` enables both with the
+        # exact custom origin when that domain is registered.
         raw["ga"] = {
             **_mapping(raw.get("ga")),
-            "enabled": True,
+            "enabled": False,
             "source": "crawlseo",
         }
         existing_seo = _mapping(raw.get("seo"))
         existing_provisioning = _mapping(existing_seo.get("provisioning"))
         raw["seo"] = {
             **existing_seo,
-            "enabled": True,
+            "enabled": False,
             "source": "crawlseo",
             "site_url": public_origin,
             "gsc_property": public_origin,
             "provisioning": {
                 **existing_provisioning,
-                "auto": True,
+                "auto": False,
                 "verification_method": str(existing_provisioning.get("verification_method") or "meta"),
                 "gsc_property": public_origin,
             },

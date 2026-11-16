@@ -902,6 +902,10 @@ class TenantRegistry:
         seo = dict(seo)
         provisioning = seo.get("provisioning") if isinstance(seo.get("provisioning"), Mapping) else {}
         provisioning = dict(provisioning)
+        # Only a registered custom origin is measurable: the workers.dev preview
+        # host is not a property the owner controls, so it neither verifies in
+        # Search Console nor belongs in reporting.
+        measurable = bool(site.get("custom_domain"))
         # A property is a tenant fact, not an origin fact: a domain property
         # keeps covering the tenant when its canonical host changes. Only a
         # URL-prefix property, which belongs to one host, is replaced.
@@ -914,9 +918,9 @@ class TenantRegistry:
             if property_covers_domain(current_property, registered_domain)
             else site_url
         )
-        seo.update({"enabled": True, "source": "crawlseo", "site_url": site_url, "gsc_property": gsc_property})
+        seo.update({"enabled": measurable, "source": "crawlseo", "site_url": site_url, "gsc_property": gsc_property})
         provisioning.update({
-            "auto": True,
+            "auto": measurable,
             "verification_method": (
                 "dns_txt"
                 if gsc_property.lower().startswith("sc-domain:")
@@ -929,7 +933,7 @@ class TenantRegistry:
 
         ga = raw.get("ga") if isinstance(raw.get("ga"), Mapping) else {}
         ga = dict(ga)
-        ga.update({"enabled": True, "source": "crawlseo"})
+        ga.update({"enabled": measurable, "source": "crawlseo"})
         raw["ga"] = ga
         from .tenant_registration import TenantRegistrationService
 
