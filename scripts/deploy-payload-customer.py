@@ -150,6 +150,10 @@ def store_build_cache(entry: Path, checkout: Path, *, key: str, source_sha: str)
     (staging / "meta.json").write_text(json.dumps({
         "key": key,
         "sourceSha": source_sha,
+        # A compile embeds the workspace it was built in (OpenNext writes
+        # absolute module paths), so a restore into a different workspace must
+        # rehost those paths or wrangler cannot read the files it collects.
+        "sourceRoot": str(checkout.resolve()),
         "publicPaths": _public_paths(checkout),
         # The restore proves the copied tree still is the stored tree, so a
         # damaged cache falls back to a build instead of shipping a broken app.
@@ -170,6 +174,7 @@ def restore_build_cache(entry: Path, checkout: Path) -> dict[str, Any]:
     shutil.copytree(entry / "open-next", target)
     if tree_digest(target) != cached.get("artifactDigest"):
         raise RuntimeError("cached build differs from what was stored")
+    cached["rehosted"] = rehost_compiled_output(target, cached.get("sourceRoot"), str(checkout.resolve()))
     # The release reads the compiled route manifest; keep it with the artifact
     # so a reused build can still be inspected without a compile.
     route_manifest = entry / "next" / "app-paths-manifest.json"
@@ -180,6 +185,37 @@ def restore_build_cache(entry: Path, checkout: Path) -> dict[str, Any]:
     reconcile_public_assets(checkout, list(cached.get("publicPaths") or []))
     verify_public_assets(checkout)
     return cached
+
+
+def rehost_compiled_output(root: Path, source_root: Any, target_root: str) -> bool:
+    """Point a restored compile at the workspace it now lives in.
+
+    OpenNext writes the build workspace as an absolute path into the compiled
+    handler and module list. A cache hit in a fresh workspace therefore
+    referenced a directory the release had already removed, and the build
+    failed reading its own wasm and font modules. Every text artifact that
+    names the old workspace is rewritten; binary assets are never touched.
+    """
+    previous = str(source_root or "")
+    if not previous or previous == target_root:
+        return False
+    old = previous.encode("utf-8")
+    new = target_root.encode("utf-8")
+    rewritten = False
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        if path.suffix not in {".mjs", ".js", ".json", ".cjs", ".txt"}:
+            continue
+        try:
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if old not in data:
+            continue
+        path.write_bytes(data.replace(old, new))
+        rewritten = True
+    return rewritten
 
 
 def reconcile_public_assets(checkout: Path, previous_public_paths: list[str]) -> None:

@@ -3038,3 +3038,31 @@ def test_a_preview_candidate_refuses_a_mount_the_platform_did_not_sign(tmp_path,
     with pytest.raises(RuntimeError):
         release.apply_preview_base_path(tmp_path, mount)
     assert (tmp_path / "next.config.mjs").read_text(encoding="utf-8") == "export default {}\n"
+
+
+def test_a_reused_compile_is_rehosted_into_its_new_workspace(tmp_path):
+    """OpenNext embeds the build workspace path; a cache hit must rewrite it.
+
+    Without the rewrite the release restored a compile that named a deleted
+    workspace, and wrangler failed to read the wasm and font modules it
+    collected from it.
+    """
+    source = tmp_path / "first-workspace"
+    (source / ".open-next" / "server-functions" / "default").mkdir(parents=True)
+    (source / ".open-next" / "assets").mkdir(parents=True)
+    (source / ".next" / "server").mkdir(parents=True)
+    (source / "public").mkdir()
+    (source / ".next" / "server" / "app-paths-manifest.json").write_text("{}\n")
+    handler = source / ".open-next" / "server-functions" / "default" / "handler.mjs"
+    handler.write_text(f'import x from "{source}/.open-next/node_modules/yoga.wasm"\n')
+    entry = tmp_path / "cache" / "key"
+    release.store_build_cache(entry, source, key="key", source_sha=SHA)
+
+    checkout = tmp_path / "second-workspace"
+    checkout.mkdir()
+    cached = release.restore_build_cache(entry, checkout)
+
+    assert cached["rehosted"] is True
+    restored = (checkout / ".open-next" / "server-functions" / "default" / "handler.mjs").read_text()
+    assert str(source) not in restored
+    assert f"{checkout}/.open-next/node_modules/yoga.wasm" in restored
