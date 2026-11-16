@@ -1070,6 +1070,26 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("gateway returned no media list")
         return [item for item in documents if isinstance(item, dict)]
 
+    def workspace_index(self) -> dict[str, Any]:
+        """Read the tenant's canonical index of every editable document.
+
+        The collection list endpoint answers one bounded page and never states
+        what it left out, so it cannot prove that a snapshot is complete. The
+        workspace index is the same paged list the owner's workspace renders;
+        every document the owner can edit appears in it exactly once with its
+        collection and status. A caller that must not truncate reads this
+        index for identities and then reads each exact document.
+        """
+        response = self._request("GET", "/api/helloada/workspace")
+        routes = response.get("routes")
+        documents = response.get("documents")
+        if not isinstance(routes, list) or not isinstance(documents, list):
+            raise PayloadGatewayError("the website workspace index is incomplete")
+        return {
+            "routes": routes,
+            "documents": [dict(item) for item in documents if isinstance(item, Mapping)],
+        }
+
     def read_media(self, identifier: str, *, identifier_kind: str = "id", draft: bool = True) -> dict[str, Any]:
         value = str(identifier or "").strip()
         if not value or identifier_kind not in {"id", "sourceId"}:
@@ -1149,7 +1169,7 @@ class PayloadMediaService:
         self.max_attachments = max(1, min(int(max_attachments), 20))
 
     @staticmethod
-    def _url(payload: PayloadGatewayClient, document: Mapping[str, Any]) -> str:
+    def document_url(payload: PayloadGatewayClient, document: Mapping[str, Any]) -> str:
         sizes = document.get("sizes") if isinstance(document.get("sizes"), Mapping) else {}
         large = sizes.get("large") if isinstance(sizes, Mapping) else {}
         candidate = str(
@@ -1180,7 +1200,7 @@ class PayloadMediaService:
             tags=_media_array_values(document.get("tags") or analysis.get("tags")),
             ocr_text=str(document.get("ocrText") or analysis.get("ocr_text") or "").strip()[:2_000],
             analysis=dict(analysis),
-            url=self._url(self.payload, document),
+            url=self.document_url(self.payload, document),
             alt_text=alt_text[:500],
             analysis_status=str(document.get("analysisStatus") or "pending").strip().lower(),
             analysis_error=str(document.get("analysisError") or "").strip()[:500],
@@ -1242,9 +1262,12 @@ class PayloadMediaService:
             raise PayloadGatewayError("Payload media does not expose a readable image URL")
         return asset.url
 
-    def read_preview(self, asset_id: int, *, thumbnail: bool = False) -> tuple[bytes, str]:
+    def read_preview(self, asset_id: int, *, thumbnail: bool = False,
+                     url: str | None = None) -> tuple[bytes, str]:
         del thumbnail
-        url = self.preview_url(asset_id)
+        # A caller that already read the document passes its URL instead of
+        # paying for the same media read twice.
+        url = url or self.preview_url(asset_id)
         request = urllib.request.Request(url, headers={"Accept": "image/*", "User-Agent": "site-agent/payload-media"})
         try:
             with urllib.request.urlopen(request, timeout=self.payload.timeout_seconds) as response:

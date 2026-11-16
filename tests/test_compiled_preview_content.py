@@ -2,19 +2,27 @@ from types import SimpleNamespace
 
 import pytest
 
-from site_agent.application.compiled_preview_content import canonical_preview_snapshot
+from site_agent.application.compiled_preview_content import MAX_PREVIEW_DOCUMENTS, canonical_preview_snapshot
 
-CONTRACT = {"locales": ["en"], "defaultLocale": "en", "enabled": {"collections": ["pages"]}}
+CONTRACT = {
+    "locales": ["en"], "defaultLocale": "en",
+    "enabled": {"collections": ["pages"]},
+    "authoring": {"collections": {"pages": []}, "globals": {"navigation": [], "siteSettings": []}},
+}
 
 
-def _gateway(draft_revision="a", rows=None):
+def _gateway(draft_revision="a", indexed=None):
     effect_revision = "sha256:" + draft_revision * 64
     draft = {"id": 1, "title": "Candidate", "_helloadaRevision": effect_revision}
+    index = ([{"collection": "pages", "id": "1", "status": "published"}]
+             if indexed is None else indexed)
     return SimpleNamespace(
+        base_url="https://tenant.example",
         require_authoring_contract=lambda: CONTRACT,
-        list=lambda *args, **kwargs: rows if rows is not None else [{"id": 1}],
+        workspace_index=lambda: {"routes": [], "documents": index},
         read=lambda collection, identifier, **kwargs: dict(draft),
         read_global=lambda slug, **kwargs: {"siteName": "Site", "_status": "published"},
+        list_media=lambda **kwargs: [],
         read_media=lambda identifier, **kwargs: {"id": identifier},
     )
 
@@ -40,9 +48,75 @@ def test_preview_rejects_a_changed_candidate_revision():
         canonical_preview_snapshot(_gateway(draft_revision="b"), [_effect()])
 
 
-def test_preview_never_truncates_canonical_content():
-    with pytest.raises(ValueError, match="complete bounded"):
-        canonical_preview_snapshot(_gateway(rows=[{"id": number} for number in range(100)]), [])
+def test_preview_reads_every_document_not_only_one_gateway_page():
+    """A catalog larger than one list page is previewed completely.
+
+    Casamigo has 365 published products. The preview used to ask the collection
+    list for one page of 100 and then refuse the build because a full page
+    proved it could not see the rest of the site; the complete snapshot is
+    every document the workspace index names.
+    """
+    index = [{"collection": "pages", "id": str(number), "status": "published"}
+             for number in range(250)]
+    gateway = _gateway(indexed=index)
+    gateway.require_authoring_contract = lambda: {
+        **CONTRACT, "enabled": {"collections": ["pages", "products"]},
+        "authoring": {"collections": {"pages": [], "products": []},
+                      "globals": {"navigation": [], "siteSettings": []}},
+    }
+    def read(collection, identifier, **kwargs):
+        return {"id": identifier, "_status": "published", "slug": f"page-{identifier}"}
+    gateway.read = read
+
+    snapshot = canonical_preview_snapshot(gateway, [])
+
+    assert len(snapshot["documents"]) == 250
+    assert [item["id"] for item in snapshot["documents"]] == [str(number) for number in range(250)]
+
+
+def test_preview_refuses_a_site_beyond_the_declared_bound_instead_of_truncating():
+    index = [{"collection": "pages", "id": str(number), "status": "published"}
+             for number in range(MAX_PREVIEW_DOCUMENTS + 1)]
+    with pytest.raises(ValueError, match=f"at most {MAX_PREVIEW_DOCUMENTS}"):
+        canonical_preview_snapshot(_gateway(indexed=index), [])
+
+
+def test_preview_copies_the_media_its_documents_reference(monkeypatch):
+    """Upload relations travel as IDs, so the schema decides what is media.
+
+    The bounded library copy alone cannot cover a large catalog: Casamigo's
+    properties reference gallery IDs outside the newest part of its library, and
+    the seed drops any upload whose bytes were not copied.
+    """
+    from site_agent.hands.payload_gateway import PayloadMediaService
+
+    seen = {}
+    monkeypatch.setattr(PayloadMediaService, "read_preview",
+                        lambda self, asset_id, **kwargs: (b"image", "image/jpeg"))
+    gateway = _gateway()
+    gateway.require_authoring_contract = lambda: {
+        **CONTRACT,
+        "authoring": {
+            "collections": {"pages": [
+                {"name": "featuredImage", "type": "upload"},
+                {"name": "gallery", "type": "upload", "hasMany": True},
+            ]},
+            "globals": {"navigation": [], "siteSettings": []},
+        },
+    }
+    gateway.read = lambda collection, identifier, **kwargs: {
+        "id": identifier, "_status": "published", "slug": "home",
+        "featuredImage": 41, "gallery": [507, 508],
+    }
+    def read_media(identifier, **kwargs):
+        seen[str(identifier)] = kwargs
+        return {"id": identifier, "filename": f"{identifier}.jpg", "mimeType": "image/jpeg",
+                "url": f"/media/{identifier}.jpg"}
+    gateway.read_media = read_media
+
+    snapshot = canonical_preview_snapshot(gateway, [])
+
+    assert [item["document"]["id"] for item in snapshot["media"]] == ["41", "507", "508"]
 
 
 def test_preview_does_not_import_unpublished_locale_baselines_outside_candidate_effects():
@@ -107,3 +181,40 @@ def test_preview_still_skips_a_global_with_nothing_saved():
         else {"id": 1, "_status": "draft", "siteName": "", "logo": None, "address": {}}
     )
     assert canonical_preview_snapshot(gateway, [])["globals"] == []
+
+def test_preview_skips_a_locale_the_live_site_cannot_route():
+    """A document with no public route in a locale is not part of that site.
+
+    Casamigo's older gateway refuses a published read in a locale whose
+    translation has no route slug. The live site cannot link to that document in
+    that language, so the preview carries the locales the site actually serves
+    instead of failing the whole build.
+    """
+    from site_agent.hands.payload_gateway import PayloadGatewayError
+
+    gateway = _gateway()
+    gateway.require_authoring_contract = lambda: {
+        **CONTRACT, "locales": ["en", "es"],
+        "authoring": {"collections": {"pages": []}, "globals": {"navigation": [], "siteSettings": []}},
+    }
+    def read(collection, identifier, *, locale, **kwargs):
+        if locale == "es":
+            raise PayloadGatewayError("Payload gateway returned 409: no public route", status_code=409)
+        return {"id": identifier, "_status": "published", "slug": "home"}
+    gateway.read = read
+
+    snapshot = canonical_preview_snapshot(gateway, [])
+
+    assert set(snapshot["documents"][0]["locales"]) == {"en"}
+    assert snapshot["omitted"] == [{"collection": "pages", "locale": "es", "documents": 1}]
+
+
+def test_preview_still_fails_on_a_gateway_error_that_is_not_a_missing_route():
+    from site_agent.hands.payload_gateway import PayloadGatewayError
+
+    gateway = _gateway()
+    gateway.read = lambda *args, **kwargs: (_ for _ in ()).throw(
+        PayloadGatewayError("Payload gateway returned 503: unavailable", status_code=503))
+
+    with pytest.raises(PayloadGatewayError):
+        canonical_preview_snapshot(gateway, [])

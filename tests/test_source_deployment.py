@@ -1058,8 +1058,8 @@ def test_the_preview_snapshot_names_the_route_of_every_page_the_candidate_saved(
         def require_authoring_contract(self):
             return {"locales": ["en"], "defaultLocale": "en", "enabled": {"collections": ["pages"]}}
 
-        def list(self, collection, **kwargs):
-            return [{"id": "2"}]
+        def workspace_index(self):
+            return {"routes": [], "documents": [{"collection": "pages", "id": "2", "status": "published"}]}
 
         def read(self, collection, identifier, **kwargs):
             return {"id": "2", "slug": "about", "_status": "published", "_helloadaRevision": revision}
