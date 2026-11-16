@@ -1195,7 +1195,7 @@ def test_the_tab_icon_is_a_tenant_brand_asset():
     # The tenant's own homepage and routes are presentation source it authors.
     assert is_frontend_owned_path("src/app/(frontend)/page.tsx")
     # The shared route shell and layout remain platform-owned.
-    assert not is_frontend_owned_path("src/app/(frontend)/[[...slug]]/page.tsx")
+    assert not is_frontend_owned_path("src/app/(frontend)/[...slug]/page.tsx")
     assert not is_frontend_owned_path("src/app/(frontend)/layout.tsx")
 
 

@@ -4,27 +4,37 @@ This repository is a small, single-instance-at-runtime Python service. Keep
 changes easy to trace from an HTTP request or scheduled job to a persisted
 state change.
 
-## Mission Lock: Manual Intake, Ada Manages, the Owner Authors
+## Mission Lock: Manual Intake, Ada Provisions, the Owner Approves
 
 Intake is manual. The owner briefs Ada and Ada provisions the account, the
 workspace, the site, GA4/Search Console/CrawlSEO, domain email and Cloudflare
-resources. Ada is the management interface for a site's lifecycle; she does not
-author its design.
+resources. Ada is the management interface for a site's lifecycle.
 
-The design is authored by the owner together with the coding agent in the
-site-agent shell, committed to the tenant repository, and promoted through the
-canonical release queue. Production changes only by explicit owner approval.
+A new site is born designed-by-nobody on purpose: it is provisioned from the
+canonical template, so its home route publishes a scaffold of empty framed
+sections. Ada's one authoring job is the first page of that site: she
+establishes the brief with the owner (business model, audience, voice, colours,
+imagery), then replaces the scaffold with one real page carrying a design of
+its own. She never widens that into inventing pages, products or claims the
+brief does not support, and she never treats a delivered site as hers to
+redesign: after the first page, design changes are again the owner's and the
+coding agent's work in this shell.
+
+Every change, including Ada's first page, is a pending draft the owner reviews
+as a preview. Production changes only by explicit owner approval.
 
 Consequences to hold to:
 
 - No intake session, confirmed-intake record or design run is required to
   provision or release a site, and none is evidence that a site works.
+- A scaffold home page is not a design and must not be reported as one; the
+  site is live and undelivered until the owner approves a first page.
 - Do not claim a site is delivered from source code, a passing build, a green
   unit test, a receipt, or a health response. Verify the actual owner-visible
   page after the release, including motion and reduced-motion behavior.
 - Ada may research, monitor, propose and report. She must not silently take over
-  authorship of a site, and an authored site must not be described as Ada's
-  generated output.
+  authorship of an authored site, and a site the owner designed must not be
+  described as Ada's generated output.
 - Browser console errors, failed module requests and failed asset requests are
   failures, in authored designs as much as anywhere else.
 

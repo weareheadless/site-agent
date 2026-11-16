@@ -89,6 +89,8 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/components/platform", "src/components/PublicDocument.tsx", "src/components/SiteChrome.tsx",
     "src/components/BlogIndex.tsx", "src/components/site/TenantSections.tsx",
     # The shared scaffold's route shell: every managed page renders through it.
+    # Existing tenants still carry the optional catch-all; new sites use the
+    # non-optional one so the tenant-owned home route owns "/".
     "src/app/(frontend)/layout.tsx", "src/app/(frontend)/[[...slug]]/page.tsx",
     "src/app/(frontend)/[...slug]/page.tsx", "src/app/(frontend)/articles",
     "src/app/(frontend)/helloada-preview",

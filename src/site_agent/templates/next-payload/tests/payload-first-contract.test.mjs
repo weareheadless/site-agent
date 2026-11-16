@@ -48,8 +48,8 @@ test('health verifies the full canonical schema identity advertised by the templ
 })
 
 test('public page and article routes read Payload and render Payload SEO metadata', () => {
-  const page = read('src/app/(frontend)/[[...slug]]/page.tsx')
-  const article = read('src/app/(frontend)/[[...slug]]/page.tsx')
+  const page = read('src/app/(frontend)/[...slug]/page.tsx')
+  const article = read('src/app/(frontend)/[...slug]/page.tsx')
   const content = read('src/lib/content.ts')
   const listing = read('src/components/site/presentation/BlogListingPresentation.tsx')
   const routes = read('src/lib/content-routes.ts')
@@ -145,7 +145,7 @@ test('the canonical public runtime reads article content through Payload only', 
 })
 
 test('a clean scaffold inherits Payload-bound pages, posts, settings, navigation and footer rendering', () => {
-  const route = read('src/app/(frontend)/[[...slug]]/page.tsx')
+  const route = read('src/app/(frontend)/[...slug]/page.tsx')
   const chrome = read('src/components/site/TenantChrome.tsx')
   const siteChrome = read('src/components/SiteChrome.tsx')
   const presentation = read('src/components/site/presentation/PagePresentation.tsx')
@@ -163,6 +163,21 @@ test('a clean scaffold inherits Payload-bound pages, posts, settings, navigation
   assert.match(chrome, /footer/)
   assert.match(siteChrome, /getNavigation/)
   assert.match(siteChrome, /getSiteSettings/)
+})
+
+test('a new site is live on its committed home route before it has a design', () => {
+  const home = read('src/app/(frontend)/page.tsx')
+  const catchAll = read('src/app/(frontend)/[...slug]/page.tsx')
+  const styles = read('src/app/(frontend)/site.css')
+  // The home route is the tenant's: it renders the scaffold from committed
+  // source and never reads Payload, so a fresh site answers a real 200 with
+  // empty framed sections instead of a 404.
+  assert.match(home, /helloAdaSite/)
+  assert.match(home, /scaffold/)
+  assert.doesNotMatch(home, /getPageBySlug|getSiteSettings/)
+  assert.equal(existsSync(new URL('../src/app/(frontend)/[[...slug]]/page.tsx', import.meta.url)), false)
+  assert.match(catchAll, /getPageBySlug/)
+  assert.match(styles, /\.scaffold-section/)
 })
 
 test('release verification rejects tenants whose shared Payload content cannot render', () => {

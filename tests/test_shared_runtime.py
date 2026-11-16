@@ -89,7 +89,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     upstream_path.write_text("export function upstreamHeaders(request, path) {}")
     public_wrappers = (
         "src/components/PublicDocument.tsx",
-        "src/app/(frontend)/[[...slug]]/page.tsx",
+        "src/app/(frontend)/[...slug]/page.tsx",
     )
     for relative in public_wrappers:
         (checkout / relative).write_text("tenant-approved routing and presentation adapter")

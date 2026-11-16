@@ -11,11 +11,15 @@ approval contracts.
 
 Intake is no longer a product surface. The owner briefs Ada directly and Ada
 provisions. Ada is the management interface for a site's lifecycle — account,
-workspace, infrastructure, measurement, releases — not the tool that designs it.
+workspace, infrastructure, measurement, releases.
 
-The design is authored by the owner together with the coding agent in the
-site-agent shell, as code in the tenant repository, and promoted through the
-same canonical release queue as every other change.
+A new site is provisioned from the canonical template and is live immediately
+with a scaffold home page: a few framed empty sections, no copy, no design. Ada
+authors exactly one thing on such a site, the first page, from the brief she
+establishes with the owner in conversation. After that, design is authored by
+the owner together with the coding agent in the site-agent shell, as code in
+the tenant repository, and promoted through the same canonical release queue as
+every other change.
 
 Two consequences follow immediately:
 
@@ -25,6 +29,34 @@ Two consequences follow immediately:
 - A candidate site is not evidence of a working pipeline, because no pipeline
   produces it. The authored design is the artifact; review happens on the real
   built page.
+
+## The scaffold, and what a new site defers
+
+`src/app/(frontend)/page.tsx` in the template is the tenant's own home route. It
+renders the scaffold, and it is tenant-owned source: Ada replaces it. The
+platform owns the route shell around it — `layout.tsx`, the Payload catch-all
+(`[...slug]`), chrome, the workspace bridge — and never this file. Because the
+scaffold is committed source, a new site answers a real 200 on `/`, its release
+gate sees a declared home route, and the owner opens a workspace with a site in
+it instead of a 404.
+
+A new site therefore declares `websitePresent: false`: it has no published
+Payload page content, and its home comes from committed source. `websitePresent`
+becomes true only for a site whose pages really are Payload documents; it is
+never inferred from a scaffold.
+
+Measurement waits for a domain. Bootstrap stages `ga.enabled: false` and
+`seo.provisioning.auto: false`, and domain attachment re-enables both with the
+exact custom origin. Search Console cannot verify a `workers.dev` host the owner
+does not control, and a preview host in GA4 is noise, not reporting. Domain
+email already behaves this way: without a custom domain it stays
+`domain_required`. CrawlSEO research follows GA4/GSC, so it starts when the
+domain does.
+
+Ada recognises the scaffold by its own source: while the tenant's home route is
+byte-identical to the template's, her instructions include the new-site brief
+(`src/site_agent/brain/new_site.py`). Replacing the page removes the brief,
+with no flag, record or per-tenant switch.
 
 ## Headless presentation, Payload for collections
 
@@ -113,16 +145,18 @@ HTML comes from, not in whether the owner has a website.
 
 | Concern | Owner + coding agent | Ada |
 | --- | --- | --- |
-| Brief, positioning, courses, pricing, copy | decide | records what was decided |
-| Design and frontend code | author in the tenant repo | not involved |
+| Brief, positioning, courses, pricing, copy | decide | records what was decided, and establishes it on a new site |
+| The first page of a new site | reviews and approves | authors from the brief |
+| Design and frontend code after the first page | author in the tenant repo | not involved |
 | HelloAda account / tenant registration | request | performs and reports |
 | Workspace bootstrap, schema init, D1/R2/queues | — | performs through the queue |
-| GA4, Search Console, CrawlSEO, domain email | supplies inputs | provisions and verifies |
+| GA4, Search Console, CrawlSEO, domain email | supplies a domain | provisions and verifies once the domain is registered |
 | Cloudflare resources, Worker versions, promotion | — | performs through the release runner |
 | Production approval | explicit approval | executes only after it |
 
 Ada may still research, monitor, propose and report — that is the management
-side of the interface. She does not silently take over authorship of the site.
+side of the interface. She does not silently take over authorship of a site
+that already has a design.
 
 ## How an owner turn works
 

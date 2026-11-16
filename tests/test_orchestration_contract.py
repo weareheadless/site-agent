@@ -39,7 +39,7 @@ PLATFORM_FILES = [
     'package.json', 'package-lock.json', 'next.config.mjs', 'tsconfig.json',
     'payload.config.ts', 'wrangler.jsonc', 'worker.ts', 'open-next.config.ts',
     'src/middleware.ts', 'src/helloada.config.ts', 'src/payload-types.ts',
-    'src/app/(frontend)/layout.tsx', 'src/app/(frontend)/[[...slug]]/page.tsx',
+    'src/app/(frontend)/layout.tsx', 'src/app/(frontend)/[...slug]/page.tsx',
     'src/app/(payload)/admin/importMap.js',
     'src/app/api/helloada/[...path]/route.ts', 'src/app/api/workspace/content/route.ts',
     'src/collections/Pages.ts', 'src/globals/SiteSettings.ts', 'src/migrations/index.ts',

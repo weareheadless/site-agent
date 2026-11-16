@@ -188,7 +188,7 @@ def test_next_template_dependency_source_is_fail_closed(tmp_path, monkeypatch):
 
 def test_managed_payload_workspace_keeps_its_canonical_route_shell(tmp_path):
     workspace = tmp_path / "managed"
-    route = workspace / "src/app/(frontend)/[[...slug]]/page.tsx"
+    route = workspace / "src/app/(frontend)/[...slug]/page.tsx"
     layout = workspace / "src/app/(frontend)/layout.tsx"
     route.parent.mkdir(parents=True)
     route.write_text("canonical public route")

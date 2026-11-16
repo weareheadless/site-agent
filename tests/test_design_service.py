@@ -331,7 +331,7 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" not in policy.allowed_hard_denied_paths
     assert "src/components/site/presentation/**" in policy.allowed_patterns
-    assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
+    assert "src/app/(frontend)/[...slug]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities
@@ -785,7 +785,7 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" not in policy.allowed_hard_denied_paths
     assert "src/components/site/presentation/**" in policy.allowed_patterns
-    assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
+    assert "src/app/(frontend)/[...slug]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities

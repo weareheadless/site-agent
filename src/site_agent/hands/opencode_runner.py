@@ -4250,6 +4250,10 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
             + "\n".join(f"- {name}" for name in skill_set.names)
             + f"\ncontent_hash: {skill_set.content_hash}\n"
         )
+        from ..brain.new_site import homepage_is_scaffold, new_site_brief
+
+        if homepage_is_scaffold(clone):
+            rendered += "\n\n" + new_site_brief()
     if site_digest and site_digest.strip():
         rendered += ("\n\nSITE REFERENCE (structural digest — read this before "
                      "reading whole files, it covers what you'd otherwise re-read):\n"

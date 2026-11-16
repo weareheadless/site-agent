@@ -1,2 +1,84 @@
-// The owner workspace now lives on the control plane. The tenant Payload admin
-// keeps Payload's own styles; only the shared brand overrides belong here.
+// The owner workspace lives in helloada.app; this admin is the advanced editor
+// beside it. It carries the same brand so the two read as one product: light
+// work surfaces, near-black ink, HelloAda coral for actions, Avenir Next for
+// both display and body. The shared runtime ships this file to every tenant
+// build, so a tenant never restyles its own admin.
+
+:root,
+html[data-theme='light'] {
+  color-scheme: light;
+
+  --theme-bg: #f1f3f6;
+  --theme-text: #161a23;
+  --theme-elevation-0: #f1f3f6;
+  --theme-elevation-50: #f4f6f9;
+  --theme-elevation-100: #ffffff;
+  --theme-elevation-150: #f8f9fb;
+  --theme-elevation-200: #ffffff;
+  --theme-elevation-250: #e5e9f0;
+  --theme-elevation-300: #d6dce5;
+  --theme-elevation-350: #c6cedb;
+  --theme-elevation-400: #aeb9c9;
+  --theme-elevation-450: #8c98ad;
+  --theme-elevation-500: #5e6778;
+  --theme-elevation-550: #536071;
+  --theme-elevation-600: #475366;
+  --theme-elevation-650: #3c475a;
+  --theme-elevation-700: #333d4f;
+  --theme-elevation-750: #293345;
+  --theme-elevation-800: #242d3e;
+  --theme-elevation-850: #1c2534;
+  --theme-elevation-900: #161a23;
+  --theme-elevation-950: #12161e;
+  --theme-elevation-1000: #0e1118;
+
+  --theme-success-500: #206347;
+  --theme-warning-500: #765500;
+  --theme-error-500: #b52a3e;
+  --theme-input-bg: #ffffff;
+  --theme-border-color: rgba(29, 39, 59, 0.16);
+
+  --helloada-accent: #ff6b5e;
+  --helloada-accent-ink: #161a23;
+  --helloada-ink: #161a23;
+  --helloada-muted: #4e596c;
+  --helloada-line: rgba(29, 39, 59, 0.2);
+  --helloada-soft-line: rgba(29, 39, 59, 0.12);
+  --helloada-ease: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --font-body: 'Avenir Next', 'Segoe UI Variable', ui-sans-serif, system-ui, sans-serif;
+}
+
+html,
+body {
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+// Actions read as HelloAda: coral fill, ink label, no gradient chrome.
+.btn--style-primary,
+.btn--style-secondary {
+  transition: background-color 160ms var(--helloada-ease), color 160ms var(--helloada-ease);
+}
+
+.btn--style-primary {
+  background-color: var(--helloada-accent);
+  color: var(--helloada-accent-ink);
+}
+
+.btn--style-primary:hover:not(:disabled) {
+  background-color: #ff8577;
+  color: var(--helloada-accent-ink);
+}
+
+// Payload's own wordmark is replaced by HelloAda in the config; make the
+// remaining nav and panel edges use the same rule weight as the workspace.
+.nav {
+  border-right-width: 1px;
+  border-color: var(--helloada-soft-line);
+}
+
+.template-default__wrap {
+  background: var(--theme-bg);
+}

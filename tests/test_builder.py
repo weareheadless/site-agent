@@ -607,7 +607,7 @@ def test_builder_allows_the_tenant_composition_and_refuses_platform_source(tmp_p
     (clone / 'public/robots.txt').write_text('User-agent: *')
     runner._validate_build_paths(config, clone, 'origin/preview')
 
-    protected = clone / 'src/app/(frontend)/[[...slug]]/page.tsx'
+    protected = clone / 'src/app/(frontend)/[...slug]/page.tsx'
     protected.parent.mkdir(parents=True, exist_ok=True)
     protected.write_text('export default function Page() { return null }')
     with pytest.raises(runner.RunnerError, match='outside the writable sandbox'):

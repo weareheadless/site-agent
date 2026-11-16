@@ -1452,12 +1452,19 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["site"]["repository"] == "weareheadless/helloada-demo"
     template_manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
     assert config["site"]["public_url"] == "https://helloada-demo.weareheadless.workers.dev/"
-    assert config["ga"]["enabled"] is True
+    # Measurement follows a registered domain: a workers.dev preview host is not
+    # a Search Console property the owner controls, and domain attach re-enables
+    # both with the exact custom origin.
+    assert config["ga"]["enabled"] is False
     assert config["ga"]["source"] == "crawlseo"
-    assert config["seo"]["enabled"] is True
-    assert config["seo"]["provisioning"]["auto"] is True
+    assert config["seo"]["enabled"] is False
+    assert config["seo"]["provisioning"]["auto"] is False
     assert config["seo"]["site_url"] == "https://helloada-demo.weareheadless.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.weareheadless.workers.dev/"
+    # The new site is live before it has a design, and it is not a Payload site:
+    # its home is committed source, so the release declares no website yet.
+    assert config["site"]["website_present"] is False
+    assert (site_dir / "src/app/(frontend)/page.tsx").is_file()
     assert config["site"]["payload"]["contract"]["sharedRuntimeFingerprint"] == template_manifest["sharedRuntimeFingerprint"]
     assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]

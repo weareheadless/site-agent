@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { createPresentationInventory, discoverPresentationRoutes, writePresentationInventory } from '../scripts/presentation-inventory.mjs'
 
@@ -58,4 +59,12 @@ test('a built site cannot ship without an explicit preview mount', async (t) => 
   assert.throws(() => createPresentationInventory(app, '/'), /preview mount/)
   assert.throws(() => createPresentationInventory(app, 'tenant-preview'), /preview mount/)
   assert.throws(() => createPresentationInventory(app, '/tenant-preview/'), /preview mount/)
+})
+test('the shipped template is a website the release gate can accept', async () => {
+  const app = path.join(fileURLToPath(new URL('..', import.meta.url)), 'src/app')
+  const routes = discoverPresentationRoutes(app)
+  // A fresh site declares its home route from committed source: the optional
+  // catch-all that used to own "/" is gone, so "/" is a real page. The release
+  // gate refuses a payload-profile site without it while websitePresent is false.
+  assert.deepEqual(routes, ['/'])
 })

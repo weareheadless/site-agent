@@ -15,8 +15,17 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert (root / "src/app/api/helloada/[...path]/route.ts").exists()
     assert not (root / "src/admin").exists()
     assert not (root / "src/components/admin/HelloAdaWorkspace.tsx").exists()
-    assert "components/admin" not in (root / "payload.config.ts").read_text()
-    assert "components/admin" not in (root / "src/app/(payload)/admin/importMap.js").read_text()
+    payload_config = (root / "payload.config.ts").read_text()
+    # The owner workspace lives on the control plane; the tenant admin keeps
+    # only the shared brand graphics, never the retired workspace components.
+    assert "components/admin/HelloAdaAdminLogo" in payload_config
+    assert "HelloAdaWorkspace" not in payload_config
+    assert "theme: 'light'" in payload_config
+    # A new site is live before it has a design: the tenant-owned home route
+    # publishes the scaffold, so the release gate finds a declared "/" route.
+    assert (root / "src/app/(frontend)/page.tsx").exists()
+    assert (root / "src/app/(frontend)/[...slug]/page.tsx").exists()
+    assert not (root / "src/app/(frontend)/[[...slug]]/page.tsx").exists()
     config = (root / "src/helloada.config.ts").read_text()
     wrangler = (root / "wrangler.jsonc").read_text()
     assert 'tenantId: "north-star-studio"' in config
@@ -37,7 +46,7 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "`/blog` is the index and" in template_instructions
     preview = (root / "src/app/(frontend)/helloada-preview/[token]/page.tsx").read_text()
     assert "pathForDocument(collection, slug)" in preview
-    assert (root / "src/app/(frontend)/[[...slug]]/page.tsx").exists()
+    assert (root / "src/app/(frontend)/[...slug]/page.tsx").exists()
     assert (root / "src/lib/content-routes.ts").exists()
     middleware = (root / "src/middleware.ts").read_text()
     assert "helloAdaSite.routes.preview" in middleware
