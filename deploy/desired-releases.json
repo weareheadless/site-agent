@@ -16,11 +16,6 @@
       "id": "rel-20261114004230-mailreport",
       "sha": "f1ab6599229fcbd7a462b51c8bf98c49ef07f578"
     },
-    "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261116143454-de9ae3cd",
-      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
-      "sharedRuntimeFingerprint": "d6f6a46f25de553128eb9d8a38ee594b716f19dc52773192bff0449cb9796327"
-    },
     "oceanicvibes": {
       "id": "rel-20261113140000-preview-rebuild-bridge",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
