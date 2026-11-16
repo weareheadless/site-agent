@@ -288,6 +288,19 @@ def test_overlay_fingerprint_matching_and_omitted_expected(tmp_path: Path):
         assert result["fingerprint"] == actual
 
 
+def test_the_declared_runtime_fingerprint_is_the_runtime_that_ships() -> None:
+    """A declared fingerprint nobody verifies is how a stale one survives.
+
+    The template declared the identity of an earlier file set, so a new site
+    stamped the wrong runtime while a fan-out release pinned the real one. The
+    declaration and the shipped bytes are checked together here.
+    """
+    declared = json.loads((TEMPLATE / "template-manifest.json").read_text(encoding="utf-8"))
+    actual = shared_runtime_fingerprint(ROOT)
+    assert declared["sharedRuntimeFingerprint"] == actual
+    assert f'"HELLOADA_SHARED_RUNTIME_FINGERPRINT": "{actual}"' in (TEMPLATE / "wrangler.jsonc").read_text(encoding="utf-8")
+
+
 def test_overlay_rejects_malformed_expected_fingerprint_before_writes(tmp_path: Path):
     checkout = _tenant_checkout(tmp_path)
     before = {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()}
