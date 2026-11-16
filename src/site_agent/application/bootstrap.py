@@ -64,7 +64,12 @@ def receipt_proves_live_home(receipt: Mapping[str, Any]) -> bool:
         return True
     inventory = receipt.get("presentationInventory")
     routes = inventory.get("routes") if isinstance(inventory, Mapping) else None
-    return any(isinstance(route, Mapping) and str(route.get("path") or "") == "/" for route in routes or ())
+    for route in routes or ():
+        if isinstance(route, str) and route.strip() == "/":
+            return True
+        if isinstance(route, Mapping) and str(route.get("path") or "") == "/":
+            return True
+    return False
 
 
 def payload_contract_identity(payload_contract: Mapping[str, Any]) -> dict[str, Any]:
