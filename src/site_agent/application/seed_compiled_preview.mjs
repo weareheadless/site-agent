@@ -38,13 +38,13 @@ await payload.db.connect()
 const mediaIds = new Map()
 const documentIds = new Map()
 
+// A relationship only resolves to a row this snapshot created. Taxonomy is not
+// part of the canonical website contract, so a product that points at a
+// production category has no local row to point at; the id must be dropped, not
+// written as a foreign key into nothing.
 const relationId = (value, collection) => {
-  if (value && typeof value === 'object') {
-    const original = value.id
-    const mapped = documentIds.get(`${collection}:${original}`) ?? mediaIds.get(String(original)) ?? original
-    return mapped
-  }
-  return value
+  const original = value && typeof value === 'object' ? value.id : value
+  return documentIds.get(`${collection}:${original}`)
 }
 
 const rewrite = (data, fields, collection) => {
@@ -75,9 +75,15 @@ const rewrite = (data, fields, collection) => {
         }
       } else if (field.type === 'relationship') {
         const target = typeof field.relationTo === 'string' ? field.relationTo : collection
-        result[field.name] = field.hasMany
-          ? value.map((entry) => relationId(entry, target))
-          : relationId(value, target)
+        if (field.hasMany) {
+          const mapped = value.map((entry) => relationId(entry, target)).filter((entry) => entry !== undefined)
+          if (mapped.length) result[field.name] = mapped
+          else delete result[field.name]
+        } else {
+          const mapped = relationId(value, target)
+          if (mapped === undefined) delete result[field.name]
+          else result[field.name] = mapped
+        }
       } else if (field.type === 'array') {
         result[field.name] = value.map((entry) => rewrite(entry, field.fields, collection))
       } else if (field.type === 'group') {
