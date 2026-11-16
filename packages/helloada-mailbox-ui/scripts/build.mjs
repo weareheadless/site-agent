@@ -301,6 +301,31 @@ export function useAssistantAvailability() {
   const source = await readFile(footer, 'utf8')
   if (!source.includes('<PoweredBy />')) throw new Error('Upstream sidebar footer changed shape')
   await writeFile(footer, source.replace('      <PoweredBy />\n', ''))
+
+  // The HelloAda control-plane header above the mailbox already carries the
+  // brand mark and name. The vendor sidebar header keeps only its collapse
+  // control, so the owner never sees a second mark, and there is no icon URL
+  // that the control plane does not serve.
+  const header = path.join(outputRoot, 'src/components/sidebar-header.tsx')
+  let headerSource = await readFile(header, 'utf8')
+  for (const [before, after] of [
+    ['\tconst branding = useBranding();\n', ''],
+    ['\t\t{minimal ? <img src={branding.iconUrl} height={32} width={32} alt="" /> : <TextAlignJustify size={18} />}', '\t\t<TextAlignJustify size={18} />'],
+  ]) {
+    if (!headerSource.includes(before)) throw new Error('Upstream sidebar header changed shape: ' + before)
+    headerSource = headerSource.replace(before, after)
+  }
+  const brandLine = headerSource.split('\n').find((line) => line.includes('<img src={branding.iconUrl}'))
+  if (!brandLine) throw new Error('Upstream sidebar header changed shape: brand row')
+  headerSource = headerSource.replace(brandLine + '\n', '')
+  headerSource = headerSource.replace(/^import \{ useBranding \} from "\.\/branding-provider";\n/m, '')
+  headerSource = headerSource.replace(/^import Link from "next\/link";\n/m, '')
+  headerSource = headerSource.replace(/^import \{ MailboxLink as Link \} from "[^"]+";\n/m, '')
+  if (!headerSource.includes('export function SidebarHeader({ href, label }: SidebarHeaderProps) {')) {
+    throw new Error('Upstream sidebar header changed shape: signature')
+  }
+  headerSource = headerSource.replace('export function SidebarHeader({ href, label }: SidebarHeaderProps) {', 'export function SidebarHeader(_props: SidebarHeaderProps) {')
+  await writeFile(header, headerSource)
 }
 
 const applyBranding = async (files) => {
