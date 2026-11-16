@@ -110,57 +110,70 @@ const collection = (slug) => {
   return definition
 }
 
-for (const item of snapshot.media || []) {
-  const data = rewrite(clean(item.document), collection('media').fields, 'media')
-  const bytes = Buffer.from(item.bytes, 'base64')
-  delete data.id
-  const saved = await payload.create({
-    collection: 'media', overrideAccess: true, locale: snapshot.defaultLocale, data,
-    file: { data: bytes, mimetype: item.contentType, name: data.filename, size: bytes.length },
-  })
-  mediaIds.set(String(item.document.id), saved.id)
-  if (item.document.filename) mediaIds.set(`filename:${item.document.filename}`, saved.id)
-}
-
-for (const item of snapshot.documents) {
-  const definition = collection(item.collection)
-  let created
-  for (const [locale, document] of Object.entries(item.locales)) {
-    const data = rewrite(clean(document), definition.fields, item.collection)
+// A rejected write must name the exact document it was importing. The build
+// keeps only the tail of this log, so the summary is printed on its own line
+// instead of relying on wherever a stack trace happens to begin.
+let writing = ''
+try {
+  for (const item of snapshot.media || []) {
+    writing = `media ${item.document.filename || item.document.id}`
+    const data = rewrite(clean(item.document), collection('media').fields, 'media')
+    const bytes = Buffer.from(item.bytes, 'base64')
     delete data.id
-    if (!created) {
-      created = await payload.create({
-        collection: item.collection, overrideAccess: true, locale, draft: false,
-        data: { ...data, _status: 'published' },
-      })
-      documentIds.set(`${item.collection}:${item.locales[snapshot.defaultLocale]?.id ?? document.id}`,
-        created.id)
-      documentIds.set(`${item.collection}:${document.id}`, created.id)
-    } else {
-      await payload.update({ collection: item.collection, id: created.id, overrideAccess: true,
-        locale, draft: false, data: { ...data, _status: 'published' } })
+    const saved = await payload.create({
+      collection: 'media', overrideAccess: true, locale: snapshot.defaultLocale, data,
+      file: { data: bytes, mimetype: item.contentType, name: data.filename, size: bytes.length },
+    })
+    mediaIds.set(String(item.document.id), saved.id)
+    if (item.document.filename) mediaIds.set(`filename:${item.document.filename}`, saved.id)
+  }
+
+  for (const item of snapshot.documents) {
+    const definition = collection(item.collection)
+    let created
+    for (const [locale, document] of Object.entries(item.locales)) {
+      writing = `${item.collection} ${document.sourceId || document.slug || document.id} (${locale})`
+      const data = rewrite(clean(document), definition.fields, item.collection)
+      delete data.id
+      if (!created) {
+        created = await payload.create({
+          collection: item.collection, overrideAccess: true, locale, draft: false,
+          data: { ...data, _status: 'published' },
+        })
+        documentIds.set(`${item.collection}:${item.locales[snapshot.defaultLocale]?.id ?? document.id}`,
+          created.id)
+        documentIds.set(`${item.collection}:${document.id}`, created.id)
+      } else {
+        await payload.update({ collection: item.collection, id: created.id, overrideAccess: true,
+          locale, draft: false, data: { ...data, _status: 'published' } })
+      }
     }
   }
-}
 
-for (const item of snapshot.globals) {
-  const definition = payload.config.globals.find((global) => global.slug === item.slug)
-  if (!definition) throw new Error(`Preview content uses an unknown canonical global: ${item.slug}`)
-  for (const [locale, document] of Object.entries(item.locales)) {
-    const data = rewrite(clean(document), definition.fields, item.slug)
-    delete data.id
-    // `_status` is version state, not a field: the snapshot only carries a
-    // published global, and this write stores exactly that published value.
-    delete data._status
-    if (!Object.keys(data).length) continue
-    await payload.updateGlobal({ slug: item.slug, overrideAccess: true, locale, data })
+  for (const item of snapshot.globals) {
+    const definition = payload.config.globals.find((global) => global.slug === item.slug)
+    if (!definition) throw new Error(`Preview content uses an unknown canonical global: ${item.slug}`)
+    for (const [locale, document] of Object.entries(item.locales)) {
+      writing = `global ${item.slug} (${locale})`
+      const data = rewrite(clean(document), definition.fields, item.slug)
+      delete data.id
+      // `_status` is version state, not a field: the snapshot only carries a
+      // published global, and this write stores exactly that published value.
+      delete data._status
+      if (!Object.keys(data).length) continue
+      await payload.updateGlobal({ slug: item.slug, overrideAccess: true, locale, data })
+    }
   }
-}
 
-await payload.destroy()
-await cloudflare.dispose?.()
-console.log(JSON.stringify({ ok: true, documents: snapshot.documents.length,
-  media: (snapshot.media || []).length, globals: snapshot.globals.length }))
-// The local dev context can keep a Miniflare child alive; the seed's work is
-// complete, so end the process rather than waiting on it.
-process.exit(0)
+  await payload.destroy()
+  await cloudflare.dispose?.()
+  console.log(JSON.stringify({ ok: true, documents: snapshot.documents.length,
+    media: (snapshot.media || []).length, globals: snapshot.globals.length }))
+  // The local dev context can keep a Miniflare child alive; the seed's work is
+  // complete, so end the process rather than waiting on it.
+  process.exit(0)
+} catch (cause) {
+  console.error(JSON.stringify({ ok: false, document: writing,
+    error: cause instanceof Error ? cause.message : String(cause) }))
+  process.exit(1)
+}
