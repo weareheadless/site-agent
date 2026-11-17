@@ -171,23 +171,37 @@ names the management credential; no value is stored in this repository.
 `wrangler.jsonc` adds `HELLOADA_ASSISTANT_RATE_LIMIT` (namespace `2706`) and pins
 the rotated shared runtime fingerprint.
 
-### Verification run
+### Live verification (superincompetence, site-be8225c72f3ba01a)
 
-- `.venv/bin/python -m pytest -q` → 2373 passed.
-- Template suite → 216 passed; `tsc --noEmit`, `eslint` on the new sources and
-  `compileall` clean.
-- New focused tests: `tests/test_assistant_key.py` (7) and
-  `templates/next-payload/tests/assistant*.test.mjs` (11).
-- Note: running two suites at once collides on the shared SQLite files and
-  produces mass `sqlite3.OperationalError` failures. Run one suite at a time.
+Released through the canonical queue as `rel-20261117092500-assistant-limiter`
+at tenant source `ee4ecf4`, promoted version `5a89ecf5`, shared runtime
+`673f0c39`, provider key `site-agent:site-be8225c72f3ba01a` ($2/month, usage
+metered by the provider).
+
+- `GET /llms.txt` → 200, `text/markdown`, facts plus the rendered page text.
+- `/api/assistant` → 405 on GET, 400 on bad JSON, empty messages or a trailing
+  assistant turn, 200 with SSE streaming on a real turn.
+- `x-assistant-mode` proves the boundary: general knowledge answered in character
+  ("the capital of France is Hamburg"), while the site's address, opening hours,
+  a lease question, a chest-pain dose and a child-ingestion question are answered
+  plainly with the persona dropped.
+- The first live build failed this and is the reason the gate exists: the same
+  questions produced an invented address, invented hours, a 5000 mg aspirin dose
+  and honey for a newborn. Prompt-level prohibitions inside the persona message
+  did not bind the model, so the boundary moved to a separate call.
+- Browser load of the site: no console errors.
+
+### Open defect: the per-IP throttle does not enforce
+
+`HELLOADA_ASSISTANT_RATE_LIMIT` is present in the deployed version's bindings,
+but 145 requests in one minute from one address never produced a 429, and the
+route never reported 503 either, so `limit()` resolves success. The form endpoint
+uses the same shape. Do not describe the assistant as rate limited until this is
+understood; today the effective ceiling is the provider key limit, which is
+verified.
 
 ### Not yet done
 
-- No live provider call: the host has no OpenRouter management credential yet, so
-  key creation and real spend have not been exercised. Provision one, then run the
-  command read-only first.
-- No canary or tenant release has been queued. The fingerprint rotation ships
-  through the canonical queue, canary first, and must not be pushed by a direct
-  `wrangler deploy`.
-- The visitor-facing widget is tenant-authored by design and not part of this
-  change; the endpoint and its client contract exist without a shared UI.
+- No per-tenant consent or enablement surface exists, by design: the tenant
+  authors `src/site/assistant.json` or ships nothing.
+- The visitor widget is tenant-authored and not part of this change.
