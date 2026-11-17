@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261117-preview-builds-its-pinned-commit",
-    "sha": "42b7bdc0f58c2ca7e5ecb33bd5e33da2a92bada5"
+    "id": "20261117-reapply-over-release-material",
+    "sha": "9ba9f737d8ca32e6bb16d3e67d1515750196b9cc"
   }
 }
