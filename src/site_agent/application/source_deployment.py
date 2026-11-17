@@ -253,6 +253,12 @@ class SourceDeploymentService:
         own checkout are considered, and one that a resumable job still points
         at is kept.
         """
+        if self.memory is None:
+            # Without the durable job ledger every worktree looks unreferenced,
+            # and removing one discards a compiled preview that a restart was
+            # about to resume. A service that cannot read the ledger does not
+            # clean up.
+            return
         try:
             checkout = self._local_checkout()
         except SourceDeploymentError:
@@ -1724,7 +1730,7 @@ class SourceDeploymentService:
         except OSError:
             return ""
 
-    def _stop_runtime(self, job_id: str) -> None:
+    def _stop_runtime(self, job_id: str, *, discard_worktree: bool = True) -> None:
         log_entry = self._runtime_logs.pop(str(job_id), None)
         if log_entry is not None:
             try:
@@ -1753,7 +1759,8 @@ class SourceDeploymentService:
                         process.kill()
                     except OSError:
                         pass
-        shutil.rmtree(worktree, ignore_errors=True)
+        if discard_worktree:
+            shutil.rmtree(worktree, ignore_errors=True)
 
     def _start_runtime(
         self,
@@ -2961,9 +2968,14 @@ class SourceDeploymentService:
         return base + parts.path + (f"?{parts.query}" if parts.query else "")
 
     def close(self) -> None:
-        """Stop queued preview work during tenant shutdown."""
+        """Stop queued preview work during tenant shutdown.
+
+        Only the process stops. Its compiled worktree holds the build and the
+        seeded content store, and a restarted API resumes that exact preview
+        instead of compiling the site and importing its content again.
+        """
         for job_id in list(self._runtimes):
-            self._stop_runtime(job_id)
+            self._stop_runtime(job_id, discard_worktree=False)
         self._executor.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(self._preview_home, ignore_errors=True)
 

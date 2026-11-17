@@ -1590,3 +1590,85 @@ def test_a_candidate_without_a_built_asset_tree_writes_no_marker(tmp_path):
         worktree, {"runtime_base_path": "/p/t/j/1799999999/0123456789abcdef"}, "e" * 40,
     )
     assert not (worktree / ".open-next").exists()
+
+
+def _git_repo_with_a_preview_worktree(tmp_path, name="site-agent-source-preview-kept"):
+    """A tenant checkout carrying one registered preview worktree."""
+    repo = tmp_path / "site"
+    repo.mkdir()
+    run = lambda *args: subprocess.run(  # noqa: E731 - one test helper
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    (repo / "README.md").write_text("site\n", encoding="utf-8")
+    run("add", "README.md")
+    run("commit", "-q", "-m", "initial")
+    worktree = tmp_path / name
+    run("worktree", "add", "--detach", str(worktree), "HEAD")
+    return repo, worktree
+
+
+def test_shutdown_stops_the_preview_process_but_keeps_its_compiled_worktree(tmp_path):
+    """A restart resumes the build; it must not pay for another compile.
+
+    The worktree holds the OpenNext output and the seeded content store. The
+    resume path only exists while that directory is there, so closing the
+    process that serves a preview must not delete it.
+    """
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    worktree = tmp_path / "site-agent-source-preview-kept"
+    (worktree / ".open-next").mkdir(parents=True)
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    service._runtimes["preview-a"] = (process, worktree)
+    try:
+        service.close()
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    assert process.poll() is not None
+    assert (worktree / ".open-next").is_dir()
+
+
+def test_a_superseded_preview_still_releases_its_worktree(tmp_path):
+    """Only a shutdown keeps the tree; replacing a preview frees its disk."""
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    worktree = tmp_path / "site-agent-source-preview-old"
+    (worktree / ".open-next").mkdir(parents=True)
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    service._runtimes["preview-old"] = (process, worktree)
+    try:
+        service._stop_runtime("preview-old")
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    assert not worktree.exists()
+
+
+def test_a_service_without_the_job_ledger_leaves_preview_worktrees_alone(tmp_path):
+    """Every worktree looks unreferenced to a service that cannot read the ledger."""
+    repo, worktree = _git_repo_with_a_preview_worktree(tmp_path)
+
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(repo)}})
+    try:
+        service._sweep_stale_worktrees()
+    finally:
+        service.close()
+
+    assert worktree.is_dir()
+
+
+def test_a_service_with_the_job_ledger_removes_a_worktree_no_job_owns(tmp_path):
+    repo, worktree = _git_repo_with_a_preview_worktree(tmp_path)
+    memory = Memory(tmp_path / "memory.db")
+
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(repo)}}, memory=memory)
+    try:
+        service._sweep_stale_worktrees()
+    finally:
+        service.close()
+
+    assert not worktree.exists()
