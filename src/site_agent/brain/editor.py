@@ -850,6 +850,8 @@ def _tools_spec(
         fn("list_files", "List every file path in the site repo", {}),
         fn("get_metrics", "Read persisted GA4 and Search Console evidence with collection timestamps; no collection or spending", {}),
         fn("get_growth", "Read the current Growth workspace: provider configuration, verification, evidence freshness, keyword research readiness, schedules and approvals. Never provisions or spends.", {}),
+        fn("get_assistant", "Read this site's visitor assistant: whether it is declared, the exact purpose, model and grounding mode, the provider key's spend ceiling and usage, and whether the live site has it configured. Never provisions, spends or changes anything.", {}),
+        fn("plan_assistant_key", "Report what provisioning this site's visitor-assistant provider key would do, without creating anything. Applying it is the owner's explicit action, not a tool.", {}),
         fn("list_drafts", "Pending proposals awaiting owner approval", {}),
         fn("recall_memory",
            "Remember by meaning: pull your own past memories — what you learned, "
@@ -1136,6 +1138,19 @@ SYSTEM_NOTE_TOOLS = (
     "step without naming the internal failure: for example, 'I couldn't verify the current "
     "page yet, so I haven't made a preview. I'll verify it first, then continue.' Never turn "
     "a transient tool failure into a claim about the site's files."
+    "\n\nVISITOR ASSISTANT: this site can answer its own visitors through a chatbot that is "
+    "declared in the repository at src/site/assistant.json, with a purpose the owner writes, a "
+    "grounding mode (sources: site answers from this site's published pages and documents; sources: "
+    "none answers from the purpose alone) and a model id chosen for this site's cost profile. It is "
+    "not you: it is public, has no tools, writes nothing, and never reaches the owner's workspace. "
+    "Call get_assistant before you say anything about it; it reports the declaration, the provider "
+    "key's spend ceiling and usage, and whether the live site has it configured. plan_assistant_key "
+    "reports what a new key would be and creates nothing: issuing it is the owner's explicit "
+    "decision, and a key is only delivered to the live site by the normal release. The persona is "
+    "the owner's writing, so draft it with them in their own words rather than presenting it as "
+    "yours. Health, safety, legal, money and the site's own facts are answered plainly by a boundary "
+    "outside the persona, and no declaration can switch that off. Never describe the assistant as "
+    "live, working or earning anything unless get_assistant shows the live site configured."
 )
 
 
@@ -1151,6 +1166,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "list_files": lambda: "listing repository files",
         "get_metrics": lambda: "reading saved analytics and search evidence",
         "get_growth": lambda: "checking growth connections and approvals",
+        "get_assistant": lambda: "checking the visitor assistant and its provider ceiling",
+        "plan_assistant_key": lambda: "checking what assistant key provisioning would do",
         "list_drafts": lambda: "checking pending drafts",
         "recall_memory": lambda: "searching my memory",
         "search_media": lambda: "searching the Library",
@@ -1226,6 +1243,28 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
     if name == "get_growth":
         from ..application.growth import growth_chat_context
         return json.dumps(growth_chat_context(memory, context["config"], context), ensure_ascii=False)
+    if name == "get_assistant":
+        from ..application.assistant_status import read_assistant_state
+
+        declaration: str | None
+        try:
+            blob = _cached_file(context, adapter, "src/site/assistant.json")
+        except AdapterError as exc:
+            return (f"TOOL ERROR: source reads are unavailable for this site ({str(exc)[:200]}). "
+                    "The host cannot read the repository; this is not a missing declaration.")
+        declaration = None if blob is None else blob.decode(errors="replace")
+        try:
+            state = read_assistant_state(context["config"], context.get("env") or {}, declaration)
+        except Exception as exc:  # noqa: BLE001 - reported, never guessed
+            return f"TOOL ERROR: the assistant state could not be read ({type(exc).__name__})."
+        return json.dumps(state, ensure_ascii=False, indent=2)
+    if name == "plan_assistant_key":
+        from ..application.assistant_status import plan_key_change
+
+        try:
+            return json.dumps(plan_key_change(context["config"], context.get("env") or {}), ensure_ascii=False, indent=2)
+        except Exception as exc:  # noqa: BLE001 - reported, never guessed
+            return f"TOOL ERROR: the assistant key plan could not be read ({type(exc).__name__})."
     if name == "read_web_page":
         from ..hands.web_read import WebReadError, fetch_text
 
