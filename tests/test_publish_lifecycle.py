@@ -647,6 +647,111 @@ def test_a_live_release_retires_a_failed_attempt_its_content_includes(tmp_path, 
     memory.close()
 
 
+def test_restart_reconciliation_retires_a_contained_attempt(tmp_path, monkeypatch):
+    """The state must survive a restart, so recovery re-derives it from proof.
+
+    A retired attempt flipped back to failed on the next refresh because the
+    projection of its old job ran again. Reconciliation now proves containment
+    from the live release, so the answer is the same on every start.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="live")
+    older = memory.save_draft("Earlier attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "c" * 40},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "c" * 40},
+    })
+
+    service._retire_contained_failures_for(release_job(draft_id, status="deployed", verified_commit="d" * 40))
+
+    assert memory.get_draft(draft_id)["status"] == "live"
+    assert memory.get_draft(older)["status"] == "superseded"
+    service.close()
+    memory.close()
+
+
+def test_a_retired_attempt_is_not_resurrected_by_a_late_failure_projection(tmp_path, monkeypatch):
+    """A job stays readable forever, so its projection runs after the draft moved on.
+
+    Astrid's change was re-applied by a later approval and its site served it,
+    yet the old failed attempt was projected onto the retired draft on the next
+    refresh, so the owner saw a retry of content that was already live.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    retired = memory.save_draft("Earlier attempt", "", kind="merge", meta={"approved_release": {"commit": "a" * 40}})
+    memory.update_draft_status(retired, "superseded")
+
+    service._sync_publish_failure(release_job(retired, status="failed"))
+
+    assert memory.get_draft(retired)["status"] == "superseded"
+    service.close()
+    memory.close()
+
+
+def test_a_live_draft_is_not_reverted_to_publish_failed(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="live")
+
+    service._sync_publish_failure(release_job(draft_id, status="failed"))
+
+    assert memory.get_draft(draft_id)["status"] == "live"
+    service.close()
+    memory.close()
+
+
+def test_a_publishing_draft_still_fails_when_its_release_fails(tmp_path, monkeypatch):
+    """The projection must still do its job for the attempt it describes."""
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+
+    service._sync_publish_failure(release_job(draft_id, status="failed"))
+
+    assert memory.get_draft(draft_id)["status"] == "publish_failed"
+    service.close()
+    memory.close()
+
+
+def test_restart_reconciliation_retires_what_the_live_release_already_carries(tmp_path, monkeypatch):
+    """Retirement is derived from proof, so a restart re-derives it too.
+
+    The state was only written when a release finished. Restart reconciliation
+    then re-projected the old failed attempt onto the draft, and the owner saw a
+    failed change whose content their site was serving.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="live")
+    older = memory.save_draft("Earlier attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "a" * 40},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "a" * 40},
+    })
+
+    service._retire_contained_failures_for(
+        release_job(draft_id, status="deployed", verified_commit="b" * 40))
+
+    assert memory.get_draft(older)["status"] == "superseded"
+    service.close()
+    memory.close()
+
+
+def test_a_failed_job_never_retires_another_attempt(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    older = memory.save_draft("Earlier attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "a" * 40},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    calls = []
+    monkeypatch.setattr(service, "_retire_contained_failures", lambda *args: calls.append(args))
+
+    service._retire_contained_failures_for(release_job(draft_id, status="failed"))
+
+    assert calls == []
+    service.close()
+    memory.close()
+
+
 def test_a_live_release_leaves_an_unrelated_failed_attempt_alone(tmp_path, monkeypatch):
     memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
     service.adapter = PreviewRecorder()

@@ -62,6 +62,10 @@ _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/ro
 _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
+# Draft states a failed release attempt still describes. Once the owner has
+# decided something else — the change went live, or a later approval replaced
+# it — the attempt is history and may not rewrite the decision.
+_PENDING_PUBLISH_STATUSES = frozenset({"pending", "approved", "publishing", "publish_failed"})
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
@@ -343,6 +347,7 @@ class SourceDeploymentService:
                         self.memory.update_draft_status(int(draft_id), "publish_failed")
                     continue
                 self._refresh_release_job(job)
+                self._retire_contained_failures_for(job)
                 continue
             if not str(job.get("release_id") or "").strip() or not str(job.get("tenant_id") or "").strip():
                 job.update(
@@ -355,6 +360,7 @@ class SourceDeploymentService:
                     self.memory.update_draft_status(int(draft_id), "publish_failed")
                 continue
             self._refresh_release_job(job)
+            self._retire_contained_failures_for(job)
         for draft_id, draft in drafts.items():
             if draft.get("status") == "publishing" and draft_id not in seen:
                 self.memory.update_draft_status(draft_id, "publish_failed")
@@ -946,10 +952,21 @@ class SourceDeploymentService:
         return False
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
+        """Project one failed attempt onto its draft, while that is still the truth.
+
+        A job is a record of one attempt and stays readable forever, so this
+        projection also runs long after the draft moved on: the change may be
+        live, or a later approval may have re-applied it and retired the
+        attempt. In those states the failure is history, not the draft's
+        status, and rewriting it would show the owner a retry of content their
+        site already serves.
+        """
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:
             draft_id = int(job["draft_id"])
-            self.memory.update_draft_status(draft_id, "publish_failed")
             draft = next((row for row in self.memory.list_drafts(limit=500) if int(row.get("id") or 0) == draft_id), None)
+            if draft is not None and str(draft.get("status") or "") not in _PENDING_PUBLISH_STATUSES:
+                return
+            self.memory.update_draft_status(draft_id, "publish_failed")
             package = (draft.get("meta") or {}).get("growth_package") if draft else None
             if isinstance(package, Mapping) and package.get("candidateType") == "source_code":
                 reason = str(job.get("error") or "The approved website release failed its production checks")[:700]
@@ -2385,6 +2402,22 @@ class SourceDeploymentService:
         from .growth_candidates import wake_growth_pending
 
         wake_growth_pending(self.memory)
+
+    def _retire_contained_failures_for(self, job: Mapping[str, Any]) -> None:
+        """Retire failures the live release in this job already carries.
+
+        Restart reconciliation re-reads every job, so the nothing-to-do case has
+        to be free: it only runs for a deployed release whose draft is the same
+        one being reconciled.
+        """
+        if self.memory is None or job.get("status") != "deployed":
+            return
+        try:
+            draft_id = int(job.get("draft_id"))
+        except (TypeError, ValueError):
+            return
+        commit = str(job.get("verified_commit") or job.get("commit") or "").strip().lower()
+        self._retire_contained_failures(draft_id, commit)
 
     def _retire_contained_failures(self, live_draft_id: int, released: str) -> None:
         """Retire failed attempts whose content this live release includes.
