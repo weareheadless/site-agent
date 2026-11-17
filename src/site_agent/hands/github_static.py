@@ -793,6 +793,36 @@ class GithubStatic(SiteAdapter):
             "scope": "frontend_only",
         }
 
+    def _release_material_only(self, reviewed: str, head: str) -> bool:
+        """Whether a branch moved past a review by platform release files only.
+
+        The fleet sync commits the deploy workflow and its release identity to
+        the site's own branches, so a review staged before it is no longer the
+        branch tip without anything of the owner's having changed.
+        """
+        try:
+            _, comparison = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/compare/{urllib.parse.quote(reviewed)}...{urllib.parse.quote(head)}",
+                token=self.token,
+            )
+        except AdapterError:
+            return False
+        if not isinstance(comparison, Mapping) or comparison.get("status") != "ahead":
+            return False
+        merge_base = comparison.get("merge_base_commit") or {}
+        if str((merge_base or {}).get("sha") or "") != reviewed:
+            return False
+        files = comparison.get("files")
+        if not isinstance(files, list) or not files or len(files) >= 300:
+            return False
+        from .repo_changes import is_release_material
+
+        return all(
+            isinstance(entry, Mapping) and is_release_material(str(entry.get("filename") or ""))
+            for entry in files
+        )
+
     def restore_snapshot(self, target_sha: str, branch: str, message: str) -> dict[str, Any]:
         """Compatibility name; restoration is deliberately frontend-only."""
         return self.restore_frontend_paths(target_sha, branch, message)
@@ -821,9 +851,9 @@ class GithubStatic(SiteAdapter):
             "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(branch)}", token=self.token,
         )
         branch_head = str((branch_ref.get("object") or {}).get("sha") or "")
-        if branch_head != candidate_sha:
+        if branch_head != candidate_sha and not self._release_material_only(candidate_sha, branch_head):
             raise AdapterError(
-                "github: the preview branch no longer carries this exact review; it cannot be re-applied over newer staged work"
+                "github: the preview branch carries newer staged work; this review cannot be re-applied over it"
             )
         _, current_ref = _request(
             "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}", token=self.token,
@@ -899,7 +929,10 @@ class GithubStatic(SiteAdapter):
         _, latest_branch = _request(
             "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(branch)}", token=self.token,
         )
-        if (latest_branch.get("object") or {}).get("sha") != candidate_sha:
+        # Compare-and-swap against the branch this review was read from: a
+        # branch that only carried the platform's release files is the same
+        # measurement as one that carried the candidate.
+        if (latest_branch.get("object") or {}).get("sha") != branch_head:
             raise AdapterError("github: the preview branch changed while the review was re-applied; rebuild it again")
         _request(
             "PATCH", f"{API}/repos/{self.repo}/git/refs/heads/{urllib.parse.quote(branch)}", token=self.token,

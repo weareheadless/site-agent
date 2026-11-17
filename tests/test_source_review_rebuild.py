@@ -36,8 +36,9 @@ CONFIG = {
 class FakeGithub:
     """The smallest GitHub the adapter can be honest against."""
 
-    def __init__(self, *, trees, commits, refs, protected_change=False):
+    def __init__(self, *, trees, commits, refs, protected_change=False, comparison=None):
         self.trees = {sha: dict(entries) for sha, entries in trees.items()}
+        self.comparison = comparison or {"status": "diverged", "merge_base_commit": {"sha": ""}, "files": []}
         if protected_change:
             self.trees[CANDIDATE_TREE]["payload.config.ts"] = {
                 "path": "payload.config.ts", "mode": "100644", "type": "blob", "sha": "cfg",
@@ -51,6 +52,8 @@ class FakeGithub:
         del token, timeout
         self.calls.append((method, url))
         path = url.split("/repos/acme/site", 1)[1].split("?", 1)[0]
+        if method == "GET" and path.startswith("/compare/"):
+            return 200, dict(self.comparison)
         if method == "GET" and path.startswith("/git/ref/heads/"):
             branch = path.rsplit("/", 1)[1]
             return 200, {"object": {"sha": self.refs[branch]}}
@@ -177,7 +180,52 @@ def test_reapply_refuses_when_the_preview_branch_carries_other_work(monkeypatch)
     refs["preview"] = "9" * 40
     _apply(monkeypatch, github)
 
-    with pytest.raises(AdapterError, match="no longer carries this exact review"):
+    with pytest.raises(AdapterError, match="carries newer staged work"):
+        adapter.reapply_review_candidate(
+            candidate_sha=CANDIDATE, base_sha=BASE, branch="preview", message="Re-apply",
+        )
+    assert github.created_commits == []
+
+
+def test_reapply_accepts_a_preview_branch_that_only_moved_by_release_material(monkeypatch):
+    """The fleet sync commits to `preview`; that is not newer staged work.
+
+    Every tenant's preview branch receives the deploy workflow and its release
+    identity. Treating that as someone else's staged change made the owner's
+    own recovery path refuse the review it was supposed to rebuild.
+    """
+    github, refs, adapter = _review(comparison={
+        "status": "ahead",
+        "merge_base_commit": {"sha": CANDIDATE},
+        "files": [
+            {"filename": ".github/helloada-release.json"},
+            {"filename": ".github/workflows/release-deploy.yml"},
+        ],
+    })
+    refs["preview"] = "9" * 40
+    _apply(monkeypatch, github)
+
+    result = adapter.reapply_review_candidate(
+        candidate_sha=CANDIDATE, base_sha=BASE, branch="preview", message="Re-apply",
+    )
+
+    assert result["commit_sha"] == REBUILT
+    assert refs["preview"] == REBUILT
+
+
+def test_reapply_refuses_a_preview_branch_carrying_a_newer_candidate(monkeypatch):
+    github, refs, adapter = _review(comparison={
+        "status": "ahead",
+        "merge_base_commit": {"sha": CANDIDATE},
+        "files": [
+            {"filename": ".github/helloada-release.json"},
+            {"filename": "src/app/page.tsx"},
+        ],
+    })
+    refs["preview"] = "9" * 40
+    _apply(monkeypatch, github)
+
+    with pytest.raises(AdapterError, match="carries newer staged work"):
         adapter.reapply_review_candidate(
             candidate_sha=CANDIDATE, base_sha=BASE, branch="preview", message="Re-apply",
         )

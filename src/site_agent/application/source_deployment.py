@@ -62,11 +62,6 @@ _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/ro
 _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
-# What the platform itself commits to a site's main after an approval: the
-# fleet-installed workflow bytes and the canonical presentation check they run.
-# None of it decides anything the owner sees, so an approved change with only
-# these commits after it is still exactly the change they approved.
-_RELEASE_MATERIAL_PATHS = (".github/", "scripts/check-presentation.mjs")
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
@@ -2573,11 +2568,9 @@ class SourceDeploymentService:
         if not isinstance(files, list) or not files or len(files) >= 300:
             raise self._main_moved_error()
         changed = [str(entry.get("filename") or "") for entry in files if isinstance(entry, Mapping)]
-        if len(changed) != len(files) or any(
-            not any(name == path or (path.endswith("/") and name.startswith(path))
-                    for path in _RELEASE_MATERIAL_PATHS)
-            for name in changed
-        ):
+        from ..hands.repo_changes import is_release_material
+
+        if len(changed) != len(files) or any(not is_release_material(name) for name in changed):
             raise self._main_moved_error()
         return head
 

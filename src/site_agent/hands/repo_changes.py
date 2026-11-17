@@ -42,6 +42,24 @@ def source_authoring_contract(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# What the platform itself commits to a site's branch after an approval: the
+# fleet-installed workflow bytes and the canonical presentation check they run.
+# None of it decides anything an owner sees, so a branch that only moved by
+# these files has not moved past the change it carries.
+RELEASE_MATERIAL_PATHS = (".github/", "scripts/check-presentation.mjs")
+
+
+def is_release_material(path: str) -> bool:
+    """True when a path is the platform's release machinery, not site work."""
+    clean = normalize_path(path)
+    if not clean:
+        return False
+    return any(
+        clean == prefix or (prefix.endswith("/") and clean.startswith(prefix))
+        for prefix in RELEASE_MATERIAL_PATHS
+    )
+
+
 def source_path_allowed(config: dict[str, Any], path: str) -> bool:
     contract = source_authoring_contract(config)
     clean = normalize_path(path)
