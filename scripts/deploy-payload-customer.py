@@ -1410,15 +1410,36 @@ def verify_preview_routes(customer: dict[str, Any], presentation: dict[str, Any]
     return checked
 
 
-def validate_presentation_source(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any]) -> dict[str, Any]:
+def registered_import_source_sha(manifest: dict[str, Any], customer: dict[str, Any], tenant: str) -> str:
+    """The source the platform imported for this static tenant, from its own record.
+
+    A runner receives it with the rest of the run's deploy material; the VPS
+    lane reads the tenant's durable bootstrap receipt. The committed
+    ``helloada-frontend.json`` is regenerated with the site's own files, so it
+    cannot be where an import identity that predates them lives.
+    """
+    supplied = str(customer.get("importedSourceSha") or "").strip().lower()
+    if supplied:
+        if not SHA_RE.fullmatch(supplied):
+            raise ValueError("registered import identity is invalid")
+        return supplied
+    from site_agent.application.tenant_registration import recorded_import_source_sha
+
+    return recorded_import_source_sha(tenant_environment_path(manifest, tenant).parent)
+
+
+def validate_presentation_source(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any],
+                                  *, imported_source_sha: str = "") -> dict[str, Any]:
     """Source admission is mandatory for bootstrap as well as ordinary releases."""
     profile = customer.get("presentationProfile", "payload")
     if profile == "static":
         from site_agent.application.github_site_import import validate_static_declaration
         if customer.get("websitePresent") is not True:
             raise RuntimeError("static presentation requires explicit websitePresent")
-        declaration = validate_static_declaration(checkout, worker_config)
-        return {"profile": "static", "importedSourceSha": declaration["sourceSha"],
+        declaration = validate_static_declaration(
+            checkout, worker_config, imported_source_sha=imported_source_sha)
+        return {"profile": "static",
+                "importedSourceSha": str(imported_source_sha or declaration.get("sourceSha") or "").lower(),
                 "pages": len(declaration["routes"]), "files": len(declaration["files"]),
                 "manifestHash": hashlib.sha256((checkout / "helloada-frontend.json").read_bytes()).hexdigest()}
     if profile != "payload" or worker_config.get("vars", {}).get("HELLOADA_PRESENTATION_PROFILE") not in (None, "", "payload"):
@@ -1428,14 +1449,16 @@ def validate_presentation_source(checkout: Path, customer: dict[str, Any], worke
 
 def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
                                    worker_config: dict[str, Any], env: dict[str, str],
-                                   base: dict[str, str], temporary_directory: Path) -> str:
+                                   base: dict[str, str], temporary_directory: Path,
+                                   *, imported_source_sha: str = "") -> str:
     config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
     try:
         website_present = customer.get("websitePresent")
         if not isinstance(website_present, bool):
             raise RuntimeError("release manifest must explicitly declare websitePresent")
         profile = customer.get("presentationProfile", "payload")
-        validate_presentation_source(checkout, customer, worker_config)
+        validate_presentation_source(checkout, customer, worker_config,
+                                     imported_source_sha=imported_source_sha)
         verifier_env = {
             **base, **env,
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
@@ -2451,6 +2474,7 @@ def main() -> int:
     from site_agent.application.shared_runtime import shared_package_versions
     package_versions = shared_package_versions(ROOT)
     customer["payloadCore"] = package_versions["@weareheadless/helloada-payload-core"]
+    imported_source_sha = registered_import_source_sha(manifest, customer, args.tenant)
     validate_target(customer, args.tenant, args.ref, args.release_id)
     try:
         require_release_purpose(args.release_purpose, args.initialize_schema_head)
@@ -2757,7 +2781,8 @@ def main() -> int:
         worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
         wrangler["handlers"] = worker_handlers(worker_entry)
         validate_worker_contract(wrangler, customer, args.tenant)
-        receipt["presentation"] = validate_presentation_source(checkout, customer, wrangler)
+        receipt["presentation"] = validate_presentation_source(
+            checkout, customer, wrangler, imported_source_sha=imported_source_sha)
         lifecycle_identity = durable_object_migration_identity(wrangler["durableObjectMigrations"])
         rollout_mode, applied_lifecycle_release = select_worker_rollout_mode(
             directory.parent, lifecycle_identity,
@@ -2915,7 +2940,10 @@ def main() -> int:
         )
         if customer.get("presentationProfile") == "static":
             from site_agent.application.github_site_import import validate_static_declaration, validate_static_artifact
-            validate_static_artifact(checkout, validate_static_declaration(checkout, wrangler))
+            validate_static_artifact(
+                checkout,
+                validate_static_declaration(checkout, wrangler, imported_source_sha=imported_source_sha),
+            )
         # Keep the dry-run bundle until the upload stage has re-hashed it. It
         # is discarded at the end of the run; deleting it here made every
         # post-upload artifact comparison fail with "no compiled custom
@@ -2982,7 +3010,10 @@ def main() -> int:
                 )
             else:
                 stage("verify-payload-contract")
-                run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
+                run_payload_contract_verifier(
+                    checkout, customer, wrangler, deploy_env, base, temporary_root,
+                    imported_source_sha=imported_source_sha,
+                )
             atomic_json(receipt_path, receipt)
 
         release_variables = {

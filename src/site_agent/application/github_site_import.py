@@ -175,13 +175,25 @@ def write_static_manifest(root: Path, declaration: dict) -> Path:
     return path
 
 
-def validate_static_declaration(root: Path, worker: dict) -> dict:
-    """Bind source files, routing and actual Worker variables before any release."""
+def validate_static_declaration(root: Path, worker: dict, *, imported_source_sha: str = '') -> dict:
+    """Bind source files, routing and actual Worker variables before any release.
+
+    ``helloada-frontend.json`` is regenerated from the working tree whenever a
+    page, script or style changes, so it can only honestly describe the files.
+    The source the platform imported is a provisioning fact that predates every
+    one of those edits; it is read from the platform's own record and passed in
+    here. A declaration that still carries the value is checked against that
+    record, and one that lost it during a regeneration is not a failed site.
+    """
     declared = json.loads((root / 'helloada-frontend.json').read_text())
     actual = inspect_static_site(root)
     if any(declared.get(key) != value for key, value in actual.items()):
         raise GitHubSiteImportError('Static presentation manifest differs from the committed website files.')
-    if not re.fullmatch('[0-9a-f]{40}', str(declared.get('sourceSha') or '')):
+    recorded = str(imported_source_sha or '').strip().lower()
+    published = str(declared.get('sourceSha') or '').strip().lower()
+    if recorded and published and recorded != published:
+        raise GitHubSiteImportError('Static presentation declares an imported source that differs from the platform record.')
+    if not re.fullmatch('[0-9a-f]{40}', recorded or published):
         raise GitHubSiteImportError('Static presentation has no imported source identity.')
     variables = worker.get('vars') or {}
     if variables.get('HELLOADA_PRESENTATION_PROFILE') != 'static':

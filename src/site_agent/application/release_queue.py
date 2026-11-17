@@ -174,8 +174,12 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
     profile = site.get("presentation_profile") or "payload"
     if profile == "static":
         from .github_site_import import validate_static_declaration
+        from .tenant_registration import recorded_import_source_sha
         try:
-            validate_static_declaration(root, wrangler)
+            validate_static_declaration(
+                root, wrangler,
+                imported_source_sha=recorded_import_source_sha(root.parent),
+            )
         except (OSError, ValueError) as exc:
             raise ReleaseQueueError(str(exc)) from exc
         if not website_present:

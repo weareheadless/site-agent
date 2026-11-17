@@ -3068,3 +3068,62 @@ def test_a_reused_compile_is_rehosted_into_its_new_workspace(tmp_path):
     restored = (checkout / ".open-next" / "server-functions" / "default" / "handler.mjs").read_text()
     assert str(source) not in restored
     assert f"{checkout}/.open-next/node_modules/yoga.wasm" in restored
+
+
+def _static_site(tmp_path, declaration=None):
+    from site_agent.application.github_site_import import inspect_static_site
+    public = tmp_path / 'public'
+    public.mkdir(exist_ok=True)
+    (public / 'index.html').write_text('<html lang="es"><head></head><body>Owner website</body></html>')
+    (tmp_path / 'helloada-frontend.json').write_text(json.dumps(declaration or inspect_static_site(tmp_path)))
+    worker = {'vars': {'HELLOADA_PRESENTATION_PROFILE': 'static'},
+              'assets': {'run_worker_first': True, 'html_handling': 'none'}}
+    return {'presentationProfile': 'static', 'websitePresent': True}, worker
+
+
+def test_static_release_reads_the_import_identity_from_the_platform_record(tmp_path):
+    """A page edit regenerates the inventory and drops the import identity with it.
+
+    The identity describes the commit the platform imported; it predates every
+    edit the site has had since. An approved update must not fail because a
+    file its own pages rewrite lost a fact it cannot restore.
+    """
+    customer, worker = _static_site(tmp_path)
+    proof = release.validate_presentation_source(
+        tmp_path, customer, worker, imported_source_sha='b' * 40)
+    assert proof['profile'] == 'static' and proof['importedSourceSha'] == 'b' * 40
+
+    with pytest.raises(ValueError, match='no imported source identity'):
+        release.validate_presentation_source(tmp_path, customer, worker)
+
+
+def test_static_release_refuses_an_inventory_that_contradicts_its_import(tmp_path):
+    from site_agent.application.github_site_import import inspect_static_site
+    customer, worker = _static_site(tmp_path)
+    declaration = json.loads((tmp_path / 'helloada-frontend.json').read_text())
+    (tmp_path / 'helloada-frontend.json').write_text(
+        json.dumps({**declaration, 'sourceSha': 'c' * 40}))
+    with pytest.raises(ValueError, match='differs from the platform record'):
+        release.validate_presentation_source(
+            tmp_path, customer, worker, imported_source_sha='b' * 40)
+
+
+def test_a_runner_release_takes_the_import_identity_the_platform_issued():
+    assert release.registered_import_source_sha(
+        {}, {'importedSourceSha': 'a' * 40}, 'site-demo') == 'a' * 40
+    with pytest.raises(ValueError, match='import identity is invalid'):
+        release.registered_import_source_sha({}, {'importedSourceSha': 'not-a-sha'}, 'site-demo')
+
+
+def test_the_import_identity_is_read_from_the_tenants_provisioning_record(tmp_path):
+    from site_agent.application.tenant_registration import recorded_import_source_sha
+    tenant = tmp_path / 'site-demo'
+    tenant.mkdir()
+    (tenant / 'bootstrap.json').write_text(json.dumps({
+        'tenant_id': 'site-demo',
+        'resource_receipts': {'creating_repository': {'source_sha': 'd' * 40}},
+    }), encoding='utf-8')
+    assert recorded_import_source_sha(tenant) == 'd' * 40
+    (tenant / 'bootstrap.json').write_text('{"resource_receipts": {}}', encoding='utf-8')
+    assert recorded_import_source_sha(tenant) == ''
+    assert recorded_import_source_sha(tmp_path / 'absent') == ''

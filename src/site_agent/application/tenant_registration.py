@@ -68,6 +68,28 @@ def tenant_token_env(tenant_id: str) -> str:
     return "PROVISIONED_" + str(tenant_id or "").replace("-", "_").upper() + "_TOKEN"
 
 
+def recorded_import_source_sha(tenant_dir: Path) -> str:
+    """The exact source the platform imported for a static tenant, or ''.
+
+    Provisioning imports the operator's repository once and records the commit
+    in the tenant's durable bootstrap receipt beside its checkout. A committed
+    ``helloada-frontend.json`` is regenerated from the working tree whenever the
+    site's own files change, so it can never be the only home of a fact that
+    predates every edit; a release reads it here instead.
+    """
+    receipt = Path(tenant_dir) / "bootstrap.json"
+    try:
+        state = json.loads(receipt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return ""
+    if not isinstance(state, Mapping):
+        return ""
+    receipts = state.get("resource_receipts")
+    creating = receipts.get("creating_repository") if isinstance(receipts, Mapping) else None
+    value = str(creating.get("source_sha") or "").strip().lower() if isinstance(creating, Mapping) else ""
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else ""
+
+
 def provisioned_root(config: Mapping[str, Any]) -> Path:
     """Root directory for runtime-registered tenant workspaces."""
     section = config.get("workspace_api") or {}

@@ -1280,6 +1280,8 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
             source_sha = str(claims["sha"])
             lifecycle = _proven_durable_object_lifecycle(config, tenant.tenant_id, activation)
+            from ..application.tenant_registration import recorded_import_source_sha
+            imported_source_sha = recorded_import_source_sha(Path(tenant.config_path).parent)
             if tenant.memory is not None:
                 tenant.memory.record_action(
                     "deploy_credentials",
@@ -1290,6 +1292,10 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 "repository": repository,
                 "branch": branch,
                 "sourceSha": source_sha,
+                # The commit the platform imported for this tenant. The
+                # committed inventory is regenerated with the site's own files,
+                # so a static release reads the import identity from here.
+                "importedSourceSha": imported_source_sha,
                 "runId": str(claims.get("run_id") or ""),
                 "worker": str((site.get("source_deployment") or {}).get("worker_name") or ""),
                 "identity": {

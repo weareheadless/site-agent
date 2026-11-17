@@ -79,6 +79,14 @@ jobs:
           if deploy["tenant"] != release["tenant"]:
               raise SystemExit("the platform issued material for a different tenant")
           customer = dict(release["customer"])
+          # The import identity is a platform fact, not a property of the
+          # committed inventory: keep a static release from depending on a file
+          # its own page edits regenerate.
+          imported = str(deploy.get("importedSourceSha") or "")
+          if customer.get("presentationProfile") == "static" and not imported:
+              raise SystemExit("the platform did not report the imported source of this static site")
+          if imported:
+              customer["importedSourceSha"] = imported
           contract = {
               name: deploy["identity"][name]
               for name in ("contentContract", "payloadCore", "schemaRevision", "schemaIdentity", "migrationHead")
