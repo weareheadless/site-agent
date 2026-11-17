@@ -332,7 +332,10 @@ class SourceDeploymentService:
                 continue
             seen.add(draft_id)
             draft = drafts.get(draft_id)
-            if draft and draft.get("status") not in {"pending", "approved", "publishing", "publish_failed"}:
+            # A live draft is reconciled too: its release is the proof that
+            # retires the failed attempts it contains, and that answer has to be
+            # re-derived on every start rather than only when a release finished.
+            if draft and draft.get("status") not in {"pending", "approved", "publishing", "publish_failed", "live"}:
                 continue
             provider = str(job.get("provider") or ("vps" if job.get("release_id") else self._release_provider()))
             if provider == "github":

@@ -888,3 +888,31 @@ def test_approval_is_refused_when_the_repository_has_no_canonical_release_lane(t
     assert memory.list_drafts()[0]["status"] == "pending"
     service.close()
     memory.close()
+
+
+def test_startup_reconciliation_retires_contained_failures_of_a_live_release(tmp_path, monkeypatch):
+    """A live draft's release is the proof that retires the attempts it carries.
+
+    Recovery skipped drafts that were already live, which is exactly the draft
+    whose release contains the earlier attempts, so the retirement never ran on
+    restart and the retired attempt came back as failed.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="live")
+    older = memory.save_draft("Earlier attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "e" * 40},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    job = release_job(draft_id, status="deployed", release_receipt_processed=True)
+    job.update(commit="f" * 40, verified_commit="f" * 40)
+    service._jobs["deployed-job"] = job
+    monkeypatch.setattr(service, "_refresh_release_job", lambda job: job)
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "e" * 40},
+    })
+
+    service._recover_production_jobs()
+
+    assert memory.get_draft(older)["status"] == "superseded"
+    service.close()
+    memory.close()
