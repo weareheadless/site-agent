@@ -3093,8 +3093,18 @@ def test_static_release_reads_the_import_identity_from_the_platform_record(tmp_p
         tmp_path, customer, worker, imported_source_sha='b' * 40)
     assert proof['profile'] == 'static' and proof['importedSourceSha'] == 'b' * 40
 
-    with pytest.raises(ValueError, match='no imported source identity'):
-        release.validate_presentation_source(tmp_path, customer, worker)
+
+def test_a_static_site_without_a_recorded_import_identity_still_releases(tmp_path):
+    """The identity is provenance: the exact commit, schema and artifact are the release.
+
+    A tenant provisioned before the platform recorded the imported commit has
+    neither the record nor the key in a regenerated inventory. Its live tree is
+    a normal site, and refusing it would strand every approved update it has.
+    """
+    customer, worker = _static_site(tmp_path)
+    proof = release.validate_presentation_source(tmp_path, customer, worker)
+    assert proof['profile'] == 'static' and proof['importedSourceSha'] == ''
+    assert proof['pages'] == 1
 
 
 def test_static_release_refuses_an_inventory_that_contradicts_its_import(tmp_path):

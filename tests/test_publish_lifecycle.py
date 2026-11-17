@@ -105,12 +105,18 @@ def test_approval_queues_the_exact_sha_once_without_a_local_production_worker(tm
     memory.close()
 
 
-def test_production_queue_rejects_a_sha_that_is_not_the_current_main_head(tmp_path, monkeypatch):
+def test_production_queue_refuses_a_sha_the_site_moved_past(tmp_path, monkeypatch):
+    """A production release never quietly deploys a tree the owner did not approve.
+
+    Without proof that only the platform's release material followed the
+    approval, the lane refuses instead of releasing an older tree.
+    """
     memory, service, draft_id, _release_root = make_service(tmp_path, monkeypatch, draft_status="pending")
     called = []
     monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "")
     monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
-    with pytest.raises(SourceDeploymentError, match="exact main revision"):
+    with pytest.raises(SourceDeploymentError, match="must be re-applied"):
         service.start({"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id}, allow_production=True)
     assert not called
     assert memory.list_drafts()[0]["status"] == "pending"
@@ -415,6 +421,110 @@ def test_a_failed_release_is_not_retried_after_the_site_moved(tmp_path, monkeypa
 
     assert not called
     assert service._jobs["failed-attempt"]["status"] == "failed"
+    service.close()
+    memory.close()
+
+
+def _comparison(service, monkeypatch, *, merge_base, files, status="ahead"):
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": status,
+        "merge_base_commit": {"sha": merge_base},
+        "files": [{"filename": name} for name in files],
+    })
+
+
+def test_a_failed_release_is_retried_when_only_release_material_followed(tmp_path, monkeypatch):
+    """The platform's fleet sync moves main past an approval it did not decide.
+
+    Installing the deploy workflow is a platform commit, not an owner edit: the
+    approved change is still merged and unchanged, so retrying releases the tip
+    instead of asking the owner to re-apply it.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed")
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    _comparison(service, monkeypatch, merge_base="a" * 40, files=[
+        ".github/helloada-release.json",
+        ".github/workflows/release-deploy.yml",
+        "scripts/check-presentation.mjs",
+    ])
+    calls = []
+
+    def request_release(config, env, source_sha, *, approval_id):
+        calls.append((source_sha, approval_id))
+        return {"release_id": "20261117-retry-2", "control_sha": "c" * 40}
+
+    monkeypatch.setattr(deployment, "request_release", request_release)
+
+    job = service.retry_release(draft_id)
+
+    assert job["commit"] == "b" * 40
+    assert calls == [("b" * 40, draft_id)]
+    service.close()
+    memory.close()
+
+
+def test_a_production_release_runs_on_the_tip_when_only_the_fleet_sync_followed(tmp_path, monkeypatch):
+    """The rule lives in the lane, so a first approval benefits too.
+
+    The approval merges its change; the fleet sync lands a workflow commit
+    before the deploy triggers. Both an approval and a retry reach production
+    through the same start, so neither can be the one place that knows this.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="pending")
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    _comparison(service, monkeypatch, merge_base="a" * 40,
+                files=[".github/workflows/release-deploy.yml"])
+    calls = []
+
+    def request_release(config, env, source_sha, *, approval_id):
+        calls.append((source_sha, approval_id))
+        return {"release_id": "20261117-tip-1", "control_sha": "c" * 40}
+
+    monkeypatch.setattr(deployment, "request_release", request_release)
+
+    job = service.start(
+        {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id},
+        allow_production=True,
+    )
+
+    assert job["commit"] == "b" * 40
+    assert calls == [("b" * 40, draft_id)]
+    service.close()
+    memory.close()
+
+
+def test_a_failed_release_is_not_retried_when_the_site_changed_after_it(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed")
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    _comparison(service, monkeypatch, merge_base="a" * 40,
+                files=[".github/workflows/release-deploy.yml", "public/index.html"])
+    called = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
+
+    with pytest.raises(SourceDeploymentError, match="must be re-applied"):
+        service.retry_release(draft_id)
+
+    assert not called
+    service.close()
+    memory.close()
+
+
+def test_a_failed_release_is_not_retried_without_proof_of_what_followed(tmp_path, monkeypatch):
+    """No comparison means no evidence; the absence is a refusal, not permission."""
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publish_failed")
+    service._jobs["failed-attempt"] = release_job(draft_id, status="failed")
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "")
+    called = []
+    monkeypatch.setattr(deployment, "request_release", lambda *args, **kwargs: called.append(True))
+
+    with pytest.raises(SourceDeploymentError, match="must be re-applied"):
+        service.retry_release(draft_id)
+
+    assert not called
     service.close()
     memory.close()
 

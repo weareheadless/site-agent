@@ -184,6 +184,12 @@ def validate_static_declaration(root: Path, worker: dict, *, imported_source_sha
     one of those edits; it is read from the platform's own record and passed in
     here. A declaration that still carries the value is checked against that
     record, and one that lost it during a regeneration is not a failed site.
+
+    That identity is provenance, not a property this release proves: the exact
+    commit, schema, migration head and compiled artifact below are what the
+    release is. A tree whose declaration and platform record both lack it still
+    releases, and the receipt reports no imported source instead of inventing
+    one.
     """
     declared = json.loads((root / 'helloada-frontend.json').read_text())
     actual = inspect_static_site(root)
@@ -193,8 +199,6 @@ def validate_static_declaration(root: Path, worker: dict, *, imported_source_sha
     published = str(declared.get('sourceSha') or '').strip().lower()
     if recorded and published and recorded != published:
         raise GitHubSiteImportError('Static presentation declares an imported source that differs from the platform record.')
-    if not re.fullmatch('[0-9a-f]{40}', recorded or published):
-        raise GitHubSiteImportError('Static presentation has no imported source identity.')
     variables = worker.get('vars') or {}
     if variables.get('HELLOADA_PRESENTATION_PROFILE') != 'static':
         raise GitHubSiteImportError('Worker static presentation differs from the committed declaration.')

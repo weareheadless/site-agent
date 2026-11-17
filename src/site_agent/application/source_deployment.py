@@ -62,6 +62,11 @@ _PREVIEW_PLATFORM_PATHS = ("/api", "/admin", "/mail", "/_next", "/favicon", "/ro
 _PREVIEW_CANDIDATE_ASSET_ROOTS = ("/api/media/",)
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
+# What the platform itself commits to a site's main after an approval: the
+# fleet-installed workflow bytes and the canonical presentation check they run.
+# None of it decides anything the owner sees, so an approved change with only
+# these commits after it is still exactly the change they approved.
+_RELEASE_MATERIAL_PATHS = (".github/", "scripts/check-presentation.mjs")
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
@@ -2438,10 +2443,9 @@ class SourceDeploymentService:
         """Queue one more attempt for an approved change whose release failed.
 
         A failed release id is evidence, not a verdict: the pipeline never runs a
-        terminal id again, so recovery means a new attempt for the same source.
-        That is only honest while the source is still the head of ``main`` — after
-        the site moves, the approved change has to be re-applied before it can be
-        released, and this refuses instead of deploying a stale tree.
+        terminal id again, so recovery means a new attempt for the same approved
+        change. ``start`` resolves that to the exact commit to release and
+        refuses if the site moved past it.
         """
         try:
             approval = int(draft_id)
@@ -2468,13 +2472,51 @@ class SourceDeploymentService:
             draft = self.memory.get_draft(approval)
             if isinstance(draft, Mapping) and draft.get("status") == "live":
                 raise SourceDeploymentError("this change is already live")
-        if self._head("main") != commit:
-            raise SourceDeploymentError(
-                "the site changed after this release failed; the approved change must be re-applied before it can be released"
-            )
         return self.start(
             {"mode": _PRODUCTION, "branch": "main", "commit": commit, "draft_id": approval, "retry": True},
             allow_production=True,
+        )
+
+    def _release_tip(self, approved: str, head: str) -> str:
+        """The commit to release when main moved past the approved change.
+
+        An approval merges its own change to main, and the platform's fleet sync
+        then commits workflow bytes to the same branch. That sync decides
+        nothing the owner sees, so the approved change is still contained in the
+        tip and unchanged, and the release runs on the tip rather than asking
+        the owner to re-apply a change that is already merged. Any other commit
+        in between is a real edit: the site moved past what they approved, and
+        this refuses instead of deploying a stale tree.
+        """
+        repository = self._github_repository()
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            # Without the comparison there is no evidence that only the
+            # platform's release material followed, and guessing is not a fix.
+            raise self._main_moved_error()
+        comparison = self._github_json(
+            f"https://api.github.com/repos/{repository}/compare/{approved}...{head}", token
+        )
+        merge_base = comparison.get("merge_base_commit") if isinstance(comparison, Mapping) else None
+        merge_base_sha = str(merge_base.get("sha") or "") if isinstance(merge_base, Mapping) else ""
+        if not comparison or comparison.get("status") != "ahead" or merge_base_sha != approved:
+            raise self._main_moved_error()
+        files = comparison.get("files")
+        if not isinstance(files, list) or not files or len(files) >= 300:
+            raise self._main_moved_error()
+        changed = [str(entry.get("filename") or "") for entry in files if isinstance(entry, Mapping)]
+        if len(changed) != len(files) or any(
+            not any(name == path or (path.endswith("/") and name.startswith(path))
+                    for path in _RELEASE_MATERIAL_PATHS)
+            for name in changed
+        ):
+            raise self._main_moved_error()
+        return head
+
+    @staticmethod
+    def _main_moved_error() -> SourceDeploymentError:
+        return SourceDeploymentError(
+            "the site changed after this change was approved; it must be re-applied before it can be released"
         )
 
     def _run_job(self, job_id: str, branch: str, requested_commit: str | None, mode: str) -> None:
@@ -2542,6 +2584,13 @@ class SourceDeploymentService:
             raise SourceDeploymentError("production deployment requires an exact commit")
         if mode == _PRODUCTION and branch != "main":
             raise SourceDeploymentError("production release must reference the official main branch")
+        if mode == _PRODUCTION:
+            # An approved change merges to main and the platform's own fleet
+            # sync may commit after it before the release runs. Releasing the
+            # tip then is still releasing exactly what the owner approved.
+            head = self._head(branch)
+            if head != requested_commit:
+                requested_commit = self._release_tip(requested_commit, head)
         draft_id = body.get("draft_id")
         publish = _mapping(body.get("publish"))
         design_run_id = str(body.get("design_run_id") or "")
