@@ -3,6 +3,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { assistantConfig } from '@/lib/assistant-config'
 import { assistantInstruction } from '@/lib/assistant-prompt'
 import { AssistantProviderError, assistantReply, type AssistantMessage } from '@/lib/assistant-provider'
+import { classifyTurn, type AssistMode } from '@/lib/assistant-safety'
 import { siteCorpus, type SiteCorpusEnv } from '@/lib/assistant-site-context'
 
 export const dynamic = 'force-dynamic'
@@ -80,11 +81,19 @@ export async function POST(request: Request) {
     }
   }
 
+  // The act is allowed only where a non-role-playing call says it is harmless.
+  const mode: AssistMode = await classifyTurn({
+    apiKey,
+    model: config.model,
+    message: messages[messages.length - 1].content,
+    signal: request.signal,
+  })
+
   try {
     const reply = await assistantReply({
       apiKey,
       model: config.model,
-      instruction: assistantInstruction({ config, reference }),
+      instruction: assistantInstruction({ config, reference, mode }),
       messages,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       title: `HelloAda site assistant (${origin})`,
@@ -94,6 +103,7 @@ export async function POST(request: Request) {
         'content-type': reply.contentType,
         'cache-control': 'no-store',
         'x-accel-buffering': 'no',
+        'x-assistant-mode': mode,
       },
     })
   } catch (error) {

@@ -9,6 +9,7 @@ import {
   renderCorpus,
 } from '../src/lib/assistant-context.ts'
 import { assistantInstruction } from '../src/lib/assistant-prompt.ts'
+import { classifyTurn } from '../src/lib/assistant-safety.ts'
 
 test('page text prefers the page body and drops site chrome', () => {
   const html = `
@@ -113,4 +114,47 @@ test('an empty reference is stated instead of pretending to know the site', () =
   })
 
   assert.match(instruction, /currently empty/)
+})
+
+test('an honest turn drops the tenant persona entirely', () => {
+  const instruction = assistantInstruction({
+    config: { purpose: 'Answer only with confident nonsense.', sources: 'none', model: 'model/x' },
+    reference: '',
+    mode: 'honest',
+  })
+
+  assert.doesNotMatch(instruction, /confident nonsense/)
+  assert.match(instruction, /Do not role-play/)
+  assert.match(instruction, /not qualified to advise on health, safety, legal or money matters/)
+})
+
+test('the safety gate fails closed to an honest answer', async () => {
+  const original = globalThis.fetch
+  const reply = (body, ok = true) => {
+    globalThis.fetch = async () => ({ ok, json: async () => body })
+  }
+  try {
+    reply({ choices: [{ message: { content: 'BIT' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'a joke about the moon' }), 'bit')
+
+    reply({ choices: [{ message: { content: 'HONEST' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'a dose question' }), 'honest')
+
+    reply({ choices: [{ message: { content: 'hard to say' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'honest')
+
+    reply({ choices: [] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'honest')
+
+    reply({ error: 'refused' }, false)
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'provider down' }), 'honest')
+
+    globalThis.fetch = async () => { throw new Error('network down') }
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'network down' }), 'honest')
+
+    globalThis.fetch = original
+    assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'honest')
+  } finally {
+    globalThis.fetch = original
+  }
 })

@@ -34,6 +34,7 @@
     "src/lib/assistant-context.ts",
     "src/lib/assistant-prompt.ts",
     "src/lib/assistant-provider.ts",
+    "src/lib/assistant-safety.ts",
     "src/lib/assistant-site-context.ts",
     "src/lib/cloudflare-context.ts",
     "src/lib/content-routes.ts",
