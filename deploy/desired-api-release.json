@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261117-assistant-owner-visibility",
-    "sha": "d4763f41dca7dbaff54c8f4be895d394bc4c9ea0"
+    "id": "20261117-preview-connection-reuse",
+    "sha": "3a62bcf90e912cf6aa86bb34073d55e7103c97af"
   }
 }
