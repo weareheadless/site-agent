@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261117-retire-contained-failures",
-    "sha": "50173199f1be207ee2322635f38c99cbbc41b549"
+    "id": "20261117-preview-builds-its-pinned-commit",
+    "sha": "42b7bdc0f58c2ca7e5ecb33bd5e33da2a92bada5"
   }
 }
