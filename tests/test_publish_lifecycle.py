@@ -621,6 +621,51 @@ def test_a_refused_preview_reset_does_not_undo_a_live_release(tmp_path, monkeypa
     memory.close()
 
 
+def test_a_live_release_retires_a_failed_attempt_its_content_includes(tmp_path, monkeypatch):
+    """A failed attempt that a later approval re-applied must not stay failed.
+
+    Leaving it there offers the owner a retry of content the site already
+    serves. It is retired only with proof that the released commit contains it.
+    """
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+    service.adapter = PreviewRecorder()
+    older = memory.save_draft("Earlier attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "a" * 40, "draft_id": 99},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "a" * 40},
+    })
+
+    service._record_production_publish(release_job(draft_id), {"commit": "b" * 40})
+
+    assert memory.get_draft(older)["status"] == "superseded"
+    actions = [row.get("kind") for row in memory.recent_actions(limit=10)]
+    assert "superseded" in actions
+    service.close()
+    memory.close()
+
+
+def test_a_live_release_leaves_an_unrelated_failed_attempt_alone(tmp_path, monkeypatch):
+    memory, service, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status="publishing")
+    service.adapter = PreviewRecorder()
+    older = memory.save_draft("Unrelated attempt", "", kind="merge", meta={
+        "approved_release": {"commit": "a" * 40, "draft_id": 99},
+    })
+    memory.update_draft_status(older, "publish_failed")
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "diverged", "merge_base_commit": {"sha": "c" * 40},
+    })
+
+    service._record_production_publish(release_job(draft_id), {"commit": "b" * 40})
+
+    assert memory.get_draft(older)["status"] == "publish_failed"
+    service.close()
+    memory.close()
+
+
 def test_approval_hands_the_exact_commit_to_the_repository_run(tmp_path, monkeypatch):
     """The default lane queues nothing: the merge push is the deploy trigger."""
     memory, service, draft_id, _root = make_service(

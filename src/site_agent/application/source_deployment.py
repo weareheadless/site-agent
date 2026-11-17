@@ -2336,6 +2336,7 @@ class SourceDeploymentService:
         )
         self.memory.update_draft_status(draft_id, "live")
         self.memory.record_action("publish_live", f"#{draft_id} live at {str(result.get('commit') or '')[:8]}")
+        self._retire_contained_failures(draft_id, str(result.get("commit") or ""))
         self._reconcile_preview_branch(draft_id, str(result.get("commit") or ""))
         draft = next((row for row in self.memory.list_drafts(limit=500) if int(row.get("id") or 0) == draft_id), None)
         package = (draft.get("meta") or {}).get("growth_package") if draft else None
@@ -2362,6 +2363,46 @@ class SourceDeploymentService:
         from .growth_candidates import wake_growth_pending
 
         wake_growth_pending(self.memory)
+
+    def _retire_contained_failures(self, live_draft_id: int, released: str) -> None:
+        """Retire failed attempts whose content this live release includes.
+
+        An attempt that failed and was later re-applied by another approved
+        change stays in the owner's list as a failure they cannot act on, while
+        the site serves it. Retire it only when GitHub proves the released
+        commit contains that attempt's commit; without that proof the failure
+        stays exactly as it was.
+        """
+        if self.memory is None or not re.fullmatch(r"[0-9a-f]{40}", released):
+            return
+        attempts: dict[int, str] = {}
+        for row in self.memory.list_drafts(limit=500):
+            if (row.get("status") != "publish_failed"
+                    or int(row.get("id") or 0) == live_draft_id
+                    or str(row.get("kind") or "") not in {"merge", "rollback"}):
+                continue
+            approved = (row.get("meta") or {}).get("approved_release")
+            commit = str(approved.get("commit") or "").strip().lower() if isinstance(approved, Mapping) else ""
+            if re.fullmatch(r"[0-9a-f]{40}", commit):
+                attempts[int(row["id"])] = commit
+        if not attempts:
+            return
+        repository = self._github_repository()
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return
+        for older_id, commit in attempts.items():
+            comparison = self._github_json(
+                f"https://api.github.com/repos/{repository}/compare/{commit}...{released}", token
+            )
+            merge_base = comparison.get("merge_base_commit") if isinstance(comparison, Mapping) else None
+            merge_base_sha = str(merge_base.get("sha") or "") if isinstance(merge_base, Mapping) else ""
+            if not comparison or comparison.get("status") != "ahead" or merge_base_sha != commit:
+                continue
+            self.memory.update_draft_status(older_id, "superseded")
+            self.memory.record_action(
+                "superseded", f"#{older_id}: its content is live in approved #{live_draft_id}"
+            )
 
     def _sync_compiled_preview_draft(
         self,
