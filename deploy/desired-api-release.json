@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261117-preview-resume-after-restart",
-    "sha": "cfc7aae62a3dafff1f20ea4577ed0625e8af5bd7"
+    "id": "20261117-static-import-identity",
+    "sha": "da6ec039ec03eba15000a48f652c74a3ca795d53"
   }
 }
