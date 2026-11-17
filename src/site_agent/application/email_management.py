@@ -17,6 +17,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
+from .mailbox_identity import OWNER_DOMAIN_SOURCE, PLATFORM_EMAIL_DOMAIN
+
 MANAGED_MODE = "managed"
 EXTERNAL_MODE = "external"
 MODES = (MANAGED_MODE, EXTERNAL_MODE)
@@ -31,6 +33,8 @@ MAX_RECIPIENT_LENGTH = 254
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]")
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
+_LOCAL_PART = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
+_DOMAIN = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
 DEFAULT_ALERT_SUBJECT = {
     ALERT_INBOUND: "New mail for {site}",
@@ -102,25 +106,47 @@ def email_mailbox_address(config: Mapping[str, Any] | None) -> str:
     email = email_settings(config)
     domain = str(email.get("domain") or "").strip().lower().rstrip(".")
     local_part = str(email.get("local_part") or "").strip().lower()
+    if not local_part and domain == PLATFORM_EMAIL_DOMAIN:
+        # The shared platform domain defaults an unset local part to the tenant
+        # id, so every reader shows the address provisioning will create.
+        local_part = str(_mapping(config).get("instance_name") or "").strip().lower()
     if not domain or not local_part:
         return ""
     return f"{local_part}@{domain}"
 
 
-def email_settings_view(config: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Return the secret-free mail settings an owner may read and change."""
+def email_settings_view(
+    config: Mapping[str, Any] | None,
+    provisioning_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return the secret-free mail settings an owner may read and change.
+
+    ``provisioning_state`` is the tenant's durable provider state, so the owner
+    sees whether the mailbox on this domain is live, pending, or blocked on a
+    host credential rather than only whether the platform may provision it.
+    """
     alerts = email_alert_settings(config)
     provisioning = _mapping(email_settings(config).get("provisioning"))
+    state = _mapping(provisioning_state)
+    settings = email_settings(config)
+    domain = str(settings.get("domain") or "").strip()
+    local_part = str(settings.get("local_part") or "").strip()
     return {
         "mode": email_management_mode(config),
         "provider": email_management_provider(config),
         "mailbox": {
             "address": email_mailbox_address(config),
-            "domain": str(email_settings(config).get("domain") or "").strip(),
-            "localPart": str(email_settings(config).get("local_part") or "").strip(),
-            "domainSource": str(email_settings(config).get("domain_source") or "").strip(),
+            "domain": domain,
+            "localPart": local_part,
+            "domainSource": str(settings.get("domain_source") or "").strip(),
         },
-        "provisioning": {"auto": bool(provisioning.get("auto"))},
+        "provisioning": {
+            "auto": bool(provisioning.get("auto")),
+            "state": str(state.get("state") or "").strip(),
+            "address": str(state.get("address") or "").strip(),
+            "error": str(state.get("error") or "").strip(),
+            "lastAttemptAt": str(state.get("lastAttemptAt") or "").strip(),
+        },
         "alerts": {
             "enabled": alerts["enabled"],
             "recipient": alerts["recipient"],
@@ -161,7 +187,7 @@ def validate_email_settings_update(
     """
     if not isinstance(body, Mapping):
         raise EmailManagementError("The mail settings request must be an object")
-    unknown = sorted(set(body) - {"mode", "provider", "alerts"})
+    unknown = sorted(set(body) - {"mode", "provider", "mailbox", "alerts"})
     if unknown:
         raise EmailManagementError(f"Unsupported mail settings: {', '.join(unknown)}")
 
@@ -179,6 +205,8 @@ def validate_email_settings_update(
         if "provider" in body
         else current_provider
     )
+
+    mailbox = _validated_mailbox_update(body.get("mailbox"), current)
 
     alerts_body = body.get("alerts")
     if alerts_body is None:
@@ -221,6 +249,7 @@ def validate_email_settings_update(
     return {
         "mode": mode,
         "provider": provider,
+        "mailbox": mailbox,
         "alerts": {
             "enabled": alerts["enabled"],
             "recipient": alerts["recipient"],
@@ -233,6 +262,66 @@ def validate_email_settings_update(
         # whatever its DNS records look like at the time.
         "provisioning": {"auto": mode == MANAGED_MODE},
     }
+
+
+def _validated_mailbox_update(
+    value: Any,
+    current: Mapping[str, Any] | None,
+) -> dict[str, str] | None:
+    """Return the mailbox identity an owner request registers, if any.
+
+    The domain follows the registered site origin unless the owner names one.
+    The local part is the owner's choice and survives a domain change. A tenant
+    on the shared platform domain needs an address unique in that domain, which
+    the tenant id already is.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise EmailManagementError("mailbox must be an object")
+    settings = email_settings(current)
+    tenant_id = str(_mapping(current).get("instance_name") or "").strip().lower()
+    local_part = str(settings.get("local_part") or "").strip().lower()
+    domain = str(settings.get("domain") or "").strip().lower().rstrip(".")
+    source = str(settings.get("domain_source") or "").strip().lower()
+    derived = _derived_domain(current)
+
+    request = value
+    unknown_mailbox = sorted(set(request) - {"localPart", "domain"})
+    if unknown_mailbox:
+        raise EmailManagementError(f"Unsupported mailbox settings: {', '.join(unknown_mailbox)}")
+
+    if "localPart" in request:
+        local_part = _validated_text(request.get("localPart"), "mailbox.localPart", 64).lower()
+        if local_part and not _LOCAL_PART.match(local_part):
+            raise EmailManagementError("mailbox.localPart must be a single address label")
+    if "domain" in request:
+        registered = _validated_text(request.get("domain"), "mailbox.domain", 253).lower().rstrip(".")
+        if registered:
+            if not _DOMAIN.match(registered):
+                raise EmailManagementError("mailbox.domain must be a domain name")
+            domain, source = registered, OWNER_DOMAIN_SOURCE
+        else:
+            # Clearing the domain returns the mailbox to the registered origin.
+            domain, source = derived, ""
+
+    if not domain:
+        domain, source = derived, ""
+    if source != OWNER_DOMAIN_SOURCE:
+        source = "site_custom_domain" if domain != PLATFORM_EMAIL_DOMAIN else "helloada_platform"
+    if domain == PLATFORM_EMAIL_DOMAIN and not local_part:
+        local_part = tenant_id
+    if domain == PLATFORM_EMAIL_DOMAIN and local_part == "hello" and tenant_id != "hello":
+        raise EmailManagementError("choose a mailbox name that is unique on helloada.app")
+    return {"localPart": local_part, "domain": domain, "domainSource": source}
+
+
+def _derived_domain(current: Mapping[str, Any] | None) -> str:
+    site = _mapping(_mapping(current).get("site"))
+    custom = str(site.get("custom_domain") or "").strip().lower().rstrip(".")
+    if custom:
+        return custom
+    return PLATFORM_EMAIL_DOMAIN
 
 
 def render_alert_template(template: str, values: Mapping[str, str]) -> str:

@@ -18,7 +18,7 @@ from uuid import uuid4
 from urllib.parse import urlsplit
 
 from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment, resend_api_key
-from ..hands.cloudflare_email import CloudflareEmailClient
+from ..hands.cloudflare_email import CloudflareEmailClient, CloudflareEmailError
 from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
 from .email_management import email_is_externally_managed
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
@@ -388,7 +388,12 @@ def _configured_local_part(
     overrides = _mapping(policy_overrides)
     configured = str(overrides.get("localPart") or email.get("local_part") or "").strip().lower()
     if domain == PLATFORM_EMAIL_DOMAIN:
-        if not configured or (configured == "hello" and str(tenant_id).strip().lower() != "hello"):
+        # A shared platform domain needs one address per tenant. The tenant id
+        # already is that unique name, so an unset local part defaults to it
+        # instead of turning provisioning into an operator errand.
+        if not configured:
+            return str(tenant_id).strip().lower()
+        if configured == "hello" and str(tenant_id).strip().lower() != "hello":
             raise EmailProvisioningError("A tenant-unique mailbox local part must be registered for helloada.app")
         return configured
     return configured or "hello"
@@ -697,16 +702,25 @@ def auto_provision_email(
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
     except Exception as exc:  # noqa: BLE001 - preserve a durable retry state without blocking other tenant tools
+        # A credential that cannot see the tenant's zone is an operator task,
+        # not a transient failure. Retrying it hourly only hides the cause
+        # behind a failure count, so it is reported as action_required with the
+        # exact zone and scope it needs.
+        permission_error = isinstance(exc, CloudflareEmailError) and is_email_permission_error(exc)
         result = {
             **state,
             **attempt,
-            "state": "failed",
+            "state": "action_required" if permission_error else "failed",
             "tenant": tenant_id,
             "domain": resolved_email_domain,
             "emailDomainSetting": requested_email_domain,
             "siteDomain": raw_domain,
             "address": address,
-            "error": str(exc)[:500],
+            "error": (
+                email_permission_action(str(exc), resolved_email_domain)
+                if permission_error
+                else str(exc)[:500]
+            ),
             "lastAttemptAt": _now(),
         }
         if memory is not None:
@@ -714,4 +728,35 @@ def auto_provision_email(
         return result, resolved_env
 
 
-__all__ = ["EmailProvisioningActionRequired", "EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]
+_EMAIL_PERMISSION_MARKERS = (
+    "HTTP 401",
+    "HTTP 403",
+    "HTTP 9109",
+    "Authentication error",
+    "Unauthorized",
+)
+
+
+def is_email_permission_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _EMAIL_PERMISSION_MARKERS)
+
+
+def email_permission_action(detail: str, domain: str) -> str:
+    """One owner/operator sentence for a host credential that lacks a zone."""
+    target = domain or "this tenant's domain"
+    return (
+        f"The host Cloudflare Email API credential cannot manage {target}. "
+        "Reissue it with Email Routing Rules Read/Edit, Zone Settings Read/Edit "
+        f"and Email Sending Edit, including every managed zone. Provider detail: {detail}"
+    )[:500]
+
+
+__all__ = [
+    "EmailProvisioningActionRequired",
+    "EmailWorkerReadinessError",
+    "auto_provision_email",
+    "email_permission_action",
+    "is_email_permission_error",
+    "prepare_email_plan",
+]

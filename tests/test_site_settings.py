@@ -257,3 +257,27 @@ def test_settings_rename_route_updates_the_record(monkeypatch):
     assert response.json()["displayName"] == "Demo Studio"
     assert slug.status_code == 400
     assert slug.json()["detail"] == "slug_read_only"
+
+
+def test_site_settings_reports_the_mail_provisioning_state_the_owner_needs(monkeypatch):
+    """A blocked mailbox is a reason, not an invisible platform-domain address."""
+    monkeypatch.setattr(
+        site_domain.SiteDomainService, "probe",
+        staticmethod(lambda url: {"ok": True, "status": 200}),
+    )
+    tenant = _tenant(state={
+        "seo_provisioning_state": {"state": "ready"},
+        "email_provisioning_state": {
+            "state": "action_required",
+            "address": "hello@demo.example",
+            "error": "The host Cloudflare Email API credential cannot manage demo.example.",
+            "lastAttemptAt": "2026-11-17T20:56:35+00:00",
+        },
+    })
+    registry = TenantRegistry({"demo": tenant})
+
+    settings = registry.site_settings(tenant)
+
+    assert settings["email"]["provisioning"]["state"] == "action_required"
+    assert settings["email"]["provisioning"]["address"] == "hello@demo.example"
+    assert "cannot manage" in settings["email"]["provisioning"]["error"]

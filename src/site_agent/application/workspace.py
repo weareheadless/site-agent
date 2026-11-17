@@ -45,7 +45,7 @@ from .site_origin import (
     property_covers_domain,
 )
 from .worker_origin import WorkerOriginError, canonical_worker_preview_url
-from .mailbox_identity import default_mailbox_identity
+from .mailbox_identity import default_mailbox_identity, mailbox_domain_is_owner_registered
 from .email_management import email_is_externally_managed
 
 
@@ -202,7 +202,32 @@ def _journey_for_config(config: Mapping[str, Any]) -> Journey:
     return Journey(website_present=website_present_value)
 
 
+def _email_provisioning_state(tenant: "Tenant") -> Mapping[str, Any]:
+    """Return the tenant's durable mail provisioning state for its settings view."""
+    state = tenant.context.get("email_provisioning_state")
+    if isinstance(state, Mapping):
+        return state
+    if tenant.memory is None:
+        return {}
+    stored = tenant.memory.kv_get("email_provisioning_state", {})
+    return stored if isinstance(stored, Mapping) else {}
 
+
+def _wake_email_provisioning(tenant: "Tenant") -> None:
+    """Make the tenant's mail provisioning due now after its identity changed.
+
+    A domain or mail-setting change is what makes a mailbox provisionable, so
+    the job must not wait for its hourly tick. Scheduling is never a reason for
+    the owner's completed change to fail: the job reads the same durable due
+    time when it next registers.
+    """
+    from ..core.jobs import wake_email_provisioning_job
+
+    scheduler = getattr(getattr(tenant, "runtime", None), "scheduler", None)
+    try:
+        wake_email_provisioning_job(scheduler, tenant.config, tenant.memory)
+    except Exception:  # noqa: BLE001 — a due time is bookkeeping, not the change itself
+        return
 
 
 @dataclass
@@ -890,10 +915,15 @@ class TenantRegistry:
         if email_is_externally_managed(raw):
             email["provisioning"] = {**dict(provisioning), "auto": False}
         else:
-            # Keep one stable mailbox local part and derive its domain at
-            # runtime; persisting an old full address here would strand the
-            # mailbox after a custom-domain change.
-            email.update(default_mailbox_identity(normalized, str(site.get("custom_domain") or "")))
+            # The local part is the owner's stable choice and never follows the
+            # origin; only the domain does. Rewriting the local part here would
+            # rename a mailbox every time the canonical host changed. A domain
+            # the owner registered explicitly is theirs, not the origin's.
+            identity = default_mailbox_identity(normalized, str(site.get("custom_domain") or ""))
+            if not mailbox_domain_is_owner_registered(email):
+                email["domain"] = identity["domain"]
+                email["domain_source"] = identity["domain_source"]
+            email["local_part"] = str(email.get("local_part") or identity["local_part"]).strip().lower()
             email["provisioning"] = {**dict(provisioning), "auto": True}
         messages["email"] = email
         raw["messages"] = messages
@@ -940,13 +970,18 @@ class TenantRegistry:
         TenantRegistrationService._replace_config(config_path, raw)
         token_env = str(tenant.api_token_env or tenant_token_env(normalized)).strip()
         values[token_env] = tenant.api_token
-        return self.reload_tenant(
+        updated = self.reload_tenant(
             normalized,
             str(config_path),
             api_token=tenant.api_token,
             api_token_env=token_env,
             env=values,
         )
+        # A domain change is the event that makes the tenant's mailbox address
+        # provisionable. Waiting for the hourly tick would leave the owner
+        # sending from the platform domain for up to an hour after attaching it.
+        _wake_email_provisioning(updated)
+        return updated
 
     def site_settings(self, tenant: Tenant) -> dict[str, Any]:
         """One read of everything the website settings surface shows."""
@@ -966,7 +1001,7 @@ class TenantRegistry:
         return {
             "identity": identity.to_dict(),
             "domain": domain,
-            "email": email_settings_view(tenant.config),
+            "email": email_settings_view(tenant.config, _email_provisioning_state(tenant)),
             "seo": {
                 "state": state.get("state") or state.get("provisioning_state") or "pending",
                 "siteUrl": state.get("site_url") or identity.public_url,
@@ -5589,7 +5624,7 @@ class ChatService:
             raise BridgeError("tenant is required")
         from .email_management import email_settings_view
 
-        return email_settings_view(tenant.config)
+        return email_settings_view(tenant.config, _email_provisioning_state(tenant))
 
     def update_email_settings(
         self,
@@ -5636,6 +5671,11 @@ class ChatService:
         email["management"] = {"mode": requested["mode"], "provider": requested["provider"]}
         email["alerts"] = requested["alerts"]
         email["provisioning"] = requested["provisioning"]
+        mailbox = requested["mailbox"]
+        if mailbox is not None:
+            email["local_part"] = mailbox["localPart"]
+            email["domain"] = mailbox["domain"]
+            email["domain_source"] = mailbox["domainSource"]
         messages["email"] = email
         raw["messages"] = messages
 
@@ -5663,7 +5703,11 @@ class ChatService:
         notice: dict[str, Any] = {"state": "not_applicable"}
         if requested["mode"] == "external":
             notice = self._deliver_external_notice(reloaded)
-        return {"settings": email_settings_view(reloaded.config), "notice": notice}
+        else:
+            # Turning managed mail on, or registering a different address, is
+            # the event that makes provisioning due; do not wait an hour.
+            _wake_email_provisioning(reloaded)
+        return {"settings": email_settings_view(reloaded.config, _email_provisioning_state(reloaded)), "notice": notice}
 
     def _deliver_external_notice(self, tenant: Tenant) -> dict[str, Any]:
         """Tell the owner that their domain mail is handled outside HelloAda."""

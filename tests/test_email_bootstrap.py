@@ -519,7 +519,8 @@ def test_auto_provision_classifies_restricted_resend_key_as_action_required(tmp_
     assert memory.state["email_provisioning_state"] == state
 
 
-def test_auto_provision_requires_a_registered_unique_local_part_for_an_explicit_domain(tmp_path):
+def test_auto_provision_defaults_a_shared_domain_mailbox_to_the_tenant_id(tmp_path):
+    """A platform-only tenant is provisionable without a registered local part."""
     config = _config(tmp_path)
     config["site"].pop("custom_domain")
     config["site"]["public_url"] = "https://atelier-harmonie.weareheadless.workers.dev/"
@@ -527,11 +528,19 @@ def test_auto_provision_requires_a_registered_unique_local_part_for_an_explicit_
     config["messages"]["email"].pop("local_part")
     memory = FakeMemory()
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"), memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(
+        config,
+        tenant_id="atelier-harmonie",
+        tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"),
+        memory=memory,
+        env={},
+    )
 
-    assert state["state"] == "failed"
-    assert "tenant-unique mailbox local part" in state["error"]
-    assert "address" not in state
+    # The mailbox identity resolves; provisioning stops at the protected
+    # management key the test host does not provide.
+    assert state["state"] == "action_required"
+    assert state["domain"] == "helloada.app"
+    assert "Resend management API key" in state["error"]
 
 
 def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monkeypatch):
@@ -668,3 +677,70 @@ def test_a_new_sender_key_is_staged_without_touching_the_worker(tmp_path):
     assert "RESEND_API_KEY_INSTALLED_ID" not in values
     assert values["PAYLOAD_SECRET"] == "kept"
     assert ledger.deleted == []
+
+
+def test_a_missing_zone_permission_is_an_operator_action_not_a_retried_failure(monkeypatch, tmp_path):
+    """A credential scoped to other zones must name the zone, not loop hourly."""
+    tenant_id = "site-ff8e9af06f56201f"
+    config = _config(tmp_path)
+    config["instance_name"] = tenant_id
+    memory = FakeMemory()
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+
+    def denied(*_args, **_kwargs):
+        raise bootstrap.CloudflareEmailError(
+            "Cloudflare Email API returned HTTP 403: Authentication error"
+        )
+
+    monkeypatch.setattr(bootstrap, "prepare_email_plan", denied)
+
+    state, _ = bootstrap.auto_provision_email(
+        config,
+        tenant_id=tenant_id,
+        tenant_config_path=_tenant_config_path(tmp_path, tenant_id),
+        memory=memory,
+        env={},
+    )
+
+    assert state["state"] == "action_required"
+    assert "oceanicvibes.com" in state["error"]
+    assert "Email Routing Rules Read/Edit" in state["error"]
+    assert memory.state["email_provisioning_state"]["state"] == "action_required"
+
+
+def test_a_non_permission_provider_failure_stays_retryable(monkeypatch, tmp_path):
+    tenant_id = "oceanicvibes"
+    config = _config(tmp_path)
+    config["instance_name"] = tenant_id
+    memory = FakeMemory()
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+
+    def unavailable(*_args, **_kwargs):
+        raise bootstrap.CloudflareEmailError("Cloudflare Email API returned HTTP 500: internal error")
+
+    monkeypatch.setattr(bootstrap, "prepare_email_plan", unavailable)
+
+    state, _ = bootstrap.auto_provision_email(
+        config,
+        tenant_id=tenant_id,
+        tenant_config_path=_tenant_config_path(tmp_path, tenant_id),
+        memory=memory,
+        env={},
+    )
+
+    assert state["state"] == "failed"
+
+
+def test_a_platform_tenant_without_a_local_part_uses_its_tenant_id(monkeypatch):
+    """The shared domain needs uniqueness, not another operator errand."""
+    identity = bootstrap._configured_local_part(
+        {}, {}, tenant_id="site-ff8e9af06f56201f", domain=bootstrap.PLATFORM_EMAIL_DOMAIN
+    )
+    assert identity == "site-ff8e9af06f56201f"
+
+
+def test_a_platform_tenant_cannot_claim_the_shared_hello_mailbox():
+    with pytest.raises(bootstrap.EmailProvisioningError):
+        bootstrap._configured_local_part(
+            {"local_part": "hello"}, {}, tenant_id="demo", domain=bootstrap.PLATFORM_EMAIL_DOMAIN
+        )

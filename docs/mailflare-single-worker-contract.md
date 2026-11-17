@@ -53,6 +53,16 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   that domain before switching the active sender/recipient identity. A change
   is not complete until inbound routing and sending verification match the
   exact registered tenant and Worker.
+- The domain event is the trigger. Registering or changing a tenant's custom
+  domain updates the mailbox domain and wakes `email_provisioning`
+  immediately; the learned local part and a mailbox domain the owner
+  registered explicitly survive that change. The owner may review and set the
+  mailbox name and domain in website settings, which shows whether the
+  mailbox is live, pending, or blocked and why.
+- Every tenant's zone must be reachable by the one protected Cloudflare Email
+  credential. A credential scoped to a fixed zone list leaves each new custom
+  domain on the platform sender; that is a host configuration defect and is
+  reported as `action_required`, never retried as a transient failure.
 - Owner Send in Mailflare is the explicit send action. Ada may read mail and
   prepare drafts only through the existing approved assistant boundary; it
   never sends or changes a message without the owner's confirmation.

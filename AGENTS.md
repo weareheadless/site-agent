@@ -272,7 +272,16 @@ Email provisioning uses distinct protected `cloudflare_dns` and
 Read and DNS Write; the latter requires Email Routing Rules Read/Edit and Zone
 Settings Read/Edit on managed zones plus Email Sending Edit on the owning
 account. Do not reuse the general Worker-management token for Email Service
-calls or merge these scopes.
+calls or merge these scopes. The Email token is host configuration for every
+tenant, so it must include every managed zone: a token scoped to a fixed list
+of zones silently strands each new customer domain. A zone the credential
+cannot manage is recorded as `action_required` on that tenant and printed by
+`provision-email`, never retried as a transient failure.
+The registered mailbox identity follows the registered site origin: a domain
+change rewrites the domain and wakes `email_provisioning` immediately, while
+the learned local part and an explicitly owner-registered mailbox domain stay
+put. The owner may set the local part and mailbox domain in website settings;
+the platform never invents them per tenant.
 For a tenant without a custom website domain, a read-only plan may specify an
 explicit host-owned email domain and unique local part with `--email-domain`
 and `--local-part`; `--apply` persists those values to that registered tenant.
