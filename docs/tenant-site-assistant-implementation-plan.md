@@ -205,3 +205,23 @@ verified.
 - No per-tenant consent or enablement surface exists, by design: the tenant
   authors `src/site/assistant.json` or ships nothing.
 - The visitor widget is tenant-authored and not part of this change.
+
+## What the owner's agent knows
+
+`get_assistant` reports the declaration exactly as the owner wrote it, the
+provider key's ceiling, reset and usage, and whether the live site has it
+configured. Its live check posts an empty request: the route validates the
+declaration, the key and the rate limiter before parsing the body, so a 400
+proves the whole path with no model call.
+
+`plan_assistant_key` reports what provisioning would do and creates nothing;
+issuing the key is the owner's explicit decision, and the key reaches the site
+only by the normal release.
+
+The system prompt carries the same contract, so she states the assistant is
+public and tool-less, treats the persona as the owner's writing, knows the safety
+boundary cannot be switched off from a declaration, and cannot call it live
+without `get_assistant` saying so.
+
+The probe sends an explicit user agent: Cloudflare answers 403 to a default
+library agent on this path, which would otherwise read as "not configured".
