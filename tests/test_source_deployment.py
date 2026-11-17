@@ -52,7 +52,23 @@ def test_preview_inventory_uses_only_the_host_owned_implementation(tmp_path):
     try:
         command = service._inventory_command(tmp_path, tmp_path)
         assert command[:2] == [sys.executable, str(source_deployment.Path(source_deployment.__file__).with_name("source_inventory.py").resolve())]
-        assert command[-2:] == ["--root", str(tmp_path)]
+        assert command[-4:] == ["--root", str(tmp_path), "--presentation-profile", "payload"]
+    finally:
+        service.close()
+
+
+def test_preview_inventory_follows_the_tenants_declared_presentation_profile(tmp_path):
+    """A static presentation owns its copy, so the inventory is told so.
+
+    The same command runs for every tenant; only the profile it carries differs,
+    and it comes from the tenant's own site declaration rather than the caller.
+    """
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview",
+                  "presentation_profile": "static"}},
+    )
+    try:
+        assert service._inventory_command(tmp_path, tmp_path)[-2:] == ["--presentation-profile", "static"]
     finally:
         service.close()
 

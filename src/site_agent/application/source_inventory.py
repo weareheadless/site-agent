@@ -16,8 +16,15 @@ import subprocess
 import sys
 
 
-def inventory(root: str | Path) -> dict[str, object]:
-    """Run the host-owned TypeScript AST inventory over presentation source."""
+def inventory(root: str | Path, *, presentation_profile: str = "payload") -> dict[str, object]:
+    """Run the host-owned TypeScript AST inventory over presentation source.
+
+    ``presentation_profile`` says where the site's page copy lives: ``payload``
+    binds every visible string to a canonical field, while ``static`` keeps copy
+    in committed source by contract.
+    """
+    if presentation_profile not in {"payload", "static"}:
+        raise ValueError("presentation profile must be payload or static")
     directory = Path(root).expanduser().resolve()
     if not directory.is_dir():
         raise ValueError("source inventory root is not a directory")
@@ -32,7 +39,8 @@ def inventory(root: str | Path) -> dict[str, object]:
     }
     try:
         result = subprocess.run(
-            [node, str(analyzer), "--root", str(directory)],
+            [node, str(analyzer), "--root", str(directory),
+             "--presentation-profile", presentation_profile],
             cwd=str(directory),
             env=safe_env,
             capture_output=True,
@@ -67,9 +75,11 @@ def inventory(root: str | Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inventory a tenant source checkout for site-agent preview validation")
     parser.add_argument("--root", required=True)
+    parser.add_argument("--presentation-profile", default="payload", choices=("payload", "static"),
+                        help="where this site's page copy lives")
     args = parser.parse_args()
     try:
-        report = inventory(args.root)
+        report = inventory(args.root, presentation_profile=args.presentation_profile)
     except ValueError as exc:
         print(json.dumps({"error": str(exc)[:2_000]}, ensure_ascii=False, sort_keys=True))
         print(f"source inventory failed: {exc}", file=sys.stderr)

@@ -35,8 +35,34 @@ def test_a_broken_inventory_is_still_a_tooling_error(tmp_path, monkeypatch):
 
 def test_main_exits_non_zero_when_the_report_has_violations(tmp_path, monkeypatch):
     report = {"fields": [], "violations": [{"path": "a.tsx", "line": 1, "reason": "x"}]}
-    monkeypatch.setattr(source_inventory, "inventory", lambda root: report)
+    monkeypatch.setattr(source_inventory, "inventory", lambda root, **kwargs: report)
     monkeypatch.setattr(sys, "argv", ["source_inventory.py", "--root", str(tmp_path)])
     assert source_inventory.main() == 1
-    monkeypatch.setattr(source_inventory, "inventory", lambda root: {"fields": [], "violations": []})
+    monkeypatch.setattr(source_inventory, "inventory", lambda root, **kwargs: {"fields": [], "violations": []})
     assert source_inventory.main() == 0
+
+
+def test_the_inventory_carries_the_declared_presentation_profile(tmp_path, monkeypatch):
+    """Where a site's copy lives is a property of the site, not of the run."""
+    analyzer = tmp_path / "source_inventory_ast.mjs"
+    analyzer.write_text("// fixture", encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(source_inventory, "__file__", str(tmp_path / "source_inventory.py"))
+    monkeypatch.setattr(source_inventory.shutil, "which", lambda name: sys.executable)
+
+    def run(command, *args, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"fields": [], "violations": []}), stderr="")
+
+    monkeypatch.setattr(source_inventory.subprocess, "run", run)
+    source_inventory.inventory(tmp_path, presentation_profile="static")
+    assert seen["command"][-2:] == ["--presentation-profile", "static"]
+
+
+def test_an_unknown_presentation_profile_is_a_tooling_error(tmp_path):
+    try:
+        source_inventory.inventory(tmp_path, presentation_profile="marketing")
+    except ValueError as exc:
+        assert "presentation profile" in str(exc)
+    else:  # pragma: no cover - a guessed profile would silently drop the gate
+        raise AssertionError("an unknown presentation profile must fail closed")

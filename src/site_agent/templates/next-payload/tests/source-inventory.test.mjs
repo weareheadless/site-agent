@@ -170,3 +170,35 @@ test('a wrapper that forwards its binding target through a spread is still a sha
 `)
   assert.ok(scanPresentation(root, ts).violations.some((item) => item.reason === 'editable_field_is_outside_the_shared_schema'))
 })
+
+test('a static presentation authors its copy, imagery and markup in source', (t) => {
+  // Casamigo's static presentation is committed Next source: its prices,
+  // labels and images are the page, not fields a Payload editor owns. The
+  // Payload binding gate belongs to the managed presentation profile, so the
+  // same tree must pass when the tenant declares a static profile and fail when
+  // it does not.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'helloada-static-inventory-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const presentation = path.join(root, 'src/components/site/presentation')
+  fs.mkdirSync(presentation, { recursive: true })
+  fs.writeFileSync(path.join(root, 'helloada-content-contract.json'), JSON.stringify({
+    collections: { pages: ['title', 'sections'] },
+    globals: {},
+  }))
+  fs.writeFileSync(path.join(presentation, 'PriceList.tsx'), `export default function PriceList({ price }: { price: string }) {
+  return <section><h2>Featured listings</h2><p>{price}</p>
+    <img src="/brand/logo.svg" alt="Casamigo" />
+    <div dangerouslySetInnerHTML={{ __html: '<strong>Private</strong>' }} />
+  </section>
+}
+`)
+
+  const managed = scanPresentation(root, ts)
+  assert.ok(managed.violations.some((item) => item.reason === 'visible_copy_must_come_from_payload'))
+  assert.ok(managed.violations.some((item) => item.reason === 'business_image_needs_a_shared_payload_binding'))
+  assert.ok(managed.violations.some((item) => item.reason === 'raw_html_is_not_an_editable_content_binding'))
+
+  const staticProfile = scanPresentation(root, ts, { presentationProfile: 'static' })
+  assert.deepEqual(staticProfile.violations, [])
+  assert.equal(staticProfile.imageElements, 1)
+})

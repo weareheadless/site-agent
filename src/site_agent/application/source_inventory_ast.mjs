@@ -169,8 +169,12 @@ const addViolation = (violations, sourceFile, node, reason) => {
   violations.push({ path: sourceFile.fileName, line: point.line + 1, reason })
 }
 
-export function scanPresentation(root, ts) {
+export function scanPresentation(root, ts, options = {}) {
   const directory = path.resolve(root)
+  // The presentation profile decides where a page's copy lives. A managed
+  // Payload presentation may not hardcode visible text; a static presentation
+  // is committed source by contract, so its copy is authored in the component.
+  const presentationProfile = String(options.presentationProfile || 'payload')
   if (!fs.statSync(directory).isDirectory()) throw new Error('source inventory root is not a directory')
   const sharedSourcePaths = [
     path.join(directory, 'src/components/site/TenantChrome.tsx'),
@@ -199,7 +203,8 @@ export function scanPresentation(root, ts) {
   let editableImages = 0
 
   for (const file of files) {
-    const enforcePayloadCopy = file.startsWith(`${presentationRoot}${path.sep}`)
+    const enforcePayloadCopy = presentationProfile !== 'static'
+      && file.startsWith(`${presentationRoot}${path.sep}`)
     const source = fs.readFileSync(file, 'utf8')
     const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
     if (sourceFile.parseDiagnostics.length) {
@@ -282,7 +287,7 @@ export function scanPresentation(root, ts) {
             })
           }
         }
-        if (attribute === 'dangerouslysetinnerhtml') {
+        if (enforcePayloadCopy && attribute === 'dangerouslysetinnerhtml') {
           addViolation(violations, sourceFile, node, 'raw_html_is_not_an_editable_content_binding')
         }
       }
@@ -303,7 +308,10 @@ export function scanPresentation(root, ts) {
           }
           if (editable) {
             editableImages += 1
-          } else {
+          } else if (enforcePayloadCopy) {
+            // A managed Payload presentation must read its business imagery
+            // through a canonical binding. A static presentation owns its
+            // committed images the same way it owns its committed copy.
             addViolation(violations, sourceFile, node, 'business_image_needs_a_shared_payload_binding')
           }
         }
@@ -331,9 +339,11 @@ async function main() {
   const rootIndex = process.argv.indexOf('--root')
   if (rootIndex < 0 || !process.argv[rootIndex + 1]) throw new Error('--root is required')
   const root = path.resolve(process.argv[rootIndex + 1])
+  const profileIndex = process.argv.indexOf('--presentation-profile')
+  const presentationProfile = profileIndex >= 0 ? String(process.argv[profileIndex + 1] || 'payload') : 'payload'
   const require = (await import('node:module')).createRequire(path.join(root, 'package.json'))
   const ts = require('typescript')
-  const result = scanPresentation(root, ts)
+  const result = scanPresentation(root, ts, { presentationProfile })
   process.stdout.write(`${JSON.stringify(result)}\n`)
   if (result.violations.length) process.exitCode = 2
 }

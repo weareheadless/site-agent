@@ -1508,7 +1508,11 @@ class SourceDeploymentService:
         inventory = Path(__file__).with_name("source_inventory.py").resolve()
         if not inventory.is_file():
             raise SourceDeploymentError("host source inventory is not installed")
-        return [sys.executable, str(inventory), "--root", str(worktree)]
+        profile = str(self.site.get("presentation_profile") or "payload").strip()
+        if profile not in {"payload", "static"}:
+            raise SourceDeploymentError("site.presentation_profile must be payload or static")
+        return [sys.executable, str(inventory), "--root", str(worktree),
+                "--presentation-profile", profile]
 
     def _retained_design_run(self, run_id: str, commit: str) -> Mapping[str, Any]:
         """Resolve the immutable candidate before its owner decision exists.
