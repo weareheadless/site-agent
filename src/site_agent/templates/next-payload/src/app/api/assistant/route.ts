@@ -62,11 +62,17 @@ export async function POST(request: Request) {
   const apiKey = String(env.HELLOADA_ASSISTANT_KEY ?? '').trim()
   if (!apiKey) return json(503, 'the assistant is not configured')
 
+  // Fail closed: a missing or broken limiter is a broken release, not permission
+  // to spend the tenant's provider budget without bound.
   const limiter = env.HELLOADA_ASSISTANT_RATE_LIMIT
-  if (limiter) {
-    const verdict = await limiter.limit({ key: visitorKey(request) }).catch(() => ({ success: true }))
-    if (!verdict.success) return json(429, 'too many messages, please wait')
+  if (!limiter) return json(503, 'the assistant rate limiter is not configured')
+  let verdict: { success: boolean }
+  try {
+    verdict = await limiter.limit({ key: visitorKey(request) })
+  } catch {
+    return json(503, 'the assistant rate limiter is unavailable')
   }
+  if (!verdict?.success) return json(429, 'too many messages, please wait')
 
   const messages = await readMessages(request)
   if (typeof messages === 'string') return json(400, messages)
