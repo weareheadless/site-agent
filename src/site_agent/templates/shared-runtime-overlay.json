@@ -9,6 +9,7 @@
     "mailflare-provisioning.ts",
     "mailflare-runtime.ts",
     "payload.config.ts",
+    "scripts/assistant-declaration.mjs",
     "scripts/verify-payload-contract.ts",
     "src/app/(frontend)/helloada-preview/[token]/page.tsx",
     "src/app/(payload)/admin/importMap.js",

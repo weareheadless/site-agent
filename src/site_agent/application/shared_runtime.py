@@ -160,8 +160,6 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         ("src/site_agent/application/shared_runtime.py", (root / "src/site_agent/application/shared_runtime.py").read_bytes()),
         ("template/scripts/generate-payload-contract.mjs",
          (root / _TEMPLATE_PATH / "scripts/generate-payload-contract.mjs").read_bytes()),
-        ("template/scripts/assistant-declaration.mjs",
-         (root / _TEMPLATE_PATH / "scripts/assistant-declaration.mjs").read_bytes()),
         ("template/scripts/presentation-inventory.mjs",
          (root / _TEMPLATE_PATH / "scripts/presentation-inventory.mjs").read_bytes()),
     ]
