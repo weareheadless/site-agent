@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261117-release-the-approved-tip",
-    "sha": "ff766f3d59906b1ae5d5d4207fa5ef3b0b6e0cb7"
+    "id": "20261117-retire-contained-failures",
+    "sha": "50173199f1be207ee2322635f38c99cbbc41b549"
   }
 }
