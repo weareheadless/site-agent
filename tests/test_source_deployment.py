@@ -1672,3 +1672,125 @@ def test_a_service_with_the_job_ledger_removes_a_worktree_no_job_owns(tmp_path):
         service.close()
 
     assert not worktree.exists()
+
+
+def _repo_with_a_candidate_then_a_later_commit(tmp_path):
+    """A tenant checkout whose preview branch moves on after the candidate.
+
+    The candidate is what a preview job pins. The later commit stands for what
+    actually moves that branch: the platform's own fleet sync, another owner
+    change, or a release pointing preview at what is live.
+    """
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+    repo = tmp_path / "site"
+    repo.mkdir()
+
+    def run(*args):
+        return subprocess.run(
+            ["git", *args], cwd=repo, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "Test")
+    (repo / "public").mkdir()
+    (repo / "public/index.html").write_text('<html lang="es"><head></head></html>', encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "base")
+    base = run("rev-parse", "HEAD")
+    run("remote", "add", "origin", str(remote))
+    run("push", "-q", "-u", "origin", "main")
+    run("branch", "preview")
+    run("checkout", "-q", "preview")
+    (repo / "public/extra.html").write_text('<html lang="es"><head></head></html>', encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "candidate")
+    candidate = run("rev-parse", "HEAD")
+    run("push", "-q", "origin", "preview")
+    (repo / "public/later.html").write_text('<html lang="es"><head></head></html>', encoding="utf-8")
+    run("add", "-A")
+    run("commit", "-q", "-m", "later platform commit")
+    run("push", "-q", "origin", "preview")
+    run("checkout", "-q", "main")
+    return repo, base, candidate
+
+
+def test_a_preview_worktree_builds_the_commit_it_pinned_after_the_branch_moves(tmp_path):
+    """A job pins one commit; the branch moving on does not unpin it.
+
+    The checkout used to require the pinned commit to be the fetched branch
+    tip, so any later commit—a candidate, the platform's fleet sync, a release
+    reset—turned an approved preview into "rescan and retry".
+    """
+    repo, _base, candidate = _repo_with_a_candidate_then_a_later_commit(tmp_path)
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(repo), "preview_branch": "preview"}},
+    )
+    try:
+        worktree, resolved = service._worktree(repo, "preview", candidate)
+    finally:
+        service.close()
+
+    assert resolved == candidate
+    assert (worktree / "public/extra.html").is_file()
+    assert not (worktree / "public/later.html").exists()
+
+
+def test_a_pinned_preview_job_is_not_refused_when_the_branch_moves(tmp_path, monkeypatch):
+    pinned = "a" * 40
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+    )
+    service._jobs["preview-pinned"] = {
+        "id": "preview-pinned", "mode": "compiled_preview", "status": "queued",
+        "branch": "preview", "commit": pinned,
+        "created_at": "2026-11-17T10:00:00+00:00", "updated_at": "2026-11-17T10:00:00+00:00",
+    }
+    monkeypatch.setattr(service, "_head", lambda _branch: "b" * 40)
+    monkeypatch.setattr(service, "_resume_build", lambda *args, **kwargs: None)
+    built = {}
+
+    def _build(job, branch, commit, mode):
+        built.update({"branch": branch, "commit": commit})
+        return {"ok": True, "status": "ready", "commit": commit, "checks": []}
+
+    monkeypatch.setattr(service, "_build", _build)
+    try:
+        service._run_job("preview-pinned", "preview", pinned, "compiled_preview")
+        job = service._jobs["preview-pinned"]
+    finally:
+        service.close()
+
+    assert built == {"branch": "preview", "commit": pinned}
+    assert job["status"] == "ready" and job["commit"] == pinned
+
+
+def test_a_publish_failed_draft_still_renders_the_candidate_the_owner_approved(tmp_path):
+    """A failed publish is why the owner looks at the preview again.
+
+    The lifecycle state of the draft does not decide whether its exact reviewed
+    tree may be rendered; only a discarded decision does.
+    """
+    repo, base, candidate = _repo_with_a_candidate_then_a_later_commit(tmp_path)
+    memory = Memory(tmp_path / "memory.db")
+    draft_id = memory.save_draft(
+        "Reviewed candidate", "", kind="merge",
+        meta={"base_sha": base, "candidate_sha": candidate},
+    )
+    memory.update_draft_status(draft_id, "publish_failed")
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(repo), "writable_patterns": ["public/*", "public/**"]}},
+        memory=memory,
+    )
+    try:
+        proof = service._verify_candidate_source_boundary(repo, candidate, draft_id)
+        assert proof["ok"] is True
+
+        memory.update_draft_status(draft_id, "discarded")
+        with pytest.raises(source_deployment.SourceDeploymentError, match="no renderable owner review decision"):
+            service._verify_candidate_source_boundary(repo, candidate, draft_id)
+    finally:
+        service.close()
+        memory.close()
+

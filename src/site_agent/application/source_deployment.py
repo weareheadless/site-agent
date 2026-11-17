@@ -1306,10 +1306,23 @@ class SourceDeploymentService:
     def _worktree(self, checkout: Path, branch: str, commit: str, *, retained: bool = False) -> tuple[Path, str]:
         fetch_timeout = int(self.settings.get("fetch_timeout_seconds") or 120)
         if retained:
-            local_head = self._run(["git", "rev-parse", "--verify", f"{commit}^{{commit}}"], checkout, timeout=30).stdout.strip().lower()
+            local_head = self._resolve_commit(checkout, commit)
         else:
-            self._run(["git", "fetch", "--no-tags", "origin", f"+{branch}:refs/remotes/origin/{branch}"], checkout, timeout=fetch_timeout)
-            local_head = self._run(["git", "rev-parse", f"refs/remotes/origin/{branch}"], checkout, timeout=30).stdout.strip().lower()
+            try:
+                self._run(["git", "fetch", "--no-tags", "origin", f"+{branch}:refs/remotes/origin/{branch}"], checkout, timeout=fetch_timeout)
+            except SourceDeploymentError:
+                # A commit this repository already holds is still buildable; the
+                # fetch is how it arrives, not a condition of the job.
+                pass
+            local_head = self._resolve_commit(checkout, commit)
+            if local_head != commit:
+                # The branch moved past this commit, so fetching the branch no
+                # longer carries it by name. Ask for the exact object.
+                try:
+                    self._run(["git", "fetch", "--no-tags", "origin", commit], checkout, timeout=fetch_timeout)
+                except SourceDeploymentError:
+                    pass
+                local_head = self._resolve_commit(checkout, commit)
         if local_head != commit:
             raise SourceDeploymentError("local Git checkout did not fetch the requested GitHub commit")
         configured_root = str(self.settings.get("worktree_root") or "").strip()
@@ -1327,6 +1340,15 @@ class SourceDeploymentService:
             shutil.rmtree(directory, ignore_errors=True)
             raise
         return directory, local_head
+
+    def _resolve_commit(self, checkout: Path, commit: str) -> str:
+        """The local object id for an exact commit, or '' when it is not here."""
+        try:
+            return self._run(
+                ["git", "rev-parse", "--verify", f"{commit}^{{commit}}"], checkout, timeout=30
+            ).stdout.strip().lower()
+        except SourceDeploymentError:
+            return ""
 
     def _mark_step(self, job: Mapping[str, Any], step: str) -> None:
         """Publish the current build step so the owner sees movement, not a spinner."""
@@ -1567,8 +1589,13 @@ class SourceDeploymentService:
         draft = self.memory.get_draft(numeric_id) if self.memory is not None else None
         if not isinstance(draft, Mapping):
             raise SourceDeploymentError("compiled source preview has no persisted owner review draft")
-        if draft.get("kind") not in {"merge", "rollback", "design"} or draft.get("status") != "pending":
-            raise SourceDeploymentError("compiled source preview requires a pending source review decision")
+        # The draft must still own this exact tree. Its lifecycle state does not
+        # decide whether the tree may be rendered: a publish that failed, or a
+        # release that finished while the preview was building, leaves the owner
+        # with the same reviewed candidate to look at. Only a discarded draft is
+        # a decision that the candidate should not be shown.
+        if draft.get("kind") not in {"merge", "rollback", "design"} or draft.get("status") == "discarded":
+            raise SourceDeploymentError("compiled source preview has no renderable owner review decision")
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
         base_sha = str(meta.get("base_sha") or "").strip().lower()
         candidate_sha = str(meta.get("candidate_sha") or meta.get("head_sha") or "").strip().lower()
@@ -2567,13 +2594,16 @@ class SourceDeploymentService:
             self._persist()
         try:
             run_id = str(job.get("design_run_id") or "")
-            commit = requested_commit or self._head(branch)
             if requested_commit and not re.fullmatch(r"[0-9a-f]{40}", requested_commit):
                 raise SourceDeploymentError("requested source commit is invalid")
-            current_head = (str(self._retained_design_run(run_id, commit)["candidate_sha"])
-                            if run_id else self._head(branch))
-            if current_head != commit:
-                raise SourceDeploymentError("deployment branch advanced before its build started; rescan and retry")
+            # A job pins one exact commit and builds that tree. The branch may
+            # have moved since the request—a later candidate, the platform's own
+            # release-material commit, a release pointing preview at what is
+            # live—and none of that makes the pinned tree unbuildable. Only a
+            # retained design run is bound to a candidate that must still match.
+            commit = requested_commit or self._head(branch)
+            if run_id and str(self._retained_design_run(run_id, commit)["candidate_sha"]) != commit:
+                raise SourceDeploymentError("the retained design run no longer points at this candidate")
             result = self._resume_build(job, branch, commit, mode) or self._build(job, branch, commit, mode)
             with self._lock:
                 # The address is part of the finished job, not something a
