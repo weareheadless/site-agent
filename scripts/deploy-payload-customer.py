@@ -837,15 +837,18 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
     if worker_config.get("turnstileSecretInVars"):
         raise RuntimeError("Turnstile secrets must be supplied through the protected Worker secret file")
     limits = worker_config.get("rateLimitBindings")
-    if not isinstance(limits, list) or len(limits) != 4:
-        raise RuntimeError("Worker must define all four canonical site and Mailflare rate-limit bindings")
+    expected_limits = {"HELLOADA_FORM_RATE_LIMIT", "HELLOADA_ASSISTANT_RATE_LIMIT",
+                       "MAILFLARE_BOOKING_RATE_LIMIT", "MAILFLARE_LOGIN_RATE_LIMIT",
+                       "MAILFLARE_AGENT_RATE_LIMIT"}
+    if not isinstance(limits, list) or len(limits) != len(expected_limits):
+        raise RuntimeError("Worker must define every canonical site, assistant and Mailflare rate-limit binding")
     limits_by_name = {str(item.get("name") or ""): str(item.get("namespaceId") or "")
                       for item in limits if isinstance(item, dict)}
-    if set(limits_by_name) != {"HELLOADA_FORM_RATE_LIMIT", "MAILFLARE_BOOKING_RATE_LIMIT",
-                               "MAILFLARE_LOGIN_RATE_LIMIT", "MAILFLARE_AGENT_RATE_LIMIT"}:
+    if set(limits_by_name) != expected_limits:
         raise RuntimeError("Worker rate-limit binding names do not match the site-agent and Mailflare contracts")
     namespace_ids = list(limits_by_name.values())
-    if any(not value.isdigit() or int(value) < 1 for value in namespace_ids) or len(set(namespace_ids)) != 4:
+    if (any(not value.isdigit() or int(value) < 1 for value in namespace_ids)
+            or len(set(namespace_ids)) != len(expected_limits)):
         raise RuntimeError("Worker rate-limit namespaces must be distinct positive Cloudflare account identifiers")
     required_handlers = {"fetch", "email", "queue", "scheduled"}
     if not required_handlers.issubset(set(worker_config.get("handlers") or [])):

@@ -160,6 +160,8 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         ("src/site_agent/application/shared_runtime.py", (root / "src/site_agent/application/shared_runtime.py").read_bytes()),
         ("template/scripts/generate-payload-contract.mjs",
          (root / _TEMPLATE_PATH / "scripts/generate-payload-contract.mjs").read_bytes()),
+        ("template/scripts/assistant-declaration.mjs",
+         (root / _TEMPLATE_PATH / "scripts/assistant-declaration.mjs").read_bytes()),
         ("template/scripts/presentation-inventory.mjs",
          (root / _TEMPLATE_PATH / "scripts/presentation-inventory.mjs").read_bytes()),
     ]
@@ -600,11 +602,7 @@ def apply_shared_runtime_overlay(
             raise SharedRuntimeError("expected shared runtime fingerprint is invalid")
     runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
     if expected_fingerprint is not None and expected_fingerprint != runtime_fingerprint:
-        raise SharedRuntimeError(
-            f"the platform asked for shared runtime {expected_fingerprint[:12]}, which "
-            f"does not match the runtime this control revision builds "
-            f"({runtime_fingerprint[:12]}); the runtime lane owns that move"
-        )
+        raise SharedRuntimeError("expected shared runtime fingerprint does not match control bytes")
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
                                shared_vars, version_match.group(1), runtime_fingerprint)
 
@@ -641,6 +639,8 @@ def apply_shared_runtime_overlay(
             "template-manifest.json", "helloada-content-contract.json",
             # Derived from the tenant app tree by generate-payload-contract.
             "src/generated/helloada-presentation.json",
+            # Derived from the tenant's own src/site/assistant.json, if any.
+            "src/generated/helloada-assistant.json",
         }),
         "sharedRuntimeFingerprint": runtime_fingerprint,
         "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],

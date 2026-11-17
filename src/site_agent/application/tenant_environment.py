@@ -164,6 +164,8 @@ def worker_runtime_secrets(
         result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
     if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
         result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
+    if values.get("HELLOADA_ASSISTANT_KEY"):
+        result["HELLOADA_ASSISTANT_KEY"] = values["HELLOADA_ASSISTANT_KEY"]
     if all(mailflare_present):
         result.update(mailflare_values)
     for name in ("GA_MEASUREMENT_ID", "GOOGLE_SITE_VERIFICATION"):

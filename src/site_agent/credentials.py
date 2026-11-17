@@ -100,7 +100,7 @@ def credential_environment(
     root_file = str(profiles.get("env_file") or "").strip()
     if root_file:
         paths.append(root_file)
-    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo", "resend"):
+    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo", "resend", "openrouter"):
         path = str(credential_profile(config, name).get("env_file") or "").strip()
         if path:
             paths.append(path)
@@ -223,6 +223,13 @@ def resend_api_key(config: Mapping[str, Any] | None, env: Mapping[str, str] | No
     """Resolve the protected Resend management credential used only by provisioning."""
     profile = credential_profile(config, "resend")
     key_name = _valid_env_name(profile.get("api_key_env"), "RESEND_API")
+    return credential_environment(config, env).get(key_name, "")
+
+
+def openrouter_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the protected provider management credential used only by provisioning."""
+    profile = credential_profile(config, "openrouter")
+    key_name = _valid_env_name(profile.get("api_token_env"), "OPENROUTER_MANAGEMENT_KEY")
     return credential_environment(config, env).get(key_name, "")
 
 

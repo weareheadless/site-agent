@@ -74,6 +74,8 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "mailflare-bindings.ts", "mailflare-booking-service.ts", "mailflare-owner-gate.ts",
     "mailflare-payload-migration.ts", "mailflare-provisioning.ts", "mailflare-runtime.ts",
     "src/lib/atelier",
+    "src/lib/assistant-config.ts", "src/lib/assistant-context.ts", "src/lib/assistant-prompt.ts",
+    "src/lib/assistant-provider.ts", "src/lib/assistant-site-context.ts",
     "src/lib/cloudflare-context.ts", "src/lib/content-routes.ts", "src/lib/growth-contract.ts",
     "src/lib/growth-operations.ts", "src/lib/helloada-admin-entry.ts", "src/lib/helloada-auth.ts",
     "src/lib/helloada-form-runtime.ts", "src/lib/helloada-handoff.ts",
@@ -94,6 +96,8 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/app/(frontend)/layout.tsx", "src/app/(frontend)/[[...slug]]/page.tsx",
     "src/app/(frontend)/[...slug]/page.tsx", "src/app/(frontend)/articles",
     "src/app/(frontend)/helloada-preview",
+    # The public site corpus: shared runtime, not a tenant page.
+    "src/app/llms.txt", "src/generated", "src/site/assistant.example.json",
     # Platform brand assets shipped into the tenant repository.
     "public/brand",
 )

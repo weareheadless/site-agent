@@ -231,6 +231,7 @@ WORKER_CONFIG = {
     "sendEmailBindingCount": 1,
     "rateLimitBindings": [
         {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
+        {"name": "HELLOADA_ASSISTANT_RATE_LIMIT", "namespaceId": "2706"},
         {"name": "MAILFLARE_BOOKING_RATE_LIMIT", "namespaceId": "2703"},
         {"name": "MAILFLARE_LOGIN_RATE_LIMIT", "namespaceId": "2704"},
         {"name": "MAILFLARE_AGENT_RATE_LIMIT", "namespaceId": "2705"},
@@ -899,6 +900,7 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
             **worker,
             "rateLimitBindings": [
                 {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
+                {"name": "HELLOADA_ASSISTANT_RATE_LIMIT", "namespaceId": "2706"},
                 {"name": "MAILFLARE_BOOKING_RATE_LIMIT", "namespaceId": "2701"},
                 {"name": "MAILFLARE_LOGIN_RATE_LIMIT", "namespaceId": "2704"},
                 {"name": "MAILFLARE_AGENT_RATE_LIMIT", "namespaceId": "2705"},

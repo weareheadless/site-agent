@@ -3,10 +3,12 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
+import { readAssistantDeclaration } from './assistant-declaration.mjs'
 import { createPresentationInventory } from './presentation-inventory.mjs'
 
 
 const templateRoot = fileURLToPath(new URL('../', import.meta.url))
+
 const siteRootArgument = process.argv.slice(2).find((value) => value.startsWith('--site-root='))
 const siteRoot = path.resolve(siteRootArgument?.slice('--site-root='.length) || templateRoot)
 const coreSourceRoot = path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/src')
@@ -122,6 +124,7 @@ const ensureGeneratedSlot = (source, key, placeholder) => {
 }
 
 let wrangler = readFileSync(wranglerPath, 'utf8')
+const assistant = readAssistantDeclaration(path.join(siteRoot, 'src/site/assistant.json'))
 wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_SCHEMA_IDENTITY', '__HELLOADA_SCHEMA_IDENTITY__')
 wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_SHARED_RUNTIME_FINGERPRINT', '__HELLOADA_SHARED_RUNTIME_FINGERPRINT__')
 wrangler = ensureGeneratedSlot(wrangler, 'HELLOADA_PAYLOAD_MIGRATION_HEAD', '__HELLOADA_PAYLOAD_MIGRATION_HEAD__')
@@ -140,6 +143,9 @@ wrangler = wrangler.replace(
 
 mkdirSync(path.dirname(presentationPath), { recursive: true })
 writeFileSync(presentationPath, `${JSON.stringify(presentation, null, 2)}\n`)
+const assistantPath = path.join(siteRoot, 'src/generated/helloada-assistant.json')
+mkdirSync(path.dirname(assistantPath), { recursive: true })
+writeFileSync(assistantPath, `${JSON.stringify(assistant, null, 2)}\n`)
 writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`)
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 for (const [name, version] of Object.entries({

@@ -154,6 +154,43 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_provision_assistant_key(args: argparse.Namespace) -> int:
+    """Plan or apply the visitor assistant's spend-limited provider key."""
+    from .application import assistant_key
+    from .application.tenant_registration import load_provisioned_tenants, provisioned_root
+    from .credentials import credential_environment, openrouter_api_token
+
+    host_config, _sources = load(args.config)
+    host_env = credential_environment(host_config, os.environ)
+    declared, _tenant_env = load_provisioned_tenants(host_config, host_env)
+    tenant_id = str(args.tenant or "").strip().lower()
+    if tenant_id not in declared:
+        raise ConfigError(f"tenant {tenant_id!r} is not present in the canonical provisioned tenant registry")
+    token = openrouter_api_token(host_config, host_env)
+    if not token:
+        raise ConfigError("the OpenRouter management credential is not configured for this host")
+    token_env = str(declared[tenant_id].get("api_token_env") or "").strip()
+    tenant_dir = (provisioned_root(host_config) / tenant_id).resolve()
+    env_path = tenant_dir / "tenant.env"
+    runner = assistant_key.apply if args.apply else assistant_key.plan
+    try:
+        summary = runner(tenant_id, env_path, limit_usd=args.limit_usd, token=token, token_env=token_env)
+    except assistant_key.AssistantKeyError as exc:
+        print(f"[site-agent] assistant key provisioning stopped without changes: {exc}", file=sys.stderr)
+        return 1
+    if not args.apply:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        print("Read-only preflight only; pass --apply to create the key and stage it for the next release.")
+        return 0
+    receipt = assistant_key.write_receipt(tenant_dir, tenant_id, summary)
+    print(json.dumps({**summary, "receipt": str(receipt)}, indent=2, ensure_ascii=False))
+    if summary.get("staged"):
+        print("Key staged in the tenant environment; the canonical release queue delivers it to the Worker.")
+    else:
+        print("Provider key already exists; the ceiling lives on the provider and no release is required.")
+    return 0
+
+
 def _cmd_provision_email(args: argparse.Namespace) -> int:
     """Plan or apply email provisioning for one canonical registered tenant."""
     import datetime
@@ -928,6 +965,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="authorize replacing an exact-address Cloudflare forward rule with the tenant Worker rule",
     )
+    assistant_parser = sub.add_parser(
+        "provision-assistant-key",
+        parents=[common],
+        help="preflight or provision the spend-limited visitor assistant key for one registered tenant",
+    )
+    assistant_parser.add_argument("--tenant", required=True, help="stable tenant ID from the canonical tenants.json registry")
+    assistant_parser.add_argument("--limit-usd", type=float, default=5.0,
+                                  help="monthly provider spend ceiling enforced on this tenant's own key")
+    assistant_parser.add_argument("--apply", action="store_true",
+                                  help="create the provider key and stage it in the tenant environment for the next release")
     experiment_parser = sub.add_parser("design-experiment", parents=[common], help="run a local-only immutable design experiment")
     experiment_parser.add_argument("--intake", required=True, help="sanitized design-intake JSON")
     experiment_parser.add_argument("--data-dir", required=True, help="dedicated experiment data directory")
@@ -973,6 +1020,7 @@ def main(argv: list[str] | None = None) -> int:
                 "init-site": _cmd_init_site,
                 "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "provision-email": _cmd_provision_email,
+                "provision-assistant-key": _cmd_provision_assistant_key,
                 "design-experiment": _cmd_design_experiment}
     if args.command == "design-lab":
         handlers = {
