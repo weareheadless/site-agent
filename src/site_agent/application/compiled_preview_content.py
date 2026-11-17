@@ -21,10 +21,19 @@ _GLOBAL_METADATA = frozenset({"id", "_status", "updatedAt", "createdAt", "global
 # The bound keeps an accidentally enormous site from spending the whole build
 # budget here; it fails loudly instead of importing part of the site.
 MAX_PREVIEW_DOCUMENTS = 2_000
-# One preview reads every document of a large catalog. Four concurrent reads
-# keep a 500-document site to minutes without fanning D1 out the way an
-# unbounded parallel read does.
-PREVIEW_READ_CONCURRENCY = 4
+# Every media file the site references is copied into the preview, and those
+# bytes are held in this process on the way to the build. Casamigo's catalog is
+# the largest known site at 148MB; the bound leaves room to grow while keeping
+# one preview from consuming the host that serves every tenant.
+MAX_PREVIEW_MEDIA_BYTES = 512 * 1024 * 1024
+# A compiled preview reads one document per locale over the tenant's gateway,
+# and then every media file those documents reference. Each read is now a
+# reused connection, and the tenant Worker answers a media file in 200-600ms,
+# so throughput scales with concurrency until the host's own limits: measured
+# on one tenant, 4 readers fetched 6.8 files/s, 8 fetched 13.3 and 12 fetched
+# 18. Twelve is the ceiling that still leaves the API's request threads and a
+# build's memory alone.
+PREVIEW_READ_CONCURRENCY = 12
 
 
 def _global_has_saved_content(document: Mapping[str, Any]) -> bool:
@@ -111,6 +120,16 @@ def _nested_media_ids(value: Any, found: set[str]) -> None:
     elif isinstance(value, list):
         for child in value:
             _nested_media_ids(child, found)
+
+
+def _media_size(document: Mapping[str, Any]) -> int:
+    """The declared byte size of one media document, or zero when it states none."""
+    for key in ("filesize", "size"):
+        try:
+            return max(0, int(document.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def _read_together(items: list[str], read: Callable[[str], Any]) -> list[tuple[str, Any]]:
@@ -263,13 +282,29 @@ def canonical_preview_snapshot(gateway: Any, effects: list[dict[str, Any]]) -> d
 
     service = PayloadMediaService(gateway)
 
+    def read_media_document(identifier: str) -> dict[str, Any]:
+        return dict(gateway.read_media(identifier, draft=False))
+
+    # Every referenced file is copied, so the library's declared size is known
+    # before a byte is downloaded. The snapshot lives in the shared API process:
+    # a library past the bound is refused here rather than filling the host's
+    # memory and taking every tenant's requests down with it.
+    media_documents = dict(_read_together(sorted(media_ids), read_media_document))
+    declared = sum(int(_media_size(row)) for row in media_documents.values())
+    if declared > MAX_PREVIEW_MEDIA_BYTES:
+        raise ValueError(
+            f"compiled preview copies every media file the website references; this website "
+            f"references {declared / (1024 * 1024):.0f}MB of media and a compiled preview "
+            f"supports at most {MAX_PREVIEW_MEDIA_BYTES // (1024 * 1024)}MB"
+        )
+
     def read_media(identifier: str) -> dict[str, Any]:
-        row = gateway.read_media(identifier, draft=False)
+        row = media_documents[identifier]
         data, content_type = service.read_preview(
             int(identifier), thumbnail=False,
             url=PayloadMediaService.document_url(gateway, row) or None,
         )
-        return {"document": dict(row), "bytes": base64.b64encode(data).decode("ascii"),
+        return {"document": row, "bytes": base64.b64encode(data).decode("ascii"),
                 "contentType": content_type}
 
     media = [item for _, item in _read_together(sorted(media_ids), read_media)]

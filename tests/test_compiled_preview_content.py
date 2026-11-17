@@ -119,6 +119,42 @@ def test_preview_copies_the_media_its_documents_reference(monkeypatch):
     assert [item["document"]["id"] for item in snapshot["media"]] == ["41", "507", "508"]
 
 
+def test_preview_refuses_a_media_library_past_the_platform_bound_before_copying_it(monkeypatch):
+    """The snapshot lives in the API process that serves every tenant.
+
+    A site whose referenced media is larger than the platform bound is refused
+    with its own size, before any bytes are downloaded, instead of growing the
+    process until the host starts killing requests for every tenant.
+    """
+    from site_agent.application import compiled_preview_content as content
+    from site_agent.hands.payload_gateway import PayloadMediaService
+
+    monkeypatch.setattr(content, "MAX_PREVIEW_MEDIA_BYTES", 1000)
+    reads = []
+    monkeypatch.setattr(PayloadMediaService, "read_preview",
+                        lambda self, asset_id, **kwargs: reads.append(asset_id) or (b"x" * 600, "image/jpeg"))
+    gateway = _gateway()
+    gateway.require_authoring_contract = lambda: {
+        **CONTRACT,
+        "authoring": {
+            "collections": {"pages": [{"name": "gallery", "type": "upload", "hasMany": True}]},
+            "globals": {"navigation": [], "siteSettings": []},
+        },
+    }
+    gateway.read = lambda collection, identifier, **kwargs: {
+        "id": identifier, "_status": "published", "slug": "home", "gallery": [41, 42],
+    }
+    gateway.read_media = lambda identifier, **kwargs: {
+        "id": identifier, "filename": f"{identifier}.jpg", "mimeType": "image/jpeg",
+        "filesize": 600, "url": f"/media/{identifier}.jpg",
+    }
+
+    with pytest.raises(ValueError, match="compiled preview copies every media file"):
+        canonical_preview_snapshot(gateway, [])
+
+    assert reads == []
+
+
 def test_preview_does_not_import_unpublished_locale_baselines_outside_candidate_effects():
     gateway = _gateway()
     gateway.require_authoring_contract = lambda: {**CONTRACT, "locales": ["en", "es"], "defaultLocale": "es"}
