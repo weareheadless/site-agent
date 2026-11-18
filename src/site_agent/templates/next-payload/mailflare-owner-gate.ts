@@ -32,6 +32,9 @@ type OwnerGateOptions<Env extends MailflareEnv, Context> = {
 
 const SESSION_COOKIE = 'ep_session'
 const SESSION_MS = 30 * 24 * 60 * 60 * 1000
+const SESSION_SECONDS = SESSION_MS / 1000
+/** Every Mailflare timestamp column is unix seconds, including this gate's. */
+const nowSeconds = () => Math.floor(Date.now() / 1000)
 const SSO_PASSWORD_SENTINEL = '!helloada-payload-sso-only'
 const SSO_ACCOUNT_NAME = 'HelloAda owner'
 
@@ -145,7 +148,7 @@ const redirectToPayloadLogin = (request: Request) => {
 }
 
 async function registerTenantBookingOwner(database: D1Binding, tenantId: string, userId: string) {
-  const now = Date.now()
+  const now = nowSeconds()
   await database.prepare(
     'INSERT OR IGNORE INTO helloada_tenant_owners (tenant_id, owner_user_id, created_at) VALUES (?, ?, ?)',
   ).bind(tenantId, userId, now).run()
@@ -185,7 +188,7 @@ export async function ensureTenantBookingOwner(
   if (!current) {
     await database.prepare(
       'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, Date.now()).run()
+    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, nowSeconds()).run()
   }
   const enabled = await database.prepare(
     'SELECT id FROM users WHERE id = ? AND disabled = 0 LIMIT 1',
@@ -233,7 +236,7 @@ async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Pro
   if (!current) {
     await env.MAILFLARE_DB.prepare(
       'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, Date.now()).run()
+    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, nowSeconds()).run()
   } else {
     await env.MAILFLARE_DB.prepare(
       'UPDATE users SET name = ? WHERE id = ? AND disabled = 0',
@@ -247,7 +250,7 @@ async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Pro
   const accessId = `ha_access_${(await digest(`${mailbox.mailboxId}:${userId}`)).slice(0, 32)}`
   await env.MAILFLARE_DB.prepare(
     'INSERT OR IGNORE INTO mailbox_access (id, mailbox_id, user_id, permission, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).bind(accessId, mailbox.mailboxId, userId, 'full_access', mailbox.serviceUserId, Date.now()).run()
+  ).bind(accessId, mailbox.mailboxId, userId, 'full_access', mailbox.serviceUserId, nowSeconds()).run()
   const access = await env.MAILFLARE_DB.prepare(
     'SELECT id FROM mailbox_access WHERE mailbox_id = ? AND user_id = ? AND permission = ? LIMIT 1',
   ).bind(mailbox.mailboxId, userId, 'full_access').first<{ id: string }>()
@@ -266,7 +269,7 @@ async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Pro
   const sessionId = `ha_sess_${randomHex(16)}`
   await env.MAILFLARE_DB.prepare(
     'INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).bind(sessionId, userId, await digest(token), Date.now() + SESSION_MS, Date.now()).run()
+  ).bind(sessionId, userId, await digest(token), nowSeconds() + SESSION_SECONDS, nowSeconds()).run()
   return { state: 'ready', token, created: true, sessionId }
 }
 
@@ -283,7 +286,7 @@ async function provisionOwnerSession(
     const tokenHash = await digest(existingToken)
     const session = await env.MAILFLARE_DB.prepare(
       'SELECT users.id AS user_id FROM sessions INNER JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.id = ? AND users.disabled = 0 LIMIT 1',
-    ).bind(tokenHash, Date.now(), userId).first<{ user_id: string }>()
+    ).bind(tokenHash, nowSeconds(), userId).first<{ user_id: string }>()
     if (session?.user_id === userId) {
       const mailbox = await provisionTenantMailflareMailbox({ database: env.MAILFLARE_DB, tenantId: env.HELLOADA_TENANT_ID, address: env.MAILFLARE_ADDRESS, zoneId: env.MAILFLARE_ZONE_ID, routingStatus: env.MAILFLARE_ROUTING_STATUS })
       const migration = await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })

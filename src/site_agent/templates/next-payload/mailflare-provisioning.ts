@@ -14,6 +14,76 @@ const sha256 = async (value: string) => {
 
 const insertId = async (prefix: string, value: string) => `${prefix}_${(await sha256(value)).slice(0, 32)}`
 
+/**
+ * One tenant has one mailbox: the one at its registered address.
+ *
+ * A mailbox id is derived from its address, and the tenant service account is
+ * derived from the tenant id alone, so every address a tenant has ever held is
+ * one mailbox row owned by that same service account. When the registered
+ * address moves (platform domain to custom domain, or custom domain to another
+ * one) provisioning used to add a mailbox for the new address and leave the
+ * previous one addressable: the owner then had two inboxes under one site and
+ * opened whichever the list returned first, which is empty while new mail
+ * arrives at the other.
+ *
+ * So the previous identities are folded into the registered mailbox here:
+ * folders are recreated, messages re-pointed, the old address kept as an alias
+ * so it still delivers into that one mailbox, and the superseded mailbox loses
+ * its access grants and is disabled. Nothing is dropped, and the operation is
+ * idempotent, so a failed pass is completed by the next one.
+ */
+async function foldSupersededTenantMailboxes({
+  database,
+  mailboxId,
+  serviceUserId,
+  now,
+}: {
+  database: MailflareD1
+  mailboxId: string
+  serviceUserId: string
+  now: number
+}) {
+  const superseded = await database.prepare(
+    'SELECT id, domain_id, local_part FROM mailboxes WHERE user_id = ? AND id != ? AND disabled = 0 LIMIT 100',
+  ).bind(serviceUserId, mailboxId).all<{ id: string; domain_id: string; local_part: string }>()
+  for (const mailbox of superseded.results ?? []) {
+    const folders = await database.prepare(
+      'SELECT id, name, color FROM folders WHERE mailbox_id = ? LIMIT 200',
+    ).bind(mailbox.id).all<{ id: string; name: string; color: string }>()
+    for (const folder of folders.results ?? []) {
+      await database.prepare(
+        'INSERT OR IGNORE INTO folders (id, user_id, mailbox_id, name, color, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).bind(await insertId('ha_folder', `${mailboxId}:${folder.name}`), serviceUserId, mailboxId, folder.name, folder.color, now).run()
+      const target = await database.prepare(
+        'SELECT id FROM folders WHERE mailbox_id = ? AND name = ? LIMIT 1',
+      ).bind(mailboxId, folder.name).first<{ id: string }>()
+      if (!target?.id) throw new Error('Mailflare could not fold a superseded mailbox folder')
+      await database.prepare(
+        'UPDATE messages SET mailbox_id = ?, folder_id = ? WHERE mailbox_id = ? AND folder_id = ?',
+      ).bind(mailboxId, target.id, mailbox.id, folder.id).run()
+    }
+    await database.prepare(
+      'UPDATE messages SET mailbox_id = ?, folder_id = NULL WHERE mailbox_id = ?',
+    ).bind(mailboxId, mailbox.id).run()
+    await database.prepare('DELETE FROM mailbox_access WHERE mailbox_id = ?').bind(mailbox.id).run()
+    await database.prepare('DELETE FROM folders WHERE mailbox_id = ?').bind(mailbox.id).run()
+    // The previous address keeps delivering, into the one mailbox the tenant
+    // has, instead of becoming a second inbox or bouncing its mail.
+    await database.prepare(
+      'INSERT OR IGNORE INTO mailbox_aliases (id, mailbox_id, domain_id, local_part, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).bind(
+      await insertId('ha_alias', `${mailbox.domain_id}:${mailbox.local_part}`),
+      mailboxId,
+      mailbox.domain_id,
+      mailbox.local_part,
+      now,
+    ).run()
+    await database.prepare(
+      'UPDATE mailboxes SET disabled = 1 WHERE id = ? AND user_id = ?',
+    ).bind(mailbox.id, serviceUserId).run()
+  }
+}
+
 export async function provisionTenantMailflareMailbox({
   database,
   tenantId,
@@ -42,7 +112,8 @@ export async function provisionTenantMailflareMailbox({
   const serviceUserId = await insertId('ha_service', tenantId)
   const domainId = await insertId('ha_domain', hostname)
   const mailboxId = await insertId('ha_mailbox', normalizedAddress)
-  const now = Date.now()
+  // Every timestamp column in the Mailflare schema is unix seconds.
+  const now = Math.floor(Date.now() / 1000)
   const serviceEmail = `${serviceUserId}@identity.helloada.invalid`
   const existingService = await database.prepare(
     'SELECT id, email, disabled FROM users WHERE id = ? LIMIT 1',
@@ -102,5 +173,6 @@ export async function provisionTenantMailflareMailbox({
     || mailbox.local_part !== localPart || mailbox.disabled) {
     throw new Error('Mailflare did not confirm the exact tenant mailbox configuration')
   }
+  await foldSupersededTenantMailboxes({ database, mailboxId, serviceUserId, now })
   return { address: normalizedAddress, domain: hostname, domainId, mailboxId, serviceUserId }
 }

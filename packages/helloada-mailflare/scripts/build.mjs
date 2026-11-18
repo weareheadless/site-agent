@@ -11,6 +11,7 @@ import { applyBookingUiPatch } from './booking-ui-patches.mjs'
 import { applyBookingWorkspacePatches } from './booking-workspace-patches.mjs'
 import { applyBookingCapacityPatches } from './booking-capacity-patches.mjs'
 import { applyMailboxAccessPatch } from './mailbox-access-patch.mjs'
+import { applyMailboxAvailabilityPatch } from './mailbox-availability-patch.mjs'
 import { applyHelloAdaBrandingPatch, sanitizeHelloAdaBrandCopy, sanitizeHelloAdaLocaleValues, shouldSkipUpstreamBrandIcon } from './helloada-branding-patch.mjs'
 
 const minimumNodeVersion = [22, 22, 2]
@@ -229,6 +230,10 @@ async function prepareBuildCopy(destination) {
   const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
   const mailboxAccessSource = await readFile(mailboxAccessPath, 'utf8')
   await writeFile(mailboxAccessPath, applyMailboxAccessPatch(mailboxAccessSource))
+
+  const mailboxAvailabilityPath = path.join(destination, 'src/app/api/auth/me/route.ts')
+  const mailboxAvailabilitySource = await readFile(mailboxAvailabilityPath, 'utf8')
+  await writeFile(mailboxAvailabilityPath, applyMailboxAvailabilityPatch(mailboxAvailabilitySource))
 
   const nextPath = path.join(destination, 'next.config.ts')
   const workerPath = path.join(destination, 'worker.ts')

@@ -8,6 +8,7 @@ function database() {
   const sqlite = new DatabaseSync(':memory:')
   sqlite.exec('CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL DEFAULT "user", is_primary_admin INTEGER NOT NULL DEFAULT 0, disabled INTEGER NOT NULL DEFAULT 0, can_manage_mailboxes INTEGER NOT NULL DEFAULT 0, can_manage_domains INTEGER NOT NULL DEFAULT 0, can_manage_users INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL); CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), token_hash TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE domains (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), hostname TEXT NOT NULL UNIQUE, zone_id TEXT NOT NULL, status TEXT NOT NULL, routing_status TEXT, sending_provider TEXT NOT NULL, receiving_provider TEXT NOT NULL, sending_requested INTEGER NOT NULL, sending_enabled INTEGER NOT NULL, routing_enabled INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE mailboxes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), domain_id TEXT NOT NULL REFERENCES domains(id), local_part TEXT NOT NULL, display_name TEXT, type TEXT NOT NULL, use_all_domains INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL, UNIQUE(domain_id, local_part)); CREATE TABLE mailbox_access (id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL REFERENCES mailboxes(id), user_id TEXT NOT NULL REFERENCES users(id), permission TEXT NOT NULL, created_by_user_id TEXT REFERENCES users(id), created_at INTEGER NOT NULL, UNIQUE(mailbox_id, user_id));')
   sqlite.exec('CREATE TABLE helloada_import_runs (tenant_id TEXT PRIMARY KEY NOT NULL, version TEXT NOT NULL, state TEXT NOT NULL, lease_token TEXT, lease_until INTEGER, source_sha256 TEXT, counts_json TEXT, error_code TEXT, started_at INTEGER NOT NULL, completed_at INTEGER); CREATE TABLE helloada_import_records (source_collection TEXT NOT NULL, source_id TEXT NOT NULL, source_sha256 TEXT NOT NULL, target_collection TEXT NOT NULL, target_id TEXT NOT NULL, migrated_at INTEGER NOT NULL, PRIMARY KEY (source_collection, source_id)); CREATE TABLE helloada_imported_operations (source_id TEXT PRIMARY KEY NOT NULL, operation_id TEXT NOT NULL, operation_type TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_hash TEXT NOT NULL, state TEXT NOT NULL, attempts INTEGER NOT NULL, next_attempt_at INTEGER, provider_reference TEXT, error_code TEXT, payload TEXT NOT NULL, created_at INTEGER NOT NULL);')
+  sqlite.exec('CREATE TABLE folders (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL DEFAULT "#2563eb", created_at INTEGER NOT NULL); CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, direction TEXT NOT NULL, folder_id TEXT, from_addr TEXT NOT NULL, to_addr TEXT NOT NULL, subject TEXT, status TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE mailbox_aliases (id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL, domain_id TEXT NOT NULL, local_part TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(domain_id, local_part));')
   sqlite.exec('CREATE TABLE helloada_tenant_owners (tenant_id TEXT PRIMARY KEY NOT NULL, owner_user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE, created_at INTEGER NOT NULL); CREATE TABLE helloada_booking_settings (user_id TEXT PRIMARY KEY NOT NULL REFERENCES users(id) ON DELETE CASCADE, enabled INTEGER NOT NULL DEFAULT 0, time_zone TEXT NOT NULL DEFAULT \'\', weekly_availability TEXT NOT NULL DEFAULT \'[]\', max_concurrent_appointments INTEGER NOT NULL DEFAULT 1, minimum_notice_hours INTEGER NOT NULL DEFAULT 24, booking_window_days INTEGER NOT NULL DEFAULT 60, revision INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL);')
   return {
     sqlite,
@@ -66,6 +67,73 @@ test('provisions one exact tenant domain and mailbox idempotently', async () => 
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM mailboxes').get().count, 1)
   assert.equal(db.sqlite.prepare('SELECT status FROM domains').get().status, 'active')
   assert.equal(db.sqlite.prepare('SELECT local_part FROM mailboxes').get().local_part, 'hello')
+})
+
+test('writes mailbox timestamps as unix seconds', async () => {
+  const db = database()
+  await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  const seconds = Math.floor(Date.now() / 1000)
+  const mailbox = db.sqlite.prepare('SELECT created_at FROM mailboxes').get()
+  assert.ok(Math.abs(mailbox.created_at - seconds) < 60, `expected seconds, received ${mailbox.created_at}`)
+  assert.equal(db.sqlite.prepare('SELECT created_at FROM domains').get().created_at, mailbox.created_at)
+})
+
+test('folds a tenant address it no longer uses into its registered mailbox', async () => {
+  const db = database()
+  const previous = await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'test-tenant@helloada.app',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  db.sqlite.prepare('INSERT INTO users (id,email,password_hash,name,created_at) VALUES (?,?,?,?,?)')
+    .run('owner-1', 'owner@identity.helloada.invalid', 'hash', 'Owner', 1)
+  db.sqlite.prepare('INSERT INTO mailbox_access (id,mailbox_id,user_id,permission,created_at) VALUES (?,?,?,?,?)')
+    .run('access-previous', previous.mailboxId, 'owner-1', 'full_access', 1)
+  db.sqlite.prepare('INSERT INTO folders (id,user_id,mailbox_id,name,created_at) VALUES (?,?,?,?,?)')
+    .run('folder-previous', previous.serviceUserId, previous.mailboxId, 'Novias', 1)
+  db.sqlite.prepare('INSERT INTO messages (id,user_id,mailbox_id,direction,folder_id,from_addr,to_addr,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('message-filed', previous.serviceUserId, previous.mailboxId, 'inbound', 'folder-previous', 'guest@example.test', 'test-tenant@helloada.app', 'received', 1)
+  db.sqlite.prepare('INSERT INTO messages (id,user_id,mailbox_id,direction,from_addr,to_addr,status,created_at) VALUES (?,?,?,?,?,?,?,?)')
+    .run('message-inbox', previous.serviceUserId, previous.mailboxId, 'inbound', 'guest@example.test', 'test-tenant@helloada.app', 'received', 1)
+
+  const current = await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+
+  assert.notEqual(current.mailboxId, previous.mailboxId)
+  // One tenant has one mailbox: the address it currently uses.
+  assert.deepEqual(
+    db.sqlite.prepare('SELECT id FROM mailboxes WHERE disabled = 0').all().map((row) => row.id),
+    [current.mailboxId],
+  )
+  assert.equal(db.sqlite.prepare('SELECT disabled FROM mailboxes WHERE id = ?').get(previous.mailboxId).disabled, 1)
+  // Nothing the previous address held is lost, and its grants are gone.
+  assert.deepEqual(
+    db.sqlite.prepare('SELECT id FROM messages WHERE mailbox_id = ? ORDER BY id').all(current.mailboxId).map((row) => row.id),
+    ['message-filed', 'message-inbox'],
+  )
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM messages WHERE mailbox_id = ?').get(previous.mailboxId).count, 0)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM mailbox_access WHERE mailbox_id = ?').get(previous.mailboxId).count, 0)
+  assert.equal(db.sqlite.prepare('SELECT name FROM folders WHERE mailbox_id = ?').get(current.mailboxId).name, 'Novias')
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM folders WHERE mailbox_id = ?').get(previous.mailboxId).count, 0)
+  assert.equal(
+    db.sqlite.prepare('SELECT folder_id FROM messages WHERE id = ?').get('message-filed').folder_id,
+    db.sqlite.prepare('SELECT id FROM folders WHERE mailbox_id = ?').get(current.mailboxId).id,
+  )
+  // The address it no longer uses still delivers into the one mailbox.
+  const alias = db.sqlite.prepare('SELECT mailbox_id, domain_id, local_part FROM mailbox_aliases').all()
+  assert.deepEqual(alias.map((row) => ({ ...row })), [{
+    mailbox_id: current.mailboxId,
+    domain_id: previous.domainId,
+    local_part: 'test-tenant',
+  }])
 })
 
 test('provisions the service mailbox safely when first requests arrive concurrently', async () => {
