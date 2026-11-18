@@ -43,13 +43,16 @@ const main = () => {
   const archive = path.join(output, packed.filename)
 
   for (const file of ['dist/index.tsx', 'dist/base.tsx', 'dist/routes.generated.tsx', 'dist/styles.css', 'dist/build.json', 'README.md',
-    'dist/src/app/(calendar)/calendar/page.tsx', 'dist/src/app/(calendar)/booking/page.tsx', 'dist/src/lib/booking/hosts.ts']) {
+    'dist/src/app/(calendar)/calendar/page.tsx']) {
     assertTarEntry(archive, file)
   }
   const build = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/dist/build.json'], { encoding: 'utf8' }))
   const routes = execFileSync('tar', ['-xOf', archive, 'package/dist/routes.generated.tsx'], { encoding: 'utf8' })
-  if (!routes.includes('pattern: "/calendar"') || !routes.includes('pattern: "/booking"')) {
-    throw new Error('Packed mailbox UI is missing the owner calendar or booking editor')
+  if (!routes.includes('pattern: "/calendar"')) {
+    throw new Error('Packed mailbox UI is missing the owner calendar')
+  }
+  if (routes.includes('pattern: "/booking"')) {
+    throw new Error('Packed mailbox UI ships a booking editor the tenant booking API cannot serve')
   }
   if (build.upstreamCommit !== upstreamPin.commit || build.upstreamPackageVersion !== upstreamPin.packageVersion) {
     throw new Error('Packed mailbox UI is not built from the pinned upstream')

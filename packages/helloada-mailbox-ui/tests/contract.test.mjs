@@ -15,6 +15,7 @@ const excluded = [
   'src/app/(dashboard)/agent',
   'src/app/(dashboard)/import-export',
   'src/app/(dashboard)/rules',
+  'src/app/(calendar)/booking',
 ]
 const routeGroups = ['(dashboard)', '(calendar)']
 
@@ -54,40 +55,18 @@ test('every owner mailbox page is routed', async () => {
   assert.deepEqual(routes, upstreamPages)
 })
 
-test('the owner calendar and booking editor ship with the mailbox', () => {
+test('the owner calendar ships with the mailbox and owns no second route', () => {
   const routes = read('routes.generated.tsx')
   assert.match(routes, /pattern: "\/calendar"/)
-  assert.match(routes, /pattern: "\/booking"/)
-
-  // The calendar tabs move between the two surfaces under the mailbox mount
-  // point, so the layout has to read the mailbox path, not the page pathname.
-  const layout = read('src/app/(calendar)/layout.tsx')
-  assert.match(layout, /useMailboxPathname\(\)/)
-  assert.match(layout, /<Link href="\/booking"/)
+  // The tenant booking API is HelloAda's settings model, not the upstream
+  // events model this editor reads, so it must not be generated.
+  assert.doesNotMatch(routes, /pattern: "\/booking"/)
 
   const calendar = read('src/app/(calendar)/calendar/page.tsx')
   assert.match(calendar, /authFetch\(`\/api\/calendar\/events/)
-  const booking = read('src/app/(calendar)/booking/page.tsx')
-  assert.match(booking, /authFetch\("\/api\/booking"\)/)
-
-  // Avatar images are not fetched, so the control-plane prefix has to be
-  // applied where the URL is built.
-  const avatar = read('src/app/(calendar)/booking/booking-host-avatar.tsx')
-  assert.match(avatar, /const imageUrl = apiUrl\(/)
-})
-
-test('booking keeps only the shapes and helpers the editor exchanges', () => {
-  // The tenant owns the booking tables; the generated app keeps the pure
-  // parser and the request shapes, and nothing that reaches a database.
-  const hosts = read('src/lib/booking/hosts.ts')
-  assert.match(hosts, /export function parseBookingHostIds\(/)
-  assert.doesNotMatch(hosts, /validBookingHostIds/)
-  assert.doesNotMatch(hosts, /drizzle|@\/db/)
-
-  const types = read('src/lib/booking/types.d.ts')
-  assert.match(types, /export type BookingEventInput/)
-  assert.doesNotMatch(types, /ExistingCalendarEvent/)
-  assert.doesNotMatch(types, /@\/db/)
+  const layout = read('src/app/(calendar)/layout.tsx')
+  assert.match(layout, /useMailboxPathname\(\)/)
+  assert.doesNotMatch(layout, /\/booking/, 'the calendar layout still offers a booking section')
 })
 
 test('the generated tree carries no tenant auth and no root-relative api calls', async () => {
