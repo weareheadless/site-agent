@@ -79,7 +79,11 @@ so there is exactly one mailbox interface.
    tenant and on oceanicvibes.
 3. **Write path live.** Compose, reply, drafts, bulk actions, star, snooze and
    archive, with an explicit send that is verified by addressing the owner.
-4. **Contacts, calendar and booking settings.**
+4. **Calendar live, booking settings next.** The owner calendar ships in the
+   package. Booking configuration cannot: the tenant's booking API is HelloAda's
+   bookings settings and type model, not the upstream events model its editor
+   reads, so that editor is not generated and `/mail/booking` is not served. The
+   booking surface needs its own admin page generated from the HelloAda model.
 5. **Settings surfaces, tenant `/mail` retirement, docs.**
 
 Each stage ends with a canonical-queue release, a fresh authenticated browser
@@ -247,3 +251,46 @@ badge, the filter and the public player read.
   bridge.
 - No `/mail` UI remains reachable as a parallel mailbox after stage 5.
 - Public sites, raw Payload admin and tenant data are unchanged.
+
+## Stage 4 record
+
+Package: `@weareheadless/helloada-mailbox-ui@0.3.1` from the same pinned
+upstream, published as `weareheadless-helloada-mailbox-ui-0.3.1.tgz` (22 routes,
+281 files) and pinned in the app by URL plus `sha512` integrity. It adds the
+upstream owner calendar and drops the upstream booking editor.
+
+App releases: `20261118-owner-calendar-r2` (SHA `5fdab050`) and
+`20261118-owner-calendar-r3` (SHA `7d520df1`). Tenant release
+`rel-20261118141000-owner-pages` proves the build change on the disposable
+tenant `site-be8225c72f3ba01a` (shared-runtime fingerprint `b3784b35`).
+
+Verified in a real authenticated browser on `astrid-rincon`:
+
+- `/astrid-rincon/mail/calendar` renders the upstream week calendar inside the
+  shared control-plane navigation: month header, week navigation, day columns,
+  "New event", and the upcoming sidebar. No console errors.
+- Its data comes from the tenant calendar API the tenant actually serves:
+  `/api/helloada/websites/astrid-rincon/owner/mail/calendar/events` answers
+  `{"events":[]}`.
+- `/astrid-rincon/mail/inbox` is unchanged, and `/astrid-rincon/mail/booking`
+  answers 404 instead of rendering a page that cannot load.
+- On the disposable tenant, `/mail` still hands over to the control-plane entry
+  (303), `/mail/api/*` still answers from the tenant, and `/api/health` reports
+  `mailflareApiVersion: 1` with the new fingerprint.
+
+Two findings recorded rather than papered over:
+
+- **The upstream booking editor cannot read the tenant's booking API.** The
+  tenant route at `/mail/api/booking` is HelloAda's bookings settings model
+  (`settings`, `types`, `capacityWarnings`), while the upstream page expects
+  `events`, `username`, `currentUser` and `canManageHosts`. Rendering it crashes
+  with `Cannot read properties of undefined (reading 'length')`. The same
+  mismatch means the tenant-side bookings settings page has never had data. The
+  editor and its Calendar/Bookings switch are therefore not generated, and the
+  release packaging refuses an artifact that ships `/booking`. Booking
+  configuration needs its own admin page built from the HelloAda model.
+- **A document open across a Worker version switch can fail to load a chunk**
+  (`ChunkLoadError`) because the previous build's chunk hashes are gone. A fresh
+  document on the same release is clean. This is the existing deploy-switch
+  behaviour, not a defect introduced by the mailbox; it is worth a build-id
+  recovery path in the app shell if it is observed on an owner's screen.
