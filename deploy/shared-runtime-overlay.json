@@ -30,6 +30,7 @@
     "src/components/admin/HelloAdaAdminLogo.tsx",
     "src/components/admin/HelloAdaBackToWorkspace.tsx",
     "src/components/platform/PublicRevision.tsx",
+    "src/lib/assistant-client.ts",
     "src/lib/assistant-config.ts",
     "src/lib/assistant-context.ts",
     "src/lib/assistant-prompt.ts",

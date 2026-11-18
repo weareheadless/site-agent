@@ -10,6 +10,7 @@ import {
 } from '../src/lib/assistant-context.ts'
 import { assistantInstruction } from '../src/lib/assistant-prompt.ts'
 import { classifyTurn } from '../src/lib/assistant-safety.ts'
+import { AssistantClientError, streamAssistant } from '../src/lib/assistant-client.ts'
 
 test('page text prefers the page body and drops site chrome', () => {
   const html = `
@@ -154,6 +155,58 @@ test('the safety gate fails closed to an honest answer', async () => {
 
     globalThis.fetch = original
     assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'honest')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('the client streams deltas and reports which mode answered', async () => {
+  const original = globalThis.fetch
+  const frames = [
+    'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"lo"}}]}\n\ndata: [DONE]\n\n',
+  ]
+  let index = 0
+  globalThis.fetch = async (url, init) => ({
+    ok: true,
+    status: 200,
+    headers: new Map([['x-assistant-mode', 'bit']]),
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (index >= frames.length) return { done: true, value: undefined }
+          const value = new TextEncoder().encode(frames[index])
+          index += 1
+          return { done: false, value }
+        },
+      }),
+    },
+    _url: url,
+    _init: init,
+  })
+  try {
+    const deltas = []
+    const result = await streamAssistant({
+      messages: [{ role: 'user', content: 'hi' }],
+      onDelta: text => deltas.push(text),
+    })
+
+    assert.equal(result.text, 'Hello')
+    assert.equal(result.mode, 'bit')
+    assert.deepEqual(deltas, ['Hel', 'lo'])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('the client surfaces the status instead of pretending it answered', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async () => ({ ok: false, status: 503, headers: new Map() })
+  try {
+    await assert.rejects(
+      () => streamAssistant({ messages: [{ role: 'user', content: 'hi' }], onDelta: () => {} }),
+      error => error instanceof AssistantClientError && error.status === 503,
+    )
   } finally {
     globalThis.fetch = original
   }

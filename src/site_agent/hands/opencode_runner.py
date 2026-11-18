@@ -50,6 +50,16 @@ _CODE_SYMBOLS = "{}=;|#&*"
 _MECH_PREFIXES = ("total ", "permission", "chmod ", "error:", "warning:", "usage:", "fatal: ")
 _DIFF_LEADS = ("diff --git", "index ", "--- a/", "+++ b/", "@@", "deleted file", "new file", "similarity index")
 _DSML_RE = _re.compile(r"(?:DSML|<\s*tool\b|<\s*invoke\b|<\s*parameter\b)", _re.I)
+
+# A model that prints tool-call markup instead of calling a tool is a provider
+# protocol failure. One retry with a different model and an explicit instruction
+# usually lands it; a second failure is reported honestly rather than looped.
+_PROTOCOL_FALLBACK_MODEL = "openrouter/openai/gpt-4.1-mini"
+_PROTOCOL_NUDGE = (
+    "\n\nUse native tool calls for every action. Never print tool-call markup, "
+    "DSML or XML in your text: if a tool cannot be called natively, say so in one "
+    "sentence instead of writing the call out."
+)
 _MAX_LIVE_PROGRESS_STEPS = 200
 _EXTENSIONS = frozenset((
     "html", "htm", "css", "js", "jsx", "ts", "tsx", "json", "md", "py",
@@ -4752,6 +4762,16 @@ def _retryable_provider_rejection(result: Mapping[str, Any]) -> str:
     return kinds[-1] if kinds else ""
 
 
+def b_protocol_retries(config: dict[str, Any]) -> int:
+    """How many protocol-failure retries this tenant allows, bounded to one."""
+    raw = (config.get("builder") or {}).get("protocol_retries", 1)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(0, min(1, value))
+
+
 def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                       progress=None, session_id: str | None = None,
                       timeout_seconds: int | None = None,
@@ -4775,6 +4795,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     failures = []
     request = brief
     resume_session: str | None = None
+    protocol_attempts = 0
+    model_override: str | None = None
     for attempt in range(3):
         try:
             result = _run_opencode_turn_once(
@@ -4782,11 +4804,33 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 timeout_seconds=timeout_seconds, api_key=api_key, env=env,
                 api_key_env=api_key_env, image_files=image_files, memory=memory,
                 agent_name=agent_name, home=home, reply_mode=reply_mode,
+                model_override=model_override,
             )
             if failures:
                 result["provider_retry_attempts"] = failures
             return result
         except RunnerError as exc:
+            if str(exc).startswith("opencode emitted unsupported DSML/XML"):
+                # The model wrote a tool call as text. Retry once, fresh session,
+                # on a model known to call tools natively, with an explicit nudge.
+                protocol_attempts += 1
+                allowed = int(b_protocol_retries(config))
+                if protocol_attempts > allowed or attempt >= 2:
+                    raise RunnerError(
+                        "opencode emitted unsupported DSML/XML instead of a native tool call "
+                        f"after {protocol_attempts} attempt(s); the model cannot call tools reliably",
+                        result=exc.result,
+                    ) from exc
+                model_override = str(
+                    (config.get("builder") or {}).get("fallback_model") or _PROTOCOL_FALLBACK_MODEL
+                ).strip()
+                request = brief + _PROTOCOL_NUDGE
+                resume_session = None
+                failures.append({"attempt": attempt + 1, "kind": "tool-call-protocol",
+                                 "detail": str(exc)[:200]})
+                if progress:
+                    progress("the model wrote a tool call as text; retrying on a model that calls tools natively")
+                continue
             if attempt < 2:
                 interruption = (_resumable_turn_failure(exc.result or {})
                                 if str(exc).startswith("opencode exited ") else "")
@@ -4827,7 +4871,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                       memory: Any | None = None,
                       agent_name: str = "build",
                       home: Path | None = None,
-                      reply_mode: str = "tail") -> dict[str, Any]:
+                      reply_mode: str = "tail",
+                      model_override: str | None = None) -> dict[str, Any]:
     """Run one structured OpenCode turn, optionally continuing a session.
 
     OpenCode's JSON event stream is the source of truth for tool calls. Plain
@@ -4847,7 +4892,9 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
         "--print-logs", "--log-level", "error",
         "--agent", agent_name,
     ]
-    builder_model = str(b.get("model") or (config.get("llm") or {}).get("model") or "").strip()
+    builder_model = str(
+        model_override or b.get("model") or (config.get("llm") or {}).get("model") or ""
+    ).strip()
     if builder_model:
         cmd.extend(["--model", _qualified_model(builder_model)])
     if session_id:

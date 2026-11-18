@@ -468,7 +468,11 @@ def test_run_opencode_turn_rejects_plain_dsml(tmp_path, monkeypatch):
     class FakeProcess:
         pid = 12345
         returncode = 0
-        stdout = iter([json.dumps({"type": "text", "part": {"text": "<DSML>tool"}})])
+
+        def __init__(self):
+            # Every attempt emits the same protocol failure, so the retry is
+            # exercised and the bound is what ends it.
+            self.stdout = iter([json.dumps({"type": "text", "part": {"text": "<DSML>tool"}})])
 
         def wait(self, timeout=None):
             return self.returncode

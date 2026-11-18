@@ -179,7 +179,11 @@ def read_assistant_state(
             "response": "text/event-stream of OpenRouter chat completion chunks",
             "headers": {"x-assistant-mode": "bit (persona answered) or honest (persona dropped)"},
             "inRepository": False,
-            "note": "present in a built preview and in production; absent from the tenant checkout",
+            "clientModule": "src/lib/assistant-client.ts",
+            "clientUsage": "import { streamAssistant } from '@/lib/assistant-client'",
+            "note": ("present in a built preview and in production; absent from the tenant checkout. "
+                     "The client module arrives with the same overlay, so a widget imports it rather "
+                     "than re-implementing the stream."),
         },
     }
     try:

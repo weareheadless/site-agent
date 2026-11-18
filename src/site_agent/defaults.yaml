@@ -340,6 +340,9 @@ env:
 builder:
   enabled: false
   model: openrouter/deepseek/deepseek-v4.1-flash
+  # One retry when the model prints tool-call markup instead of calling a tool.
+  protocol_retries: 1
+  fallback_model: openrouter/openai/gpt-4.1-mini
   timeout_seconds: 1800
   provider_timeout_seconds: 2100
   provider_chunk_timeout_seconds: 180
