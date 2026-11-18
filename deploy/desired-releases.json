@@ -1,20 +1,29 @@
 {
   "releases": {
+    "ada-direct-admin-sso-e2e-a76df8a18660acea": {
+      "id": "runtime-20261118143325-b33aa2b0",
+      "sha": "419f1c9344d56f6d0a368aff8ac419215f43d91c",
+      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
+    },
     "atelier-harmonie": {
-      "id": "rel-20261111153000-atelier-media-upload-video",
-      "sha": "4fcdd8cf3e22d7b07514c7beaef402db72112f3b"
+      "id": "runtime-20261118143325-3442057f",
+      "sha": "4fcdd8cf3e22d7b07514c7beaef402db72112f3b",
+      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
     },
     "casamigo": {
-      "id": "rel-20261114212545-a3957ced",
-      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14"
+      "id": "runtime-20261118143325-a11b400f",
+      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
+      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "rel-20261103225111-1c9e29e3",
-      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072"
+      "id": "runtime-20261118143325-cd81dcc0",
+      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
+      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "rel-20261114004230-mailreport",
-      "sha": "f1ab6599229fcbd7a462b51c8bf98c49ef07f578"
+      "id": "runtime-20261118143326-cfab882f",
+      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
+      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
     },
     "oceanicvibes": {
       "id": "rel-20261113140000-preview-rebuild-bridge",
