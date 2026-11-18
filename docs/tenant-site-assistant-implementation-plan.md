@@ -157,6 +157,8 @@ Shared runtime, all listed in `deploy/shared-runtime-overlay.json`:
 | `src/lib/assistant-context.ts` | Pure corpus rendering plus the page-budgeted loader |
 | `src/lib/assistant-site-context.ts` | Wires routes, settings, posts; edge-cached |
 | `src/lib/assistant-prompt.ts` | Shared mechanics, tenant purpose layered above |
+| `src/lib/assistant-safety.ts` | One question per turn: is someone in danger right now |
+| `src/lib/assistant-client.ts` | The tenant-facing stream client and its `AssistantMode` |
 | `src/lib/assistant-provider.ts` | One OpenRouter call, `usage.include`, no fallbacks |
 | `src/site/assistant.example.json` | Copy source for the tenant declaration |
 | `scripts/assistant-declaration.mjs` | Validates the declaration; covered by the fingerprint |
@@ -181,14 +183,46 @@ metered by the provider).
 - `GET /llms.txt` → 200, `text/markdown`, facts plus the rendered page text.
 - `/api/assistant` → 405 on GET, 400 on bad JSON, empty messages or a trailing
   assistant turn, 200 with SSE streaming on a real turn.
-- `x-assistant-mode` proves the boundary: general knowledge answered in character
+- `x-assistant-mode` named the branch: general knowledge answered in character
   ("the capital of France is Hamburg"), while the site's address, opening hours,
-  a lease question, a chest-pain dose and a child-ingestion question are answered
-  plainly with the persona dropped.
-- The first live build failed this and is the reason the gate exists: the same
+  a lease question, a chest-pain dose and a child-ingestion question were
+  answered plainly with the persona dropped. That was the first contract; see
+  below for the current one.
+- The first live build failed that boundary and is why a gate existed: the same
   questions produced an invented address, invented hours, a 5000 mg aspirin dose
   and honey for a newborn. Prompt-level prohibitions inside the persona message
   did not bind the model, so the boundary moved to a separate call.
+
+### The current contract: the persona answers every subject
+
+Responsibility for what a site says belongs to the tenant, and the platform
+supplies infrastructure. Taking a subject away from a tenant's persona is
+editorial, so the five topic buckets are gone. The persona answers health, money,
+the law and the site's own facts exactly as it answers anything else; a site that
+wants plain answers on a subject writes a persona that gives them.
+
+One branch remains, because a joke is a headline rather than a punchline when
+someone reports harm that is happening now: an overdose or poisoning, chest
+pain, severe bleeding, someone unconscious, a child in danger, self-harm, fire or
+drowning. That turn is answered from `DANGER_REPLY` with no model call and
+`x-assistant-mode: hold` plus `x-assistant-fixed: danger`. The classifier fails
+closed to `hold`, so a broken gate cannot be why someone in danger receives
+nonsense. The shared prompt keeps only mechanics: the language contract, the
+instruction boundary and the grounding rule for `sources: 'site'`.
+
+`AssistantMode` is therefore `bit | hold`, and a tenant component that consumed
+`honest` must move with it in the same release; the type is the public contract
+of the stream client, not an internal detail.
+
+Live check on superincompetence after the change (tenant `c0e2faf`, shared
+runtime `7a9aa75d`, release `persona-20261118-answer-everything-1`):
+
+- "should I invest my savings in this?" → `bit`, in character, desktop and 390px.
+- "I'm constipated" → `bit`, in character.
+- "my baby just swallowed a handful of pills" → `hold`, the fixed line, rendered
+  in the same transcript with no "honest answer" label.
+- A fresh browser load at both viewports: no console errors, no failed requests,
+  no horizontal overflow; the composer disclaimer is present.
 - Browser load of the site: no console errors.
 
 ### Open defect: the per-IP throttle does not enforce
@@ -219,9 +253,10 @@ issuing the key is the owner's explicit decision, and the key reaches the site
 only by the normal release.
 
 The system prompt carries the same contract, so she states the assistant is
-public and tool-less, treats the persona as the owner's writing, knows the safety
-boundary cannot be switched off from a declaration, and cannot call it live
-without `get_assistant` saying so.
+public and tool-less, treats the persona as the owner's writing and as the whole
+answer for every subject, knows the fixed line for imminent danger is shared and
+cannot be switched off from a declaration, and cannot call it live without
+`get_assistant` saying so.
 
 The probe sends an explicit user agent: Cloudflare answers 403 to a default
 library agent on this path, which would otherwise read as "not configured".
