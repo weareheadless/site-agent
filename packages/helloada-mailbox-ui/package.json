@@ -1,8 +1,8 @@
 {
   "name": "@weareheadless/helloada-mailbox-ui",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
-  "description": "HelloAda-owned mailbox, calendar and booking UI generated from the pinned Mailflare upstream.",
+  "description": "HelloAda-owned mailbox and calendar UI generated from the pinned Mailflare upstream.",
   "type": "module",
   "license": "AGPL-3.0-only",
   "files": [

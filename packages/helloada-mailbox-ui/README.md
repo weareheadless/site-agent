@@ -14,8 +14,8 @@ npm test          # contract tests: routes, auth removal, API base, locales
 - The owner mailbox route tree from the upstream `(dashboard)` group: inbox,
   message threads, compose, drafts, scheduled, sent, starred, snoozed, archived,
   spam and trash, with custom folders and search.
-- The owner calendar and booking editor from the upstream `(calendar)` group,
-  reading and writing the tenant's own calendar and booking API.
+- The owner calendar from the upstream `(calendar)` group, reading and writing
+  the tenant's own calendar API.
 - A generated route map that preserves the upstream layout nesting, plus the
   language provider and the query client the mailbox components expect.
 - 32 locale catalogs, loaded on demand instead of fetched from a tenant origin.
@@ -24,9 +24,11 @@ npm test          # contract tests: routes, auth removal, API base, locales
 
 - Tenant authentication. The control plane authenticates the owner; the package
   never redirects to a login page and never holds a tenant session cookie.
-- Server code: no `cloudflare:workers`, no Drizzle, no `next/headers`. The
-  booking host parser and request shapes are generated from upstream, but the
-  tenant database queries beside them stay in the tenant Worker.
+- Server code: no `cloudflare:workers`, no Drizzle, no `next/headers`.
+- The upstream booking editor. The tenant's booking API is HelloAda's booking
+  settings and type model, not the upstream events model that editor reads, so
+  it would render a page that cannot read its own data. Booking configuration
+  needs its own admin surface generated from the HelloAda model.
 - The assistant review queue and server-redirect stubs, which remain
   tenant-runtime surfaces until their own stage.
 - A stylesheet that resets the control-plane shell. `styles.css` keeps the
@@ -41,8 +43,6 @@ the build instead of shipping a silent fallback:
 - `authFetch` resolves `/api/*` against the injected owner-proxy base and no
   longer redirects to `/login`;
 - bare `fetch("/api/...")` call sites use `authFetch`;
-- URLs that are rendered rather than fetched, such as booking host avatars, are
-  prefixed with the same owner-proxy base;
 - `href`, `router.push`, `usePathname` and `useParams` go through the mailbox
   base path and route params;
 - `h-dvh` becomes `h-full` so the control plane owns the viewport height;
