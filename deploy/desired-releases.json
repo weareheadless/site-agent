@@ -6,9 +6,8 @@
       "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
     },
     "atelier-harmonie": {
-      "id": "runtime-20261118143325-3442057f",
-      "sha": "4fcdd8cf3e22d7b07514c7beaef402db72112f3b",
-      "sharedRuntimeFingerprint": "b3784b35cd7db35e0c0123b366024a812abd4505e12482a5c85662a1a3700cb7"
+      "id": "rel-20261118151000-content-contract",
+      "sha": "84c5f7af16d723c1d8f0de9e5fc53150033b057c"
     },
     "casamigo": {
       "id": "runtime-20261118143325-a11b400f",
