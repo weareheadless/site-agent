@@ -166,6 +166,14 @@ Rules the implementation must keep:
   confirmation in place and offers any further handoff (such as WhatsApp) as an
   explicit link. An automatic redirect hides the delivery from the visitor and
   from whoever is testing it.
+- **One tenant has one mailbox, at the address it is registered with.** A
+  mailbox id is derived from its address, so an address change (platform domain
+  to custom domain, or one custom domain to another) must move that mailbox, not
+  add a second one. Provisioning folds the tenant's previous addresses into the
+  registered mailbox: messages and folders move across, the old address stays an
+  alias so it keeps delivering into the same inbox, and the superseded mailbox
+  loses its access grants. Two mailboxes under one site is how an owner opens an
+  empty inbox while site mail lands in the other one.
 
 ## Release and acceptance
 
