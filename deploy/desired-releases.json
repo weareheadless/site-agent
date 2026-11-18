@@ -4,6 +4,21 @@
       "id": "rel-20261118160600-canonical-payload-config-r2",
       "sha": "69df185d582c38bd02ebf5f5e087591c7eba8c5e"
     },
+    "casamigo": {
+      "id": "runtime-20261118162900-bcad4f64",
+      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
+      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
+    },
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "id": "runtime-20261118162900-437026fe",
+      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
+      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
+    },
+    "oceanicvibes": {
+      "id": "runtime-20261118162901-a1c934ea",
+      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
+      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
+    },
     "site-be8225c72f3ba01a": {
       "id": "runtime-20261118162117-35c11f75",
       "sha": "ee4ecf43fb3c82a1cfe71c18cd8c26bcba0fac43",
