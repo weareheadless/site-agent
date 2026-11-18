@@ -3501,6 +3501,13 @@ def _payload_manifest_for_review(context: Mapping[str, Any], memory: Any,
         if isinstance(revision, Mapping):
             previous_id = revision.get("previousDraftId")
     previous = memory.get_draft(int(previous_id)) if (memory is not None and previous_id) else None
+    if not isinstance(previous, Mapping):
+        # No review is being revised in place, but a failed preview may have left
+        # one open. Its content revisions are still the owner's undecided work:
+        # the page built from them is what the replacement review renders, and
+        # dropping them left a site whose only page had never been published with
+        # no review carrying that publication at all.
+        previous = _blocked_pending_review(memory)
     meta = previous.get("meta") if isinstance(previous, Mapping) else None
     carried = meta.get("payload_effects") if isinstance(meta, Mapping) else None
     if isinstance(carried, list) and carried:
@@ -3516,6 +3523,26 @@ def _payload_manifest_for_review(context: Mapping[str, Any], memory: Any,
             merged[identity(item)] = dict(item)
         effects = list(merged.values())
     return payload_revision_manifest(effects)
+
+
+def _blocked_pending_review(memory: Any) -> Mapping[str, Any] | None:
+    """The newest review whose preview failed and which the owner never decided."""
+    if memory is None:
+        return None
+    try:
+        pending = memory.list_drafts(status="pending")
+    except Exception:  # noqa: BLE001 - missing memory is not a review failure
+        return None
+    blocked = [
+        draft for draft in pending
+        if draft.get("kind") in {"merge", "rollback"}
+        and isinstance(draft.get("meta"), Mapping)
+        and isinstance(draft["meta"].get("preview"), Mapping)
+        and draft["meta"]["preview"].get("status") in {"blocked", "failed", "error"}
+    ]
+    if not blocked:
+        return None
+    return max(blocked, key=lambda draft: int(draft.get("id") or 0))
 
 
 def _draft_candidate_sha(draft: Mapping[str, Any]) -> str:
