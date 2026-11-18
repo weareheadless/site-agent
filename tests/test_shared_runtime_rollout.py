@@ -332,3 +332,49 @@ def test_existing_run_without_receipt_blocks_canary_retry(tmp_path):
     assert plan["state"] == "canary-failed"
     assert plan["blocked"] == ["oceanicvibes"]
     assert plan["queued"] == {}
+
+
+def test_stale_runtime_requests_are_replaced_instead_of_deadlocking_the_queue(tmp_path):
+    from site_agent.application.shared_runtime_rollout import superseded_runtime_requests
+
+    _receipt(tmp_path, "atelier-harmonie", "runtime-old", status="deployed", fingerprint=OLD_FINGERPRINT)
+    _receipt(tmp_path, "northstar", "runtime-failed", status="failed", fingerprint=OLD_FINGERPRINT)
+    _receipt(tmp_path, "oceanicvibes", "runtime-live", status="running", fingerprint=OLD_FINGERPRINT)
+    queue = {"releases": {
+        # Pinned to a runtime this control plane no longer builds: it can never
+        # pass the build's fingerprint check and it blocks the next canary.
+        "atelier-harmonie": {"id": "runtime-old", "sha": SHA, "sharedRuntimeFingerprint": OLD_FINGERPRINT},
+        "northstar": {"id": "runtime-failed", "sha": SHA, "sharedRuntimeFingerprint": OLD_FINGERPRINT},
+        # Still in flight: never yank a release that is executing.
+        "oceanicvibes": {"id": "runtime-live", "sha": SHA, "sharedRuntimeFingerprint": OLD_FINGERPRINT},
+        # An ordinary website release carries no runtime pin.
+        "legacy-test": {"id": "approved-site-change", "sha": SHA},
+        # Already the target runtime.
+        "site-other": {"id": "runtime-new", "sha": SHA, "sharedRuntimeFingerprint": FINGERPRINT},
+    }}
+
+    assert superseded_runtime_requests(queue, tmp_path, FINGERPRINT) == ["atelier-harmonie", "northstar"]
+
+
+def test_superseding_the_old_batch_lets_the_next_canary_be_queued(tmp_path):
+    from site_agent.application.shared_runtime_rollout import superseded_runtime_requests
+
+    _receipt(tmp_path, "oceanicvibes", "oceanic-last", fingerprint=OLD_FINGERPRINT)
+    _receipt(tmp_path, "atelier-harmonie", "runtime-old", status="deployed", fingerprint=OLD_FINGERPRINT)
+    queue = {"releases": {
+        "atelier-harmonie": {"id": "runtime-old", "sha": SHA, "sharedRuntimeFingerprint": OLD_FINGERPRINT},
+    }}
+    superseded = superseded_runtime_requests(queue, tmp_path, FINGERPRINT)
+    assert superseded == ["atelier-harmonie"]
+    for tenant in superseded:
+        del queue["releases"][tenant]
+
+    plan = plan_shared_runtime_rollout(
+        _registry(), queue, tmp_path, FINGERPRINT,
+        now=datetime(2026, 10, 10, tzinfo=timezone.utc),
+    )
+
+    assert plan["state"] == "canary-queued"
+    assert plan["queued"]["oceanicvibes"]["sharedRuntimeFingerprint"] == FINGERPRINT
+    fingerprints = {request.get("sharedRuntimeFingerprint") for request in queue["releases"].values()}
+    assert fingerprints <= {FINGERPRINT, None}

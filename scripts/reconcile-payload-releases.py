@@ -180,7 +180,10 @@ def queue_shared_runtime_fanout(
     batch_size: int = 5,
 ) -> dict:
     """Queue one canary or bounded automatic tenant batch in an atomic Git commit."""
-    from site_agent.application.shared_runtime_rollout import plan_shared_runtime_rollout
+    from site_agent.application.shared_runtime_rollout import (
+        plan_shared_runtime_rollout,
+        superseded_runtime_requests,
+    )
 
     subprocess.run(
         ["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"],
@@ -201,6 +204,17 @@ def queue_shared_runtime_fanout(
 
     registry = document("deploy/payload-customers.json")
     queue = document("deploy/desired-releases.json")
+    superseded = superseded_runtime_requests(queue, release_root, fingerprint)
+    if superseded:
+        print(
+            "[runtime-rollout] replacing stale runtime requests: " + ", ".join(superseded),
+            flush=True,
+        )
+        stale = set(superseded)
+        queue["releases"] = {
+            tenant: request for tenant, request in queue["releases"].items()
+            if tenant not in stale
+        }
     plan = plan_shared_runtime_rollout(
         registry, queue, release_root, fingerprint, batch_size=batch_size,
     )
@@ -429,7 +443,10 @@ def main() -> int:
                 f"[lifecycle-reconcile] {item['tenant']}/{item['releaseId']} remains blocked: {item['reason']}",
                 flush=True,
             )
-        from site_agent.application.shared_runtime_rollout import plan_shared_runtime_rollout
+        from site_agent.application.shared_runtime_rollout import (
+            plan_shared_runtime_rollout,
+            superseded_runtime_requests,
+        )
         initial_rollout = plan_shared_runtime_rollout(
             registry, queue, args.root, shared_fingerprint,
         )

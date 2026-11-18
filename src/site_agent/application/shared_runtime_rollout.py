@@ -82,6 +82,41 @@ def _release_id(now: datetime | None = None) -> str:
     return f"runtime-{timestamp}-{secrets.token_hex(4)}"
 
 
+def superseded_runtime_requests(
+    queue: Mapping[str, Any],
+    release_root: Path,
+    fingerprint: str,
+) -> list[str]:
+    """Queued runtime requests this control plane can no longer build.
+
+    A fan-out request pins the fingerprint it was queued for, and the build
+    refuses a mismatch. Once the shared runtime changes, every request pinned
+    to the older runtime is dead: it can never build, and while it stays in the
+    queue the next canary cannot be queued either, because one queue may name
+    only one fingerprint. Such a request is replaced by the rollout that
+    supersedes it, never retried. A request whose receipt is still in progress
+    is left alone, and a request with no runtime fingerprint (an ordinary
+    website release) is never touched.
+    """
+    if not _FINGERPRINT.fullmatch(str(fingerprint or "")):
+        raise SharedRuntimeRolloutError("shared-runtime fingerprint must be a full SHA-256")
+    releases = queue.get("releases")
+    if not isinstance(releases, Mapping):
+        raise SharedRuntimeRolloutError("runtime rollout requires the canonical release queue")
+    superseded: list[str] = []
+    for tenant, request in releases.items():
+        if not isinstance(request, Mapping):
+            continue
+        pinned = request.get("sharedRuntimeFingerprint")
+        if not isinstance(pinned, str) or pinned == fingerprint:
+            continue
+        receipt = _request_receipt(release_root, str(tenant), request)
+        if receipt and receipt.get("status") not in _SUCCESS | _TERMINAL_FAILURE:
+            continue
+        superseded.append(str(tenant))
+    return sorted(superseded)
+
+
 def plan_shared_runtime_rollout(
     registry: Mapping[str, Any],
     queue: Mapping[str, Any],
@@ -290,4 +325,4 @@ def plan_shared_runtime_rollout(
     }
 
 
-__all__ = ["SharedRuntimeRolloutError", "plan_shared_runtime_rollout"]
+__all__ = ["SharedRuntimeRolloutError", "plan_shared_runtime_rollout", "superseded_runtime_requests"]
