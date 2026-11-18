@@ -133,3 +133,63 @@ def test_apex_email_routing_is_enabled_without_a_subdomain_name():
 
     assert result == {"enabled": True}
     assert client.calls == [("POST", "/zones/zone-id/email/routing/dns", None)]
+
+
+def test_sending_a_message_uses_the_account_email_endpoint_and_returns_its_identity():
+    class SendClient(CloudflareEmailClient):
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, body=None):
+            self.calls.append((method, path, body))
+            return {"result": {"message_id": "<abc@astridrincon.com>", "queued": ["owner@example.com"]}}
+
+    client = SendClient()
+
+    message_id = client.send_email(
+        "account-id",
+        sender="hello@astridrincon.com",
+        recipient="owner@example.com",
+        subject="New mail",
+        text="You have mail.",
+    )
+
+    assert message_id == "<abc@astridrincon.com>"
+    method, path, body = client.calls[0]
+    assert (method, path) == ("POST", "/accounts/account-id/email/sending/send")
+    assert body == {
+        "from": "hello@astridrincon.com",
+        "to": "owner@example.com",
+        "subject": "New mail",
+        "text": "You have mail.",
+    }
+
+
+def test_sending_a_message_requires_the_account_and_both_addresses():
+    client = CloudflareEmailClient("email-token", "dns-token")
+    for account, sender, recipient in (
+        ("", "hello@astridrincon.com", "owner@example.com"),
+        ("account-id", "", "owner@example.com"),
+        ("account-id", "hello@astridrincon.com", ""),
+    ):
+        try:
+            client.send_email(account, sender=sender, recipient=recipient, subject="s", text="t")
+        except cloudflare_email.CloudflareEmailError as exc:
+            assert "required" in str(exc)
+        else:
+            raise AssertionError("an incomplete send request must fail closed")
+
+
+def test_sending_a_message_fails_closed_when_cloudflare_omits_the_identity():
+    class SendClient(CloudflareEmailClient):
+        def request(self, method, path, body=None):
+            return {"result": {"queued": []}}
+
+    client = SendClient("email-token", "dns-token")
+    try:
+        client.send_email("account-id", sender="hello@astridrincon.com", recipient="owner@example.com",
+                          subject="New mail", text="You have mail.")
+    except cloudflare_email.CloudflareEmailError as exc:
+        assert "did not confirm the message identity" in str(exc)
+    else:
+        raise AssertionError("a send without a message identity must fail closed")

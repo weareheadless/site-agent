@@ -23,7 +23,8 @@ from .config import (
     resolve_secret,
 )
 from .credentials import cloudflare_api_token, credential_environment, credential_status
-from .application.mailbox_identity import PLATFORM_EMAIL_DOMAIN
+from .application.mailbox_identity import PLATFORM_EMAIL_DOMAIN, mailbox_identity_source
+from .hands.cloudflare_email import CloudflareEmailError
 from .core.jobs import register_builtin
 from .core.memory import Memory
 from .core.reflect import effective_persona
@@ -269,6 +270,19 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
     except EmailProvisioningError as exc:
         print(f"[site-agent] Email preflight stopped without changes: {exc}", file=sys.stderr)
         return 1
+    except CloudflareEmailError as exc:
+        # A host credential that cannot see this tenant's zone is the most
+        # common reason a custom-domain mailbox never provisions; say so
+        # instead of printing a traceback the operator has to decode.
+        from .application.email_bootstrap import email_permission_action, is_email_permission_error
+
+        detail = (
+            email_permission_action(str(exc), effective_email_domain)
+            if is_email_permission_error(exc)
+            else str(exc)
+        )
+        print(f"[site-agent] Email preflight stopped without changes: {detail}", file=sys.stderr)
+        return 1
 
     summary = {
         "state": "ready_to_apply",
@@ -347,10 +361,16 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
     if configured_email_domain == PLATFORM_EMAIL_DOMAIN:
         if not email.get("local_part") or str(email.get("local_part")).strip().lower() == "hello":
             email["local_part"] = str(policy_overrides.get("localPart") or tenant_id).lower()
-        email["domain_source"] = "helloada_platform"
     else:
         email.setdefault("local_part", "hello")
-        email["domain_source"] = "site_custom_domain"
+    # A mailbox domain that is not the registered site origin's is the
+    # operator's or owner's choice; a later domain change must keep it.
+    site_custom_domain = str(
+        ((raw_tenant.get("site") if isinstance(raw_tenant.get("site"), dict) else {}).get("custom_domain") or "")
+    ).strip().lower().rstrip(".")
+    email["domain_source"] = mailbox_identity_source(
+        tenant_id, configured_email_domain, site_custom_domain
+    )
     if local_part_override:
         email["local_part"] = local_part_override.lower()
     provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), dict) else {}

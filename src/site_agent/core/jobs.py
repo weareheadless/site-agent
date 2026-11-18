@@ -1008,9 +1008,31 @@ def _email_provisioning(context: dict[str, Any]) -> dict[str, str]:
     )
     context["email_provisioning_state"] = state
     context["env"] = env
+    if state.get("state") == "action_required":
+        # A host credential or provider-permission defect is not a transient
+        # failure: retrying it every hour would only hide it behind a growing
+        # failure count. The recorded state is the operator's signal, and the
+        # job keeps its hourly attempt so a fixed credential resumes by itself.
+        return {"status": "action_required"}
     if state.get("state") == "failed":
         raise RuntimeError(str(state.get("error") or "email provisioning failed")[:300])
     return {"status": "pending" if state.get("state") in {"domain_required", "waiting_for_worker_release", "awaiting_runtime_release"} else "ok"}
+
+
+def wake_email_provisioning_job(
+    scheduler: Scheduler | None,
+    config: Mapping[str, Any],
+    memory: Any = None,
+) -> bool:
+    """Make mail provisioning due now instead of at its next scheduled tick."""
+    if not _email_provisioning_enabled(config):
+        return False
+    store = scheduler.memory if scheduler is not None else memory
+    if store is None:
+        return False
+    clock = scheduler.clock if scheduler is not None else time.time
+    store.kv_set("next_run:email_provisioning", round(float(clock()), 3))
+    return True
 
 
 def register_email_provisioning_job(

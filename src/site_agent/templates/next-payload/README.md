@@ -12,14 +12,12 @@ retired FastAPI admin.
 
 ## Mail delivery boundary
 
-Resend sends approved owner replies and new messages. The site-agent VPS keeps
-the Resend management key in its protected `resend` credential profile and
-creates a domain-restricted `sending_access` key for each tenant. Only that
-tenant key is installed as the Worker secret `RESEND_API_KEY`; it never belongs
-in source, GitHub, public Worker variables, or this repository. Resend sends
-are bound to the durable approved Payload operation and use its stable
-idempotency identity. An ambiguous send is marked uncertain and is not
-automatically retried.
+Cloudflare Email Sending sends approved owner replies and new messages from the
+tenant's own mailbox address through the Worker's `EMAIL` binding. Provisioning
+enables the sending domain and keeps no per-tenant sender key, so a Worker holds
+no third-party mail credential. Sends are bound to the durable approved Payload
+operation and use its stable idempotency identity. An ambiguous send is marked
+uncertain and is not automatically retried.
 
 Cloudflare Email Routing delivers inbound mail to the same Worker, and the
 Cloudflare `EMAIL` binding sends transactional notices and booking confirmations.

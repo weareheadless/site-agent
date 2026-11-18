@@ -44,15 +44,26 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   public admin API key in a tenant runtime. Every Mailflare request must resolve
   the same tenant's authenticated Payload owner before reading or mutating mail.
 - Site-Agent provisions domain resources with its protected host credentials.
-  Cloudflare Email Routing delivers to that tenant's single Worker. Ordinary
-  sending uses only the tenant-restricted Resend key already installed for its
-  verified sender domain. The full-access Resend key and Cloudflare control
-  tokens stay on the VPS.
+  Cloudflare Email Routing delivers to that tenant's single Worker. The Worker
+  sends ordinary mail through Cloudflare Email Sending from the tenant's own
+  mailbox address, using its `EMAIL` binding; there is no third-party sender
+  account, no per-tenant sending key and no provider domain quota to exhaust.
+  Cloudflare control tokens stay on the VPS.
 - Platform-hosted tenants receive a unique address on `helloada.app`; when a
   custom domain is registered, Site-Agent provisions the tenant address on
   that domain before switching the active sender/recipient identity. A change
   is not complete until inbound routing and sending verification match the
   exact registered tenant and Worker.
+- The domain event is the trigger. Registering or changing a tenant's custom
+  domain updates the mailbox domain and wakes `email_provisioning`
+  immediately; the learned local part and a mailbox domain the owner
+  registered explicitly survive that change. The owner may review and set the
+  mailbox name and domain in website settings, which shows whether the
+  mailbox is live, pending, or blocked and why.
+- Every tenant's zone must be reachable by the one protected Cloudflare Email
+  credential. A credential scoped to a fixed zone list leaves each new custom
+  domain on the platform sender; that is a host configuration defect and is
+  reported as `action_required`, never retried as a transient failure.
 - Owner Send in Mailflare is the explicit send action. Ada may read mail and
   prepare drafts only through the existing approved assistant boundary; it
   never sends or changes a message without the owner's confirmation.

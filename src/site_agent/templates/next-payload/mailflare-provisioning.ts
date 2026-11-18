@@ -73,10 +73,10 @@ export async function provisionTenantMailflareMailbox({
   }
   await database.prepare(
     'INSERT OR IGNORE INTO domains (id, user_id, hostname, zone_id, status, routing_status, sending_provider, receiving_provider, sending_requested, sending_enabled, routing_enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).bind(domainId, serviceUserId, hostname, zoneId, 'active', routingStatus, 'resend', 'cloudflare', 1, 1, 1, now).run()
+  ).bind(domainId, serviceUserId, hostname, zoneId, 'active', routingStatus, 'cloudflare', 'cloudflare', 1, 1, 1, now).run()
   await database.prepare(
     'UPDATE domains SET zone_id = ?, status = ?, routing_status = ?, sending_provider = ?, receiving_provider = ?, sending_requested = 1, sending_enabled = 1, routing_enabled = 1 WHERE id = ? AND user_id = ?',
-  ).bind(zoneId, 'active', routingStatus, 'resend', 'cloudflare', domainId, serviceUserId).run()
+  ).bind(zoneId, 'active', routingStatus, 'cloudflare', 'cloudflare', domainId, serviceUserId).run()
 
   const existingMailbox = await database.prepare(
     'SELECT id, user_id, domain_id, local_part FROM mailboxes WHERE domain_id = ? AND local_part = ? LIMIT 1',

@@ -238,26 +238,35 @@ def _alert_tenant(tmp_path: Path, *, mode: str = "managed"):
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     (tenant_dir / "tenant.env").write_text(
-        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\nRESEND_API_KEY=re_tenant_key\n",
+        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\n",
         encoding="utf-8",
     )
     return config, config_path
 
 
-def test_inbound_alert_uses_the_tenant_key_and_is_sent_once(tmp_path, monkeypatch):
+def test_inbound_alert_is_sent_through_cloudflare_and_only_once(tmp_path, monkeypatch):
     from site_agent.application import mail_alerts
 
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
-            assert api_key == "re_tenant_key"
+        def __init__(self, email_token, dns_token, **_kwargs):
+            assert email_token == "email-token"
+            assert dns_token == "email-token"
 
-        def send_message(self, **message):
+        def send_email(self, account_id, **message):
+            assert account_id == "account-id"
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     config, config_path = _alert_tenant(tmp_path)
     memory = FakeMemory()
     service = mail_alerts.MailAlertService(
@@ -283,14 +292,21 @@ def test_external_notice_tells_the_owner_who_handles_the_mail(tmp_path, monkeypa
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             pass
 
-        def send_message(self, **message):
+        def send_email(self, _account_id, **message):
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     config, config_path = _alert_tenant(tmp_path, mode="external")
     memory = FakeMemory()
     service = mail_alerts.MailAlertService(
@@ -308,10 +324,10 @@ def test_managed_tenant_sends_no_external_notice(tmp_path, monkeypatch):
     from site_agent.application import mail_alerts
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             raise AssertionError("a managed tenant must not send an external notice")
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
     config, config_path = _alert_tenant(tmp_path)
     service = mail_alerts.MailAlertService(
         config, tenant_id="demo-tenant", tenant_config_path=config_path, memory=FakeMemory(),
@@ -335,7 +351,7 @@ def _registered_tenant(tmp_path: Path):
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     (tenant_dir / "tenant.env").write_text(
-        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\nRESEND_API_KEY=re_tenant_key\n",
+        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\n",
         encoding="utf-8",
     )
     tenant = Tenant(
@@ -407,14 +423,21 @@ def test_mail_notification_route_sends_one_alert_for_one_reported_mail(tmp_path,
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             pass
 
-        def send_message(self, **message):
+        def send_email(self, _account_id, **message):
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     tenant, _config_path = _registered_tenant(tmp_path)
     registry = TenantRegistry({"demo-tenant": tenant})
     app = FastAPI()
@@ -439,3 +462,221 @@ def test_mail_notification_route_sends_one_alert_for_one_reported_mail(tmp_path,
         assert repeated.status_code == 200
         assert repeated.json()["alert"]["state"] == "already_sent"
         assert len(sent) == 1
+
+
+def _origin_tenant(tmp_path: Path, email: dict, *, memory=None):
+    from site_agent.application.workspace import Tenant
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "instance_name": "demo",
+        "site": {"preview_url": "https://demo.example/", "source_deployment": {"worker_name": "demo"}},
+        "messages": {"email": email},
+    }), encoding="utf-8")
+    return Tenant(
+        tenant_id="demo",
+        config={},
+        memory=memory,
+        runtime=None,
+        context={},
+        api_token="demo-token",
+        config_path=str(config_path),
+        api_token_env="CUSTOM_DEMO_TOKEN",
+    )
+
+
+def test_origin_change_keeps_the_local_part_and_moves_only_the_domain(tmp_path, monkeypatch):
+    """A canonical-host change must not rename a mailbox the owner registered."""
+    from site_agent.application import workspace as workspace_module
+    from site_agent.application.workspace import TenantRegistry
+
+    tenant = _origin_tenant(tmp_path, {
+        "enabled": True,
+        "domain": "helloada.app",
+        "local_part": "contact",
+        "domain_source": "helloada_platform",
+        "provisioning": {"auto": True},
+    })
+    registry = TenantRegistry({"demo": tenant})
+    monkeypatch.setattr(
+        workspace_module, "canonical_worker_preview_url",
+        lambda _config, _env: "https://demo.weareheadless.workers.dev",
+    )
+    registry.reload_tenant = lambda tenant_id, path, **kwargs: tenant
+
+    registry.update_site_origin("demo", "https://www.demo.example")
+
+    email = yaml.safe_load(Path(tenant.config_path).read_text(encoding="utf-8"))["messages"]["email"]
+    assert (email["local_part"], email["domain"]) == ("contact", "www.demo.example")
+    assert email["domain_source"] == "site_custom_domain"
+
+
+def test_origin_change_keeps_a_mailbox_domain_the_owner_registered(tmp_path, monkeypatch):
+    from site_agent.application import workspace as workspace_module
+    from site_agent.application.workspace import TenantRegistry
+
+    tenant = _origin_tenant(tmp_path, {
+        "enabled": True,
+        "domain": "mail.other.example",
+        "local_part": "inbox",
+        "domain_source": "owner",
+        "provisioning": {"auto": True},
+    })
+    registry = TenantRegistry({"demo": tenant})
+    monkeypatch.setattr(
+        workspace_module, "canonical_worker_preview_url",
+        lambda _config, _env: "https://demo.weareheadless.workers.dev",
+    )
+    registry.reload_tenant = lambda tenant_id, path, **kwargs: tenant
+
+    registry.update_site_origin("demo", "https://www.demo.example")
+
+    email = yaml.safe_load(Path(tenant.config_path).read_text(encoding="utf-8"))["messages"]["email"]
+    assert (email["local_part"], email["domain"]) == ("inbox", "mail.other.example")
+    assert email["domain_source"] == "owner"
+
+
+def test_setting_up_a_domain_makes_mail_provisioning_due_now(tmp_path, monkeypatch):
+    """The domain event is the trigger; an hour of platform-domain mail is not ok."""
+    from site_agent.application import workspace as workspace_module
+    from site_agent.application.workspace import TenantRegistry
+
+    memory = FakeMemory({"next_run:email_provisioning": 10.0})
+    tenant = _origin_tenant(tmp_path, {
+        "enabled": True,
+        "domain": "helloada.app",
+        "local_part": "hello",
+        "domain_source": "helloada_platform",
+        "provisioning": {"auto": True},
+    }, memory=memory)
+    registry = TenantRegistry({"demo": tenant})
+    monkeypatch.setattr(
+        workspace_module, "canonical_worker_preview_url",
+        lambda _config, _env: "https://demo.weareheadless.workers.dev",
+    )
+    monkeypatch.setattr("time.time", lambda: 1_800_000_000.0)
+
+    def reload_tenant(tenant_id, path, **kwargs):
+        tenant.config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        return tenant
+
+    registry.reload_tenant = reload_tenant
+
+    registry.update_site_origin("demo", "https://www.demo.example")
+
+    assert memory.state["next_run:email_provisioning"] == 1_800_000_000.0
+
+
+def test_external_mail_is_never_made_due_by_a_domain_change(tmp_path, monkeypatch):
+    from site_agent.application import workspace as workspace_module
+    from site_agent.application.workspace import TenantRegistry
+
+    memory = FakeMemory({"next_run:email_provisioning": 10.0})
+    tenant = _origin_tenant(tmp_path, {
+        "enabled": True,
+        "domain": "helloada.app",
+        "local_part": "demo",
+        "domain_source": "helloada_platform",
+        "management": {"mode": "external", "provider": "GoDaddy"},
+        "provisioning": {"auto": False},
+    }, memory=memory)
+    registry = TenantRegistry({"demo": tenant})
+    monkeypatch.setattr(
+        workspace_module, "canonical_worker_preview_url",
+        lambda _config, _env: "https://demo.weareheadless.workers.dev",
+    )
+    def reload_tenant(tenant_id, path, **kwargs):
+        tenant.config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        return tenant
+
+    registry.reload_tenant = reload_tenant
+
+    registry.update_site_origin("demo", "https://www.demo.example")
+
+    assert memory.state["next_run:email_provisioning"] == 10.0
+
+
+def test_mail_settings_register_the_owner_mailbox_local_part(tmp_path):
+    current = _config(tmp_path)
+    requested = validate_email_settings_update(
+        {"mode": "managed", "mailbox": {"localPart": "Studio.Mail"}}, current
+    )
+    # Only the local part changes; the registered mailbox domain is kept.
+    assert requested["mailbox"] == {
+        "localPart": "studio.mail",
+        "domain": "helloada.app",
+        "domainSource": "helloada_platform",
+    }
+
+
+def test_mail_settings_register_an_owner_domain_and_can_return_to_the_origin(tmp_path):
+    current = _config(tmp_path)
+    owned = validate_email_settings_update(
+        {"mode": "managed", "mailbox": {"domain": "mail.other.example"}}, current
+    )
+    assert owned["mailbox"]["domain"] == "mail.other.example"
+    assert owned["mailbox"]["domainSource"] == "owner"
+
+    current["messages"]["email"].update(owned["mailbox"])
+    current["messages"]["email"] = {
+        "enabled": True,
+        "local_part": owned["mailbox"]["localPart"],
+        "domain": owned["mailbox"]["domain"],
+        "domain_source": owned["mailbox"]["domainSource"],
+        "provisioning": {"auto": True},
+    }
+    derived = validate_email_settings_update({"mode": "managed", "mailbox": {"domain": ""}}, current)
+    assert derived["mailbox"]["domain"] == "demo.example"
+    assert derived["mailbox"]["domainSource"] == "site_custom_domain"
+
+
+def test_mail_settings_reject_an_invalid_mailbox_identity(tmp_path):
+    current = _config(tmp_path)
+    with pytest.raises(EmailManagementError):
+        validate_email_settings_update({"mode": "managed", "mailbox": {"localPart": "two words"}}, current)
+    with pytest.raises(EmailManagementError):
+        validate_email_settings_update({"mode": "managed", "mailbox": {"localPart": "a" * 70}}, current)
+    with pytest.raises(EmailManagementError):
+        validate_email_settings_update({"mode": "managed", "mailbox": {"domain": "not a domain"}}, current)
+    with pytest.raises(EmailManagementError):
+        validate_email_settings_update({"mode": "managed", "mailbox": {"nickname": "x"}}, current)
+    platform = {
+        "instance_name": "demo",
+        "site": {},
+        "messages": {"email": {"enabled": True, "domain": "helloada.app", "domain_source": "helloada_platform"}},
+    }
+    with pytest.raises(EmailManagementError):
+        validate_email_settings_update({"mode": "managed", "mailbox": {"localPart": "hello"}}, platform)
+    defaulted = validate_email_settings_update({"mode": "managed", "mailbox": {"localPart": ""}}, platform)
+    assert defaulted["mailbox"]["localPart"] == "demo"
+
+
+def test_a_mode_change_alone_leaves_the_registered_mailbox_untouched(tmp_path):
+    current = _config(tmp_path)
+    requested = validate_email_settings_update({"mode": "external"}, current)
+    assert requested["mailbox"] is None
+
+
+def test_mail_settings_view_reports_why_provisioning_is_blocked(tmp_path):
+    view = email_settings_view(_config(tmp_path), {
+        "state": "action_required",
+        "address": "hello@demo.example",
+        "error": "The host Cloudflare Email API credential cannot manage demo.example.",
+        "lastAttemptAt": "2026-11-17T20:56:35+00:00",
+    })
+    assert view["provisioning"]["state"] == "action_required"
+    assert view["provisioning"]["address"] == "hello@demo.example"
+    assert "cannot manage" in view["provisioning"]["error"]
+
+
+def test_the_mailbox_view_shows_the_address_a_platform_tenant_will_get(tmp_path):
+    """An unset local part on helloada.app is the tenant id, not 'not provisioned'."""
+    config = _config(tmp_path)
+    config["instance_name"] = "site-ff8e9af06f56201f"
+    config["messages"]["email"].pop("local_part")
+    config["site"] = {}
+
+    view = email_settings_view(config)
+
+    assert view["mailbox"]["localPart"] == ""
+    assert view["mailbox"]["address"] == "site-ff8e9af06f56201f@helloada.app"

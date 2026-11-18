@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import copy
 import datetime
-import fcntl
 import json
-import os
 import re
 import urllib.error
 import urllib.parse
@@ -14,12 +12,10 @@ import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 from urllib.parse import urlsplit
 
-from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment, resend_api_key
-from ..hands.cloudflare_email import CloudflareEmailClient
-from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
+from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment
+from ..hands.cloudflare_email import CloudflareEmailClient, CloudflareEmailError
 from .email_management import email_is_externally_managed
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
 from .mailbox_identity import PLATFORM_EMAIL_DOMAIN
@@ -51,97 +47,31 @@ def _tenant_env_path(tenant_config_path: str | Path, tenant_id: str) -> Path:
         raise EmailProvisioningError(str(exc)) from exc
 
 
-def _tenant_secret_values(path: Path) -> dict[str, str]:
-    from .tenant_environment import read_tenant_environment, TenantEnvironmentError
+# Tenant mail is sent by the tenant's own Worker through Cloudflare Email
+# Sending. There is no third-party sender account, so no provider domain slot,
+# management key or per-tenant restricted key can be exhausted or rotated.
+OUTBOUND_PROVIDER = "cloudflare"
+
+
+# No tenant sends mail through a third-party key any more. Retiring the old
+# ledger is part of the same reconcile so no dead credential survives in a
+# protected tenant file.
+_RETIRED_SENDER_KEYS = (
+    "RESEND_API_KEY",
+    "RESEND_API_KEY_ID",
+    "RESEND_API_KEY_DOMAIN_ID",
+    "RESEND_API_KEY_INSTALLED_ID",
+    "RESEND_API_KEY_PENDING_NAME",
+    "RESEND_API_KEY_PREVIOUS_IDS",
+)
+
+
+def _retire_sender_keys(path: Path) -> None:
+    from .tenant_environment import retire_tenant_environment, TenantEnvironmentError
     try:
-        return read_tenant_environment(path)
+        retire_tenant_environment(path, _RETIRED_SENDER_KEYS)
     except TenantEnvironmentError as exc:
         raise EmailProvisioningError(str(exc)) from exc
-
-
-def _write_tenant_secrets(path: Path, values: Mapping[str, str]) -> None:
-    from .tenant_environment import write_tenant_environment, TenantEnvironmentError
-    try:
-        write_tenant_environment(path, values)
-    except TenantEnvironmentError as exc:
-        raise EmailProvisioningError(str(exc)) from exc
-
-
-def _ensure_tenant_resend_key(
-    *,
-    path: Path,
-    tenant_id: str,
-    domain_id: str,
-    worker: str,
-    config: Mapping[str, Any],
-    env: Mapping[str, str],
-    resend: ResendProvisioner,
-) -> str:
-    """Install one domain-scoped sender key and reconcile interrupted rotations."""
-    lock_fd = os.open(path.with_name(".resend-key-provisioning.lock"), os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        os.fchmod(lock_fd, 0o600)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        values = _tenant_secret_values(path)
-        api_key = str(values.get("RESEND_API_KEY") or "").strip()
-        key_id = str(values.get("RESEND_API_KEY_ID") or "").strip()
-        key_domain_id = str(values.get("RESEND_API_KEY_DOMAIN_ID") or "").strip()
-        installed_id = str(values.get("RESEND_API_KEY_INSTALLED_ID") or "").strip()
-        previous_ids = [
-            item for item in str(values.get("RESEND_API_KEY_PREVIOUS_IDS") or "").split(",")
-            if item.strip()
-        ]
-        pending_name = str(values.get("RESEND_API_KEY_PENDING_NAME") or "").strip()
-
-        if bool(api_key) != bool(key_id):
-            raise EmailProvisioningError("The tenant Resend sending credential is incomplete; operator reconciliation is required")
-        key_id_pattern = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
-        if (key_id and not re.fullmatch(key_id_pattern, key_id)) or any(
-            not re.fullmatch(key_id_pattern, item) for item in previous_ids
-        ):
-            raise EmailProvisioningError("The tenant Resend key ledger contains an invalid provider identity")
-
-        # A create request may have succeeded at Resend while its response was
-        # lost. The intent name is persisted before POST; remove any matching
-        # token (which cannot be retrieved again) before starting a new create.
-        if pending_name:
-            pending = resend.api_keys_named(pending_name)
-            for item in pending:
-                identity = str(item.get("id") or "").strip()
-                if not identity:
-                    raise EmailProvisioningError("Resend returned an API key without an identity during retry reconciliation")
-                resend.delete_api_key(identity)
-            if resend.api_keys_named(pending_name):
-                raise EmailProvisioningError("Resend did not confirm cleanup of an interrupted tenant key creation")
-            _write_tenant_secrets(path, {"RESEND_API_KEY_PENDING_NAME": ""})
-
-        if api_key and key_id and key_domain_id == domain_id:
-            if installed_id != key_id:
-                # Persisted is not installed. Keep every prior sender key until
-                # the canonical promoted version proves the new key binding.
-                return key_id
-            for old_id in dict.fromkeys(previous_ids):
-                if old_id and old_id != key_id:
-                    resend.delete_api_key(old_id)
-            if previous_ids:
-                _write_tenant_secrets(path, {"RESEND_API_KEY_PREVIOUS_IDS": ""})
-            return key_id
-
-        old_ids = list(dict.fromkeys([*previous_ids, *([key_id] if key_id else [])]))
-        pending_name = f"HA-{tenant_id[:20]}-{uuid4().hex[:12]}"
-        _write_tenant_secrets(path, {"RESEND_API_KEY_PENDING_NAME": pending_name})
-        new_id, new_key = resend.create_sending_key(pending_name, domain_id)
-        _write_tenant_secrets(path, {
-            "RESEND_API_KEY": new_key,
-            "RESEND_API_KEY_ID": new_id,
-            "RESEND_API_KEY_DOMAIN_ID": domain_id,
-            "RESEND_API_KEY_PREVIOUS_IDS": ",".join(old_ids),
-            "RESEND_API_KEY_PENDING_NAME": "",
-        })
-        return new_id
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
 
 
 def _registered_site_origin(config: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -226,7 +156,7 @@ def _worker_readiness(
         or body.get("ok") is not True
         or body.get("tenant") != tenant_id
         or body.get("contentContract") != contract
-        or body.get("mailflareProvisioningVersion") != 1
+        or body.get("mailflareProvisioningVersion") != 2
     ):
         return "", "The tenant Worker has not confirmed the canonical Mailflare release."
     return worker, ""
@@ -310,15 +240,6 @@ def prepare_email_plan(
     if readiness_error:
         raise EmailWorkerReadinessError(readiness_error)
     client = CloudflareEmailClient(email_token, dns_token)
-    management_key = resend_api_key(config, resolved_env)
-    if not management_key:
-        raise EmailProvisioningActionRequired("The protected Resend Full access API key is not configured")
-    try:
-        ResendProvisioner(management_key, client).validate_management_access()
-    except ResendCredentialError as exc:
-        raise EmailProvisioningActionRequired(str(exc)) from exc
-    except ResendError as exc:
-        raise EmailProvisioningError(str(exc)) from exc
     zone = client.zone(domain)
     zone_name = str(zone.get("name") or "").strip().lower().rstrip(".")
     if not zone_name or (domain != zone_name and not domain.endswith("." + zone_name)):
@@ -343,8 +264,7 @@ def prepare_email_plan(
     plan = EmailProvisioningService(client).plan(tenant_id, policy)
     plan["operations"] = [
         *list(plan.get("operations") or []),
-        f"verify the Resend sending domain and add only its declared, conflict-free DNS records for {domain}",
-        f"install or rotate the domain-restricted Resend sending key for {address}",
+        f"send tenant mail from {address} through Cloudflare Email Sending",
     ]
     return plan, policy, resolved_env
 
@@ -388,7 +308,12 @@ def _configured_local_part(
     overrides = _mapping(policy_overrides)
     configured = str(overrides.get("localPart") or email.get("local_part") or "").strip().lower()
     if domain == PLATFORM_EMAIL_DOMAIN:
-        if not configured or (configured == "hello" and str(tenant_id).strip().lower() != "hello"):
+        # A shared platform domain needs one address per tenant. The tenant id
+        # already is that unique name, so an unset local part defaults to it
+        # instead of turning provisioning into an operator errand.
+        if not configured:
+            return str(tenant_id).strip().lower()
+        if configured == "hello" and str(tenant_id).strip().lower() != "hello":
             raise EmailProvisioningError("A tenant-unique mailbox local part must be registered for helloada.app")
         return configured
     return configured or "hello"
@@ -475,13 +400,13 @@ def auto_provision_email(
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
 
-    if not resend_api_key(config, resolved_env):
+    if not cloudflare_email_api_token(config, resolved_env):
         result = {
             **state,
             "state": "action_required",
             "tenant": tenant_id,
             "domain": requested_email_domain,
-            "error": "The protected Resend management API key is not configured.",
+            "error": "The host Cloudflare Email Service API token is not configured.",
             "lastAttemptAt": _now(),
         }
         if memory is not None:
@@ -495,7 +420,7 @@ def auto_provision_email(
         and (state.get("state") == "active" or (state.get("state") == "awaiting_runtime_release" and state.get("mailflareMailboxState") == "active"))
         and state.get("siteDomain") == raw_domain
         and state.get("emailDomainSetting") == requested_email_domain
-        and state.get("outboundProvider") == "resend"
+        and state.get("outboundProvider") == OUTBOUND_PROVIDER
         and str(state.get("address") or "").strip().lower() == address.lower()
         and state.get("worker") == configured_worker
     )
@@ -574,18 +499,7 @@ def auto_provision_email(
         if not dns_token or not email_token:
             raise EmailProvisioningError("The Cloudflare DNS and Email Service API tokens must both be configured")
         cloudflare_email = CloudflareEmailClient(email_token, dns_token)
-        resend = ResendProvisioner(resend_api_key(config, resolved_env), cloudflare_email)
         secret_path = _tenant_env_path(tenant_config_path, tenant_id)
-        resend_domain = resend.ensure_domain(resolved_email_domain)
-        send_key_id = _ensure_tenant_resend_key(
-            path=secret_path,
-            tenant_id=tenant_id,
-            domain_id=str(resend_domain["id"]),
-            worker=worker,
-            config=config,
-            env=resolved_env,
-            resend=resend,
-        )
 
         provider = EmailProvisioningService(cloudflare_email).provision(preflight, policy)
         attempt.update(state="configuring_mailflare", cloudflareRouteId=provider["routingRuleId"])
@@ -594,14 +508,6 @@ def auto_provision_email(
             "MAILFLARE_ZONE_ID": str(provider["zoneId"]),
             "MAILFLARE_ROUTING_STATUS": str(provider["routingStatus"]),
         }
-        # The restricted sender key is staged in the same protected file, so
-        # its delivery is proven with the mailbox bindings instead of assumed.
-        sender_key = (
-            str(_tenant_secret_values(secret_path).get("RESEND_API_KEY") or "").strip()
-            if secret_path.is_file() else ""
-        )
-        if sender_key:
-            mailbox_secrets["RESEND_API_KEY"] = sender_key
         delivery = deliver_runtime_bindings(config, resolved_env, memory, tenant_config_path, mailbox_secrets)
         attempt["runtime_delivery"] = delivery
         if delivery["state"] != "delivered":
@@ -609,10 +515,6 @@ def auto_provision_email(
             if memory is not None:
                 memory.kv_set("email_provisioning_state", attempt)
             return attempt, resolved_env
-        _write_tenant_secrets(secret_path, {"RESEND_API_KEY_INSTALLED_ID": send_key_id})
-        # This second pass may retire old sender keys only after exact delivery.
-        _ensure_tenant_resend_key(path=secret_path, tenant_id=tenant_id, domain_id=str(resend_domain["id"]),
-                                worker=worker, config=config, env=resolved_env, resend=resend)
         if memory is not None:
             memory.kv_set("email_provisioning_state", attempt)
         mailbox = _configure_mailflare_mailbox(
@@ -625,6 +527,9 @@ def auto_provision_email(
             routing_status=str(provider["routingStatus"]),
             env=resolved_env,
         )
+        # The mailbox is live through Cloudflare, so no third-party sender key
+        # may remain in the protected tenant file.
+        _retire_sender_keys(secret_path)
         result = {
             "state": "active",
             "tenant": tenant_id,
@@ -637,10 +542,7 @@ def auto_provision_email(
             "sendingDomainId": provider["sendingDomainId"],
             "routingRuleId": provider["routingRuleId"],
             "routingStatus": provider["routingStatus"],
-            "outboundProvider": "resend",
-            "resendDomain": resend_domain["domain"],
-            "resendDomainStatus": resend_domain["status"],
-            "resendSendingKeyProvisioned": True,
+            "outboundProvider": OUTBOUND_PROVIDER,
             "mailflareMailboxState": mailbox["state"],
             "runtime_delivery": delivery,
             "preflightSha256": preflight["snapshotSha256"],
@@ -649,23 +551,7 @@ def auto_provision_email(
         if memory is not None:
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
-    except ResendVerificationPending as exc:
-        result = {
-            **state,
-            **attempt,
-            "state": "provisioning",
-            "tenant": tenant_id,
-            "domain": resolved_email_domain,
-            "emailDomainSetting": requested_email_domain,
-            "siteDomain": raw_domain,
-            "address": address,
-            "error": str(exc)[:500],
-            "lastAttemptAt": _now(),
-        }
-        if memory is not None:
-            memory.kv_set("email_provisioning_state", result)
-        return result, resolved_env
-    except (EmailProvisioningActionRequired, ResendCredentialError) as exc:
+    except EmailProvisioningActionRequired as exc:
         result = {
             **state,
             **attempt,
@@ -697,16 +583,25 @@ def auto_provision_email(
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
     except Exception as exc:  # noqa: BLE001 - preserve a durable retry state without blocking other tenant tools
+        # A credential that cannot see the tenant's zone is an operator task,
+        # not a transient failure. Retrying it hourly only hides the cause
+        # behind a failure count, so it is reported as action_required with the
+        # exact zone and scope it needs.
+        permission_error = isinstance(exc, CloudflareEmailError) and is_email_permission_error(exc)
         result = {
             **state,
             **attempt,
-            "state": "failed",
+            "state": "action_required" if permission_error else "failed",
             "tenant": tenant_id,
             "domain": resolved_email_domain,
             "emailDomainSetting": requested_email_domain,
             "siteDomain": raw_domain,
             "address": address,
-            "error": str(exc)[:500],
+            "error": (
+                email_permission_action(str(exc), resolved_email_domain)
+                if permission_error
+                else str(exc)[:500]
+            ),
             "lastAttemptAt": _now(),
         }
         if memory is not None:
@@ -714,4 +609,35 @@ def auto_provision_email(
         return result, resolved_env
 
 
-__all__ = ["EmailProvisioningActionRequired", "EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]
+_EMAIL_PERMISSION_MARKERS = (
+    "HTTP 401",
+    "HTTP 403",
+    "HTTP 9109",
+    "Authentication error",
+    "Unauthorized",
+)
+
+
+def is_email_permission_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _EMAIL_PERMISSION_MARKERS)
+
+
+def email_permission_action(detail: str, domain: str) -> str:
+    """One owner/operator sentence for a host credential that lacks a zone."""
+    target = domain or "this tenant's domain"
+    return (
+        f"The host Cloudflare Email API credential cannot manage {target}. "
+        "Reissue it with Email Routing Rules Read/Edit, Zone Settings Read/Edit "
+        f"and Email Sending Edit, including every managed zone. Provider detail: {detail}"
+    )[:500]
+
+
+__all__ = [
+    "EmailProvisioningActionRequired",
+    "EmailWorkerReadinessError",
+    "auto_provision_email",
+    "email_permission_action",
+    "is_email_permission_error",
+    "prepare_email_plan",
+]

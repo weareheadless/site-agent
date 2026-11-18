@@ -261,6 +261,40 @@ class CloudflareEmailClient:
             body,
         ).get("result") or {})
 
+    def send_email(
+        self,
+        account_id: str,
+        *,
+        sender: str,
+        recipient: str,
+        subject: str,
+        text: str,
+        reply_to: str = "",
+    ) -> str:
+        """Send one message from a domain onboarded for Cloudflare Email Sending."""
+        account = str(account_id or "").strip()
+        if not account or "/" in account:
+            raise CloudflareEmailError("The Cloudflare account identity is required to send mail")
+        if not str(sender or "").strip() or not str(recipient or "").strip():
+            raise CloudflareEmailError("A sender and recipient address are required to send mail")
+        body: dict[str, Any] = {
+            "from": str(sender).strip(),
+            "to": str(recipient).strip(),
+            "subject": str(subject or "").strip(),
+            "text": str(text or ""),
+        }
+        if reply_to:
+            body["reply_to"] = str(reply_to).strip()
+        result = self.request(
+            "POST",
+            f"/accounts/{urllib.parse.quote(account, safe='')}/email/sending/send",
+            body,
+        ).get("result") or {}
+        message_id = str(result.get("message_id") or "").strip() if isinstance(result, Mapping) else ""
+        if not message_id:
+            raise CloudflareEmailError("Cloudflare Email Sending did not confirm the message identity")
+        return message_id
+
     def upsert_dns_txt(self, zone_id: str, record: Mapping[str, Any]) -> dict[str, Any]:
         name = str(record.get("name") or "")
         existing = [item for item in self.dns_records(zone_id) if item.get("type") == "TXT" and item.get("name") == name]

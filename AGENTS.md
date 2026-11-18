@@ -249,11 +249,13 @@ provisioning and has registered Mailflare D1 resources; partial settings and
 manual setup remain hard failures. After exact Worker health and authenticated
 connection gates pass, the release runner wakes `next_run:email_provisioning`
 using that tenant's registered `data_dir/memory.db`. The API adapter is the
-only path that changes Cloudflare Email Service/DNS or Resend domains/keys. Unknown MX/SPF/routing state is a
+only path that changes Cloudflare Email Service or DNS. Unknown MX/SPF/routing state is a
 hard stop; do not click through Cloudflare or substitute another provider.
-The protected host Resend management key provisions verified sender domains
-and domain-restricted `sending_access` keys; only each tenant's restricted
-sending key is installed in its Worker. For one existing tenant, run
+Tenant mail is sent by the tenant's own Worker through Cloudflare Email
+Sending from its mailbox address; there is no third-party sender account, no
+per-tenant sending key and no provider domain quota. Every managed domain
+therefore provisions and sends without a separate provider step or plan limit.
+For one existing tenant, run
 `site-agent provision-email --tenant <registered-id>` first (read only),
 inspect its domain/address/operation summary, then use `--apply` to persist
 the tenant setting and perform the reviewed plan. The command resolves
@@ -272,7 +274,16 @@ Email provisioning uses distinct protected `cloudflare_dns` and
 Read and DNS Write; the latter requires Email Routing Rules Read/Edit and Zone
 Settings Read/Edit on managed zones plus Email Sending Edit on the owning
 account. Do not reuse the general Worker-management token for Email Service
-calls or merge these scopes.
+calls or merge these scopes. The Email token is host configuration for every
+tenant, so it must include every managed zone: a token scoped to a fixed list
+of zones silently strands each new customer domain. A zone the credential
+cannot manage is recorded as `action_required` on that tenant and printed by
+`provision-email`, never retried as a transient failure.
+The registered mailbox identity follows the registered site origin: a domain
+change rewrites the domain and wakes `email_provisioning` immediately, while
+the learned local part and an explicitly owner-registered mailbox domain stay
+put. The owner may set the local part and mailbox domain in website settings;
+the platform never invents them per tenant.
 For a tenant without a custom website domain, a read-only plan may specify an
 explicit host-owned email domain and unique local part with `--email-domain`
 and `--local-part`; `--apply` persists those values to that registered tenant.

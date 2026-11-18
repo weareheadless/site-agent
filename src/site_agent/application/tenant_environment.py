@@ -47,13 +47,32 @@ def read_tenant_environment(path: Path) -> dict[str, str]:
 def write_tenant_environment(path: Path, values: Mapping[str, str]) -> None:
     if any(not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', str(name)) or any(c in str(value) for c in '\r\n\0') for name, value in values.items()):
         raise TenantEnvironmentError('The tenant secret update contains an invalid name or value')
+    _rewrite_tenant_environment(path, updates=dict(values))
+
+
+def retire_tenant_environment(path: Path, names: tuple[str, ...]) -> None:
+    """Remove retired credential names from the protected tenant file."""
+    retired = tuple(str(name) for name in names)
+    if any(not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', name) for name in retired):
+        raise TenantEnvironmentError('The tenant secret retirement contains an invalid name')
+    _rewrite_tenant_environment(path, removed=retired)
+
+
+def _rewrite_tenant_environment(
+    path: Path,
+    *,
+    updates: Mapping[str, str] | None = None,
+    removed: tuple[str, ...] = (),
+) -> None:
     descriptor = os.open(path.with_name('.tenant-env.lock'), os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
     temporary = None
     try:
         os.fchmod(descriptor, 0o600)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         current = read_tenant_environment(path)
-        current.update({name: str(value) for name, value in values.items()})
+        current.update({name: str(value) for name, value in (updates or {}).items()})
+        for name in removed:
+            current.pop(name, None)
         fd, filename = tempfile.mkstemp(prefix='.tenant-env-', suffix='.tmp', dir=path.parent)
         temporary = Path(filename)
         os.fchmod(fd, 0o600)
@@ -108,7 +127,6 @@ def auto_email_provisioning_enabled(config_path: str | Path) -> bool:
 WORKER_SECRET_NAMES = (
     "PAYLOAD_SECRET",
     "HELLOADA_SITE_AGENT_TOKEN",
-    "RESEND_API_KEY",
     "HELLOADA_TURNSTILE_SECRET_KEY",
     "MAILFLARE_ADDRESS",
     "MAILFLARE_ZONE_ID",
@@ -130,7 +148,7 @@ def worker_runtime_secrets(
 
     The tenant environment file stays the credential authority; this function
     only decides which of its values are bound into the Worker, and refuses an
-    incomplete Mailflare/Resend set instead of deploying half a configuration.
+    incomplete Mailflare set instead of deploying half a configuration.
     """
     from .tenant_registration import WORKER_SITE_AGENT_TOKEN_ENV, tenant_token_env
 
@@ -152,16 +170,10 @@ def worker_runtime_secrets(
         raise TenantEnvironmentError("registered Mailflare tenant runtime settings are incomplete")
     if any(mailflare_present) and not mailflare_enabled:
         raise TenantEnvironmentError("Mailflare runtime settings exist without registered Mailflare resources")
-    if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_ID")):
-        raise TenantEnvironmentError("registered tenant Resend sender credential is incomplete")
-    if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_DOMAIN_ID")):
-        raise TenantEnvironmentError("registered tenant Resend sender key is not bound to an exact domain")
     result = {
         "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
         WORKER_SITE_AGENT_TOKEN_ENV: values[token_name],
     }
-    if values.get("RESEND_API_KEY"):
-        result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
     if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
         result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
     if values.get("HELLOADA_ASSISTANT_KEY"):
