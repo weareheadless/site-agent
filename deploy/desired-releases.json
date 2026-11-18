@@ -1,29 +1,9 @@
 {
   "releases": {
-    "atelier-harmonie": {
-      "id": "runtime-20261118170434-e98b2448",
-      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
-      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
-    },
-    "casamigo": {
-      "id": "runtime-20261118162900-bcad4f64",
-      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
-      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
-    },
-    "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261118162900-437026fe",
-      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
-      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
-    },
-    "oceanicvibes": {
-      "id": "runtime-20261118162901-a1c934ea",
-      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
-      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
-    },
     "site-be8225c72f3ba01a": {
-      "id": "runtime-20261118162117-35c11f75",
+      "id": "runtime-20261118174524-33d2cf7a",
       "sha": "ee4ecf43fb3c82a1cfe71c18cd8c26bcba0fac43",
-      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
+      "sharedRuntimeFingerprint": "9f9ddbf1687b115b497a87ded0b5b0c208e91a3eb54982bbdc8566642d1a8409"
     },
     "site-ff8e9af06f56201f": {
       "id": "rel-20261118183000-enquiry-confirmation",
