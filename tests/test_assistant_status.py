@@ -134,3 +134,32 @@ def test_planning_reports_unavailable_instead_of_guessing_a_path(tmp_path) -> No
 def test_a_tenant_without_a_public_url_says_so() -> None:
     with pytest.raises(assistant_status.AssistantStatusError):
         assistant_status.worker_url({"instance_name": "x"})
+
+
+def test_the_declaration_is_read_from_the_checkout_without_an_adapter(tmp_path) -> None:
+    checkout = tmp_path / "site"
+    (checkout / "src" / "site").mkdir(parents=True)
+    (checkout / "src" / "site" / "assistant.json").write_text('{"purpose":"x","sources":"none","model":"m"}')
+
+    text = assistant_status.read_declaration(checkout)
+
+    assert text is not None and '"purpose"' in text
+    assert assistant_status.read_declaration(tmp_path / "site") is not None
+    (checkout / "src" / "site" / "assistant.json").unlink()
+    assert assistant_status.read_declaration(checkout) is None
+
+
+def test_an_unavailable_checkout_is_reported_not_treated_as_undeclared(tmp_path) -> None:
+    with pytest.raises(assistant_status.AssistantStatusError):
+        assistant_status.read_declaration(tmp_path / "missing")
+    with pytest.raises(assistant_status.AssistantStatusError):
+        assistant_status.read_declaration("")
+
+
+def test_the_state_carries_the_route_contract_the_repository_cannot_show() -> None:
+    state = assistant_status.read_assistant_state(CONFIG, {}, None, probe_transport=_probe(400)[0])
+
+    route = state["route"]
+    assert route["method"] == "POST"
+    assert route["path"] == "/api/assistant"
+    assert route["inRepository"] is False

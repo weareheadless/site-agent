@@ -56,6 +56,28 @@ def parse_declaration(text: str | None) -> dict[str, Any]:
     }
 
 
+def read_declaration(clone_path: str | Path | None) -> str | None:
+    """The tenant's declaration as the checkout holds it, or None when absent.
+
+    The workspace MCP process has no repository adapter, so this reads the
+    persistent checkout directly instead of pretending a missing reader means a
+    missing declaration.
+    """
+    raw = str(clone_path or "").strip()
+    if not raw:
+        raise AssistantStatusError("this tenant has no checkout to read the declaration from")
+    root = Path(raw).expanduser().resolve()
+    if not (root / "src").is_dir():
+        raise AssistantStatusError("the tenant checkout is not available to this process")
+    path = (root / DECLARATION_PATH).resolve()
+    if root not in path.parents:
+        raise AssistantStatusError("the declaration path escapes the tenant checkout")
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
 def worker_url(config: Mapping[str, Any]) -> str:
     site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
@@ -147,6 +169,18 @@ def read_assistant_state(
         "declaration": parse_declaration(declaration_text),
         "declarationPath": DECLARATION_PATH,
         "key": key_state(config, env, transport=provider_transport),
+        # The route is served by the built site, not by the repository checkout:
+        # the shared runtime is overlaid at release and preview build time. State
+        # the contract in full so a widget can be written without the file.
+        "route": {
+            "method": "POST",
+            "path": ASSISTANT_ROUTE,
+            "body": {"messages": [{"role": "user", "content": "..."}]},
+            "response": "text/event-stream of OpenRouter chat completion chunks",
+            "headers": {"x-assistant-mode": "bit (persona answered) or honest (persona dropped)"},
+            "inRepository": False,
+            "note": "present in a built preview and in production; absent from the tenant checkout",
+        },
     }
     try:
         state["live"] = probe(worker_url(config), transport=probe_transport)

@@ -1141,7 +1141,11 @@ SYSTEM_NOTE_TOOLS = (
     "\n\nVISITOR ASSISTANT: this site can answer its own visitors through a chatbot that is "
     "declared in the repository at src/site/assistant.json, with a purpose the owner writes, a "
     "grounding mode (sources: site answers from this site's published pages and documents; sources: "
-    "none answers from the purpose alone) and a model id chosen for this site's cost profile. It is "
+    "none answers from the purpose alone) and a model id chosen for this site's cost profile. The "
+    "endpoint is POST /api/assistant on the built site, and it is deliberately absent from the "
+    "checkout because the shared runtime is overlaid at build time: when a widget in the site's own "
+    "presentation source has to call it, use the route contract get_assistant reports and expect a "
+    "preview build, not the repository, to be where the route exists. It is "
     "not you: it is public, has no tools, writes nothing, and never reaches the owner's workspace. "
     "Call get_assistant before you say anything about it; it reports the declaration, the provider "
     "key's spend ceiling and usage, and whether the live site has it configured. plan_assistant_key "
@@ -1244,15 +1248,14 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         from ..application.growth import growth_chat_context
         return json.dumps(growth_chat_context(memory, context["config"], context), ensure_ascii=False)
     if name == "get_assistant":
+        from ..application import assistant_status
         from ..application.assistant_status import read_assistant_state
 
-        declaration: str | None
+        site = context["config"].get("site") if isinstance(context["config"].get("site"), dict) else {}
         try:
-            blob = _cached_file(context, adapter, "src/site/assistant.json")
-        except AdapterError as exc:
-            return (f"TOOL ERROR: source reads are unavailable for this site ({str(exc)[:200]}). "
-                    "The host cannot read the repository; this is not a missing declaration.")
-        declaration = None if blob is None else blob.decode(errors="replace")
+            declaration = assistant_status.read_declaration(site.get("clone_path"))
+        except assistant_status.AssistantStatusError as exc:
+            return f"TOOL ERROR: the assistant declaration could not be read ({exc})."
         try:
             state = read_assistant_state(context["config"], context.get("env") or {}, declaration)
         except Exception as exc:  # noqa: BLE001 - reported, never guessed
