@@ -121,6 +121,21 @@ test("two concurrent submissions for the last unit admit one appointment; idempo
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM messages").get().count, 1);
 });
 
+test("the calendar entry names the guest and repeats the enquiry", async () => {
+  // The owner sees an appointment in the calendar and the message in the inbox.
+  // Without the guest address and the booking detail on the entry itself, the
+  // two are unlinked and the appointment cannot be answered from the calendar.
+  const { sqlite, db } = fixture();
+  const startsAt = slotAt(futureDate());
+  const result = await createPublicBooking(db, "tenant-1", "hello@example.test", "type-1",
+    input(startsAt, "request-000000000003"));
+  assert.equal(result.state, "created");
+  const event = sqlite.prepare("SELECT attendees, description FROM calendar_events WHERE booking_request_id IS NOT NULL").get();
+  assert.deepEqual(JSON.parse(event.attendees), ["visitor@example.test"]);
+  assert.match(event.description, /visitor@example\.test/);
+  assert.match(event.description, /Booked on the website/);
+});
+
 test("availability omits daylight-saving gaps and emits one deterministic repeated wall time", async (t) => {
   // Pin the clock: this test is about wall-clock arithmetic, not about when it
   // happens to run. With the real clock the repeated 01:xx hour disappears once

@@ -336,14 +336,26 @@ async function submitOnce(db: BookingD1, tenantId: string, mailboxAddress: strin
     input.sourcePage ? "Page: " + input.sourcePage : "",
   ].filter(Boolean).join("\n");
   const title = (snapshot.type.name + " - " + input.name).slice(0, 180);
+  // The calendar entry carries the person who booked: without the guest
+  // address the owner sees an appointment with no way to reply, while the
+  // inbox has the message. The description repeats the same detail so the
+  // entry is useful on its own.
+  const attendees = JSON.stringify([input.email.toLowerCase()]);
+  const description = [
+    "Booked on the website",
+    "Name: " + input.name,
+    "Email: " + input.email,
+    input.notes ? "Notes: " + input.notes : "",
+    input.sourcePage ? "Page: " + input.sourcePage : "",
+  ].filter(Boolean).join("\n").slice(0, 4000);
   const bookingSql = `INSERT INTO calendar_events
     (id,user_id,mailbox_id,title,description,location,attendees,color,repeat,repeat_days,excluded_occurrences,time_zone,starts_at,ends_at,booking_request_id,booking_request_hash,booking_consent_at,helloada_state,helloada_receipt_id,helloada_answers,helloada_consent_accepted_at,helloada_notification_state,helloada_notification_lease_until,helloada_buffer_minutes,helloada_booking_type_id,helloada_booking_type_name,helloada_booking_duration_minutes,helloada_contact_id,helloada_capacity_revision,created_at,updated_at)
-    SELECT ?,?,?,?,?,'','[]','#f28b55','none','[]','[]',?,?,?,?,?,?, 'confirmed',?,?,?, 'pending',NULL,0,?,?,?,NULL,?,?,?
+    SELECT ?,?,?,?,?,'',?,'#f28b55','none','[]','[]',?,?,?,?,?,?, 'confirmed',?,?,?, 'pending',NULL,0,?,?,?,NULL,?,?,?
     WHERE EXISTS (SELECT 1 FROM helloada_booking_settings WHERE user_id=? AND enabled=1 AND revision=?)
       AND EXISTS (SELECT 1 FROM booking_events WHERE user_id=? AND id=? AND enabled=1 AND helloada_revision=?)
 `;
   const bookingStatement = db.prepare(bookingSql).bind(
-    eventId, snapshot.ownerId, mailbox.id, title, input.notes,
+    eventId, snapshot.ownerId, mailbox.id, title, description, attendees,
     snapshot.settings.timeZone, startMilliseconds, endMilliseconds, input.requestId, requestHash, nowSeconds, eventId, JSON.stringify({ name: input.name, email: input.email, notes: input.notes, sourcePage: input.sourcePage }), nowSeconds,
     snapshot.type.id, snapshot.type.name, snapshot.type.durationMinutes, snapshot.settings.revision, nowSeconds, nowSeconds,
     snapshot.ownerId, snapshot.settings.revision,

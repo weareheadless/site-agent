@@ -70,7 +70,11 @@ export async function writeMailflareFormMessage({
     return { messageId, duplicate: true }
   }
 
-  const now = Date.now()
+  // Message and contact timestamps are seconds throughout the mailbox (the
+  // table is read as unix seconds by the inbox and by every other writer).
+  // Milliseconds here made the enquiry show an impossible date and sort
+  // outside the inbox.
+  const now = Math.floor(Date.now() / 1000)
   const contactId = `${mailbox.user_id}:${normalizedEmail}`
   await database.prepare(
     `INSERT INTO contacts (id, user_id, email, display_name, source, last_seen_at, created_at)
@@ -83,13 +87,17 @@ export async function writeMailflareFormMessage({
   ).bind(contactId, mailbox.user_id, normalizedEmail, name || null, now, now).run()
   await database.prepare(
     `INSERT OR IGNORE INTO messages
-       (id, user_id, mailbox_id, direction, provider_message_id, from_addr, to_addr, subject, snippet, text_body, status, thread_id, created_at)
-     VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?, ?, 'received', ?, ?)`,
+       (id, user_id, mailbox_id, direction, provider_message_id, from_addr, to_addr, subject, snippet, text_body, status, thread_id, helloada_contact_id, helloada_source_page, helloada_delivery_state, created_at)
+     VALUES (?, ?, ?, 'inbound', ?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, 'received', ?)`,
   ).bind(
     messageId, mailbox.user_id, mailbox.id,
     `helloada-form:${tenantId}:${formSlug}:${requestId}`,
     fromAddress, address, subject, cleanText(submission.message).slice(0, 240),
-    textBody, messageId, now,
+    textBody, messageId,
+    // The enquiry is a contact in the same mailbox, on the page that sent it.
+    // Without these the inbox shows an unattributed message and no page.
+    contactId, sourcePage ? cleanText(sourcePage).slice(0, 500) : null,
+    now,
   ).run()
 
   const accepted = await database.prepare(

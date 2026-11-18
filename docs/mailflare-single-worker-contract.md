@@ -136,6 +136,37 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   carries those stable field keys in its markup and posts the same contract; it
   never writes inbox records itself.
 
+### The delivery contract
+
+A form or booking that Ada creates is a promise that what a visitor sends
+reaches the owner. Both surfaces are one write path, and that path must always
+produce the same records, linked, in the mailbox the owner actually reads:
+
+| Surface | Written by the platform, in one batch |
+| --- | --- |
+| Enquiry (`/api/helloada/forms/<slug>`) | Inbox message (`direction=inbound`, `helloada_delivery_state=received`) carrying `helloada_contact_id` and `helloada_source_page`, plus the Contact it points at |
+| Booking (`/mail/api/public/booking/<type>`) | Calendar event with `attendees=[visitor email]` and the booking detail in its description, the Contact, and the Inbox message that shares that Contact |
+
+Rules the implementation must keep:
+
+- **One write path.** A page, a static file or an Agent may render a form
+  surface, but it posts to the two endpoints above and never writes Mailflare
+  records itself. A second delivery path is the defect.
+- **Every record is attributable.** An enquiry message without its contact and
+  source page, or a calendar event without the guest address, leaves the owner
+  holding a record they cannot answer or match to the email in the inbox.
+- **Timestamps are unix seconds.** The mailbox reads `messages`, `contacts` and
+  `calendar_events` timestamps as seconds. Milliseconds render an impossible
+  date and sort the record out of the inbox.
+- **A form document is treated as an account of intent, not a layout.** Payload
+  refuses to save a form that does not map one `email` field and one enquiry
+  `message` field, so a published form is deliverable by construction. A booking
+  block may only reference an active booking type whose settings are enabled.
+- **The visitor stays on the page.** A successful enquiry shows the
+  confirmation in place and offers any further handoff (such as WhatsApp) as an
+  explicit link. An automatic redirect hides the delivery from the visitor and
+  from whoever is testing it.
+
 ## Release and acceptance
 
 - New tenant creation provisions the isolated Mailflare D1/mail resources and

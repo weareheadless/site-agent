@@ -43,10 +43,12 @@ class MemoryMailflareD1 {
     }
     if (sql.includes('INSERT OR IGNORE INTO messages')) {
       this.messageInserts += 1
-      const [id, user_id, mailbox_id, provider_message_id, from_addr, to_addr, subject, snippet, text_body, thread_id, created_at] = values
+      const [id, user_id, mailbox_id, provider_message_id, from_addr, to_addr, subject, snippet,
+        text_body, thread_id, helloada_contact_id, helloada_source_page, created_at] = values
       if (!this.messages.has(id)) this.messages.set(id, {
         id, user_id, mailbox_id, direction: 'inbound', provider_message_id, from_addr, to_addr,
-        subject, snippet, text_body, status: 'received', thread_id, created_at,
+        subject, snippet, text_body, status: 'received', thread_id,
+        helloada_contact_id, helloada_source_page, helloada_delivery_state: 'received', created_at,
       })
     }
     return { meta: { changes: 1 } }
@@ -92,6 +94,20 @@ test('website form creates a native inbound Mailflare message and contact', asyn
   assert.match(message.text_body, /Topic: Appointments/)
   assert.doesNotMatch(message.text_body, /Consent/)
   assert.equal(database.contacts.get('maya@example.net').display_name, 'Maya')
+})
+
+test('the enquiry is dated in seconds and carries its contact and page', async () => {
+  // The inbox reads created_at as unix seconds, like every other writer. A
+  // millisecond value renders an impossible date and sorts outside the inbox.
+  const database = new MemoryMailflareD1()
+  const before = Math.floor(Date.now() / 1000)
+  await writeMailflareFormMessage(params(database))
+  const [message] = database.messages.values()
+  assert.ok(Number.isInteger(message.created_at))
+  assert.ok(message.created_at >= before && message.created_at <= Math.floor(Date.now() / 1000) + 5)
+  assert.equal(message.helloada_contact_id, 'user_test:maya@example.net')
+  assert.equal(message.helloada_source_page, '/contact')
+  assert.equal(message.helloada_delivery_state, 'received')
 })
 
 test('replaying the same form request is idempotent; changed answers conflict', async () => {
