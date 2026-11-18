@@ -19,7 +19,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-direct-admin-sso-e2e-a76df8a18660acea.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
     },
@@ -36,7 +36,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
     },
@@ -53,7 +53,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-intake-0aa0b1a55ae48348.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
     },
@@ -124,7 +124,7 @@
       "repository": "https://github.com/weareheadless/helloada-helloada-handoff-validation-20261021-39b6663e141ff33c.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-helloada-handoff-validat-d07f7a53aec1452bb162"
     },
@@ -164,7 +164,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768"
     },
@@ -181,7 +181,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-l-8c5745f57bbce7efb441.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441"
     },
@@ -205,7 +205,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "sharedRuntimeUpdate": "canary",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
     },
@@ -268,7 +268,7 @@
       "repository": "https://github.com/weareheadless/helloada-site-be8225c72f3ba01a.git",
       "schemaIdentity": "664c57047e3ed8f2dd9d1e2dd6b50938f8c2e20ee1ab4f85a75abbfb5ba98848",
       "schemaRevision": 13,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-site-be8225c72f3ba01a"
     },
