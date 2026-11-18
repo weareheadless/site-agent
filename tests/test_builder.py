@@ -2151,6 +2151,47 @@ def test_a_first_turn_pins_only_its_own_content():
     assert effects == [{**nav, "summary": ""}]
 
 
+def test_the_review_that_replaces_a_failed_preview_keeps_its_content():
+    """A blocked review is still the owner's undecided content decision.
+
+    The replacement review is the same request built again. If it drops the
+    revision the failed one carried, the page disappears from the preview it is
+    supposed to render and its publication has nothing left to approve it.
+    """
+    page = _effect("collection", "pages", "1", "a")
+
+    class Memory:
+        def get_draft(self, draft_id):
+            raise AssertionError("no review is being revised in place here")
+
+        def list_drafts(self, status=None, limit=200):
+            assert status == "pending"
+            return [
+                {"id": 7, "kind": "merge", "meta": {"payload_effects": [page],
+                                                    "preview": {"status": "ready"}}},
+                {"id": 8, "kind": "merge", "meta": {"payload_effects": [page],
+                                                    "preview": {"status": "blocked"}}},
+            ]
+
+    effects, digest = runner._payload_manifest_for_review({"_completed_payload_effects": []}, Memory())
+
+    assert [item["target"] for item in effects] == ["pages"]
+    assert digest
+
+
+def test_a_review_with_no_failed_predecessor_carries_nothing():
+    class Memory:
+        def get_draft(self, draft_id):
+            raise AssertionError("nothing to read")
+
+        def list_drafts(self, status=None, limit=200):
+            return [{"id": 7, "kind": "merge", "meta": {"preview": {"status": "ready"}}}]
+
+    effects, digest = runner._payload_manifest_for_review({}, Memory())
+
+    assert effects == [] and digest == ""
+
+
 def test_a_repaired_candidate_is_recorded_on_the_draft_before_its_preview():
     class Memory:
         def __init__(self):
