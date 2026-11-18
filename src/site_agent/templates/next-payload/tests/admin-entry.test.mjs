@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { helloAdaAdminEntry, helloAdaWorkspaceHref } from '../src/lib/helloada-admin-entry.ts'
+import { helloAdaAdminEntry, helloAdaMailboxEntry, helloAdaWorkspaceHref } from '../src/lib/helloada-admin-entry.ts'
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
@@ -19,6 +19,8 @@ test('the admin links back to the owner workspace through the platform', () => {
   // so the link is stable for a readable tenant and for a legacy digest one.
   assert.equal(helloAdaWorkspaceHref('https://helloada.app', 'superincompetence'),
     'https://helloada.app/admin-entry/superincompetence/workspace')
+  assert.equal(helloAdaMailboxEntry('https://helloada.app', 'superincompetence'),
+    'https://helloada.app/admin-entry/superincompetence/mail')
   assert.equal(helloAdaWorkspaceHref('https://helloada.app', 'site-be8225c72f3ba01a'),
     'https://helloada.app/admin-entry/site-be8225c72f3ba01a/workspace')
 })

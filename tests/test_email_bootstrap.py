@@ -174,6 +174,7 @@ def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
                 "mailflareProvisioningVersion": 2,
+                "mailflareApiVersion": 1,
             }).encode()
 
     def urlopen(request, timeout):
@@ -210,6 +211,7 @@ def test_worker_readiness_requires_the_registered_contract(monkeypatch, tmp_path
             return bootstrap.json.dumps({
                 "ok": True, "tenant": "oceanicvibes", "contentContract": reported,
                 "mailflareProvisioningVersion": 2,
+                "mailflareApiVersion": 1,
             }).encode()
 
     monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
@@ -255,6 +257,7 @@ def test_worker_readiness_uses_exact_account_qualified_origin_without_custom_dom
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
                 "mailflareProvisioningVersion": 2,
+                "mailflareApiVersion": 1,
             }).encode()
 
     def urlopen(request, timeout):
