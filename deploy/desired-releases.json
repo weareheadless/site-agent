@@ -1,5 +1,9 @@
 {
   "releases": {
+    "site-be8225c72f3ba01a": {
+      "id": "persona-20261118-specific-wrongness-1",
+      "sha": "5af4dda6c2e29d9dfb0ca4bbedf38ba64a5ec768"
+    },
     "atelier-harmonie": {
       "id": "runtime-20261118220420-4c5b6a4a",
       "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
@@ -19,10 +23,6 @@
       "id": "runtime-20261118220438-1d19953e",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
       "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
-    },
-    "site-be8225c72f3ba01a": {
-      "id": "persona-20261118-specific-wrongness-1",
-      "sha": "5af4dda6c2e29d9dfb0ca4bbedf38ba64a5ec768"
     },
     "site-ff8e9af06f56201f": {
       "id": "runtime-20261118220438-2736e699",
