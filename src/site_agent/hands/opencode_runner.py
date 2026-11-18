@@ -3665,6 +3665,14 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         "changed_paths": [str(path) for path in changed_paths],
         "preview": preview,
     }
+    # The exact commit this candidate was built on. It is not `base_sha`, which
+    # is the production head the owner's approval must find unchanged. A
+    # candidate built on the preview branch inherits every platform file the
+    # release pipeline committed there, so the review boundary needs both
+    # revisions to tell the owner's change apart from the pipeline's commits.
+    built_from = str(outcome.get("base_sha") or "").strip().lower()
+    if _re.fullmatch(r"[0-9a-f]{40}", built_from) and built_from != candidate_sha:
+        meta["built_from_sha"] = built_from
     if isinstance(revision, Mapping):
         meta.update({
             "growth_initiative_id": int(revision["initiativeId"]),
@@ -5304,10 +5312,18 @@ def _template_tokens(context: dict[str, Any], clone: Path, ref: str = "origin/ma
 
 
 def _changed_paths(clone: Path, base_ref: str) -> set[str]:
-    """Paths changed by the agent, including committed and untracked work."""
+    """Paths whose content differs from `base_ref`, plus untracked files.
+
+    Compare trees, never ancestry. A build starts on one branch and the review
+    base is another branch's head; the release pipeline commits its own platform
+    files (`.github/**`, the release identity) to both branches separately, so a
+    merge-base diff reports those commits as the builder's edits even though the
+    files are byte-identical. What the builder changed is a question about
+    content, so `git diff <base>` (two revisions, tree to tree) is the honest
+    answer, and it stays correct when work is committed mid-turn.
+    """
     outputs = [
-        _git(clone, "diff", "--name-only", "-z", f"{base_ref}...HEAD"),
-        _git(clone, "diff", "--name-only", "-z", "HEAD"),
+        _git(clone, "diff", "--name-only", "-z", base_ref),
         _git(clone, "ls-files", "--others", "--exclude-standard", "-z"),
     ]
     return {path for output in outputs for path in output.split("\0") if path}
@@ -5418,6 +5434,12 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
     base_ref = base_ref or _build_base_ref(memory, config)
     site_clone = Path(str((config.get("site") or {}).get("clone_path", ""))).resolve()
     clone = prepare_preview(config, progress, base_ref=base_ref)
+    # Pin the base to the commit the worktree actually started on. A symbolic
+    # ref is not a boundary: the build pushes its own candidate to the preview
+    # branch, so `origin/preview` means something else after the first commit,
+    # and a repair turn would then be measured against its own output. Every
+    # later comparison uses this immutable SHA.
+    base_ref = _git(clone, "rev-parse", "HEAD").strip().lower()
     media_paths = _materialize_media(context, clone)
     if media_paths:
         context["_materialized_media_paths"] = media_paths
@@ -5849,8 +5871,8 @@ def _finish_builder(context: dict[str, Any], clone: Path, base_ref: str,
     _git(clone, "push", "--force-with-lease", "origin", f"HEAD:{_remote_ref(preview_branch)}",
          token=_token(config), timeout=180)
 
-    changed_paths = sorted(_changed_paths(clone, "origin/main"))
-    stat = _git(clone, "diff", "--stat", "origin/main...HEAD")
+    changed_paths = sorted(_changed_paths(clone, base_ref))
+    stat = _git(clone, "diff", "--stat", base_ref)
     candidate_sha = _git(clone, "rev-parse", "HEAD").strip().lower()
     try:
         base_sha = _git(clone, "rev-parse", base_ref).strip().lower()

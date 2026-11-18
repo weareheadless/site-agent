@@ -584,6 +584,97 @@ def test_builder_rejects_changes_outside_writable_sandbox(tmp_path):
         runner._validate_build_paths(config, clone, "origin/preview")
 
 
+def test_platform_files_both_branches_carry_are_not_builder_changes(tmp_path, monkeypatch):
+    """The release pipeline commits its own files to main and to preview.
+
+    The two branches then carry byte-identical platform files with separate
+    history, so an ancestry diff blames the builder for the pipeline's commits.
+    What the builder changed is a question about content.
+    """
+    clone = _make_clone(tmp_path)
+    config = _builder_config(clone)
+    workflow = clone / ".github/workflows/release-build.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: release\n")
+
+    _git(clone, "checkout", "-q", "main")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "pipeline: refresh the main workflow")
+    main_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    _git(clone, "checkout", "-q", "preview")
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text("name: release\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "pipeline: refresh the preview workflow")
+    preview_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    _git(clone, "checkout", "-q", "main")
+    _git(clone, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(clone, "update-ref", "refs/remotes/origin/preview", preview_sha)
+
+    # The build starts on the preview branch and edits presentation source.
+    monkeypatch.setattr(runner, "ensure_clone", lambda cfg, progress=None: clone)
+    worktree = runner.prepare_preview(config, base_ref="origin/preview")
+    (worktree / "coaching.html").write_text("<html><body>new</body></html>")
+
+    assert runner._changed_paths(worktree, "origin/main") == {"coaching.html"}
+    runner._validate_build_paths(config, worktree, "origin/main")
+
+    # A repair turn that moves the candidate onto main and re-applies the
+    # change is still only a presentation change: the inherited platform files
+    # are identical in content, so they are not the builder's edits.
+    _git(worktree, "reset", "-q", "--hard", "origin/main")
+    (worktree / "coaching.html").write_text("<html><body>re-applied</body></html>")
+    _git(worktree, "add", "-A")
+    _git(worktree, "commit", "-qm", "re-applied onto main")
+    assert runner._changed_paths(worktree, "origin/preview") == {"coaching.html"}
+    runner._validate_build_paths(config, worktree, "origin/preview")
+
+    # The sandbox is unchanged: a platform file the builder really edits is
+    # still refused, whether or not both branches already carried it.
+    (worktree / ".github/workflows/release-build.yml").write_text("name: replaced\n")
+    with pytest.raises(runner.RunnerError, match="outside the writable sandbox"):
+        runner._validate_build_paths(config, worktree, "origin/preview")
+
+
+def test_the_build_base_is_the_commit_the_worktree_started_on(tmp_path, monkeypatch):
+    """A symbolic base is not a boundary: the build moves the preview branch."""
+    clone = _make_clone(tmp_path)
+    config = _builder_config(clone)
+    started = _git(clone, "rev-parse", "origin/preview").stdout.strip()
+    real_prepare = runner.prepare_preview
+
+    def prepare_then_push(config, progress=None, base_ref=None):
+        worktree = real_prepare(config, progress, base_ref=base_ref)
+        # The finished build pushes its own candidate over the preview branch.
+        _git(clone, "checkout", "-q", "preview")
+        (clone / "coaching.html").write_text("<html><body>candidate</body></html>")
+        _git(clone, "add", "-A")
+        _git(clone, "commit", "-qm", "candidate")
+        moved = _git(clone, "rev-parse", "HEAD").stdout.strip()
+        _git(clone, "checkout", "-q", "main")
+        _git(clone, "update-ref", "refs/remotes/origin/preview", moved)
+        return worktree
+
+    monkeypatch.setattr(runner, "prepare_preview", prepare_then_push)
+    monkeypatch.setattr(runner, "ensure_clone", lambda cfg, progress=None: clone)
+    monkeypatch.setattr(runner, "_site_digest", lambda *args, **kwargs: "")
+    monkeypatch.setattr(runner, "_vision_context", lambda *args, **kwargs: "")
+    monkeypatch.setattr(runner, "_template_tokens", lambda *args, **kwargs: "")
+    monkeypatch.setattr(runner, "_materialize_media", lambda *args, **kwargs: [])
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    site_clone, worktree, base_ref, _state = runner._prepare_builder_context(
+        {"config": config}, base_ref="origin/preview",
+    )
+
+    assert base_ref == started
+    assert base_ref != _git(clone, "rev-parse", "origin/preview").stdout.strip()
+    (worktree / "coaching.html").write_text("<html><body>builder work</body></html>")
+    assert runner._changed_paths(worktree, base_ref) == {"coaching.html"}
+
+
 def test_builder_allows_configured_site_files(tmp_path):
     clone = _make_clone(tmp_path)
     config = _builder_config(clone)
@@ -619,8 +710,7 @@ def test_builder_allows_the_tenant_composition_and_refuses_platform_source(tmp_p
 
 
 def test_generic_builder_context_exposes_the_source_boundary(tmp_path, monkeypatch):
-    clone = tmp_path / 'clone'
-    clone.mkdir()
+    clone = _make_clone(tmp_path, name='clone')
     captured = {}
     config = {
         'site': {

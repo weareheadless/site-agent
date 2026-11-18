@@ -1621,17 +1621,27 @@ class SourceDeploymentService:
         if not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise SourceDeploymentError("compiled source boundary requires a full candidate SHA")
 
+        built_from_sha = str(meta.get("built_from_sha") or "").strip().lower()
+
         try:
             from ..hands.repo_changes import source_path_allowed
 
-            output = self._run(
-                ["git", "diff", "--name-only", "-z", f"{base_sha}...{commit}"],
-                worktree,
-                timeout=60,
-            ).stdout
+            # Compare trees, not ancestry. The candidate may have been built on
+            # the preview branch, and the release pipeline commits its own
+            # platform files to both branches separately, so a merge-base diff
+            # reports those commits as the owner's change even when the files
+            # are byte-identical.
+            paths = self._tree_diff(worktree, base_sha, commit)
+            if (built_from_sha != commit
+                    and re.fullmatch(r"[0-9a-f]{40}", built_from_sha)):
+                # Keep only what this candidate changed relative to the commit
+                # it was built on. A platform file that only differs because
+                # the pipeline refreshed the other branch is not the builder's
+                # edit and must not be attributed to the owner's change.
+                authored = set(self._tree_diff(worktree, built_from_sha, commit))
+                paths = [path for path in paths if path in authored]
         except SourceDeploymentError as exc:
             raise SourceDeploymentError(f"candidate source boundary could not be verified: {exc}") from exc
-        paths = [path for path in output.split("\0") if path]
         if not paths:
             raise SourceDeploymentError("candidate has no presentation source changes relative to its reviewed base")
         # The preview boundary accepts exactly what the authoring gate accepted:
@@ -1645,6 +1655,15 @@ class SourceDeploymentService:
                 "candidate changed platform-owned or non-presentation files before build: " + names + suffix
             )
         return {"name": "presentation_source_boundary", "ok": True, "changed_files": len(paths)}
+
+    def _tree_diff(self, worktree: Path, older: str, newer: str) -> list[str]:
+        """Paths whose content differs between two revisions, ignoring ancestry."""
+        output = self._run(
+            ["git", "diff", "--name-only", "-z", older, newer],
+            worktree,
+            timeout=60,
+        ).stdout
+        return [path for path in output.split("\0") if path]
 
     def _preview_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:

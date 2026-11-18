@@ -3995,7 +3995,8 @@ class ChatService:
                             "head_sha", "runtime_path", "preview_url", "deployment_mode", "error",
                         }
                         valid_local_meta = (
-                            set(meta) == {"head", "base", "head_sha", "base_sha", "summary", "changed_paths", "preview"}
+                            set(meta) <= {"head", "base", "head_sha", "base_sha", "summary", "changed_paths", "preview", "built_from_sha"}
+                            and {"head", "base", "head_sha", "base_sha", "summary", "changed_paths", "preview"} <= set(meta)
                             and all(isinstance(meta.get(key), str) for key in ("head", "base", "head_sha", "base_sha", "summary"))
                             and isinstance(meta.get("changed_paths"), list)
                             and all(isinstance(path, str) for path in meta["changed_paths"])

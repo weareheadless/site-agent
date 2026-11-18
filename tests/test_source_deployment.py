@@ -230,6 +230,84 @@ def test_compiled_candidate_is_checked_against_frontend_allowlist_before_build(t
         memory.close()
 
 
+def test_pipeline_commits_on_the_preview_branch_are_not_the_owner_change(tmp_path):
+    """The review boundary measures content against the build base.
+
+    A candidate built on the preview branch inherits the release pipeline's own
+    commits. Both branches then carry the same platform files with separate
+    history, and a merge-base diff would attribute the pipeline's commits to the
+    owner's change and refuse a preview that publishes nothing extra.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Site Agent Test")
+    git("config", "user.email", "site-agent-test@example.invalid")
+    presentation = repo / "src/components/site/presentation/Hero.tsx"
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text("export const Hero = () => <h1>Base</h1>\n", encoding="utf-8")
+    workflow = repo / ".github/workflows/release-build.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: release\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "base")
+
+    # The pipeline commits its own platform files on main, then on preview.
+    git("checkout", "-q", "-b", "preview")
+    workflow.write_text("name: release\n# refreshed on preview\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "pipeline: refresh the preview workflow")
+    built_from = git("rev-parse", "HEAD")
+    git("checkout", "-q", "main")
+    workflow.write_text("name: release\n# refreshed on main\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "pipeline: refresh the main workflow")
+    base_sha = git("rev-parse", "HEAD")
+
+    git("checkout", "-q", "preview")
+    presentation.write_text("export const Hero = () => <h1>Candidate</h1>\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "presentation change")
+    candidate_sha = git("rev-parse", "HEAD")
+
+    memory = Memory(tmp_path / "memory.db")
+    draft_id = memory.save_draft(
+        "Candidate", "diff", kind="merge",
+        meta={"base_sha": base_sha, "candidate_sha": candidate_sha, "built_from_sha": built_from},
+    )
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(repo)}, "design_engine": {"build_profile": "next_react"}},
+        memory=memory,
+    )
+    try:
+        result = service._verify_candidate_source_boundary(repo, candidate_sha, draft_id)
+
+        assert result["ok"] is True
+        assert result["changed_files"] == 1
+
+        # A platform file the builder really edits is still refused: the
+        # narrowing only drops paths the candidate did not author.
+        workflow.write_text("name: release\n# builder edit\n", encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "touch the workflow")
+        edited_sha = git("rev-parse", "HEAD")
+        edited_draft = memory.save_draft(
+            "Unsafe candidate", "diff", kind="merge",
+            meta={"base_sha": base_sha, "candidate_sha": edited_sha, "built_from_sha": built_from},
+        )
+        with pytest.raises(source_deployment.SourceDeploymentError, match="platform-owned or non-presentation"):
+            service._verify_candidate_source_boundary(repo, edited_sha, edited_draft)
+    finally:
+        service.close()
+        memory.close()
+
+
 def test_compiled_preview_does_not_report_a_404_homepage_as_ready(tmp_path):
     service = source_deployment.SourceDeploymentService(
         {"site": {"clone_path": str(tmp_path)}},

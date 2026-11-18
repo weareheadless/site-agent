@@ -338,7 +338,9 @@ def _changed_paths(repo: Path, base_sha: str, candidate_sha: str) -> set[str]:
     paths: set[str] = set()
     if base_sha != candidate_sha:
         try:
-            paths.update(path for path in _git(repo, "diff", "--name-only", "-z", f"{base_sha}...{candidate_sha}").split("\0") if path)
+            # Tree diff, not merge-base diff: the candidate may be built on a
+            # branch whose pipeline commits are not the author's change.
+            paths.update(path for path in _git(repo, "diff", "--name-only", "-z", base_sha, candidate_sha).split("\0") if path)
         except RuntimeError:
             pass
     try:
@@ -719,7 +721,7 @@ def _host_provisioned_paths(repo: Path, policy: QualityPolicy) -> set[str]:
     authored = metadata.get("changed_source_files")
     if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{40}", base) and isinstance(authored, list):
         try:
-            host_changes = set(_git(repo, "diff", "--name-only", "-z", f"{base}...HEAD").split("\0")) - set(authored)
+            host_changes = set(_git(repo, "diff", "--name-only", "-z", base, "HEAD").split("\0")) - set(authored)
             host_changes -= set(_git(repo, "diff", "--name-only", "-z", "HEAD").split("\0"))
             provisioned.update(host_changes & {"package.json", "package-lock.json", "postcss.config.mjs"})
         except Exception:
