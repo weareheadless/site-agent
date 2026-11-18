@@ -106,16 +106,24 @@ test('all standard tenant schemas come from one contract and share the native mu
   ])
 })
 
-test('contact forms require stable field IDs, a required email and enquiry, and compatible mappings', () => {
+test('a saved form is deliverable by construction: it must map an email and an enquiry', () => {
+  // The delivery contract starts here. A form that cannot name a contact or
+  // carry a message is refused before it can be published, so an owner never
+  // ends up with a live form whose submissions cannot reach the inbox.
   const valid = [
     { key: 'contact.name', label: 'Your name', type: 'text', mapsTo: 'name' },
     { key: 'contact.email', label: 'Email', type: 'email', mapsTo: 'email', required: true },
     { key: 'contact.message', label: 'How can we help?', type: 'textarea', mapsTo: 'message', required: true, maxLength: 4000 },
   ]
   assert.equal(validateHelloAdaFormFields(valid), true)
-  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.email' ? { ...field, required: false } : field)), /must require an email/)
-  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.message' ? { ...field, type: 'select' } : field)), /text input/)
-  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.name' ? { ...field, key: '' } : field)), /stable ID/)
+  assert.match(
+    validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.email' ? { ...field, mapsTo: 'none' } : field)),
+    /must map one email field and one enquiry message/,
+  )
+  assert.match(
+    validateHelloAdaFormFields(valid.filter((field) => field.key !== 'contact.message')),
+    /must map one email field and one enquiry message/,
+  )
 })
 
 test('contact forms require stable field IDs, a required email and enquiry, and compatible mappings', () => {
