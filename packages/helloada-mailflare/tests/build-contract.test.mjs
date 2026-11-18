@@ -13,7 +13,7 @@ import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
 import { applyBookingCapacityPatches } from '../scripts/booking-capacity-patches.mjs'
 import { applyBookingWorkspacePatches } from '../scripts/booking-workspace-patches.mjs'
 import { patchDashboardNavigation } from '../scripts/contacts-patch.mjs'
-import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences, removeLegacyBookingSurfaces } from '../scripts/build.mjs'
+import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences, removeLegacyBookingSurfaces, removeOwnerMailPages } from '../scripts/build.mjs'
 import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
 
@@ -243,6 +243,60 @@ test('the tenant build retains one booking service and removes username-driven b
     }
     assert.equal(await readFile(path.join(destination, canonical), 'utf8'), 'canonical-public-booking-service')
   } finally {
+    await rm(destination, { recursive: true, force: true })
+  }
+})
+
+test('the tenant build keeps the mail API and drops the owner page shells', async () => {
+  const destination = await mkdtemp(path.join(tmpdir(), 'helloada-owner-pages-'))
+  const shells = [
+    'src/app/(dashboard)/layout.tsx',
+    'src/app/(dashboard)/inbox/page.tsx',
+    'src/app/(calendar)/layout.tsx',
+    'src/app/(calendar)/calendar/page.tsx',
+    'src/app/(calendar)/booking/page.tsx',
+  ]
+  const kept = [
+    // Server code and shared components import these helpers out of the page
+    // groups, so only the routes go.
+    'src/app/(dashboard)/inbox/[messageId]/utils.ts',
+    'src/app/(calendar)/booking/utils.ts',
+    'src/app/(settings)/settings/page.tsx',
+  ]
+  const api = [
+    'src/app/api/messages/route.ts',
+    'src/app/api/calendar/events/route.ts',
+    'src/app/api/booking/route.ts',
+  ]
+  try {
+    for (const relative of [...shells, ...kept, ...api]) {
+      const file = path.join(destination, relative)
+      await mkdir(path.dirname(file), { recursive: true })
+      await writeFile(file, 'surface')
+    }
+    await removeOwnerMailPages(destination)
+    for (const relative of shells) {
+      await assert.rejects(readFile(path.join(destination, relative)), relative)
+    }
+    for (const relative of [...kept, ...api]) {
+      assert.equal(await readFile(path.join(destination, relative), 'utf8'), 'surface', relative)
+    }
+  } finally {
+    await rm(destination, { recursive: true, force: true })
+  }
+})
+
+test('the tenant build fails closed when the route it must remove or keep is gone', async () => {
+  const empty = await mkdtemp(path.join(tmpdir(), 'helloada-owner-pages-'))
+  const destination = await mkdtemp(path.join(tmpdir(), 'helloada-owner-pages-'))
+  try {
+    await assert.rejects(removeOwnerMailPages(empty), /Owner mail pages were not found/)
+    const page = path.join(destination, 'src/app/(dashboard)/inbox/page.tsx')
+    await mkdir(path.dirname(page), { recursive: true })
+    await writeFile(page, 'surface')
+    await assert.rejects(removeOwnerMailPages(destination), /Tenant mail API routes are missing/)
+  } finally {
+    await rm(empty, { recursive: true, force: true })
     await rm(destination, { recursive: true, force: true })
   }
 })

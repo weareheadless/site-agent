@@ -22,23 +22,22 @@ const sourceRoot = path.join(upstreamRoot, 'src')
 const outputRoot = path.join(packageRoot, 'dist')
 const upstreamPin = JSON.parse(await readFile(path.join(mailflareRoot, 'UPSTREAM.json'), 'utf8'))
 
-const routeGroups = ['(dashboard)']
+const routeGroups = ['(dashboard)', '(calendar)']
 
 /**
- * Surfaces that are not part of the owner mailbox yet or that depend on tenant
- * server code: the assistant review queue, server-redirect stubs, the booking
- * editor (which reads tenant hosts from D1), and the tenant app's own
- * auth/PWA/realtime shell.
+ * Surfaces that are not part of the owner workspace yet or that depend on
+ * tenant server code: the assistant review queue, server-redirect stubs, and
+ * the tenant app's own auth/PWA/realtime shell. The calendar and booking
+ * editor are the owner's, so they ship here; only their database modules stay
+ * on the tenant.
  */
 const excluded = [
   'src/app/(dashboard)/agent',
   'src/app/(dashboard)/import-export',
   'src/app/(dashboard)/rules',
-  'src/app/(calendar)/booking',
   'src/lib/i18n/server.ts',
   'src/lib/cloudflare.ts',
   'src/db',
-  'src/lib/booking/hosts.ts',
   'src/components/auth/auth-guard.tsx',
   'src/components/providers.tsx',
   'src/components/new-message-popup.tsx',
@@ -204,7 +203,7 @@ const adaptFile = async (file, outputFile) => {
   if (needs.size) {
     source = ensureImport(source, [...needs].sort(), baseSpecifier)
     for (const name of replacedNextHooks) {
-      const fromNext = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["']next/navigation["']`)
+      const fromNext = new RegExp(`import\\s*\\{([^}]*)\\}\\s*from\\s*["']next/navigation["'];?`)
       const match = source.match(fromNext)
       if (!match) continue
       const kept = match[1].split(',').map((entry) => entry.trim()).filter(Boolean).filter((entry) => entry !== name)
@@ -430,6 +429,53 @@ const patchThreadStar = async (outputFile) => {
   const anchor = 'setStarred(await toggleMessageStar(message.id));'
   if (!source.includes(anchor)) throw new Error('Upstream thread star handler changed shape')
   await writeFile(outputFile, source.replace(anchor, 'const starred = await toggleMessageStar(message.id);\n\t\t\tsetStarred(starred.starred);'))
+}
+
+/**
+ * `lib/booking/hosts.ts` pairs the booking host parser with a D1 query. The
+ * control plane has no tenant database, so the generated module keeps the
+ * parser the booking editor needs and drops the query. The build fails if the
+ * parser disappears instead of generating a module that silently returns
+ * nothing.
+ */
+const clientBookingHosts = async (file) => {
+  const source = await readFile(file, 'utf8')
+  const start = source.indexOf('export function parseBookingHostIds(')
+  if (start < 0) throw new Error('Upstream booking hosts changed shape: parseBookingHostIds is missing')
+  const end = source.indexOf('\n}\n', start)
+  if (end < 0) throw new Error('Upstream booking hosts changed shape: parseBookingHostIds is unterminated')
+  return `// Generated from ${relativeToUpstream(file)}. The booking host ids this app
+// parses are the tenant's, and the database query that validates them stays in
+// the tenant Worker.
+${source.slice(start, end + 3)}`
+}
+
+/**
+ * The booking types are pure data shapes except for one alias that names the
+ * tenant's calendar table. That alias describes a row this app never reads, so
+ * the generated module keeps every shape the editor uses and drops it.
+ */
+const clientBookingTypes = async (file) => {
+  const source = await readFile(file, 'utf8')
+  const tenantRow = 'export type ExistingCalendarEvent = typeof import("@/db/schema").calendarEvents.$inferSelect;\n'
+  if (!source.includes(tenantRow)) throw new Error('Upstream booking types changed shape: ExistingCalendarEvent moved')
+  return `// Generated from ${relativeToUpstream(file)}. The tenant's calendar row type stays
+// with the tenant; only the booking shapes the owner editor exchanges are here.
+${source.replace(tenantRow, '')}`
+}
+
+/**
+ * Avatar images are plain `src` values, so no fetch adapter rewrites them: an
+ * unprefixed `/api` path would resolve against the control plane instead of the
+ * owner's tenant.
+ */
+const patchBookingHostAvatar = async (outputFile) => {
+  let source = await readFile(outputFile, 'utf8')
+  const anchor = '	const imageUrl = host.id === currentUserId ? "/api/profile/avatar" : `/api/accounts/${host.id}/avatar`;'
+  if (!source.includes(anchor)) throw new Error('Upstream booking host avatar changed shape')
+  source = source.replace(anchor, '	const imageUrl = apiUrl(host.id === currentUserId ? "/api/profile/avatar" : `/api/accounts/${host.id}/avatar`);')
+  source = ensureImport(source, ['apiUrl'], importSpecifier(path.relative(outputRoot, outputFile).split(path.sep).join('/'), 'base.tsx'))
+  await writeFile(outputFile, source)
 }
 
 const writeBase = async () => {
@@ -693,6 +739,14 @@ const main = async () => {
       await writeFile(output, await readFile(file))
       continue
     }
+    if (relativeToUpstream(file) === 'src/lib/booking/hosts.ts') {
+      await writeFile(output, await clientBookingHosts(file))
+      continue
+    }
+    if (relativeToUpstream(file) === 'src/lib/booking/types.d.ts') {
+      await writeFile(output, await clientBookingTypes(file))
+      continue
+    }
     await adaptFile(file, output)
   }
 
@@ -700,6 +754,7 @@ const main = async () => {
   await patchAuthClient(path.join(outputRoot, 'src/lib/auth/client.ts'))
   await patchStrictClientTypes(path.join(outputRoot, 'src/hooks/use-message-counts.ts'))
   await patchDraftDetail(path.join(outputRoot, 'src/app/(dashboard)/drafts/[messageId]/page.tsx'))
+  await patchBookingHostAvatar(path.join(outputRoot, 'src/app/(calendar)/booking/booking-host-avatar.tsx'))
   await patchVendorTypes()
   await patchOwnerShell()
   await patchThreadStar(path.join(outputRoot, 'src/components/messages/thread-message-actions.tsx'))

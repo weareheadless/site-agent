@@ -41,8 +41,10 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   control plane, from the shared generated package; a page request on a tenant
   origin under `/mail/*` is handed to that entry instead of rendering a second
   mailbox. The tenant Worker keeps the mail API, the mailbox data and the
-  public booking endpoints. Do not keep a bespoke composer or a second mailbox
-  UI as a parallel path.
+  public booking endpoints, and its build does not compile the upstream owner
+  pages at all, so a page request cannot render a parallel admin even if the
+  handover were misconfigured. Do not keep a bespoke composer, calendar or
+  second mailbox UI as a parallel path.
 - Reuse the authenticated Payload owner session for Mailflare access. There is
   no second user password, cross-site SSO service, central account store, or
   public admin API key in a tenant runtime. Every Mailflare request must resolve
