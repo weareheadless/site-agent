@@ -38,7 +38,6 @@ type TenantEnv = StaticWebsiteEnv & {
   HELLOADA_MAILFLARE_AGENT_QUEUE_NAME: string
   EMAIL: unknown
   PRIVATE_EMAIL: PrivateEmailBucket
-  RESEND_API_KEY?: string
   MAILFLARE_DB: MailflareD1
   MAILFLARE_ADDRESS: string
   MAILFLARE_ZONE_ID: string

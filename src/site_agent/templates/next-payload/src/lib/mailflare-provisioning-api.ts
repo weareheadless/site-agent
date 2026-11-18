@@ -11,7 +11,6 @@ type MailflareRuntimeEnv = {
   MAILFLARE_ZONE_ID?: string
   MAILFLARE_ROUTING_STATUS?: string
   EMAIL?: unknown
-  RESEND_API_KEY?: string
 }
 
 const noStore = { 'Cache-Control': 'no-store' }
@@ -42,7 +41,7 @@ export async function internalMailflareRoute(request: Request, path: string) {
   if (!env.MAILFLARE_DB || !env.MAILFLARE_ADDRESS || !env.MAILFLARE_ZONE_ID || !env.MAILFLARE_ROUTING_STATUS) {
     return fail('mailflare_runtime_configuration_missing', 503)
   }
-  if (!env.EMAIL || !env.RESEND_API_KEY) return fail('mail_transport_not_ready', 503)
+  if (!env.EMAIL) return fail('mail_transport_not_ready', 503)
   if (address !== env.MAILFLARE_ADDRESS.trim().toLowerCase()
     || text(body.zoneId) !== env.MAILFLARE_ZONE_ID
     || text(body.routingStatus) !== env.MAILFLARE_ROUTING_STATUS

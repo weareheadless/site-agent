@@ -8,8 +8,9 @@ Two alerts exist, and both are configured per tenant:
   is told that HelloAda is not managing it, so nobody waits for mail that
   HelloAda never receives.
 
-The alert is sent with the tenant's own restricted Resend key, as the tenant's
-own mailbox address. The platform's management key never sends tenant mail.
+The alert is sent through Cloudflare Email Sending as the tenant's own mailbox
+address, using the host-owned Email Service credential. No per-tenant sending
+key exists, so an alert can never be delivered under a different domain.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..hands.resend import ResendError, ResendSender
+from ..credentials import cloudflare_email_api_token, cloudflare_env_names, credential_environment
+from ..hands.cloudflare_email import CloudflareEmailClient, CloudflareEmailError
 from .email_management import (
     ALERT_EXTERNAL,
     ALERT_INBOUND,
@@ -99,24 +101,27 @@ class MailAlertService:
         if isinstance(previous, Mapping) and previous.get("state") == "sent":
             return {**dict(previous), "state": "already_sent"}
 
-        api_key = self._tenant_secret("RESEND_API_KEY")
+        api_key = cloudflare_email_api_token(self._config)
         sender = self._sender_address()
         if not api_key:
-            raise MailAlertError("The tenant Resend sending credential is unavailable")
+            raise MailAlertError("The host Cloudflare Email Service credential is unavailable")
         if not sender:
             raise MailAlertError("The tenant mailbox address is unavailable")
         if not recipient:
             raise MailAlertError("The registered alert recipient is unavailable")
+        _, account_name = cloudflare_env_names(self._config)
+        account_id = str(credential_environment(self._config).get(account_name) or "").strip()
+        if not account_id:
+            raise MailAlertError("The Cloudflare account identity is unavailable")
         try:
-            identity = ResendSender(api_key).send_message(
-                tenant=self._tenant_id,
-                operation_id=operation_id,
+            identity = CloudflareEmailClient(api_key, api_key).send_email(
+                account_id,
                 sender=sender,
                 recipient=recipient,
                 subject=subject,
                 text=text,
             )
-        except ResendError as exc:
+        except CloudflareEmailError as exc:
             raise MailAlertError(str(exc)) from exc
         receipt = {
             "state": "sent",

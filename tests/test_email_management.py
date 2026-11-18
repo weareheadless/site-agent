@@ -238,26 +238,35 @@ def _alert_tenant(tmp_path: Path, *, mode: str = "managed"):
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     (tenant_dir / "tenant.env").write_text(
-        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\nRESEND_API_KEY=re_tenant_key\n",
+        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\n",
         encoding="utf-8",
     )
     return config, config_path
 
 
-def test_inbound_alert_uses_the_tenant_key_and_is_sent_once(tmp_path, monkeypatch):
+def test_inbound_alert_is_sent_through_cloudflare_and_only_once(tmp_path, monkeypatch):
     from site_agent.application import mail_alerts
 
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
-            assert api_key == "re_tenant_key"
+        def __init__(self, email_token, dns_token, **_kwargs):
+            assert email_token == "email-token"
+            assert dns_token == "email-token"
 
-        def send_message(self, **message):
+        def send_email(self, account_id, **message):
+            assert account_id == "account-id"
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     config, config_path = _alert_tenant(tmp_path)
     memory = FakeMemory()
     service = mail_alerts.MailAlertService(
@@ -283,14 +292,21 @@ def test_external_notice_tells_the_owner_who_handles_the_mail(tmp_path, monkeypa
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             pass
 
-        def send_message(self, **message):
+        def send_email(self, _account_id, **message):
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     config, config_path = _alert_tenant(tmp_path, mode="external")
     memory = FakeMemory()
     service = mail_alerts.MailAlertService(
@@ -308,10 +324,10 @@ def test_managed_tenant_sends_no_external_notice(tmp_path, monkeypatch):
     from site_agent.application import mail_alerts
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             raise AssertionError("a managed tenant must not send an external notice")
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
     config, config_path = _alert_tenant(tmp_path)
     service = mail_alerts.MailAlertService(
         config, tenant_id="demo-tenant", tenant_config_path=config_path, memory=FakeMemory(),
@@ -335,7 +351,7 @@ def _registered_tenant(tmp_path: Path):
     }
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     (tenant_dir / "tenant.env").write_text(
-        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\nRESEND_API_KEY=re_tenant_key\n",
+        "MAILFLARE_ADDRESS=demo-tenant@helloada.app\n",
         encoding="utf-8",
     )
     tenant = Tenant(
@@ -407,14 +423,21 @@ def test_mail_notification_route_sends_one_alert_for_one_reported_mail(tmp_path,
     sent: list[dict] = []
 
     class FakeSender:
-        def __init__(self, api_key, **_kwargs):
+        def __init__(self, *_args, **_kwargs):
             pass
 
-        def send_message(self, **message):
+        def send_email(self, _account_id, **message):
             sent.append(message)
             return "provider-message-id"
 
-    monkeypatch.setattr(mail_alerts, "ResendSender", FakeSender)
+    monkeypatch.setattr(mail_alerts, "CloudflareEmailClient", FakeSender)
+    monkeypatch.setattr(mail_alerts, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        mail_alerts, "cloudflare_env_names", lambda *_args: ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID")
+    )
+    monkeypatch.setattr(
+        mail_alerts, "credential_environment", lambda *_args: {"CLOUDFLARE_ACCOUNT_ID": "account-id"}
+    )
     tenant, _config_path = _registered_tenant(tmp_path)
     registry = TenantRegistry({"demo-tenant": tenant})
     app = FastAPI()

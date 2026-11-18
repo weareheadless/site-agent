@@ -44,10 +44,11 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   public admin API key in a tenant runtime. Every Mailflare request must resolve
   the same tenant's authenticated Payload owner before reading or mutating mail.
 - Site-Agent provisions domain resources with its protected host credentials.
-  Cloudflare Email Routing delivers to that tenant's single Worker. Ordinary
-  sending uses only the tenant-restricted Resend key already installed for its
-  verified sender domain. The full-access Resend key and Cloudflare control
-  tokens stay on the VPS.
+  Cloudflare Email Routing delivers to that tenant's single Worker. The Worker
+  sends ordinary mail through Cloudflare Email Sending from the tenant's own
+  mailbox address, using its `EMAIL` binding; there is no third-party sender
+  account, no per-tenant sending key and no provider domain quota to exhaust.
+  Cloudflare control tokens stay on the VPS.
 - Platform-hosted tenants receive a unique address on `helloada.app`; when a
   custom domain is registered, Site-Agent provisions the tenant address on
   that domain before switching the active sender/recipient identity. A change

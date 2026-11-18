@@ -32,8 +32,10 @@ are validated and written into the tenant's Mailflare Inbox; confirmed booking
 events use Mailflare Calendar. Public availability is bounded and exposes no
 guest data. The site-level `features.bookings` flag defaults to false. Enable
 it only when the owner offers appointments and the design includes the
-canonical `helloAdaBooking` content block. Ordinary sending uses the tenant's
-restricted Resend key; Cloudflare Email Routing handles inbound delivery.
+canonical `helloAdaBooking` content block. Ordinary sending uses Cloudflare
+Email Sending through the Worker's `EMAIL` binding from the tenant's own
+mailbox address; Cloudflare Email Routing handles inbound delivery. There is no
+third-party sender key in a tenant runtime.
 Follow `docs/mailflare-single-worker-contract.md`; do not add a Payload mailbox,
 provider fallback, duplicate queue path, or separate booking store.
 

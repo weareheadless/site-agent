@@ -56,7 +56,7 @@ at request time through the Cloudflare runtime context. They are not public
 ## Runtime binding delivery
 
 Provisioning never mutates a Worker's secrets. `GOOGLE_SITE_VERIFICATION`,
-`GA_MEASUREMENT_ID`, `RESEND_API_KEY` and the Mailflare settings are staged in
+`GA_MEASUREMENT_ID` and the Mailflare settings are staged in
 the registered tenant's protected `tenant.env`, then delivered by the one
 canonical release queue:
 
@@ -64,8 +64,7 @@ canonical release queue:
    (`application/tenant_environment.py`) preserves every other value.
 2. `application/runtime_binding_delivery.py` resolves the tenant from the
    central registry, requires the currently active `runtime_activation` and its
-   canonical receipt, and refuses partial mailbox settings or a sender key
-   without its provider/domain identity.
+   canonical receipt, and refuses partial mailbox settings.
 3. The stable release intent is recorded in durable state before the external
    queue call, so an ambiguous response retries the same release identity.
    Existing pending requests are never overwritten.
@@ -73,8 +72,9 @@ canonical release queue:
    secret-free `runtimeBindings` hashes. Delivery is proven only when the
    activated receipt reports the same hashes, the exact uploaded version at
    100%, and a verified connection.
-5. SEO verification, Mailflare activation and retirement of a superseded Resend
-   sender key all happen after that proof. A failed release identity is never
+5. SEO verification and Mailflare activation happen after that proof, and a
+   superseded third-party sender-key ledger is retired from the same protected
+   file. A failed release identity is never
    retried; a new intent requires an operator-promoted release, and a completed
    release that still lacks the staged bindings stops after one retry.
 6. A completed release wakes the tenant `seo_provisioning` and

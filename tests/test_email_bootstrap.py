@@ -38,7 +38,9 @@ def _tenant_config_path(tmp_path: Path, tenant_id: str) -> Path:
 
 def _verified_delivery(config, env, memory, config_path, values):
     path = bootstrap._tenant_env_path(config_path, Path(config_path).parent.name)
-    bootstrap._write_tenant_secrets(path, values)
+    from site_agent.application.tenant_environment import write_tenant_environment
+
+    write_tenant_environment(path, values)
     return {"state": "delivered", "release_id": "verified-runtime-release"}
 
 
@@ -54,7 +56,9 @@ def test_tenant_env_path_uses_registered_config_parent_not_data_dir(tmp_path):
     resolved = bootstrap._tenant_env_path(config_path, tenant_id)
 
     assert resolved == tenant_env
-    assert bootstrap._tenant_secret_values(resolved) == {"EXISTING_SECRET": "kept"}
+    from site_agent.application.tenant_environment import read_tenant_environment
+
+    assert read_tenant_environment(resolved) == {"EXISTING_SECRET": "kept"}
 
 
 def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkeypatch, tmp_path):
@@ -68,7 +72,7 @@ def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkey
         "state": "active",
         "siteDomain": "oceanicvibes.com",
         "emailDomainSetting": "oceanicvibes.com",
-        "outboundProvider": "resend",
+        "outboundProvider": "cloudflare",
         "address": "contact@oceanicvibes.com",
         "worker": "oceanicvibes",
         "cloudflareZoneId": "zone-id",
@@ -76,7 +80,7 @@ def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkey
     }
     memory = FakeMemory({"email_provisioning_state": active_state})
     preflight_calls = []
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
 
     def require_preflight(*_args, **_kwargs):
         preflight_calls.append(True)
@@ -124,14 +128,14 @@ def test_active_email_state_skips_provider_work_only_when_mailflare_settings_mat
         "state": "active",
         "siteDomain": "oceanicvibes.com",
         "emailDomainSetting": "oceanicvibes.com",
-        "outboundProvider": "resend",
+        "outboundProvider": "cloudflare",
         "address": "contact@oceanicvibes.com",
         "worker": "oceanicvibes",
         "cloudflareZoneId": "zone-id",
         "routingStatus": "active",
     }
     memory = FakeMemory({"email_provisioning_state": active_state})
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
     monkeypatch.setattr(bootstrap, "deliver_runtime_bindings", _verified_delivery)
     monkeypatch.setattr(
         bootstrap,
@@ -152,18 +156,6 @@ def test_active_email_state_skips_provider_work_only_when_mailflare_settings_mat
     assert memory.state["email_provisioning_state"] == state
 
 
-def _mock_resend_management(monkeypatch):
-    class Resend:
-        def __init__(self, api_key, _cloudflare):
-            assert api_key == "management-key"
-
-        def validate_management_access(self):
-            return None
-
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda _config, _env: "management-key")
-    monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
-
-
 def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
     config = _config(tmp_path)
     config["site"]["preview_url"] = "https://oceanicvibes.weareheadless.workers.dev/"
@@ -181,7 +173,7 @@ def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
                 "ok": True,
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
-                "mailflareProvisioningVersion": 1,
+                "mailflareProvisioningVersion": 2,
             }).encode()
 
     def urlopen(request, timeout):
@@ -217,7 +209,7 @@ def test_worker_readiness_requires_the_registered_contract(monkeypatch, tmp_path
         def read(self, _size=-1):
             return bootstrap.json.dumps({
                 "ok": True, "tenant": "oceanicvibes", "contentContract": reported,
-                "mailflareProvisioningVersion": 1,
+                "mailflareProvisioningVersion": 2,
             }).encode()
 
     monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
@@ -262,7 +254,7 @@ def test_worker_readiness_uses_exact_account_qualified_origin_without_custom_dom
                 "ok": True,
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
-                "mailflareProvisioningVersion": 1,
+                "mailflareProvisioningVersion": 2,
             }).encode()
 
     def urlopen(request, timeout):
@@ -344,7 +336,6 @@ def test_prepare_plan_derives_mailbox_from_current_domain_and_local_part(monkeyp
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
-    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -381,7 +372,6 @@ def test_prepare_plan_uses_managed_zone_apex_by_default_for_a_www_site(monkeypat
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
-    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -420,7 +410,6 @@ def test_prepare_plan_uses_registered_platform_email_domain_for_worker_site(monk
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("atelier-harmonie", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
-    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -458,7 +447,6 @@ def test_prepare_plan_rejects_email_subdomain_until_routing_onboarding_is_suppor
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("atelier-harmonie", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
-    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -478,17 +466,18 @@ def test_prepare_plan_rejects_email_subdomain_until_routing_onboarding_is_suppor
         raise AssertionError("subdomain email provisioning must not use the apex-only API path")
 
 
-def test_auto_provision_requires_resend_management_key_before_provider_access(tmp_path, monkeypatch):
+def test_auto_provision_requires_the_host_cloudflare_email_credential_before_provider_access(tmp_path, monkeypatch):
     config = _config(tmp_path)
     config["site"].pop("custom_domain")
     config["site"]["public_url"] = "https://atelier-harmonie.weareheadless.workers.dev/"
     config["messages"]["email"].update(domain="helloada.app", local_part="atelier-harmonie")
     memory = FakeMemory()
 
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "")
     monkeypatch.setattr(
         bootstrap,
         "prepare_email_plan",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("missing management key must stop before provider access")),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("a missing host credential must stop before provider access")),
     )
 
     state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"), memory=memory, env={})
@@ -496,18 +485,18 @@ def test_auto_provision_requires_resend_management_key_before_provider_access(tm
     assert state["state"] == "action_required"
     assert state["tenant"] == "atelier-harmonie"
     assert state["domain"] == "helloada.app"
-    assert "protected Resend management API key" in state["error"]
+    assert "Cloudflare Email Service API token" in state["error"]
 
 
-def test_auto_provision_classifies_restricted_resend_key_as_action_required(tmp_path, monkeypatch):
+def test_auto_provision_reports_an_operator_credential_gap_as_action_required(tmp_path, monkeypatch):
     config = _config(tmp_path)
     memory = FakeMemory()
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda _config, _env: "restricted-key")
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
     monkeypatch.setattr(
         bootstrap,
         "prepare_email_plan",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            bootstrap.EmailProvisioningActionRequired("Resend requires Full access")
+            bootstrap.EmailProvisioningActionRequired("The Email Routing Rules scope is missing")
         ),
     )
 
@@ -515,7 +504,7 @@ def test_auto_provision_classifies_restricted_resend_key_as_action_required(tmp_
 
     assert state["state"] == "action_required"
     assert state["tenant"] == "oceanicvibes"
-    assert "Full access" in state["error"]
+    assert "Email Routing Rules" in state["error"]
     assert memory.state["email_provisioning_state"] == state
 
 
@@ -536,11 +525,11 @@ def test_auto_provision_defaults_a_shared_domain_mailbox_to_the_tenant_id(tmp_pa
         env={},
     )
 
-    # The mailbox identity resolves; provisioning stops at the protected
-    # management key the test host does not provide.
+    # The mailbox identity resolves; provisioning stops at the host credential
+    # this test host does not provide.
     assert state["state"] == "action_required"
     assert state["domain"] == "helloada.app"
-    assert "Resend management API key" in state["error"]
+    assert "Cloudflare Email Service API token" in state["error"]
 
 
 def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monkeypatch):
@@ -576,17 +565,6 @@ def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monke
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
 
-    class Resend:
-        def __init__(self, api_key, _cloudflare_email):
-            assert api_key == "management-key"
-
-        def ensure_domain(self, domain):
-            provider_calls.append("ensure_domain")
-            return {"id": "resend-domain-id", "domain": domain, "status": "verified"}
-
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda config, env: "management-key")
-    monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
-    monkeypatch.setattr(bootstrap, "_ensure_tenant_resend_key", lambda **_kwargs: "tenant-sending-key-id")
     def registered_secret_path(config_path, tenant_id):
         assert config_path == _tenant_config_path(tmp_path, "oceanicvibes")
         assert tenant_id == "oceanicvibes"
@@ -594,7 +572,6 @@ def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monke
         return tmp_path / "tenant.env"
 
     monkeypatch.setattr(bootstrap, "_tenant_env_path", registered_secret_path)
-    monkeypatch.setattr(bootstrap, "_write_tenant_secrets", lambda *_args, **_kwargs: None)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -615,68 +592,10 @@ def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monke
     state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "failed"
-    assert provider_calls == ["tenant_secret_path", "ensure_domain"]
+    assert provider_calls == ["tenant_secret_path"]
     assert state["cloudflareRouteId"] == "rule-id"
     assert "Mailflare timeout" in state["error"]
     assert memory.state["email_provisioning_state"]["cloudflareRouteId"] == "rule-id"
-
-
-class _ResendLedger:
-    def __init__(self):
-        self.deleted = []
-        self.created = []
-
-    def api_keys_named(self, _name):
-        return []
-
-    def delete_api_key(self, key_id):
-        self.deleted.append(key_id)
-
-    def create_sending_key(self, _name, _domain_id):
-        self.created.append("new-key-id")
-        return "new-key-id", "re_new_secret"
-
-
-def test_a_rotated_sender_key_is_not_retired_before_delivery_is_proven(tmp_path):
-    """Old sender keys stay valid until the promoted version proves the new one."""
-    path = tmp_path / "tenant.env"
-    path.write_text(
-        "RESEND_API_KEY=old-secret\n"
-        "RESEND_API_KEY_ID=11111111-1111-1111-1111-111111111111\n"
-        "RESEND_API_KEY_DOMAIN_ID=domain-one\n"
-        "RESEND_API_KEY_PREVIOUS_IDS=22222222-2222-2222-2222-222222222222\n",
-        encoding="utf-8",
-    )
-    ledger = _ResendLedger()
-    key_id = bootstrap._ensure_tenant_resend_key(
-        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
-        config={}, env={}, resend=ledger,
-    )
-    # Not yet installed in a promoted version: nothing may be revoked.
-    assert key_id == "11111111-1111-1111-1111-111111111111"
-    assert ledger.deleted == []
-    bootstrap._write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": key_id})
-    bootstrap._ensure_tenant_resend_key(
-        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
-        config={}, env={}, resend=ledger,
-    )
-    assert ledger.deleted == ["22222222-2222-2222-2222-222222222222"]
-
-
-def test_a_new_sender_key_is_staged_without_touching_the_worker(tmp_path):
-    path = tmp_path / "tenant.env"
-    path.write_text("PAYLOAD_SECRET=kept\n", encoding="utf-8")
-    ledger = _ResendLedger()
-    key_id = bootstrap._ensure_tenant_resend_key(
-        path=path, tenant_id="oceanicvibes", domain_id="domain-one", worker="oceanicvibes",
-        config={}, env={}, resend=ledger,
-    )
-    assert key_id == "new-key-id"
-    values = bootstrap._tenant_secret_values(path)
-    assert values["RESEND_API_KEY"] == "re_new_secret"
-    assert "RESEND_API_KEY_INSTALLED_ID" not in values
-    assert values["PAYLOAD_SECRET"] == "kept"
-    assert ledger.deleted == []
 
 
 def test_a_missing_zone_permission_is_an_operator_action_not_a_retried_failure(monkeypatch, tmp_path):
@@ -685,7 +604,7 @@ def test_a_missing_zone_permission_is_an_operator_action_not_a_retried_failure(m
     config = _config(tmp_path)
     config["instance_name"] = tenant_id
     memory = FakeMemory()
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
 
     def denied(*_args, **_kwargs):
         raise bootstrap.CloudflareEmailError(
@@ -713,7 +632,7 @@ def test_a_non_permission_provider_failure_stays_retryable(monkeypatch, tmp_path
     config = _config(tmp_path)
     config["instance_name"] = tenant_id
     memory = FakeMemory()
-    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
 
     def unavailable(*_args, **_kwargs):
         raise bootstrap.CloudflareEmailError("Cloudflare Email API returned HTTP 500: internal error")
@@ -744,3 +663,96 @@ def test_a_platform_tenant_cannot_claim_the_shared_hello_mailbox():
         bootstrap._configured_local_part(
             {"local_part": "hello"}, {}, tenant_id="demo", domain=bootstrap.PLATFORM_EMAIL_DOMAIN
         )
+
+
+def test_a_mailbox_provisioned_through_a_third_party_sender_is_reconciled_once(monkeypatch, tmp_path):
+    """Every tenant moves to Cloudflare sending through its own next attempt."""
+    tenant_id = "oceanicvibes"
+    tenant_config_path = _tenant_config_path(tmp_path, tenant_id)
+    tenant_config_path.parent.mkdir(parents=True)
+    tenant_config_path.write_text(f"instance_name: {tenant_id}\n", encoding="utf-8")
+    (tenant_config_path.parent / "tenant.env").write_text(
+        "MAILFLARE_ADDRESS=contact@oceanicvibes.com\n"
+        "MAILFLARE_ZONE_ID=zone-id\n"
+        "MAILFLARE_ROUTING_STATUS=active\n",
+        encoding="utf-8",
+    )
+    active_state = {
+        "state": "active",
+        "siteDomain": "oceanicvibes.com",
+        "emailDomainSetting": "oceanicvibes.com",
+        "outboundProvider": "resend",
+        "address": "contact@oceanicvibes.com",
+        "worker": "oceanicvibes",
+        "cloudflareZoneId": "zone-id",
+        "routingStatus": "active",
+    }
+    memory = FakeMemory({"email_provisioning_state": active_state})
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
+    reconciled = []
+
+    def recheck(*_args, **_kwargs):
+        reconciled.append(True)
+        raise bootstrap.EmailWorkerReadinessError("the tenant Worker has not confirmed the canonical Mailflare release")
+
+    monkeypatch.setattr(bootstrap, "prepare_email_plan", recheck)
+
+    state, _ = bootstrap.auto_provision_email(
+        _config(tmp_path),
+        tenant_id=tenant_id,
+        tenant_config_path=tenant_config_path,
+        memory=memory,
+        env={},
+    )
+
+    assert reconciled == [True]
+    assert state["state"] == "waiting_for_worker_release"
+
+
+def test_retiring_the_third_party_sender_leaves_every_other_secret_intact(tmp_path):
+    path = tmp_path / "tenant.env"
+    path.write_text(
+        "PAYLOAD_SECRET=kept\n"
+        "RESEND_API_KEY=old-secret\n"
+        "RESEND_API_KEY_ID=11111111-1111-1111-1111-111111111111\n"
+        "RESEND_API_KEY_DOMAIN_ID=domain-one\n"
+        "RESEND_API_KEY_INSTALLED_ID=22222222-2222-2222-2222-222222222222\n"
+        "RESEND_API_KEY_PREVIOUS_IDS=33333333-3333-3333-3333-333333333333\n"
+        "MAILFLARE_ADDRESS=contact@oceanicvibes.com\n",
+        encoding="utf-8",
+    )
+
+    bootstrap._retire_sender_keys(path)
+
+    from site_agent.application.tenant_environment import read_tenant_environment
+
+    assert read_tenant_environment(path) == {
+        "PAYLOAD_SECRET": "kept",
+        "MAILFLARE_ADDRESS": "contact@oceanicvibes.com",
+    }
+
+
+def test_worker_readiness_requires_the_cloudflare_sending_contract(monkeypatch, tmp_path):
+    """The older Mailflare contract cannot prove Cloudflare sending."""
+    config = _config(tmp_path)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return bootstrap.json.dumps({
+                "ok": True,
+                "tenant": "oceanicvibes",
+                "contentContract": "helloada-content-v3",
+                "mailflareProvisioningVersion": 1,
+            }).encode()
+
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes")
+
+    assert worker == ""
+    assert "canonical Mailflare release" in error

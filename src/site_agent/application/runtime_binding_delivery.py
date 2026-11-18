@@ -21,8 +21,8 @@ from .release_queue import request_release, release_root, ReleaseQueueError
 from .runtime_activation import RuntimeActivation
 from .tenant_environment import tenant_environment_path, write_tenant_environment, read_tenant_environment, TenantEnvironmentError
 
-RUNTIME_BINDING_NAMES = frozenset({'GOOGLE_SITE_VERIFICATION', 'GA_MEASUREMENT_ID', 'RESEND_API_KEY',
-                                 'MAILFLARE_ADDRESS', 'MAILFLARE_ZONE_ID', 'MAILFLARE_ROUTING_STATUS'})
+RUNTIME_BINDING_NAMES = frozenset({'GOOGLE_SITE_VERIFICATION', 'GA_MEASUREMENT_ID',
+                                  'MAILFLARE_ADDRESS', 'MAILFLARE_ZONE_ID', 'MAILFLARE_ROUTING_STATUS'})
 
 
 class RuntimeBindingError(RuntimeError):
@@ -84,8 +84,6 @@ def deliver_runtime_bindings(config: Mapping[str, Any], env: Mapping[str, str], 
             mailbox = [bool(future.get(name)) for name in ('MAILFLARE_ADDRESS', 'MAILFLARE_ZONE_ID', 'MAILFLARE_ROUTING_STATUS')]
             if any(mailbox) and not all(mailbox):
                 raise RuntimeBindingError('Partial mailbox runtime settings cannot be staged or released')
-            if future.get('RESEND_API_KEY') and not all(future.get(name) for name in ('RESEND_API_KEY_ID', 'RESEND_API_KEY_DOMAIN_ID')):
-                raise RuntimeBindingError('A restricted sender key must retain its exact provider and domain identity')
             write_tenant_environment(path, values)
             # Prove only the bindings this producer owns. Another reconciler
             # may stage its own settings concurrently and must not make this

@@ -249,11 +249,13 @@ provisioning and has registered Mailflare D1 resources; partial settings and
 manual setup remain hard failures. After exact Worker health and authenticated
 connection gates pass, the release runner wakes `next_run:email_provisioning`
 using that tenant's registered `data_dir/memory.db`. The API adapter is the
-only path that changes Cloudflare Email Service/DNS or Resend domains/keys. Unknown MX/SPF/routing state is a
+only path that changes Cloudflare Email Service or DNS. Unknown MX/SPF/routing state is a
 hard stop; do not click through Cloudflare or substitute another provider.
-The protected host Resend management key provisions verified sender domains
-and domain-restricted `sending_access` keys; only each tenant's restricted
-sending key is installed in its Worker. For one existing tenant, run
+Tenant mail is sent by the tenant's own Worker through Cloudflare Email
+Sending from its mailbox address; there is no third-party sender account, no
+per-tenant sending key and no provider domain quota. Every managed domain
+therefore provisions and sends without a separate provider step or plan limit.
+For one existing tenant, run
 `site-agent provision-email --tenant <registered-id>` first (read only),
 inspect its domain/address/operation summary, then use `--apply` to persist
 the tenant setting and perform the reviewed plan. The command resolves
