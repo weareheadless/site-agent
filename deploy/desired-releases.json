@@ -1,8 +1,33 @@
 {
   "releases": {
+    "atelier-harmonie": {
+      "id": "runtime-20261118220420-4c5b6a4a",
+      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
+      "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
+    },
+    "casamigo": {
+      "id": "runtime-20261118220431-b2f5b272",
+      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
+      "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
+    },
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "id": "runtime-20261118220436-23cade92",
+      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
+      "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
+    },
+    "oceanicvibes": {
+      "id": "runtime-20261118220438-1d19953e",
+      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
+      "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
+    },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261118-answer-everything-1",
       "sha": "c0e2fafc47a344516a8b713920dc5449b446d00a"
+    },
+    "site-ff8e9af06f56201f": {
+      "id": "runtime-20261118220438-2736e699",
+      "sha": "4a5e393691658f5dd1515ff91640a08f7229f583",
+      "sharedRuntimeFingerprint": "7a9aa75dbcee8efc57b102b3c2d8a7effc57a450264ce0c43b4d0b409df423f7"
     }
   },
   "schema": 1
