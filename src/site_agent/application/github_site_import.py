@@ -22,15 +22,6 @@ class GitHubSiteImportError(ValueError):
 # ships as an asset next to the pages it describes.
 STATIC_MANIFEST_ASSET = '/_helloada/static-manifest.json'
 
-# The Turnstile widget is a script that renders its challenge in a cross-origin
-# frame from its own origin, which the markup cannot reveal: the frame is
-# created at runtime. A page that loads the loader has already trusted that
-# origin to execute, so the frame directive is derived from the loader instead
-# of being left for every site to remember. No other script origin frames
-# anything.
-TURNSTILE_ORIGIN = 'challenges.cloudflare.com'
-TURNSTILE_LOADER_PATH = re.compile(r'/turnstile/v0/api(?:\.js)?$')
-
 
 def normalize_repository(value: str) -> str:
     value = str(value or '').strip()
@@ -71,9 +62,6 @@ class _References(HTMLParser):
                     self._origin('frame', attrs[key])
                 elif tag == 'script':
                     self._origin('script', attrs[key])
-                    loader = urlsplit(attrs[key])
-                    if loader.netloc == TURNSTILE_ORIGIN and TURNSTILE_LOADER_PATH.search(loader.path):
-                        self._origin('frame', attrs[key])
                 else:
                     self._origin('img', attrs[key])
         if tag == 'link' and attrs.get('rel') in {'stylesheet', 'icon', 'preload'} and attrs.get('href'):

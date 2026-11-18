@@ -143,26 +143,3 @@ def test_unreadable_inventory_does_not_invent_origins(tmp_path):
     (public / 'index.html').write_text('<html lang="en"><head><title>Site</title></head><body></body></html>')
     (tmp_path / 'helloada-frontend.json').write_text('{not json')
     assert 'origins' not in inspect_static_site(tmp_path)
-
-
-def test_turnstile_loader_declares_the_frame_its_widget_creates(tmp_path):
-    """A runtime-created challenge frame must be allowed by the page policy.
-
-    The widget's frame does not exist in the exported markup, so a policy
-    derived only from iframe elements blocks it and every form protected by the
-    challenge fails with a framing error. The loader is the declaration.
-    """
-    public = tmp_path / 'public'
-    public.mkdir()
-    (public / 'index.html').write_text(
-        '<html lang="en"><head><title>Site</title>'
-        '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>'
-        '<script src="https://cdn.example.com/app.js"></script>'
-        '</head><body></body></html>'
-    )
-    security = inspect_static_site(tmp_path)['security']['/index.html']['origins']
-    assert security['script'] == [
-        'https://cdn.example.com',
-        'https://challenges.cloudflare.com',
-    ]
-    assert security['frame'] == ['https://challenges.cloudflare.com']
