@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261118-preview-refusal-names-the-cause",
-    "sha": "0ba88b1fe8a006b8ee7da88eb10bb023541e2c04"
+    "id": "20261118-preview-reason-survives-log",
+    "sha": "f64fd7a9d845231d73684139e60a06e515761487"
   }
 }
