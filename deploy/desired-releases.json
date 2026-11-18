@@ -1,8 +1,19 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "rel-20261118155800-canonical-payload-config",
-      "sha": "69df185d582c38bd02ebf5f5e087591c7eba8c5e"
+      "id": "runtime-20261118155818-d0b376f7",
+      "sha": "4fcdd8cf3e22d7b07514c7beaef402db72112f3b",
+      "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
+    },
+    "casamigo": {
+      "id": "runtime-20261118155819-2dd101af",
+      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
+      "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
+    },
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "id": "runtime-20261118155819-074809ac",
+      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
+      "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261118152956-e0570697",
@@ -10,8 +21,9 @@
       "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
     },
     "oceanicvibes": {
-      "id": "rel-20261113140000-preview-rebuild-bridge",
-      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
+      "id": "runtime-20261118155819-87b98912",
+      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
+      "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
     },
     "site-be8225c72f3ba01a": {
       "id": "runtime-20261118151411-d79ddb29",
