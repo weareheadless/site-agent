@@ -52,6 +52,11 @@ def _tenant_env_path(tenant_config_path: str | Path, tenant_id: str) -> Path:
 # management key or per-tenant restricted key can be exhausted or rotated.
 OUTBOUND_PROVIDER = "cloudflare"
 
+# The tenant mail API the control-plane mailbox is written against. A Worker
+# that does not serve this exact contract cannot be provisioned, because the
+# owner would otherwise be handed a mailbox that speaks a different language.
+MAILFLARE_API_VERSION = 1
+
 
 # No tenant sends mail through a third-party key any more. Retiring the old
 # ledger is part of the same reconcile so no dead credential survives in a
@@ -157,6 +162,7 @@ def _worker_readiness(
         or body.get("tenant") != tenant_id
         or body.get("contentContract") != contract
         or body.get("mailflareProvisioningVersion") != 2
+        or body.get("mailflareApiVersion") != MAILFLARE_API_VERSION
     ):
         return "", "The tenant Worker has not confirmed the canonical Mailflare release."
     return worker, ""

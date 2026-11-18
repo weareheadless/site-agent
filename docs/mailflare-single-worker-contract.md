@@ -36,9 +36,13 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   the Worker continues to export one `fetch`, `email`, `queue` and `scheduled`
   handler. Mailflare queue messages are explicitly discriminated and may not be
   acknowledged by the website-message processor or vice versa.
-- Keep Mailflare UI routes and APIs namespaced so they cannot shadow Payload's
-  API or a site's CMS-backed paths. The Message navigation opens Mailflare's
-  native mailbox. Do not keep the bespoke Payload composer as a parallel path.
+- Keep Mailflare APIs namespaced so they cannot shadow Payload's API or a
+  site's CMS-backed paths. The owner's mailbox UI is served once, by the
+  control plane, from the shared generated package; a page request on a tenant
+  origin under `/mail/*` is handed to that entry instead of rendering a second
+  mailbox. The tenant Worker keeps the mail API, the mailbox data and the
+  public booking endpoints. Do not keep a bespoke composer or a second mailbox
+  UI as a parallel path.
 - Reuse the authenticated Payload owner session for Mailflare access. There is
   no second user password, cross-site SSO service, central account store, or
   public admin API key in a tenant runtime. Every Mailflare request must resolve

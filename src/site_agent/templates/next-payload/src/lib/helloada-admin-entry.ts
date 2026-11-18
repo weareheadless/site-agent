@@ -33,3 +33,14 @@ export function helloAdaAdminEntry(issuer: string | undefined, tenantId: string 
 export function helloAdaWorkspaceHref(issuer: string | undefined, tenantId: string | undefined): string | undefined {
   return tenantEntryUrl(issuer, tenantId, '/workspace')
 }
+
+/**
+ * The owner's mailbox, which the control plane serves.
+ *
+ * A tenant origin keeps the mail API and its data, but it is not a second
+ * mailbox application: a page request there is handed to the platform entry,
+ * which resolves the owner's site and opens the one mailbox UI.
+ */
+export function helloAdaMailboxEntry(issuer: string | undefined, tenantId: string | undefined): string | undefined {
+  return tenantEntryUrl(issuer, tenantId, '/mail')
+}

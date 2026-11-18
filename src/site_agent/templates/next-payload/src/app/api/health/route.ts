@@ -95,5 +95,9 @@ export async function GET() {
     siteAgent: process.env.HELLOADA_SITE_AGENT_VERSION || null,
     releaseSha: process.env.HELLOADA_RELEASE_SHA || null,
     mailflareProvisioningVersion: 2,
+    // The tenant mail API contract the control-plane mailbox is written
+    // against. Bump it with an incompatible API change so a central UI can
+    // refuse a tenant it does not understand instead of rendering it wrong.
+    mailflareApiVersion: 1,
   }, { status: compatible ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

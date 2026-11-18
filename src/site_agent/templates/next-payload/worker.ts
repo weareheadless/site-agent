@@ -4,7 +4,7 @@ import { asMailflareEnv } from "./mailflare-bindings"
 import { createMailflareMailBridge, createPayloadOwnerGate } from "./mailflare-owner-gate"
 import type { MailflareD1 } from "./mailflare-provisioning"
 import { helloAdaSite } from "./src/helloada.config"
-import { helloAdaAdminEntry } from "./src/lib/helloada-admin-entry"
+import { helloAdaAdminEntry, helloAdaMailboxEntry } from "./src/lib/helloada-admin-entry"
 import { describeInboundMessage, reportMailArrival } from "./src/lib/mail-alerts"
 import { managedPathRewrite, previewHtmlResponse, staticWebsiteResponse, type StaticWebsiteEnv } from "./src/lib/static-website"
 import { workspacePreviewPath } from "./src/lib/workspace-preview-path"
@@ -151,6 +151,7 @@ const tenantWorker = composeTenantWorker({
     env.HELLOADA_MAILFLARE_AGENT_QUEUE_NAME,
   ],
   basePath: "/mail",
+  mailboxEntry: (env) => helloAdaMailboxEntry(env.HELLOADA_HANDOFF_ISSUER, env.HELLOADA_TENANT_ID),
 })
 
 export default {

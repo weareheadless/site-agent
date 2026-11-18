@@ -76,3 +76,67 @@ def test_origin_change_rejects_a_custom_domain_that_does_not_cover_the_host(tmp_
 
     with pytest.raises(ConfigError):
         registry.update_site_origin("demo", "https://www.demo.example", custom_domain="other.example")
+
+
+def test_a_new_tenant_derives_its_mailbox_from_its_registered_domain(tmp_path, monkeypatch):
+    """Spawning is settings-first: the mail identity follows the site origin."""
+    from site_agent.application import workspace as workspace_module
+
+    registry, config_path = _registry(tmp_path, monkeypatch)
+    woken = []
+    monkeypatch.setattr(workspace_module, "_wake_email_provisioning", lambda tenant: woken.append(tenant.tenant_id))
+
+    registry.update_site_origin("demo", "https://www.demo.example", custom_domain="demo.example")
+
+    email = yaml.safe_load(config_path.read_text(encoding="utf-8"))["messages"]["email"]
+    assert email == {
+        "enabled": True,
+        "domain": "demo.example",
+        "domain_source": "site_custom_domain",
+        "local_part": "hello",
+        "provisioning": {"auto": True},
+    }
+    assert woken == ["demo"]
+
+
+def test_a_platform_only_tenant_gets_a_tenant_unique_platform_mailbox(tmp_path, monkeypatch):
+    from site_agent.application import workspace as workspace_module
+
+    registry, config_path = _registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(workspace_module, "_wake_email_provisioning", lambda tenant: None)
+
+    registry.update_site_origin("demo", "https://demo.weareheadless.workers.dev")
+
+    email = yaml.safe_load(config_path.read_text(encoding="utf-8"))["messages"]["email"]
+    assert email["domain"] == "helloada.app"
+    assert email["domain_source"] == "helloada_platform"
+    assert email["local_part"] == "demo"
+    assert email["provisioning"] == {"auto": True}
+
+
+def test_an_owner_registered_mailbox_domain_survives_a_domain_change(tmp_path, monkeypatch):
+    from site_agent.application import workspace as workspace_module
+
+    registry, config_path = _registry(tmp_path, monkeypatch)
+    monkeypatch.setattr(workspace_module, "_wake_email_provisioning", lambda tenant: None)
+    document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config_path.write_text(
+        yaml.safe_dump({
+            **document,
+            "messages": {"email": {
+                "enabled": True,
+                "domain": "mail.owner.example",
+                "domain_source": "owner",
+                "local_part": "studio",
+                "provisioning": {"auto": True},
+            }},
+        }),
+        encoding="utf-8",
+    )
+
+    registry.update_site_origin("demo", "https://www.demo.example", custom_domain="demo.example")
+
+    email = yaml.safe_load(config_path.read_text(encoding="utf-8"))["messages"]["email"]
+    assert email["domain"] == "mail.owner.example"
+    assert email["domain_source"] == "owner"
+    assert email["local_part"] == "studio"

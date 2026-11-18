@@ -18,10 +18,30 @@ type ComposeOptions<SiteEnv, MailflareEnv, Context> = {
     dispatch: (authorizedRequest: Request) => Promise<Response>,
   ) => Promise<Response>
   basePath: string
+  /**
+   * The owner's mailbox is served by the control plane, so a page request on
+   * the tenant origin is handed over instead of rendering a second mailbox
+   * here. The tenant keeps the mail API, its data and its public booking
+   * endpoints.
+   */
+  mailboxEntry?: (env: SiteEnv) => string | undefined
 }
 
 function isWithinBasePath(pathname: string, basePath: string) {
   return pathname === basePath || pathname.startsWith(`${basePath}/`)
+}
+
+function isMailflareApi(pathname: string, basePath: string) {
+  return pathname.startsWith(`${basePath}/api/`)
+}
+
+/** A browser asking for a page, not an API client, asset or provider hook. */
+function isMailboxPageRequest(request: Request, pathname: string, basePath: string) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') return false
+  if (isMailflareApi(pathname, basePath)) return false
+  const accept = request.headers.get('accept') ?? ''
+  if (accept && !accept.includes('text/html') && !accept.includes('*/*')) return false
+  return true
 }
 
 type AssetFetcher = { fetch: (request: Request) => Response | Promise<Response> }
@@ -45,6 +65,7 @@ export function composeTenantWorker<SiteEnv, MailflareEnv, Context = unknown>({
   mailflareQueueNames,
   mailflareRequest,
   basePath,
+  mailboxEntry,
 }: ComposeOptions<SiteEnv, MailflareEnv, Context>) {
   if (!basePath.startsWith('/') || basePath === '/' || basePath.endsWith('/')) {
     throw new Error('Mailflare base path must be one absolute, non-root path.')
@@ -60,6 +81,19 @@ export function composeTenantWorker<SiteEnv, MailflareEnv, Context = unknown>({
         const assets = (env as { ASSETS?: AssetFetcher }).ASSETS
         if (assets && isMailflareAsset(pathname, basePath)) {
           return assets.fetch(request)
+        }
+        if (mailboxEntry && isMailboxPageRequest(request, pathname, basePath)) {
+          const entry = mailboxEntry(env)
+          if (!entry) {
+            return new Response(JSON.stringify({ error: 'mailbox_entry_not_configured' }), {
+              status: 503,
+              headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+            })
+          }
+          return new Response(null, {
+            status: 303,
+            headers: { location: entry, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' },
+          })
         }
         if (!mailflare.fetch) throw new Error('Mailflare HTTP handler is missing.')
         return mailflareRequest(request, env, context, async (authorizedRequest) =>

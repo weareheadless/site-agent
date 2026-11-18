@@ -24,9 +24,11 @@ Payload schema and migration files remain platform-owned, not Ada-editable.
 Routine Ada website work cannot change schema, migrations, admin, auth, server
 bridges, package pins or runtime configuration.
 
-Mailflare is the only mailbox and booking application. Its native UI is served
-inside the tenant's single Worker under `/mail/*`; the shared Payload workspace
-must route Messages and enabled Calendar navigation there. Do not export or
+Mailflare is the only mailbox and booking application. The one owner mailbox UI
+is served by the control plane from the shared generated package; this Worker
+keeps the mail API, the mailbox data and the public booking endpoints, and a
+`/mail/*` page request is handed to the control-plane entry. The shared Payload
+workspace routes Messages and enabled Calendar navigation there. Do not export or
 mount the retired Payload Messages or Calendar components. Website enquiries
 are validated and written into the tenant's Mailflare Inbox; confirmed booking
 events use Mailflare Calendar. Public availability is bounded and exposes no

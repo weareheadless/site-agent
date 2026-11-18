@@ -153,3 +153,59 @@ test('Mailflare resolves namespaced tenant bindings without changing Payload bin
 test('Mailflare binding adapter does not fall back to an unrelated DB binding', () => {
   assert.equal(asMailflareEnv({ DB: { name: 'unrelated-db' } }).DB, undefined)
 })
+
+function mailboxHandlers(entry = 'https://helloada.app/admin-entry/site-test/mail') {
+  const calls = []
+  const site = { fetch: async () => { calls.push(['site.fetch']); return new Response('site') } }
+  const mailflare = {
+    fetch: async (request) => { calls.push(['mail.fetch', new URL(request.url).pathname]); return new Response('mail') },
+  }
+  const worker = composeTenantWorker({
+    site,
+    mailflare,
+    mailflareEnv: (env) => env,
+    mailflareQueueNames: () => [...queueNames],
+    mailflareRequest: (request, _env, _context, dispatch) => dispatch(request),
+    basePath: '/mail',
+    mailboxEntry: () => entry,
+  })
+  return { calls, worker }
+}
+
+test('a mailbox page request is handed to the one control-plane mailbox', async () => {
+  const { calls, worker } = mailboxHandlers()
+  for (const path of ['/mail', '/mail/inbox', '/mail/inbox/42', '/mail/settings']) {
+    const response = await worker.fetch(new Request(`https://tenant.test${path}`, {
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    }), {}, {})
+    assert.equal(response.status, 303, path)
+    assert.equal(response.headers.get('location'), 'https://helloada.app/admin-entry/site-test/mail')
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+  }
+  assert.deepEqual(calls, [])
+})
+
+test('the tenant keeps its mail API, assets and non-page requests', async () => {
+  const { calls, worker } = mailboxHandlers()
+  const html = { headers: { accept: 'text/html' } }
+  await worker.fetch(new Request('https://tenant.test/mail/api/public/booking/event-1', html), {}, {})
+  await worker.fetch(new Request('https://tenant.test/mail/api/messages', html), {}, {})
+  await worker.fetch(new Request('https://tenant.test/mail/inbox', { method: 'POST', headers: html.headers }), {}, {})
+  await worker.fetch(new Request('https://tenant.test/mail/inbox', { headers: { accept: 'application/rss+xml' } }), {}, {})
+  assert.deepEqual(calls.map(([name, path]) => [name, path]), [
+    ['mail.fetch', '/mail/api/public/booking/event-1'],
+    ['mail.fetch', '/mail/api/messages'],
+    ['mail.fetch', '/mail/inbox'],
+    ['mail.fetch', '/mail/inbox'],
+  ])
+})
+
+test('a tenant that cannot name the central mailbox fails closed instead of serving a second one', async () => {
+  const { calls, worker } = mailboxHandlers('')
+  const response = await worker.fetch(new Request('https://tenant.test/mail/inbox', {
+    headers: { accept: 'text/html' },
+  }), {}, {})
+  assert.equal(response.status, 503)
+  assert.equal((await response.json()).error, 'mailbox_entry_not_configured')
+  assert.deepEqual(calls, [])
+})
