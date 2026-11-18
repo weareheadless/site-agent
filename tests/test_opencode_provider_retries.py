@@ -92,3 +92,51 @@ def test_ambiguous_or_non_retryable_failure_is_not_replayed(monkeypatch, tmp_pat
     with pytest.raises(runner.RunnerError):
         runner.run_opencode_turn(tmp_path, "request", {})
     assert len(calls) == 1
+
+
+def test_a_text_tool_call_retries_once_on_a_native_tool_model(tmp_path, monkeypatch):
+    """DSML in a text event is a provider protocol failure, not a dead task."""
+    from site_agent.hands import opencode_runner as runner
+
+    calls = []
+
+    def fake_once(clone, brief, config, **kwargs):
+        calls.append({"brief": brief, "model": kwargs.get("model_override"), "session": kwargs.get("session_id")})
+        if len(calls) == 1:
+            raise runner.RunnerError(
+                "opencode emitted unsupported DSML/XML instead of a native tool call: <tool",
+                result={"session_id": "ses_protocol"},
+            )
+        return {"reply": "done", "session_id": "ses_ok"}
+
+    monkeypatch.setattr(runner, "_run_opencode_turn_once", fake_once)
+    config = {"builder": {"model": "openrouter/deepseek/deepseek-v4.1-flash"}}
+
+    result = runner.run_opencode_turn(tmp_path, "wire the widget", config)
+
+    assert result["reply"] == "done"
+    assert len(calls) == 2
+    assert calls[0]["model"] is None
+    assert calls[1]["model"] == runner._PROTOCOL_FALLBACK_MODEL
+    assert "native tool calls" in calls[1]["brief"]
+    # A protocol failure is not an interrupted turn: it must not resume the session.
+    assert calls[1]["session"] is None
+
+
+def test_a_second_protocol_failure_is_reported_not_looped(tmp_path, monkeypatch):
+    from site_agent.hands import opencode_runner as runner
+
+    calls = []
+
+    def always_dsml(clone, brief, config, **kwargs):
+        calls.append(1)
+        raise runner.RunnerError(
+            "opencode emitted unsupported DSML/XML instead of a native tool call: <tool",
+            result={},
+        )
+
+    monkeypatch.setattr(runner, "_run_opencode_turn_once", always_dsml)
+
+    with pytest.raises(runner.RunnerError, match="cannot call tools reliably"):
+        runner.run_opencode_turn(tmp_path, "brief", {"builder": {}})
+    assert len(calls) == 2
