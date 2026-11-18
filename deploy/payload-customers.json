@@ -205,7 +205,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "sharedRuntimeUpdate": "automatic",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
     },
@@ -268,7 +268,7 @@
       "repository": "https://github.com/weareheadless/helloada-site-be8225c72f3ba01a.git",
       "schemaIdentity": "664c57047e3ed8f2dd9d1e2dd6b50938f8c2e20ee1ab4f85a75abbfb5ba98848",
       "schemaRevision": 13,
-      "sharedRuntimeUpdate": "canary",
+      "sharedRuntimeUpdate": "automatic",
       "websitePresent": false,
       "worker": "helloada-site-be8225c72f3ba01a"
     },
