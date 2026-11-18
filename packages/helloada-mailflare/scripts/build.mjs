@@ -224,6 +224,7 @@ async function prepareBuildCopy(destination) {
   await applyBookingWorkspacePatches(destination)
   await applyBookingCapacityPatches(destination)
   await removeLegacyBookingSurfaces(destination)
+  await removeOwnerMailPages(destination)
 
   const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
   const mailboxAccessSource = await readFile(mailboxAccessPath, 'utf8')
@@ -257,6 +258,49 @@ async function prepareBuildCopy(destination) {
 
 async function exists(file) {
   try { await stat(file); return true } catch { return false }
+}
+
+/**
+ * The owner's mailbox, calendar and booking UI is served once, by the control
+ * plane. A tenant Worker keeps the mail API, its data, its public booking
+ * endpoints and the shared mail helpers its server code uses, but it compiles
+ * no route that could render a second admin even if the handover were
+ * misconfigured.
+ */
+export async function removeOwnerMailPages(destination) {
+  const groups = ['src/app/(dashboard)', 'src/app/(calendar)']
+  const shellFiles = new Set(['page.tsx', 'layout.tsx', 'template.tsx', 'loading.tsx', 'error.tsx', 'not-found.tsx'])
+  const removed = []
+  const walk = async relative => {
+    const directory = path.join(destination, relative)
+    if (!(await exists(directory))) return
+    const { readdir } = await import('node:fs/promises')
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const child = `${relative}/${entry.name}`
+      if (entry.isDirectory()) { await walk(child); continue }
+      if (!shellFiles.has(entry.name)) continue
+      await rm(path.join(destination, child), { force: true })
+      removed.push(child)
+    }
+  }
+  for (const group of groups) await walk(group)
+  if (removed.length === 0) throw new Error('Owner mail pages were not found; the pinned upstream layout changed')
+
+  for (const group of groups) {
+    for (const file of await sourceFiles(path.join(destination, group)).catch(() => [])) {
+      const name = path.basename(file)
+      if (shellFiles.has(name)) throw new Error('Owner mail page remains in the generated tenant app: ' + path.relative(destination, file))
+    }
+  }
+
+  const requiredApi = [
+    'src/app/api/messages/route.ts',
+    'src/app/api/calendar/events/route.ts',
+    'src/app/api/booking/route.ts',
+  ]
+  const missing = []
+  for (const relative of requiredApi) if (!(await exists(path.join(destination, relative)))) missing.push(relative)
+  if (missing.length) throw new Error('Tenant mail API routes are missing from the generated tenant app: ' + missing.join(', '))
 }
 
 async function copyMigrations(destination) {

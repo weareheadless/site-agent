@@ -16,6 +16,7 @@ const excluded = [
   'src/app/(dashboard)/import-export',
   'src/app/(dashboard)/rules',
 ]
+const routeGroups = ['(dashboard)', '(calendar)']
 
 test.before(() => {
   execFileSync('node', ['scripts/build.mjs'], { cwd: packageRoot, stdio: 'pipe' })
@@ -40,13 +41,53 @@ test('every owner mailbox page is routed', async () => {
     }
     return pages
   }
-  const upstreamPages = (await walk(path.join(upstreamRoot, 'src/app/(dashboard)')))
-    .map((file) => path.relative(upstreamRoot, file).split(path.sep).join('/'))
-    .filter((relative) => !excluded.some((entry) => relative.startsWith(entry)))
-    .map((relative) => relative.replace('src/app/(dashboard)', '').replace(/\/page\.tsx$/, '').replace(/\[([^\]]+)\]/g, ':$1') || '/')
-    .sort()
+  const upstreamPages = []
+  for (const group of routeGroups) {
+    const pages = (await walk(path.join(upstreamRoot, 'src/app', group)))
+      .map((file) => path.relative(upstreamRoot, file).split(path.sep).join('/'))
+      .filter((relative) => !excluded.some((entry) => relative.startsWith(entry)))
+      .map((relative) => relative.replace(`src/app/${group}`, '').replace(/\/page\.tsx$/, '').replace(/\[([^\]]+)\]/g, ':$1') || '/')
+    upstreamPages.push(...pages)
+  }
+  upstreamPages.sort()
   const routes = [...read('routes.generated.tsx').matchAll(/pattern: "([^"]+)"/g)].map((match) => match[1]).sort()
   assert.deepEqual(routes, upstreamPages)
+})
+
+test('the owner calendar and booking editor ship with the mailbox', () => {
+  const routes = read('routes.generated.tsx')
+  assert.match(routes, /pattern: "\/calendar"/)
+  assert.match(routes, /pattern: "\/booking"/)
+
+  // The calendar tabs move between the two surfaces under the mailbox mount
+  // point, so the layout has to read the mailbox path, not the page pathname.
+  const layout = read('src/app/(calendar)/layout.tsx')
+  assert.match(layout, /useMailboxPathname\(\)/)
+  assert.match(layout, /<Link href="\/booking"/)
+
+  const calendar = read('src/app/(calendar)/calendar/page.tsx')
+  assert.match(calendar, /authFetch\(`\/api\/calendar\/events/)
+  const booking = read('src/app/(calendar)/booking/page.tsx')
+  assert.match(booking, /authFetch\("\/api\/booking"\)/)
+
+  // Avatar images are not fetched, so the control-plane prefix has to be
+  // applied where the URL is built.
+  const avatar = read('src/app/(calendar)/booking/booking-host-avatar.tsx')
+  assert.match(avatar, /const imageUrl = apiUrl\(/)
+})
+
+test('booking keeps only the shapes and helpers the editor exchanges', () => {
+  // The tenant owns the booking tables; the generated app keeps the pure
+  // parser and the request shapes, and nothing that reaches a database.
+  const hosts = read('src/lib/booking/hosts.ts')
+  assert.match(hosts, /export function parseBookingHostIds\(/)
+  assert.doesNotMatch(hosts, /validBookingHostIds/)
+  assert.doesNotMatch(hosts, /drizzle|@\/db/)
+
+  const types = read('src/lib/booking/types.d.ts')
+  assert.match(types, /export type BookingEventInput/)
+  assert.doesNotMatch(types, /ExistingCalendarEvent/)
+  assert.doesNotMatch(types, /@\/db/)
 })
 
 test('the generated tree carries no tenant auth and no root-relative api calls', async () => {
