@@ -1,8 +1,8 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "rel-20261118151000-content-contract",
-      "sha": "84c5f7af16d723c1d8f0de9e5fc53150033b057c"
+      "id": "rel-20261118155800-canonical-payload-config",
+      "sha": "69df185d582c38bd02ebf5f5e087591c7eba8c5e"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "runtime-20261118152956-e0570697",
