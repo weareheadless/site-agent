@@ -9,6 +9,15 @@ export type HelloAdaSiteConfig = {
     preview: string
     /** Control-plane handoff entry for the tenant admin, when it is remote. */
     manage?: string
+    /**
+     * Public paths this site's own Next source renders even when its
+     * presentation is committed static HTML.
+     *
+     * A static presentation answers every undeclared path with its 404 page, so
+     * a platform page such as the booking form has to be named here instead of
+     * being mistaken for a missing static document.
+     */
+    managedPaths?: readonly string[]
   }
   content: {
     primaryCollections: readonly string[]
@@ -34,7 +43,7 @@ const defaultHelloAdaSite: HelloAdaSiteConfig = {
   siteName: 'Your website',
   defaultLocale: 'en',
   locales: ['en'],
-  routes: { workspaceApi: '/api/helloada', liveSite: '/', preview: '/helloada-preview' },
+  routes: { workspaceApi: '/api/helloada', liveSite: '/', preview: '/helloada-preview', managedPaths: [] },
   content: { primaryCollections: ['pages', 'posts', 'products', 'media'], settingsGlobals: ['siteSettings', 'navigation'] },
   features: { commerce: false, posts: true, social: false, bookings: false, inlineEditing: true },
 }
@@ -52,6 +61,23 @@ const route = (value: string, fallback: string) => {
   }
   if (!normalized.startsWith('/') || normalized.startsWith('//')) return fallback
   return normalized.replace(/\/$/, '') || '/'
+}
+
+/**
+ * Managed bases are public site paths the app renders itself. They must be
+ * absolute, query-free paths; anything else is a configuration error rather
+ * than a page that silently 404s.
+ */
+const managedBases = (value: unknown): string[] => {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) throw new Error('HelloAda managedPaths must be a list of absolute paths')
+  return Array.from(new Set(value.map((item) => {
+    const base = typeof item === 'string' ? item.trim() : ''
+    if (!base.startsWith('/') || base.startsWith('//') || base.includes('?') || base.includes('#')) {
+      throw new Error('HelloAda managedPaths must be absolute site paths')
+    }
+    return base.length > 1 ? base.replace(/\/+$/, '') : base
+  })))
 }
 
 export const previewRouteForTenant = (tenantId: string) => {
@@ -82,6 +108,7 @@ export const defineHelloAdaSite = (input: HelloAdaSiteInput): HelloAdaSiteConfig
       workspaceApi: route(input.routes?.workspaceApi || defaultHelloAdaSite.routes.workspaceApi, defaultHelloAdaSite.routes.workspaceApi),
       liveSite: route(input.routes?.liveSite || defaultHelloAdaSite.routes.liveSite, defaultHelloAdaSite.routes.liveSite),
       preview: route(input.routes?.preview || tenantPreviewRoute, tenantPreviewRoute),
+      managedPaths: managedBases(input.routes?.managedPaths),
     },
     content: { ...defaultHelloAdaSite.content, ...input.content },
     features: { ...defaultHelloAdaSite.features, ...input.features },
