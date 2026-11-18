@@ -1153,8 +1153,9 @@ SYSTEM_NOTE_TOOLS = (
     "reports what a new key would be and creates nothing: issuing it is the owner's explicit "
     "decision, and a key is only delivered to the live site by the normal release. The persona is "
     "the owner's writing, so draft it with them in their own words rather than presenting it as "
-    "yours. Health, safety, legal, money and the site's own facts are answered plainly by a boundary "
-    "outside the persona, and no declaration can switch that off. Never describe the assistant as "
+    "yours, and it answers every subject the visitor raises — the platform does not take a topic "
+    "away from a site's persona. The one exception is a report of imminent harm, which gets a fixed "
+    "line with an emergency pointer instead of the persona. Never describe the assistant as "
     "live, working or earning anything unless get_assistant shows the live site configured."
 )
 

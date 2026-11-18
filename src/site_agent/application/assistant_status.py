@@ -177,7 +177,10 @@ def read_assistant_state(
             "path": ASSISTANT_ROUTE,
             "body": {"messages": [{"role": "user", "content": "..."}]},
             "response": "text/event-stream of OpenRouter chat completion chunks",
-            "headers": {"x-assistant-mode": "bit (persona answered) or honest (persona dropped)"},
+            "headers": {
+                "x-assistant-mode": "bit (the site's persona answered) or hold (the fixed danger line answered)",
+                "x-assistant-fixed": "danger, on a hold turn only",
+            },
             "inRepository": False,
             "clientModule": "src/lib/assistant-client.ts",
             "clientUsage": "import { streamAssistant } from '@/lib/assistant-client'",

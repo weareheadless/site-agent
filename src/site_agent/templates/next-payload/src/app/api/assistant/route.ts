@@ -3,7 +3,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { assistantConfig } from '@/lib/assistant-config'
 import { assistantInstruction } from '@/lib/assistant-prompt'
 import { AssistantProviderError, assistantReply, type AssistantMessage } from '@/lib/assistant-provider'
-import { classifyTurn, type AssistMode } from '@/lib/assistant-safety'
+import { classifyTurn, dangerStream, type AssistMode } from '@/lib/assistant-safety'
 import { siteCorpus, type SiteCorpusEnv } from '@/lib/assistant-site-context'
 
 export const dynamic = 'force-dynamic'
@@ -87,19 +87,33 @@ export async function POST(request: Request) {
     }
   }
 
-  // The act is allowed only where a non-role-playing call says it is harmless.
+  // One question decides the branch: is someone in danger right now? Every
+  // other subject belongs to the site's own persona, including the ones the
+  // platform used to take over. The hold answers from a fixed line so a report
+  // of harm can never receive a generated joke.
   const mode: AssistMode = await classifyTurn({
     apiKey,
     model: config.model,
     message: messages[messages.length - 1].content,
     signal: request.signal,
   })
+  if (mode === 'hold') {
+    return new Response(dangerStream(), {
+      headers: {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        'x-accel-buffering': 'no',
+        'x-assistant-mode': mode,
+        'x-assistant-fixed': 'danger',
+      },
+    })
+  }
 
   try {
     const reply = await assistantReply({
       apiKey,
       model: config.model,
-      instruction: assistantInstruction({ config, reference, mode }),
+      instruction: assistantInstruction({ config, reference }),
       messages,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       title: `HelloAda site assistant (${origin})`,

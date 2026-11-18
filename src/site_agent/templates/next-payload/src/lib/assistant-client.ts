@@ -10,7 +10,7 @@
 export const ASSISTANT_ENDPOINT = '/api/assistant'
 
 export type AssistantTurn = { role: 'user' | 'assistant'; content: string }
-export type AssistantMode = 'bit' | 'honest'
+export type AssistantMode = 'bit' | 'hold'
 
 export type AssistantStreamOptions = {
   messages: readonly AssistantTurn[]
@@ -22,7 +22,7 @@ export type AssistantStreamOptions = {
 }
 
 export type AssistantResult = {
-  /** `bit` when the site's persona answered, `honest` when it was dropped. */
+  /** `bit` when the site's persona answered, `hold` when the fixed danger line did. */
   mode: AssistantMode | null
   text: string
 }
@@ -40,7 +40,7 @@ export class AssistantClientError extends Error {
 
 const readMode = (value: string | null): AssistantMode | null => {
   const mode = String(value ?? '').trim()
-  return mode === 'bit' || mode === 'honest' ? mode : null
+  return mode === 'bit' || mode === 'hold' ? mode : null
 }
 
 const deltaOf = (payload: string): string => {

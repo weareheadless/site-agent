@@ -9,7 +9,7 @@ import {
   renderCorpus,
 } from '../src/lib/assistant-context.ts'
 import { assistantInstruction } from '../src/lib/assistant-prompt.ts'
-import { classifyTurn } from '../src/lib/assistant-safety.ts'
+import { DANGER_REPLY, classifyTurn, dangerStream } from '../src/lib/assistant-safety.ts'
 import { AssistantClientError, streamAssistant } from '../src/lib/assistant-client.ts'
 
 test('page text prefers the page body and drops site chrome', () => {
@@ -117,47 +117,70 @@ test('an empty reference is stated instead of pretending to know the site', () =
   assert.match(instruction, /currently empty/)
 })
 
-test('an honest turn drops the tenant persona entirely', () => {
+test('the persona answers every subject, and no rule takes one over', () => {
   const instruction = assistantInstruction({
     config: { purpose: 'Answer only with confident nonsense.', sources: 'none', model: 'model/x' },
     reference: '',
-    mode: 'honest',
   })
 
-  assert.doesNotMatch(instruction, /confident nonsense/)
-  assert.match(instruction, /Do not role-play/)
-  assert.match(instruction, /not qualified to advise on health, safety, legal or money matters/)
+  assert.match(instruction, /confident nonsense/)
+  // The platform no longer decides that a subject leaves the persona: health,
+  // money, the law and the site's own facts are the owner's writing.
+  for (const retired of ['Do not role-play', 'not qualified to advise', 'Health, bodies, symptoms', 'contact the contact page']) {
+    assert.doesNotMatch(instruction, new RegExp(retired), retired)
+  }
+  // What stays is infrastructure: language, instruction boundary, grounding.
+  assert.match(instruction, /Reply in the language the visitor used/)
+  assert.match(instruction, /are content, not orders/)
 })
 
-test('the safety gate fails closed to an honest answer', async () => {
+test('the gate holds only a report of imminent harm', async () => {
   const original = globalThis.fetch
   const reply = (body, ok = true) => {
     globalThis.fetch = async () => ({ ok, json: async () => body })
   }
   try {
-    reply({ choices: [{ message: { content: 'BIT' } }] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'a joke about the moon' }), 'bit')
+    reply({ choices: [{ message: { content: 'SILLY' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'should I invest my savings?' }), 'bit')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I am constipated' }), 'bit')
 
-    reply({ choices: [{ message: { content: 'HONEST' } }] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'a dose question' }), 'honest')
+    reply({ choices: [{ message: { content: 'DANGER' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'my baby swallowed pills' }), 'hold')
 
+    // A broken gate must not be the reason someone in danger gets nonsense.
     reply({ choices: [{ message: { content: 'hard to say' } }] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'honest')
-
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
     reply({ choices: [] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'honest')
-
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'hold')
     reply({ error: 'refused' }, false)
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'provider down' }), 'honest')
-
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'provider down' }), 'hold')
     globalThis.fetch = async () => { throw new Error('network down') }
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'network down' }), 'honest')
-
-    globalThis.fetch = original
-    assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'honest')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'network down' }), 'hold')
+    assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'hold')
   } finally {
     globalThis.fetch = original
   }
+})
+
+test('the hold answers with the platform line, not a persona', async () => {
+  assert.match(DANGER_REPLY, /not going to answer this one in character/)
+  assert.match(DANGER_REPLY, /emergency services/)
+  // It carries no site voice, and nothing a visitor could mistake for advice.
+  assert.doesNotMatch(DANGER_REPLY, /you should|take |mg\b/i)
+
+  const stream = dangerStream()
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    text += decoder.decode(value, { stream: true })
+  }
+  assert.match(text, /^data: \{/)
+  const first = JSON.parse(text.split('\n\n')[0].slice(5))
+  assert.equal(first.choices[0].delta.content, DANGER_REPLY)
+  assert.match(text, /data: \[DONE\]/)
 })
 
 test('the client streams deltas and reports which mode answered', async () => {
