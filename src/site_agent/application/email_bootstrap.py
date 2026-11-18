@@ -415,15 +415,26 @@ def auto_provision_email(
 
     address = f"{local_part}@{requested_email_domain}"
     configured_worker = str(_mapping(site.get("source_deployment")).get("worker_name") or "").strip().lower()
-    existing_mailbox_state_matches = (
+    mailbox_identity_matches = (
         not expected_snapshot_sha256
         and (state.get("state") == "active" or (state.get("state") == "awaiting_runtime_release" and state.get("mailflareMailboxState") == "active"))
         and state.get("siteDomain") == raw_domain
         and state.get("emailDomainSetting") == requested_email_domain
-        and state.get("outboundProvider") == OUTBOUND_PROVIDER
         and str(state.get("address") or "").strip().lower() == address.lower()
         and state.get("worker") == configured_worker
     )
+    existing_mailbox_state_matches = mailbox_identity_matches and state.get("outboundProvider") == OUTBOUND_PROVIDER
+    if mailbox_identity_matches and not existing_mailbox_state_matches:
+        # A mailbox provisioned under an older sender contract keeps working
+        # until its own Worker carries the Cloudflare sending contract. Only
+        # then is it reconciled, so the owner-visible state stays true instead
+        # of reporting a setup in progress for a working mailbox.
+        _worker, readiness_error = _worker_readiness(config, tenant_id, resolved_env)
+        if readiness_error:
+            result = {**state, "lastAttemptAt": _now()}
+            if memory is not None:
+                memory.kv_set("email_provisioning_state", result)
+            return result, resolved_env
     if existing_mailbox_state_matches:
         try:
             _tenant_env_path(tenant_config_path, tenant_id)

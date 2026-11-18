@@ -665,8 +665,7 @@ def test_a_platform_tenant_cannot_claim_the_shared_hello_mailbox():
         )
 
 
-def test_a_mailbox_provisioned_through_a_third_party_sender_is_reconciled_once(monkeypatch, tmp_path):
-    """Every tenant moves to Cloudflare sending through its own next attempt."""
+def _third_party_state(tmp_path):
     tenant_id = "oceanicvibes"
     tenant_config_path = _tenant_config_path(tmp_path, tenant_id)
     tenant_config_path.parent.mkdir(parents=True)
@@ -674,7 +673,8 @@ def test_a_mailbox_provisioned_through_a_third_party_sender_is_reconciled_once(m
     (tenant_config_path.parent / "tenant.env").write_text(
         "MAILFLARE_ADDRESS=contact@oceanicvibes.com\n"
         "MAILFLARE_ZONE_ID=zone-id\n"
-        "MAILFLARE_ROUTING_STATUS=active\n",
+        "MAILFLARE_ROUTING_STATUS=active\n"
+        "RESEND_API_KEY=old-tenant-key\n",
         encoding="utf-8",
     )
     active_state = {
@@ -686,27 +686,54 @@ def test_a_mailbox_provisioned_through_a_third_party_sender_is_reconciled_once(m
         "worker": "oceanicvibes",
         "cloudflareZoneId": "zone-id",
         "routingStatus": "active",
+        "resendDomain": "oceanicvibes.com",
     }
+    return tenant_id, tenant_config_path, active_state
+
+
+def test_a_working_mailbox_keeps_its_state_until_its_worker_carries_the_new_sender(monkeypatch, tmp_path):
+    """Report the truth: the mailbox works while a release has not arrived."""
+    tenant_id, tenant_config_path, active_state = _third_party_state(tmp_path)
     memory = FakeMemory({"email_provisioning_state": active_state})
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(
+        bootstrap, "_worker_readiness",
+        lambda *_args, **_kwargs: ("", "The tenant Worker has not confirmed the canonical Mailflare release."),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "prepare_email_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("an unchanged Worker must not be planned")),
+    )
+
+    state, _ = bootstrap.auto_provision_email(
+        _config(tmp_path), tenant_id=tenant_id, tenant_config_path=tenant_config_path, memory=memory, env={},
+    )
+
+    assert state["state"] == "active"
+    assert state["outboundProvider"] == "resend"
+    assert "RESEND_API_KEY=old-tenant-key" in (tenant_config_path.parent / "tenant.env").read_text()
+
+
+def test_a_working_mailbox_is_reconciled_once_its_worker_reports_the_new_sender(monkeypatch, tmp_path):
+    tenant_id, tenant_config_path, active_state = _third_party_state(tmp_path)
+    memory = FakeMemory({"email_provisioning_state": active_state})
+    monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda *_args: "email-token")
+    monkeypatch.setattr(bootstrap, "_worker_readiness", lambda *_args, **_kwargs: ("oceanicvibes", ""))
     reconciled = []
 
     def recheck(*_args, **_kwargs):
         reconciled.append(True)
-        raise bootstrap.EmailWorkerReadinessError("the tenant Worker has not confirmed the canonical Mailflare release")
+        raise bootstrap.EmailProvisioningError("mailbox preflight reached")
 
     monkeypatch.setattr(bootstrap, "prepare_email_plan", recheck)
 
     state, _ = bootstrap.auto_provision_email(
-        _config(tmp_path),
-        tenant_id=tenant_id,
-        tenant_config_path=tenant_config_path,
-        memory=memory,
-        env={},
+        _config(tmp_path), tenant_id=tenant_id, tenant_config_path=tenant_config_path, memory=memory, env={},
     )
 
     assert reconciled == [True]
-    assert state["state"] == "waiting_for_worker_release"
+    assert state["state"] == "failed"
 
 
 def test_retiring_the_third_party_sender_leaves_every_other_secret_intact(tmp_path):
