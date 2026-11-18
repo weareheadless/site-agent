@@ -308,6 +308,55 @@ def test_pipeline_commits_on_the_preview_branch_are_not_the_owner_change(tmp_pat
         memory.close()
 
 
+def test_an_empty_preview_homepage_names_the_route_and_the_unpublished_page(tmp_path):
+    """The owner and the agent read this message; a bare HTTP 404 is not it."""
+
+    class _Gateway:
+        def __init__(self, status):
+            self.status = status
+
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            assert (collection, identifier, identifier_kind, draft) == ("pages", "home", "slug", False)
+            return {"id": "1", "slug": "home", "_status": self.status}
+
+    for status, expected in (("draft", "no published home document"), ("published", "")):
+        service = source_deployment.SourceDeploymentService(
+            {"site": {"clone_path": str(tmp_path)}},
+        )
+        service.payload_gateway = _Gateway(status)
+        try:
+            message = service._preview_unavailable_reason(
+                {"id": "job-1"},
+                source_deployment.SourceDeploymentError(
+                    "compiled preview homepage returned HTTP 404; refusing to mark an unrendered site ready"
+                ),
+            )
+            assert "HTTP 404" in message
+            assert "HTTP Error 404" not in message
+            if expected:
+                assert expected in message
+            else:
+                assert "no published home document" not in message
+        finally:
+            service.close()
+
+
+def test_a_gateway_that_cannot_answer_adds_no_claim(tmp_path):
+    class _Broken:
+        def read(self, *_args, **_kwargs):
+            raise RuntimeError("gateway unavailable")
+
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    service.payload_gateway = _Broken()
+    try:
+        message = service._preview_unavailable_reason(
+            {"id": "job-1"}, source_deployment.SourceDeploymentError("the route refused to render"),
+        )
+        assert message == "the route refused to render"
+    finally:
+        service.close()
+
+
 def test_compiled_preview_does_not_report_a_404_homepage_as_ready(tmp_path):
     service = source_deployment.SourceDeploymentService(
         {"site": {"clone_path": str(tmp_path)}},

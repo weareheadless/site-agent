@@ -1786,6 +1786,45 @@ class SourceDeploymentService:
             )
         return int(status) == 200
 
+    def _preview_unavailable_reason(self, job: Mapping[str, Any], refusal: Exception) -> str:
+        """Name why a preview cannot present its homepage, with the evidence.
+
+        A 404 on the root is a real refusal and the reason must survive it: the
+        route, the runtime's own last words, and — when it is true — the fact
+        that the site has no published homepage for the preview to render.
+        """
+        message = str(refusal).strip() or "the preview did not render its homepage"
+        tail = self._runtime_log_tail(str(job.get("id") or ""))
+        if tail:
+            message = f"{message}\n{tail}"
+        return message + self._unpublished_home_note()
+
+    def _unpublished_home_note(self) -> str:
+        """Why a homepage that reads Payload can render nothing.
+
+        The runtime answers a public read from the published revision only, so
+        a document that was saved but never published renders nothing and the
+        route answers 404. State that as a fact when it is this site's state,
+        and say nothing when it is not.
+        """
+        gateway = self.payload_gateway
+        if gateway is None:
+            return ""
+        try:
+            document = gateway.read(
+                "pages", identifier="home", identifier_kind="slug", draft=False, locale=None,
+            )
+        except Exception:  # noqa: BLE001 - a note is never a reason to fail a preview
+            return ""
+        if not isinstance(document, Mapping) or document.get("_status") == "published":
+            return ""
+        return (
+            "\nThis site has no published home document: its saved pages/home revision is still a "
+            "draft, and a public read answers from the published revision only. Publishing that "
+            "revision is the owner's decision; until it exists, no preview of this site can render "
+            "a homepage."
+        )
+
     def _runtime_log_tail(self, job_id: str, limit: int = 1_500) -> str:
         entry = self._runtime_logs.get(str(job_id))
         if entry is None:
@@ -1897,9 +1936,14 @@ class SourceDeploymentService:
             except urllib.error.HTTPError as exc:
                 try:
                     self._preview_root_is_ready(exc.code)
-                except SourceDeploymentError:
+                except SourceDeploymentError as refusal:
+                    # The refusal names the route and the status; the HTTPError's
+                    # own text is "HTTP Error 404: Not Found", which tells the
+                    # owner and the agent nothing and was the only thing they
+                    # received the last time a preview had an empty homepage.
+                    message = self._preview_unavailable_reason(job, refusal)
                     self._stop_runtime(str(job["id"]))
-                    raise SourceDeploymentError(str(exc)) from exc
+                    raise SourceDeploymentError(message) from exc
             except (OSError, urllib.error.URLError):
                 pass
             time.sleep(1)
