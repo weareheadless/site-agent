@@ -1,0 +1,165 @@
+/*
+ * Booking frame defaults.
+ *
+ * These are fallbacks only: a tenant page can pass its own stylesheet with
+ * ?stylesheet=/path.css and then its typography and palette win. The frame
+ * must stay legible on its own, because a static page that never had a
+ * booking form has no booking styles to lend it.
+ */
+:root {
+  color-scheme: light;
+}
+
+body.helloada-booking-frame {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: #1f1c1a;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.helloada-booking {
+  display: grid;
+  gap: 18px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.helloada-booking *,
+.helloada-booking *::before,
+.helloada-booking *::after {
+  box-sizing: border-box;
+}
+
+.helloada-booking-heading h3 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: -0.02em;
+}
+
+.helloada-booking-heading p,
+.helloada-booking-duration {
+  margin: 6px 0 0;
+  color: #5c5753;
+  font-size: 0.95rem;
+}
+
+.helloada-booking form {
+  display: grid;
+  gap: 16px;
+}
+
+.helloada-booking form > label {
+  display: grid;
+  gap: 7px;
+  font-size: 0.9rem;
+}
+
+.helloada-booking input,
+.helloada-booking textarea,
+.helloada-booking select {
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid rgba(31, 28, 26, 0.22);
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+
+.helloada-booking input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 2px 0 0;
+}
+
+.helloada-booking-consent {
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+}
+
+.helloada-booking fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.helloada-booking legend {
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.helloada-booking legend small {
+  color: #5c5753;
+  font-weight: 400;
+}
+
+.helloada-booking-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.helloada-booking-slots button {
+  padding: 9px 14px;
+  border: 1px solid rgba(31, 28, 26, 0.22);
+  border-radius: 999px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.helloada-booking-slots button.is-selected {
+  border-color: currentColor;
+  background: #1f1c1a;
+  color: #fff;
+}
+
+.helloada-booking form > button[type="submit"] {
+  justify-self: start;
+  padding: 12px 22px;
+  border: 1px solid #1f1c1a;
+  border-radius: 8px;
+  background: #1f1c1a;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+.helloada-booking form > button[type="submit"]:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.helloada-booking-empty,
+.helloada-booking-error,
+.helloada-booking-success {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.helloada-booking-error {
+  color: #a51f1f;
+}
+
+.helloada-booking-success {
+  padding: 16px;
+  border: 1px solid rgba(31, 28, 26, 0.22);
+  border-radius: 8px;
+}
+
+.helloada-booking-honeypot {
+  position: absolute;
+  left: -10000px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.helloada-turnstile {
+  min-height: 65px;
+}

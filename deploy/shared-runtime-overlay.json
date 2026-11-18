@@ -22,6 +22,7 @@
     "src/app/api/helloada/handoff/route.ts",
     "src/app/api/helloada/mailflare-identity/route.ts",
     "src/app/api/workspace/authoring-contract/route.ts",
+    "src/app/api/workspace/booking/route.ts",
     "src/app/api/workspace/content/route.ts",
     "src/app/api/workspace/global/route.ts",
     "src/app/api/workspace/growth/[...path]/route.ts",
