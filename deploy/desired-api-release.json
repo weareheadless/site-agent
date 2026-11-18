@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261118-assistant-tool-reads-checkout",
-    "sha": "2607d334c99f4f7112bfc590e72c0fa7e4b6196a"
+    "id": "20261118-assistant-client-and-protocol-retry",
+    "sha": "1d7824ca5e2eb02196304b6185457efd28d25e59"
   }
 }
