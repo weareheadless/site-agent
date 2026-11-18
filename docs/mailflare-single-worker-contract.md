@@ -105,6 +105,37 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   use Mailflare Calendar. Do not maintain a second Payload Inbox or calendar.
   Public form/booking writes remain server-side, validated and idempotent.
 
+## Public booking and website forms
+
+- The public booking surface is `GET /booking/<bookingTypeId>` on the tenant
+  origin, rendered by the one shared booking form. It reads the Turnstile
+  sitekey from the Worker's own binding and talks only to the tenant's public
+  booking API under `/mail/api/public/booking/<bookingTypeId>`. A tenant page
+  may pass `?stylesheet=<same-origin path>` so the form uses that site's
+  typography; it may never name another origin.
+- A committed static presentation links to that page with an anchor. Its
+  inventory validator treats every referenced asset as a committed file, so an
+  embedded runtime route (an `iframe` source) is not presentation source. Do
+  not add a second booking client to a static page; the shared form is the
+  client.
+- Owner booking configuration is `POST /api/workspace/booking` with
+  `update_settings`, `create_type`, `read_availability`, `update_type`,
+  `activate_type` and `deactivate_type`. The route is shared runtime, so every
+  tenant's Worker answers it. Booking types carry immutable
+  `ha_booking_<32hex>` identities derived from the workspace owner and slug;
+  settings and types are Mailflare D1 data, never Payload documents.
+- The workspace owner is provisioned by `ensureTenantBookingOwner`, the same
+  deterministic identity the mailbox gate uses, so server-to-server booking
+  configuration does not depend on an owner having opened the mailbox first. A
+  registered owner is reused verbatim and a disabled owner fails closed.
+- A website form is a Payload `contactForms` document owned by the site. Its
+  public submission is `POST /api/helloada/forms/<slug>`: same-origin only,
+  rate limited per tenant and IP, honeypot and Turnstile verified, idempotent
+  per request ID, and validated against the form's own stable field keys. The
+  enquiry becomes a Mailflare Inbox message with the Contact. A static page
+  carries those stable field keys in its markup and posts the same contract; it
+  never writes inbox records itself.
+
 ## Release and acceptance
 
 - New tenant creation provisions the isolated Mailflare D1/mail resources and
