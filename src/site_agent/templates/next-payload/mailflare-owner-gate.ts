@@ -158,6 +158,43 @@ async function registerTenantBookingOwner(database: D1Binding, tenantId: string,
   ).bind(userId, now).run()
 }
 
+/**
+ * The workspace owner a tenant's mailbox, bookings, contacts and calendar
+ * belong to.
+ *
+ * The mailbox gate provisions this owner on the owner's first request, but the
+ * platform also configures bookings server-to-server, before an owner has ever
+ * opened the mailbox. Both paths have to resolve the same identity, so the
+ * provisioning lives here and each entry point calls it instead of deciding
+ * again what an owner is.
+ */
+export async function ensureTenantBookingOwner(
+  database: MailflareEnv['MAILFLARE_DB'],
+  tenantId: string,
+): Promise<string> {
+  const tenant = tenantId.trim()
+  if (!/^[a-z0-9-]{1,63}$/.test(tenant)) throw new Error('tenant_identity_not_configured')
+  const registered = await database.prepare(
+    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
+  ).bind(tenant).first<{ owner_user_id: string }>()
+  const userId = registered?.owner_user_id || `ha_${await digest(`tenant:${tenant}`)}`
+  const current = await database.prepare(
+    'SELECT id, disabled FROM users WHERE id = ? LIMIT 1',
+  ).bind(userId).first<{ id: string; disabled: number }>()
+  if (current?.disabled) throw new Error('Mailflare owner account is disabled')
+  if (!current) {
+    await database.prepare(
+      'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, Date.now()).run()
+  }
+  const enabled = await database.prepare(
+    'SELECT id FROM users WHERE id = ? AND disabled = 0 LIMIT 1',
+  ).bind(userId).first<{ id: string }>()
+  if (!enabled) throw new Error('Mailflare owner account could not be provisioned')
+  await registerTenantBookingOwner(database, tenant, userId)
+  return userId
+}
+
 async function ownerUserId(env: MailflareEnv): Promise<string> {
   const registeredOwner = await env.MAILFLARE_DB.prepare(
     'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',

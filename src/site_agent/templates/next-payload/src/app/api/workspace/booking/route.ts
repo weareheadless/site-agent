@@ -3,13 +3,13 @@ import { NextResponse } from 'next/server'
 
 import { helloAdaSite } from '@/helloada.config'
 import { serviceAuthorized } from '@/lib/service-auth'
+import { ensureTenantBookingOwner } from '../../../../../mailflare-owner-gate'
 import type { BookingD1 } from '../../../../../mailflare-booking-service'
 import {
   createBookingType,
   deactivateBookingType,
   setBookingTypeActive,
   readBookingConfiguration,
-  resolveTenantBookingOwner,
   updateBookingSettings,
   updateBookingType,
 } from '../../../../../mailflare-booking-service'
@@ -26,7 +26,7 @@ async function ownerContext() {
   if (!tenantId) throw new Error('tenant_identity_not_configured')
   const env = (await getCloudflareContext({ async: true })).env as RuntimeEnv
   if (!env.MAILFLARE_DB) throw new Error('booking_database_not_configured')
-  const ownerId = await resolveTenantBookingOwner(env.MAILFLARE_DB, tenantId)
+  const ownerId = await ensureTenantBookingOwner(env.MAILFLARE_DB, tenantId)
   return { db: env.MAILFLARE_DB, ownerId }
 }
 
