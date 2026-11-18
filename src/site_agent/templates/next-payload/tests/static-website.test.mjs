@@ -302,3 +302,15 @@ test('preview HTML carries the containment script and preview framing policy', a
   const publicResponse = await staticWebsiteResponse(request('/'), settings)
   assert.doesNotMatch(await publicResponse.text(), /MutationObserver/)
 })
+
+test('a widget loader may frame its own origin, because the frame exists only at runtime', async () => {
+  const widget = {
+    ...manifest,
+    security: { '/index.html': { origins: { script: ['https://challenges.cloudflare.com'] } } },
+  }
+  const csp = (await staticWebsiteResponse(request('/'), env({}, widget)))
+    .headers.get('content-security-policy')
+  assert.match(csp, /frame-src https:\/\/challenges\.cloudflare\.com/)
+  // The grant follows the declared script origin; it is not a blanket allow.
+  assert.doesNotMatch(csp, /frame-src[^;]*'self'/)
+})

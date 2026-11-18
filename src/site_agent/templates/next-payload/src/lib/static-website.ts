@@ -396,6 +396,14 @@ const MEASUREMENT_IMG = [
  * external origins its markup references. Inline execution stays allowed
  * because the export generates inline code at runtime; external script
  * sources are limited to the declaration.
+ *
+ * A script origin is also a frame source. A widget loaded from an origin may
+ * render its own cross-origin frame at runtime (a Turnstile challenge is the
+ * canonical case), and the markup cannot show a frame that does not exist yet;
+ * deriving the frame from the declared iframe alone silently dropped the
+ * directive and blocked the widget. A page already executes that origin's code,
+ * so framing it grants nothing it did not already have, and connect-src already
+ * trusts it the same way.
  */
 function pagePolicy(manifest: StaticManifest, file: string, measurement: string, preview = false): string {
   const declared: PageSecurity = (manifest.security || {})[file] || {}
@@ -420,7 +428,7 @@ function pagePolicy(manifest: StaticManifest, file: string, measurement: string,
     ['font-src', merge(["'self'", 'data:'], origins.font, webfont ? WEBFONT_FONT : [])],
     ['media-src', merge(["'self'"], origins.media)],
     ['connect-src', merge(["'self'"], origins.script, origins.connect, analytics ? MEASUREMENT_CONNECT : [])],
-    ['frame-src', merge(origins.frame)],
+    ['frame-src', merge(origins.frame, origins.script)],
     ['object-src', ["'none'"]],
     ['base-uri', ["'self'"]],
     ['frame-ancestors', preview ? ["'self'", CONTROL_PLANE_ORIGIN] : ["'self'"]],
