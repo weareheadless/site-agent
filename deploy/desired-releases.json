@@ -1,8 +1,9 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "rel-20261118160600-canonical-payload-config-r2",
-      "sha": "69df185d582c38bd02ebf5f5e087591c7eba8c5e"
+      "id": "runtime-20261118170434-e98b2448",
+      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
+      "sharedRuntimeFingerprint": "70ee4fccb473588851e79c8f88fde9a7d77087a090210c3cf1ecd3d5fdcae45b"
     },
     "casamigo": {
       "id": "runtime-20261118162900-bcad4f64",
