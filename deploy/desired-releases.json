@@ -4,6 +4,11 @@
       "id": "rel-20261118151000-content-contract",
       "sha": "84c5f7af16d723c1d8f0de9e5fc53150033b057c"
     },
+    "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
+      "id": "runtime-20261118152956-e0570697",
+      "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
+      "sharedRuntimeFingerprint": "3a9a40798fe15f0905205139b25824ff68b56af860d7468c3d5581d96efc5f65"
+    },
     "oceanicvibes": {
       "id": "rel-20261113140000-preview-rebuild-bridge",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545"
