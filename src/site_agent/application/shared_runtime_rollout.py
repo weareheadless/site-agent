@@ -308,6 +308,12 @@ def plan_shared_runtime_rollout(
                     blocked.append(tenant)
                     continue
         if not history:
+            # A registered automatic tenant that has never had a successful
+            # release cannot inherit the runtime: there is no deployed source to
+            # rebuild. Skipping it silently made a registered site look aligned
+            # while it stayed on whatever it was last handed. Name it instead;
+            # bringing it forward is an explicit, operator-visible decision.
+            blocked.append(tenant)
             continue
         queued[tenant] = {
             "id": _release_id(now),

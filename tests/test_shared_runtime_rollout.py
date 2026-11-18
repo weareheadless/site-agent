@@ -296,7 +296,9 @@ def test_ambiguous_old_tenant_failure_is_not_retried_without_reconciliation(tmp_
     plan = plan_shared_runtime_rollout(_registry(), queue, tmp_path, FINGERPRINT)
 
     assert plan["state"] == "blocked"
-    assert plan["blocked"] == ["atelier-harmonie"]
+    # northstar has no release history at all, so it is reported too: it cannot
+    # receive this runtime by inheritance until someone gives it a release.
+    assert plan["blocked"] == ["atelier-harmonie", "northstar"]
     assert plan["queued"] == {}
 
 
@@ -378,3 +380,22 @@ def test_superseding_the_old_batch_lets_the_next_canary_be_queued(tmp_path):
     assert plan["queued"]["oceanicvibes"]["sharedRuntimeFingerprint"] == FINGERPRINT
     fingerprints = {request.get("sharedRuntimeFingerprint") for request in queue["releases"].values()}
     assert fingerprints <= {FINGERPRINT, None}
+
+
+def test_a_tenant_that_never_released_is_named_not_silently_skipped(tmp_path):
+    """A registered site with no release history cannot inherit the runtime.
+
+    Rebuilding a tenant needs its last successfully deployed source. Without
+    one there is nothing to rebuild, so the rollout must report the tenant as
+    blocked rather than leave a registered site looking aligned while it stays
+    on whatever it was last handed.
+    """
+    _receipt(tmp_path, "oceanicvibes", "oceanic-current", fingerprint=FINGERPRINT)
+    _receipt(tmp_path, "atelier-harmonie", "atelier-current", fingerprint=FINGERPRINT)
+    queue = {"releases": {}}
+
+    plan = plan_shared_runtime_rollout(_registry(), queue, tmp_path, FINGERPRINT)
+
+    assert plan["state"] == "blocked"
+    assert plan["blocked"] == ["northstar"]
+    assert plan["queued"] == {}
