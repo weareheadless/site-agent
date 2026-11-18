@@ -341,6 +341,29 @@ def test_an_empty_preview_homepage_names_the_route_and_the_unpublished_page(tmp_
             service.close()
 
 
+def test_the_cause_survives_the_runtime_log_ahead_of_its_truncation(tmp_path):
+    """The job error is stored with a hard bound: the reason is not last."""
+
+    class _Gateway:
+        def read(self, *_args, **_kwargs):
+            return {"id": "1", "slug": "home", "_status": "draft"}
+
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    service.payload_gateway = _Gateway()
+    log = tmp_path / "runtime.log"
+    log.write_text("Environment Variable local\n" + ("env.NOISE (" + "x" * 40 + ")\n") * 40)
+    service._runtime_logs["job-1"] = (None, log)
+    try:
+        message = service._preview_unavailable_reason(
+            {"id": "job-1"},
+            source_deployment.SourceDeploymentError("compiled preview homepage returned HTTP 404"),
+        )
+        assert message.index("no published home document") < message.index("preview runtime log:")
+        assert len(message) < 1_000
+    finally:
+        service.close()
+
+
 def test_a_gateway_that_cannot_answer_adds_no_claim(tmp_path):
     class _Broken:
         def read(self, *_args, **_kwargs):

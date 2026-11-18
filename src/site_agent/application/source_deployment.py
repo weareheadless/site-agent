@@ -1794,10 +1794,14 @@ class SourceDeploymentService:
         that the site has no published homepage for the preview to render.
         """
         message = str(refusal).strip() or "the preview did not render its homepage"
-        tail = self._runtime_log_tail(str(job.get("id") or ""))
+        # The cause the owner can act on comes first: the job error is stored
+        # with a hard bound, and a runtime's environment banner is hundreds of
+        # characters of noise that would otherwise push the reason out of it.
+        message += self._unpublished_home_note()
+        tail = self._runtime_log_tail(str(job.get("id") or ""), limit=400)
         if tail:
-            message = f"{message}\n{tail}"
-        return message + self._unpublished_home_note()
+            message = f"{message}\npreview runtime log:\n{tail}"
+        return message
 
     def _unpublished_home_note(self) -> str:
         """Why a homepage that reads Payload can render nothing.
