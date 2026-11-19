@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261119-preview-restarts-its-worker",
-    "sha": "fe650ac456b7380a6bc00d17996f34eb6cb31a03"
+    "id": "20261119-publication-follows-live-release",
+    "sha": "e6857826c9143814459aeb732d0309532f5e7455"
   }
 }
