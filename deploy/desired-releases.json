@@ -1,11 +1,9 @@
 {
   "releases": {
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "bootstrap-20261119231700-canary-bindings",
+      "id": "runtime-20261119231113-e1fdef87",
       "sha": "64b238190416721c1899faa9026e3bfbc3bc1e19",
-      "initializeSchema": {
-        "migrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
-      }
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
     },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
