@@ -99,6 +99,7 @@ _STAGE_LABELS = {
     "github_run_running": "The repository is deploying the approved change",
     "github_run_failed": "The repository deploy run stopped",
     "verified_by_repository_run": "The repository run is live",
+    "verified_by_live_release": "A later live release includes this change",
     "preflight": "Checking the release",
     "credentials": "Checking release access",
     "checkout": "Reading the approved code",

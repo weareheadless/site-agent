@@ -740,22 +740,115 @@ class SourceDeploymentService:
         run = job.get("github_run") if isinstance(job.get("github_run"), Mapping) else None
         if run is not None:
             if run.get("status") == "completed" and run.get("conclusion") not in {"success", "neutral", "skipped"}:
-                job.update(
-                    status="failed",
-                    ok=False,
-                    phase="github_run_failed",
-                    error=(
-                        f"the repository release run {run.get('conclusion') or 'failed'}"
-                        f"{': ' + str(run.get('url')) if run.get('url') else ''}"
-                    )[:1_000],
-                    updated_at=_now(),
-                )
-                self._sync_publish_failure(job)
+                live = self._live_activation_sha()
+                if self._attempt_carried_by_live_release(job, commit, live):
+                    # The attempt failed, but production moved past it: a later
+                    # release of a descendant commit ships this change. The
+                    # owner's site serves it, so the failure is history.
+                    job.update(
+                        status="deployed",
+                        ok=True,
+                        live=True,
+                        phase="verified_by_live_release",
+                        verified_commit=live,
+                        updated_at=_now(),
+                    )
+                    job.pop("error", None)
+                    self._supersede_attempt(job, commit, live)
+                else:
+                    job.update(
+                        status="failed",
+                        ok=False,
+                        phase="github_run_failed",
+                        error=(
+                            f"the repository release run {run.get('conclusion') or 'failed'}"
+                            f"{': ' + str(run.get('url')) if run.get('url') else ''}"
+                        )[:1_000],
+                        updated_at=_now(),
+                    )
+                    self._sync_publish_failure(job)
             elif run.get("status") in {"in_progress", "queued", "waiting", "requested", "pending"}:
                 job.update(status="running", phase="github_run_running", updated_at=_now())
         self._jobs[str(job.get("id") or "")] = job
         self._persist()
         return job
+
+    def _live_activation_sha(self) -> str:
+        """The exact commit the authenticated runtime is serving, if one is mounted.
+
+        Production identity is the activation the release lane mounted, never
+        the newest attempt this host happens to have recorded.
+        """
+        site = self.site
+        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+        activation = payload.get("runtime_activation") if isinstance(payload, Mapping) else None
+        if not isinstance(activation, Mapping):
+            activation = site.get("runtime_activation") if isinstance(site.get("runtime_activation"), Mapping) else {}
+        sha = str(activation.get("source_sha") or "").strip().lower() if isinstance(activation, Mapping) else ""
+        return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else ""
+
+    def _attempt_carried_by_live_release(self, job: Mapping[str, Any], commit: str,
+                                         live: str) -> bool:
+        """Whether the live release already ships this attempt's change.
+
+        An attempt is not production. A release that failed its own run can be
+        followed by a release of a descendant commit, from this workspace or
+        from the repository's own lane, and that release carries the change
+        into production. Proven from GitHub's compare against the authenticated
+        activation, once per live commit; without proof the failure stands.
+        """
+        if job.get("status") == "deployed" and job.get("phase") == "verified_by_live_release":
+            # Proven once is history: a later release that drops the change
+            # supersedes it, it does not make the old attempt live again.
+            return True
+        if not re.fullmatch(r"[0-9a-f]{40}", commit) or not live:
+            return False
+        checked_for = str(job.get("live_release_checked_for") or "")
+        if checked_for == live and "live_release_contains" in job:
+            return bool(job.get("live_release_contains"))
+        contained = self._live_release_contains(commit, live)
+        job["live_release_checked_for"] = live
+        job["live_release_contains"] = contained
+        return contained
+
+    def _live_release_contains(self, commit: str, live: str) -> bool:
+        if commit == live:
+            return True
+        try:
+            repository = self._github_repository()
+        except SourceDeploymentError:
+            return False
+        token = github_api_token(self.config, self._resolved_env())
+        if not token:
+            return False
+        comparison = self._github_json(
+            f"https://api.github.com/repos/{repository}/compare/{commit}...{live}", token
+        )
+        if not isinstance(comparison, Mapping) or comparison.get("status") != "ahead":
+            return False
+        merge_base = comparison.get("merge_base_commit")
+        return (
+            isinstance(merge_base, Mapping)
+            and str(merge_base.get("sha") or "").strip().lower() == commit
+        )
+
+    def _supersede_attempt(self, job: Mapping[str, Any], commit: str, live: str) -> None:
+        """Retire the owner-facing failure once the live release carries it."""
+        if self.memory is None or job.get("mode") != _PRODUCTION:
+            return
+        try:
+            draft_id = int(job.get("draft_id"))
+        except (TypeError, ValueError):
+            return
+        draft = next((row for row in self.memory.list_drafts(limit=500)
+                      if int(row.get("id") or 0) == draft_id), None)
+        if draft is None or str(draft.get("status") or "") not in _PENDING_PUBLISH_STATUSES:
+            return
+        self.memory.update_draft_status(draft_id, "superseded")
+        self.memory.record_action(
+            "superseded",
+            f"#{draft_id}: the live release {live[:8]} includes {commit[:8]}",
+        )
 
     def _dispatch_github_release(self, commit: str) -> None:
         """Ask the repository to run the deploy again for the same commit."""

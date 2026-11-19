@@ -5342,10 +5342,18 @@ class ChatService:
         status = str(job.get("status") or "queued")
         progress = release_progress(job.get("phase"), status)
         published = self._latest_publish(memory)
+        # A release that is live is identified by the commit its lane proved,
+        # not by the attempt that happened to be recorded first: a later
+        # release of a descendant commit may be the one that shipped it.
+        live_commit = (
+            str(job.get("verified_commit") or job.get("commit") or "")
+            if status in {"deployed", "verified"}
+            else str(job.get("commit") or "")
+        )
         return {
             "release": {
                 "id": str(job.get("release_id") or activation.get("release_id") or ""),
-                "commit": str(job.get("commit") or activation.get("source_sha") or ""),
+                "commit": live_commit or str(activation.get("source_sha") or ""),
                 "draftId": job.get("draft_id"),
                 "status": status,
                 "stage": progress["stage"],

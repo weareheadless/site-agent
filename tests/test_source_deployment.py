@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import datetime
 import hashlib
 import json
 import subprocess
@@ -476,7 +477,7 @@ def test_a_preview_address_is_signed_for_its_tenant_and_job():
     """The address is the capability: self-describing, stable, expiring."""
     key = "k" * 40
     job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
-    expires = preview_host.expiry_for("2026-11-12T10:00:00+00:00")
+    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
     path = preview_host.path_for(key, "Tenant-One", job, expires)
     assert path == preview_host.path_for(key, "tenant-one", job, expires)
     # The tenant and the job are in the path, so whoever answers the request

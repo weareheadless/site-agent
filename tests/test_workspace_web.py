@@ -3935,7 +3935,7 @@ def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
         service=ChatService(registry=registry),
         registry=registry,
     )
-    expires = preview_host.expiry_for("2026-11-12T10:00:00+00:00")
+    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
     path = preview_host.path_for(key, "demo", job, expires)
 
     with TestClient(app) as client:
@@ -3988,7 +3988,7 @@ def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
             return {"id": job_id, "status": "failed", "commit": "a" * 40}
 
     key = "k" * 40
-    expires = preview_host.expiry_for("2026-11-12T10:00:00+00:00")
+    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
     path = preview_host.path_for(key, "demo", job, expires)
     pages = {}
     for name, deployer in (("building", Building()), ("failed", Failed())):

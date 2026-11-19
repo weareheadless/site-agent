@@ -8,7 +8,7 @@ import pytest
 
 from site_agent.application import source_deployment as deployment
 from site_agent.application.source_deployment import SourceDeploymentError
-from site_agent.application.workspace import ChatService
+from site_agent.application.workspace import ChatService, Tenant
 from site_agent.core.memory import Memory
 
 
@@ -842,6 +842,134 @@ def test_a_failed_repository_run_stops_the_approved_change(tmp_path, monkeypatch
     assert failed["phase"] == "github_run_failed"
     assert "actions/runs/1" in failed["error"]
     assert memory.list_drafts()[0]["status"] == "publish_failed"
+    service.close()
+    memory.close()
+
+
+def test_a_failed_attempt_the_live_release_carries_is_not_reported_as_stopped(tmp_path, monkeypatch):
+    """The owner's site serves the change, so its attempt is not a stopped publish.
+
+    One release attempt failed its own run. A later release of a descendant
+    commit then shipped the same tree, and the authenticated activation moved
+    there. The publication must follow the live identity: telling the owner a
+    change failed while their site serves it leaves them retrying work that is
+    already done.
+    """
+    memory, service, draft_id, _root = make_service(
+        tmp_path, monkeypatch, draft_status="publishing", provider="github",
+    )
+    service.config["site"]["payload"] = {"runtime_activation": {"source_sha": "b" * 40}}
+    job = release_job(draft_id, status="queued", phase="awaiting_github_deploy", provider="github",
+                      github_checked_at=time.time(),
+                      github_run={"status": "completed", "conclusion": "failure",
+                                  "url": "https://github.com/o/r/actions/runs/1"})
+    job.pop("release_id")
+    service._jobs["publish"] = job
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "a" * 40},
+    })
+
+    live = service.status("publish")
+
+    assert live["status"] == "deployed"
+    assert live["phase"] == "verified_by_live_release"
+    assert live["verified_commit"] == "b" * 40
+    assert not live.get("error")
+    assert memory.get_draft(draft_id)["status"] == "superseded"
+    service.close()
+    memory.close()
+
+
+def test_a_failed_attempt_outside_the_live_release_still_stops(tmp_path, monkeypatch):
+    """Without proof the live release contains it, the failure stands."""
+    memory, service, draft_id, _root = make_service(
+        tmp_path, monkeypatch, draft_status="publishing", provider="github",
+    )
+    service.config["site"]["payload"] = {"runtime_activation": {"source_sha": "b" * 40}}
+    job = release_job(draft_id, status="queued", phase="awaiting_github_deploy", provider="github",
+                      github_checked_at=time.time(),
+                      github_run={"status": "completed", "conclusion": "failure",
+                                  "url": "https://github.com/o/r/actions/runs/1"})
+    job.pop("release_id")
+    service._jobs["publish"] = job
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "diverged", "merge_base_commit": {"sha": "c" * 40},
+    })
+
+    failed = service.status("publish")
+
+    assert failed["status"] == "failed"
+    assert failed["phase"] == "github_run_failed"
+    assert "actions/runs/1" in failed["error"]
+    assert memory.get_draft(draft_id)["status"] == "publish_failed"
+    service.close()
+    memory.close()
+
+
+def test_publication_reports_the_live_release_not_the_failed_attempt(tmp_path, monkeypatch):
+    """The owner-facing publication follows production, not an old attempt.
+
+    The workspace card reads this projection. A stopped attempt the live
+    release later carried must never render as a stopped publication.
+    """
+    memory, service, draft_id, _root = make_service(
+        tmp_path, monkeypatch, draft_status="publishing", provider="github",
+    )
+    service.config["site"]["payload"] = {"runtime_activation": {
+        "source_sha": "b" * 40, "release_id": "ci-live-1",
+    }}
+    job = release_job(draft_id, status="queued", phase="awaiting_github_deploy", provider="github",
+                      github_checked_at=time.time(),
+                      github_run={"status": "completed", "conclusion": "failure",
+                                  "url": "https://github.com/o/r/actions/runs/1"})
+    job.pop("release_id")
+    service._jobs["publish"] = job
+    monkeypatch.setattr(deployment, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: {
+        "status": "ahead", "merge_base_commit": {"sha": "a" * 40},
+    })
+    tenant = Tenant("demo", service.config, memory, None,
+                    {"source_deployment": service}, "token")
+
+    view = ChatService(memory, object()).publication(tenant=tenant)
+
+    assert view["release"]["status"] == "deployed"
+    assert view["release"]["failed"] is False
+    assert view["release"]["complete"] is True
+    assert view["release"]["commit"] == "b" * 40
+    assert view["release"]["id"] == "ci-live-1"
+    assert view["release"]["error"] == ""
+    service.close()
+    memory.close()
+
+
+def test_a_reconciled_attempt_stays_retired_when_production_moves_on(tmp_path, monkeypatch):
+    """Once a live release carried the attempt, a later one supersedes it.
+
+    Re-proving against every later commit would flip the attempt back to failed
+    each time production advanced, which is history rewritten into a stop.
+    """
+    memory, service, draft_id, _root = make_service(
+        tmp_path, monkeypatch, draft_status="superseded", provider="github",
+    )
+    service.config["site"]["payload"] = {"runtime_activation": {"source_sha": "c" * 40}}
+    job = release_job(draft_id, status="deployed", live=True,
+                      phase="verified_by_live_release", verified_commit="b" * 40,
+                      provider="github", github_checked_at=time.time(),
+                      github_run={"status": "completed", "conclusion": "failure",
+                                  "url": "https://github.com/o/r/actions/runs/1"})
+    job.pop("release_id")
+    service._jobs["publish"] = job
+    calls = []
+    monkeypatch.setattr(service, "_github_json", lambda *args, **kwargs: calls.append(args))
+
+    live = service.status("publish")
+
+    assert live["status"] == "deployed"
+    assert live["phase"] == "verified_by_live_release"
+    assert calls == []
     service.close()
     memory.close()
 
