@@ -5998,13 +5998,16 @@ class ChatService:
         self,
         branch: str | None = None,
         *,
+        draft_id: int | None = None,
         tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         from .source_deployment import SourceDeploymentError
 
         try:
             deployer = self._source_deployer(tenant)
-            return _owner_preview_job(getattr(deployer, "latest_preview", deployer.latest)(branch))
+            return _owner_preview_job(
+                getattr(deployer, "latest_preview", deployer.latest)(branch, draft_id=draft_id)
+            )
         except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 
@@ -6063,7 +6066,9 @@ class ChatService:
         branch = str(meta.get("head") or site.get("preview_branch") or "preview")
         deployer = self._source_deployer(tenant)
         try:
-            latest = _owner_preview_job(getattr(deployer, "latest_preview", deployer.latest)(branch))
+            latest = _owner_preview_job(
+                getattr(deployer, "latest_preview", deployer.latest)(branch, draft_id=draft_id)
+            )
         except Exception:  # noqa: BLE001 - a missing job is not a reason to refuse
             latest = {}
         if str(latest.get("commit") or "") == candidate_sha:

@@ -3960,6 +3960,61 @@ def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
     memory.close()
 
 
+def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
+    """A frame that arrives mid-build recovers itself instead of dead-ending.
+
+    The address stays valid; only the process behind it is not there yet. Asking
+    the owner to rebuild a preview that is already rebuilding is what made a
+    stale tab unrecoverable.
+    """
+    from site_agent.application import preview_host
+    from site_agent.application.workspace import BridgeError
+
+    memory = Memory(tmp_path / "memory.db")
+    job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
+
+    class Building:
+        def runtime(self, job_id, path, query="", headers=None):
+            raise BridgeError("compiled preview is not ready")
+
+        def status(self, job_id):
+            return {"id": job_id, "status": "running", "commit": "a" * 40}
+
+    class Failed:
+        def runtime(self, job_id, path, query="", headers=None):
+            raise BridgeError("compiled preview is not ready")
+
+        def status(self, job_id):
+            return {"id": job_id, "status": "failed", "commit": "a" * 40}
+
+    key = "k" * 40
+    expires = preview_host.expiry_for("2026-11-12T10:00:00+00:00")
+    path = preview_host.path_for(key, "demo", job, expires)
+    pages = {}
+    for name, deployer in (("building", Building()), ("failed", Failed())):
+        tenant = Tenant("demo", {}, memory, None, {"source_deployment": deployer}, "demo-token")
+        registry = TenantRegistry({"demo": tenant})
+        app = FastAPI()
+        register_workspace_routes(
+            app,
+            config={},
+            env={"HELLOADA_PREVIEW_HOST": "preview.example.test", "HELLOADA_PREVIEW_SIGNING_KEY": key},
+            service=ChatService(registry=registry),
+            registry=registry,
+        )
+        with TestClient(app) as client:
+            pages[name] = client.get(path)
+
+    assert pages["building"].status_code == 503
+    assert "still building" in pages["building"].text
+    assert "Waiting for the build to finish" in pages["building"].text
+    assert "window.location.reload()" in pages["building"].text
+    assert pages["failed"].status_code == 409
+    assert "not running" in pages["failed"].text
+    assert "window.location.reload()" not in pages["failed"].text
+    memory.close()
+
+
 def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
     """A fresh installation needs no hand-made Cloudflare record for previews.
 

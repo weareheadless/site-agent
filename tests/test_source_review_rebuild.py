@@ -250,7 +250,7 @@ class _Deployer:
         self.latest = latest or {}
         self.started: list[dict] = []
 
-    def latest_preview(self, branch=None):
+    def latest_preview(self, branch=None, *, draft_id=None):
         return dict(self.latest)
 
     def start(self, body):

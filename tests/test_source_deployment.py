@@ -815,12 +815,12 @@ def test_compiled_preview_rebuilds_exact_commit_after_process_restart(monkeypatc
     memory.close()
 
 
-def test_a_dead_ready_preview_restarts_instead_of_reporting_itself_ready(monkeypatch, tmp_path):
-    """A build receipt is not a running preview.
+def test_a_dead_ready_preview_restarts_its_process_instead_of_reporting_itself_ready(monkeypatch, tmp_path):
+    """A build receipt survives a restart; the process behind it does not.
 
-    The record can say ``ready`` while its workerd process is gone. Handing that
-    address to the workspace frames a 409 and the owner never gets a rebuild,
-    because the UI trusts the ``ready`` it was given.
+    The record can say ``ready`` while its workerd process is gone. The address
+    is still the right address, so a reader starts the process from the tree
+    that was already built instead of being told to compile it again.
     """
 
     class Future:
@@ -840,6 +840,9 @@ def test_a_dead_ready_preview_restarts_instead_of_reporting_itself_ready(monkeyp
 
     monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
     memory = Memory(tmp_path / "memory.db")
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
     memory.kv_set(
         "source_preview_jobs",
         {
@@ -850,10 +853,12 @@ def test_a_dead_ready_preview_restarts_instead_of_reporting_itself_ready(monkeyp
                 "branch": "preview",
                 "commit": "a" * 40,
                 "mode": "compiled_preview",
+                "draft_id": 9,
                 "created_at": "2026-09-22T00:00:00+00:00",
                 "updated_at": "2026-09-22T00:01:00+00:00",
-                "runtime_port": 34509,
+                "worktree_path": str(worktree),
                 "runtime_path": "/old/runtime",
+                "runtime_port": 34509,
             }
         },
     )
@@ -866,28 +871,20 @@ def test_a_dead_ready_preview_restarts_instead_of_reporting_itself_ready(monkeyp
         memory=memory,
     )
     try:
-        # The constructor's boot recovery already queued this job. Put it back
-        # to the state a live process sees when only the runtime died, and drop
-        # the boot future, so this test observes the reader's own restart.
-        service._futures.clear()
-        service._jobs["preview-job"].update(status="ready", ok=True)
-        booted = len(service._executor.submitted)
-
-        job = service.latest_preview("preview")
-        assert job["status"] == "queued"
-        assert job["error"] == "the preview process stopped; restarting this exact build"
+        # Boot keeps the build: the address names a tree that is still on disk.
+        job = service.status("preview-job")
+        assert job["status"] == "ready"
+        assert "error" not in job
         assert "runtime_port" not in job
-        assert "preview_url" not in job
-        assert len(service._executor.submitted) == booted + 1
-        function, args = service._executor.submitted[-1]
-        assert function == service._run_job
-        assert args == ("preview-job", "preview", "a" * 40, "compiled_preview")
+        assert service._executor.submitted == []
 
-        # The same request while that restart is in flight must not queue a
-        # second build of the same commit.
-        service._start_locked({"branch": "preview", "commit": "a" * 40,
-                               "mode": "compiled_preview"})
-        assert len(service._executor.submitted) == booted + 1
+        # Nothing was built twice, but the reader that asks for it now starts
+        # its process.
+        service.latest_preview("preview", draft_id=9)
+        assert len(service._warm_executor.submitted) == 1
+        function, args = service._warm_executor.submitted[0]
+        assert function == service._warm_runtime
+        assert args == ("preview-job",)
     finally:
         service.close()
         memory.close()
@@ -1127,6 +1124,249 @@ def test_compiled_preview_rebuilds_when_the_output_is_missing(tmp_path, monkeypa
         job = {"id": "preview-2", "mode": "compiled_preview", "commit": "b" * 40,
                "resume": True, "worktree_path": str(tmp_path / "missing")}
         assert service._resume_build(job, "preview", "b" * 40, "compiled_preview") is None
+    finally:
+        service.close()
+
+
+def test_a_kept_preview_is_served_by_starting_its_own_compiled_tree(tmp_path, monkeypatch):
+    """The request path may start a process, never a compile."""
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+    (worktree / ".dev.vars").write_text('PAYLOAD_SECRET="resume-secret"\n', encoding="utf-8")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "ready",
+        "worktree_path": str(worktree), "runtime_base_path": "/p/tenant/preview-1/1/sig",
+    }
+    started = {}
+
+    class Result:
+        stdout = commit + "\n"
+
+    monkeypatch.setattr(service, "_run", lambda *args, **kwargs: Result())
+
+    def start_runtime(job, directory, expected=None, **kwargs):
+        started.update({"worktree": directory, "commit": expected, **kwargs})
+        return {"status": "ready", "runtime_port": 4321,
+                "runtime_base_path": job.get("runtime_base_path")}
+
+    monkeypatch.setattr(service, "_start_runtime", start_runtime)
+    try:
+        served = service._served_preview("preview-1")
+        assert started["worktree"] == worktree.resolve()
+        assert started["commit"] == commit
+        assert started["preview_secret"] == "resume-secret"
+        assert started["discard_on_failure"] is False
+        assert served["runtime_port"] == 4321
+        assert served["status"] == "ready"
+        assert service._jobs["preview-1"]["runtime_port"] == 4321
+        # A second request finds the process that is already running.
+        started.clear()
+        assert service._served_preview("preview-1")["runtime_port"] == 4321
+    finally:
+        service.close()
+
+
+def test_starting_a_preview_keeps_the_previous_compiled_tree(tmp_path, monkeypatch):
+    """One preview runs at a time; the one it replaced keeps what it built."""
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    kept = tmp_path / "site-agent-source-preview-kept"
+    (kept / ".open-next").mkdir(parents=True)
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    service._runtimes["preview-old"] = (process, kept)
+    stopped = {}
+
+    class Process:
+        pid = 424242
+
+        def poll(self):
+            return None
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(service, "_stop_runtime",
+                        lambda job_id, *, discard_worktree=True: stopped.update(
+                            {"id": job_id, "discard": discard_worktree}))
+    monkeypatch.setattr(service, "_preview_port", lambda: 4321)
+    monkeypatch.setattr(service, "_preview_env", lambda **kwargs: {})
+    monkeypatch.setattr(service, "_verify_public_revision", lambda *a, **k: {"verified": True})
+    monkeypatch.setattr(service, "_verify_preview_routes", lambda *a, **k: ["/"])
+    monkeypatch.setattr(source_deployment.subprocess, "Popen", lambda *a, **k: Process())
+    monkeypatch.setattr(source_deployment.urllib.request, "urlopen", lambda *a, **k: Response())
+    try:
+        worktree = tmp_path / "next"
+        worktree.mkdir()
+        started = service._start_runtime(
+            {"id": "preview-new", "commit": "b" * 40, "runtime_base_path": "/p/x/1/1/s"},
+            worktree, "b" * 40, preview_secret="secret",
+        )
+        assert stopped == {"id": "preview-old", "discard": False}
+        assert started["status"] == "ready"
+        assert started["runtime_port"] == 4321
+    finally:
+        if process.poll() is None:
+            process.kill()
+        service.close()
+
+
+def test_retrying_a_failed_preview_keeps_the_address_the_owner_has(tmp_path, monkeypatch):
+    """A preview's address names the reviewed tree, not one attempt at it."""
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            self.submitted = []
+
+        def submit(self, function, *args):
+            self.submitted.append((function, args))
+            return None
+
+        def shutdown(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
+    memory = Memory(tmp_path / "memory.db")
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+        memory=memory,
+    )
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "status": "failed", "ok": False,
+        "error": "compiled preview did not become ready in time",
+        "branch": "preview", "commit": commit, "draft_id": 7,
+        "worktree_path": str(worktree),
+        "runtime_base_path": "/p/tenant/preview-1/1799999999/signature",
+        "created_at": "2026-11-01T00:00:00+00:00",
+        "updated_at": "2026-11-01T00:01:00+00:00",
+    }
+    try:
+        job = service.start({"branch": "preview", "commit": commit, "draft_id": 7,
+                             "mode": "compiled_preview"})
+        assert job["id"] == "preview-1"
+        assert job["status"] == "queued"
+        assert "error" not in job
+        assert job["resume"] is True
+        assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
+        assert job["preview_url"] == (
+            "https://preview.example.test/p/tenant/preview-1/1799999999/signature")
+        assert service._executor.submitted == [
+            (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
+        ]
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_old_compiled_previews_are_retired_but_the_newest_are_kept(tmp_path, monkeypatch):
+    """A kept preview is a cache, and a cache needs a bound and a keeper."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 100 * 1024 ** 3})())
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    trees = []
+    for index in range(4):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "created_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    # The oldest is the one being served, so it is not taken out from under a
+    # reader even though it is the oldest.
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    service._runtimes["job-0"] = (process, trees[0])
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-3"]["status"] == "ready" and trees[3].is_dir()
+        assert service._jobs["job-2"]["status"] == "ready" and trees[2].is_dir()
+        assert service._jobs["job-0"]["status"] == "ready" and trees[0].is_dir()
+        assert service._jobs["job-1"]["status"] == "retired"
+        assert service._jobs["job-1"]["worktree_path"] == ""
+        assert not trees[1].exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        service.close()
+        memory.close()
+
+
+def test_a_host_without_disk_room_keeps_only_the_running_preview(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    trees = []
+    for index in range(2):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 1})(), raising=False)
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-1"]["status"] == "retired"
+        assert not trees[1].exists()
+        assert service._jobs["job-0"]["status"] == "retired"
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_the_latest_preview_can_be_asked_for_by_draft(tmp_path):
+    """A second draft's newer preview must not hide the one being reviewed."""
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    service._jobs["preview-a"] = {
+        "id": "preview-a", "mode": "compiled_preview", "status": "ready",
+        "branch": "preview", "commit": "a" * 40, "draft_id": 1,
+        "runtime_base_path": "/p/tenant/preview-a/1/sig",
+        "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-01T00:00:00+00:00",
+    }
+    service._jobs["preview-b"] = {
+        "id": "preview-b", "mode": "compiled_preview", "status": "ready",
+        "branch": "preview", "commit": "b" * 40, "draft_id": 2,
+        "runtime_base_path": "/p/tenant/preview-b/1/sig",
+        "created_at": "2026-11-02T00:00:00+00:00", "updated_at": "2026-11-02T00:00:00+00:00",
+    }
+    try:
+        assert service.latest_preview("preview")["id"] == "preview-b"
+        assert service.latest_preview("preview", draft_id=1)["id"] == "preview-a"
+        assert service.latest_preview("preview", draft_id=2)["id"] == "preview-b"
+        assert service.latest_preview("preview", draft_id=3) == {}
     finally:
         service.close()
 

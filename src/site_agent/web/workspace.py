@@ -970,7 +970,26 @@ def register_workspace_routes(
     # rewritten, and an address from an older workspace cannot collide with the
     # app's routes or its CMS. The signature in the path is the capability, so
     # the frame needs no cookie and the address stops working on its own.
-    def preview_page(status: int, title: str, detail: str) -> HTMLResponse:
+    def preview_page(status: int, title: str, detail: str, *, wait_for: str = "") -> HTMLResponse:
+        """The frame's own page when the build behind it cannot answer yet.
+
+        ``wait_for`` makes the page reload itself while that build is still
+        being prepared, so a tab that was open when the process went away
+        recovers without the owner doing anything. The attempts are bounded so
+        a preview that will never come back stops retrying and says so.
+        """
+        retry = ""
+        if wait_for:
+            retry = f"""<p class="detail waiting">Waiting for the build to finish…</p>
+<script>
+(function () {{
+  var key = "helloada-preview-wait:" + {json.dumps(wait_for)};
+  var attempts = Number(window.sessionStorage.getItem(key) || 0);
+  if (attempts >= 40) {{ window.sessionStorage.removeItem(key); return; }}
+  window.sessionStorage.setItem(key, String(attempts + 1));
+  window.setTimeout(function () {{ window.location.reload(); }}, 3000);
+}})();
+</script>"""
         body = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><style>
@@ -982,11 +1001,13 @@ main {{ max-width: 460px; }}
 p.eyebrow {{ margin: 0 0 14px; font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: #8d8f96; }}
 h1 {{ margin: 0 0 12px; font-size: 22px; line-height: 1.25; font-weight: 600; }}
 p.detail {{ margin: 0; color: #a9abb2; }}
+p.detail.waiting {{ margin-top: 10px; }}
 @media (prefers-color-scheme: light) {{
   body {{ background: #faf8f4; color: #1b1d21; }} p.eyebrow {{ color: #6f7178; }} p.detail {{ color: #55575e; }}
 }}
 </style></head><body><main>
 <p class="eyebrow">HelloAda</p><h1>{title}</h1><p class="detail">{detail}</p>
+{retry}
 </main></body></html>"""
         return HTMLResponse(body, status_code=status, headers={"cache-control": "no-store"})
 
@@ -1037,6 +1058,20 @@ p.detail {{ margin: 0; color: #a9abb2; }}
                 tenant=tenant,
             )
         except BridgeError:
+            # The address is still valid; only the process behind it is not. If
+            # a retry of this exact build is what is running, the page waits for
+            # it instead of asking the owner to start over.
+            try:
+                preview = service.source_preview_status(job_id, tenant=tenant)
+            except BridgeError:
+                preview = {}
+            if str(preview.get("status") or "") in {"queued", "running", "verifying"}:
+                return preview_page(
+                    503,
+                    "This preview is still building",
+                    "The build for this address is running. This page reloads until it is ready.",
+                    wait_for=job_id,
+                )
             return preview_page(
                 409,
                 "This preview is not running",
@@ -1096,10 +1131,14 @@ p.detail {{ margin: 0; color: #a9abb2; }}
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/preview")
-    def workspace_source_preview_latest(request: Request, branch: str | None = None):
+    def workspace_source_preview_latest(request: Request, branch: str | None = None, draft_id: str | None = None):
         tenant = require_service(request)
         try:
-            return service.source_preview_latest(branch, tenant=tenant)
+            return service.source_preview_latest(
+                branch,
+                draft_id=int(draft_id) if str(draft_id or "").strip().isdigit() else None,
+                tenant=tenant,
+            )
         except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

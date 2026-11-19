@@ -66,6 +66,18 @@ _PRODUCTION = "production"
 # decided something else — the change went live, or a later approval replaced
 # it — the attempt is history and may not rewrite the decision.
 _PENDING_PUBLISH_STATUSES = frozenset({"pending", "approved", "publishing", "publish_failed"})
+# How many compiled previews one tenant keeps on disk. Each is a whole Next
+# build with its dependencies, so the newest few stay resumable and an older
+# one is rebuilt on request rather than left to fill the host.
+_PREVIEW_WORKTREE_LIMIT = 2
+# Disk a compiled preview may never consume. The host builds and releases every
+# tenant, and a cache that fills the disk stops all of them, so below this the
+# only preview kept is the one a runtime is serving.
+_PREVIEW_DISK_RESERVE_BYTES = 25 * 1024 ** 3
+# How long a browser request may wait for a kept preview's process to bind. A
+# process start is seconds; a compile is minutes, and a request must never look
+# like one.
+_PREVIEW_RESUME_TIMEOUT_SECONDS = 60
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
@@ -215,6 +227,26 @@ class SourceDeploymentService:
                 key = (branch, mode)
                 if (
                     mode == _COMPILED_PREVIEW
+                    and job.get("status") == "ready"
+                    and self._compiled_preview_tree(job) is not None
+                ):
+                    # A finished preview is an artifact, not an attempt that was
+                    # in flight. Its compiled tree is still on disk, so its
+                    # address stays valid: the next request starts that build's
+                    # process. Failing it here is what let every platform
+                    # release destroy every owner's preview and ask them to wait
+                    # out a full compile again.
+                    job.update({
+                        "status": "ready",
+                        "ok": True,
+                        "resume": True,
+                    })
+                    job.pop("error", None)
+                    for stale_key in ("runtime_path", "runtime_port"):
+                        job.pop(stale_key, None)
+                    continue
+                if (
+                    mode == _COMPILED_PREVIEW
                     and job_id
                     and re.fullmatch(r"[0-9a-f]{40}", commit)
                     and key not in recovered_keys
@@ -242,6 +274,12 @@ class SourceDeploymentService:
         self._futures: dict[str, Any] = {}
         self._runtimes: dict[str, tuple[subprocess.Popen[str], Path]] = {}
         self._runtime_logs: dict[str, tuple[Any, Path]] = {}
+        # One preview process runs at a time, so starting one is serialized;
+        # warming is separate from building, because a kept preview must never
+        # wait behind a compile to be shown.
+        self._runtime_start_lock = threading.Lock()
+        self._warm_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="site-agent-preview-start")
+        self._warming: dict[str, Any] = {}
         with self._lock:
             self._recover_production_jobs()
             self._sweep_stale_worktrees()
@@ -307,6 +345,106 @@ class SourceDeploymentService:
             if (entry / ".git").exists() or (entry / "wrangler.jsonc").exists():
                 continue
             shutil.rmtree(entry, ignore_errors=True)
+        self._prune_preview_worktrees()
+
+    def _prune_preview_worktrees(self) -> None:
+        """Keep the newest compiled previews, retire the rest with their trees.
+
+        Previews survive each other and restarts now, which is what makes an
+        address reliable; that only works while the host holds a bounded number
+        of them. The oldest are removed and rebuilt on request, never the tree a
+        runtime is currently serving, and never more than the host can hold.
+        """
+        try:
+            checkout = self._local_checkout()
+        except SourceDeploymentError:
+            return
+        keep = _PREVIEW_WORKTREE_LIMIT
+        try:
+            free = shutil.disk_usage(checkout.parent).free
+        except OSError:
+            free = None
+        if free is not None and free < _PREVIEW_DISK_RESERVE_BYTES:
+            # A compiled preview is a cache. It may not be the reason the host
+            # cannot build or release: below the reserve only the preview that
+            # is being served is kept.
+            keep = 0
+        previews = [
+            job for job in self._jobs.values()
+            if isinstance(job, dict)
+            and job.get("mode") == _COMPILED_PREVIEW
+            and self._compiled_preview_tree(job) is not None
+        ]
+        previews.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+        retired = 0
+        for job in previews[keep:]:
+            job_id = str(job.get("id") or "")
+            if self._runtime_alive(job_id):
+                continue
+            path = self._compiled_preview_tree(job)
+            if path is not None:
+                try:
+                    self._run(["git", "worktree", "remove", "--force", str(path)], checkout, timeout=120)
+                except SourceDeploymentError:
+                    shutil.rmtree(path, ignore_errors=True)
+            # The address keeps naming this build, but the tree behind it is
+            # gone, so it may not keep claiming to be ready: a reader that asks
+            # for this draft again gets a new preview instead of a dead frame.
+            job.update({
+                "status": "retired",
+                "ok": False,
+                "error": "this preview was retired to free disk; the next request rebuilds it",
+                "worktree_path": "",
+                "updated_at": _now(),
+            })
+            job.pop("runtime_port", None)
+            retired += 1
+        # A worktree that holds no compiled application cannot be resumed, so
+        # keeping it only spends disk: a failed compile leaves a full checkout
+        # and its dependencies behind and no job can ever reopen it.
+        for job in list(self._jobs.values()):
+            if not isinstance(job, dict) or job.get("mode") != _COMPILED_PREVIEW:
+                continue
+            if job.get("status") in {"queued", "running", "verifying"}:
+                continue
+            if self._compiled_preview_tree(job) is not None:
+                continue
+            if self._runtime_alive(str(job.get("id") or "")):
+                continue
+            raw = str(job.get("worktree_path") or "").strip()
+            if not raw:
+                continue
+            path = Path(raw).expanduser()
+            if path.name.startswith("site-agent-source-preview-"):
+                try:
+                    self._run(["git", "worktree", "remove", "--force", str(path)], checkout, timeout=120)
+                except SourceDeploymentError:
+                    shutil.rmtree(path, ignore_errors=True)
+                retired += 1
+            job["worktree_path"] = ""
+        if retired:
+            if self.memory is not None:
+                self.memory.record_action(
+                    "preview_pruned",
+                    f"retired {retired} preview worktrees; kept the {keep} newest compiled previews",
+                )
+            self._persist()
+
+    @staticmethod
+    def _compiled_preview_tree(job: Mapping[str, Any]) -> Path | None:
+        """The compiled application an address can be restarted from, if any.
+
+        A preview is only resumable while the tree that was built is still on
+        disk. This decides that, so no caller has to guess from the job status
+        whether a process can be started or the tree has to be compiled again.
+        """
+        raw = str(job.get("worktree_path") or "").strip()
+        if not raw:
+            return None
+        worktree = Path(raw).expanduser()
+        if not (worktree / ".open-next").is_dir() or not (worktree / "wrangler.jsonc").is_file():
+            return None
+        return worktree.resolve()
 
     def _persist(self) -> None:
         if self.memory is None:
@@ -1878,6 +2016,8 @@ class SourceDeploymentService:
         expected_commit: str | None = None,
         *,
         preview_secret: str,
+        start_timeout: int | None = None,
+        discard_on_failure: bool = True,
     ) -> dict[str, Any]:
         """Start the exact OpenNext build behind the tenant-scoped API proxy.
 
@@ -1885,9 +2025,13 @@ class SourceDeploymentService:
         the site-agent host gives the owner a stable preview URL without creating
         a second Worker, database, or public Cloudflare deployment.
         """
+        # One preview runs at a time on this host, but a preview is not a
+        # casualty of another one: the sibling's process stops and its compiled
+        # tree stays, so its address comes back by starting that tree again
+        # instead of paying for a whole build the owner already waited for.
         for other_id in list(self._runtimes):
             if other_id != str(job["id"]):
-                self._stop_runtime(other_id)
+                self._stop_runtime(other_id, discard_worktree=False)
 
         port = self._preview_port()
         base_path = str(job.get("runtime_base_path") or "")
@@ -1925,12 +2069,14 @@ class SourceDeploymentService:
         self._runtime_logs[str(job["id"])] = (log_stream, log_path)
 
         self._runtimes[str(job["id"])] = (process, worktree)
-        timeout = max(30, int(self.settings.get("preview_start_timeout_seconds") or 180))
+        timeout = max(30, int(
+            start_timeout or self.settings.get("preview_start_timeout_seconds") or 180
+        ))
         deadline = time.monotonic() + timeout
         ready = False
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                self._stop_runtime(str(job["id"]))
+                self._stop_runtime(str(job["id"]), discard_worktree=discard_on_failure)
                 raise SourceDeploymentError("compiled preview process exited before it was ready")
             try:
                 with urllib.request.urlopen(preview_runtime_url(port, base_path), timeout=3) as response:
@@ -1946,14 +2092,14 @@ class SourceDeploymentService:
                     # owner and the agent nothing and was the only thing they
                     # received the last time a preview had an empty homepage.
                     message = self._preview_unavailable_reason(job, refusal)
-                    self._stop_runtime(str(job["id"]))
+                    self._stop_runtime(str(job["id"]), discard_worktree=discard_on_failure)
                     raise SourceDeploymentError(message) from exc
             except (OSError, urllib.error.URLError):
                 pass
             time.sleep(1)
         if not ready:
             tail = self._runtime_log_tail(str(job["id"]))
-            self._stop_runtime(str(job["id"]))
+            self._stop_runtime(str(job["id"]), discard_worktree=discard_on_failure)
             raise SourceDeploymentError(
                 "compiled preview did not become ready in time" + (f"\n{tail}" if tail else "")
             )
@@ -1974,7 +2120,7 @@ class SourceDeploymentService:
                 job,
             )
         except SourceDeploymentError:
-            self._stop_runtime(str(job["id"]))
+            self._stop_runtime(str(job["id"]), discard_worktree=discard_on_failure)
             raise
         return {
             "status": "ready",
@@ -2713,6 +2859,13 @@ class SourceDeploymentService:
             self._sync_compiled_preview_draft(self._jobs[job_id], result)
             if mode == _PRODUCTION:
                 self._record_production_publish(self._jobs[job_id], result)
+            else:
+                # A finished preview is kept so its address can be served and
+                # reopened, which is only safe while a bounded number exist.
+                try:
+                    self._prune_preview_worktrees()
+                except Exception:  # noqa: BLE001 - a cache sweep never fails a build
+                    pass
         except Exception as exc:  # noqa: BLE001 - persist a safe job failure
             self._fail_job(job_id, str(exc))
             self._sync_compiled_preview_draft(self._jobs[job_id], error=str(exc))
@@ -2801,7 +2954,16 @@ class SourceDeploymentService:
                     # The same source commit against different Payload revisions
                     # is a different preview: it renders different content.
                     and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
-                    and existing.get("status") in {"queued", "running", "verifying", "ready", "deployed"}
+                    and existing.get("status") in (
+                        # A preview's address is its identity, so a failed or
+                        # interrupted attempt is retried in place instead of
+                        # being replaced by an address nobody has opened.
+                        {"queued", "running", "verifying", "ready", "deployed", "failed", "interrupted"}
+                        if mode == _COMPILED_PREVIEW
+                        # A release attempt is not an address: every retry is a
+                        # new attempt with its own receipt.
+                        else {"queued", "running", "verifying", "ready", "deployed"}
+                    )
                 ):
                     # ``ready`` only describes the build. An address whose
                     # process has exited is a failed preview, so the same deduped
@@ -2810,6 +2972,12 @@ class SourceDeploymentService:
                         str(existing.get("id") or "")
                     ):
                         self._restart_preview(existing)
+                        return dict(existing)
+                    if mode == _COMPILED_PREVIEW and existing.get("status") in {"failed", "interrupted"}:
+                        # The address is this preview's identity, not one
+                        # attempt's: a retry rebuilds the same identity so the
+                        # tab the owner already has recovers in place.
+                        return self._retry_preview(existing, branch, mode)
                     return dict(existing)
         job = {
             "id": job_id,
@@ -2932,6 +3100,136 @@ class SourceDeploymentService:
         process, _worktree = runtime
         return process.poll() is None
 
+    def _ready_preview(self, job_id: str) -> dict[str, Any]:
+        """The exact built preview this address names, or a refusal.
+
+        Only a build that finished can be served. A failed attempt has no tree
+        of its own, so the address answers as failed until the owner's retry
+        rebuilds the same identity.
+        """
+        with self._lock:
+            job = self._jobs.get(str(job_id))
+            if not isinstance(job, Mapping):
+                raise SourceDeploymentError("compiled preview is not ready")
+            if job.get("status") != "ready":
+                raise SourceDeploymentError("compiled preview is not ready")
+            return dict(job)
+
+    def _served_preview(self, job_id: str) -> dict[str, Any]:
+        """The preview this address names, with the process behind it running.
+
+        Serving an address may start a process, never a compile: the tree was
+        built when the address was handed out and is still on disk. One start
+        at a time, so two readers arriving together wait for the same process
+        instead of racing for the same port.
+        """
+        job = self._ready_preview(job_id)
+        # Serialized even when the process is up: while one request is starting
+        # it, every other request for this address waits for the same process
+        # instead of reaching a port that is not listening yet.
+        with self._runtime_start_lock:
+            if not self._runtime_alive(str(job_id)):
+                job = self._resume_runtime(self._ready_preview(job_id))
+        return self._ready_preview(str(job_id))
+
+    def _warm_preview(self, job: Mapping[str, Any]) -> None:
+        """Start a kept preview while the reader is still rendering the page.
+
+        The frame arrives a moment after the address does, so starting the
+        process here means that request finds a server binding instead of
+        waiting inside it.
+        """
+        job_id = str(job.get("id") or "")
+        if not job_id or job.get("status") != "ready" or self._runtime_alive(job_id):
+            return
+        if self._compiled_preview_tree(job) is None:
+            return
+        with self._lock:
+            warming = self._warming.get(job_id)
+            if warming is not None and not warming.done():
+                return
+            self._warming[job_id] = self._warm_executor.submit(self._warm_runtime, job_id)
+
+    def _warm_runtime(self, job_id: str) -> None:
+        try:
+            self._served_preview(job_id)
+        except SourceDeploymentError:
+            # The request that follows reports the failure with its context; a
+            # warm start only ever removes waiting, it never decides an outcome.
+            return
+
+    def _resume_runtime(self, job: Mapping[str, Any]) -> dict[str, Any]:
+        """Start the process for a build that is already on disk.
+
+        This is the recovery path, not a rebuild: the compiled tree, its
+        dependencies and its seeded content store are all still in the worktree,
+        so the owner waits for a process to bind its port instead of for a
+        fifteen-minute compile.
+        """
+        job_id = str(job.get("id") or "")
+        worktree = self._compiled_preview_tree(job)
+        commit = str(job.get("commit") or "").strip().lower()
+        if worktree is None:
+            raise SourceDeploymentError("compiled preview has no built tree to restart")
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SourceDeploymentError("compiled preview has no exact source revision")
+        preview_secret = self._preview_secret_from(worktree)
+        if not preview_secret:
+            raise SourceDeploymentError("compiled preview has no build secret to restart")
+        head = self._run(["git", "rev-parse", "HEAD"], worktree, timeout=30).stdout.strip().lower()
+        if head != commit:
+            raise SourceDeploymentError("compiled preview tree is not the commit this address names")
+        # A request waits for a process, not for a build: keep the bind bounded
+        # so a broken tree answers quickly instead of hanging the frame.
+        started = self._start_runtime(
+            dict(job), worktree, head,
+            preview_secret=preview_secret,
+            start_timeout=_PREVIEW_RESUME_TIMEOUT_SECONDS,
+            # A tree that was built is not a failed build: a process that will
+            # not start keeps its compiled output for the next attempt instead
+            # of throwing away the fifteen minutes it took.
+            discard_on_failure=False,
+        )
+        with self._lock:
+            live = self._jobs.get(job_id)
+            if isinstance(live, dict):
+                live.update({
+                    "status": "ready",
+                    "ok": True,
+                    "updated_at": _now(),
+                    **{key: value for key, value in started.items() if key != "status"},
+                })
+                live.pop("error", None)
+                self._persist()
+                return dict(live)
+        return {**job, **started}
+
+    def _retry_preview(self, job: dict[str, Any], branch: str, mode: str) -> dict[str, Any]:
+        """Rebuild one preview under the identity it already has.
+
+        A preview's address names the reviewed tree, not one attempt at it. A
+        failed attempt that is retried keeps its job id, its signed mount and
+        its worktree, so the frame the owner is looking at serves the new build
+        instead of being replaced by an address nobody has opened.
+        """
+        job_id = str(job.get("id") or "")
+        commit = str(job.get("commit") or "").strip().lower()
+        raw = str(job.get("worktree_path") or "").strip()
+        worktree = Path(raw).expanduser().resolve() if raw else None
+        job.update({
+            "status": "queued",
+            "ok": True,
+            "phase": "queued",
+            "resume": bool(worktree and (worktree / ".open-next").is_dir()),
+            "updated_at": _now(),
+        })
+        job.pop("error", None)
+        for stale in ("runtime_path", "preview_url", "runtime_port"):
+            job.pop(stale, None)
+        self._persist()
+        self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, commit, mode)
+        return self._with_preview_url(job)
+
     def _restart_preview(self, job: dict[str, Any]) -> None:
         """Queue the same reviewed commit again when its runtime is gone.
 
@@ -2980,8 +3278,8 @@ class SourceDeploymentService:
             result.pop("preview_url", None)
         return result
 
-    def latest_preview(self, branch: str | None = None) -> dict[str, Any]:
-        return self.latest(branch, mode=_COMPILED_PREVIEW)
+    def latest_preview(self, branch: str | None = None, *, draft_id: int | None = None) -> dict[str, Any]:
+        return self.latest(branch, mode=_COMPILED_PREVIEW, draft_id=draft_id)
 
     def preview_for_candidate(self, design_run_id: str, candidate_sha: str) -> dict[str, Any]:
         """Return an existing compiled-preview job for one exact candidate.
@@ -3099,41 +3397,55 @@ class SourceDeploymentService:
         self._refresh_release_job(job)
         return dict(job)
 
-    def latest(self, branch: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
+    def latest(
+        self,
+        branch: str | None = None,
+        *,
+        mode: str | None = None,
+        draft_id: int | None = None,
+    ) -> dict[str, Any]:
+        """The most recent job, optionally for one exact review draft.
+
+        A reader asking for its draft's preview must not be handed another
+        draft's newer one: the workspace frames the address only when it names
+        the draft and revision it is showing, so a global "latest" made every
+        second draft look unpreviewed and queued a build for one already built.
+        """
         with self._lock:
             candidates = [
                 value for value in self._jobs.values()
                 if isinstance(value, Mapping) and (not branch or str(value.get("branch") or "") == branch)
                 and (mode is None or value.get("mode") == mode)
+                and (draft_id is None or str(value.get("draft_id")) == str(draft_id))
             ]
             if not candidates:
                 return {}
             job = max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
-            # A reader asking for the latest preview is asking for one it can
-            # open. When the process behind it is gone, restart the same commit
-            # and report the job as queued instead of handing out a dead address.
-            if job.get("status") == "ready" and not self._runtime_alive(str(job.get("id") or "")):
-                self._restart_preview(job)
-            return self._with_preview_url(job)
+            result = self._with_preview_url(job)
+        # A reader asking for a preview is asking for one it can open. Starting
+        # the process here makes the frame's own request fast; the job stays
+        # ``ready`` because the build it names is still on disk either way.
+        self._warm_preview(job)
+        return result
 
     def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None) -> dict[str, Any]:
-        """Proxy one authenticated browser request to an isolated preview."""
-        with self._lock:
-            job = self._jobs.get(str(job_id))
-            runtime = self._runtimes.get(str(job_id))
-            if not isinstance(job, Mapping) or job.get("status") != "ready" or runtime is None:
-                raise SourceDeploymentError("compiled preview is not ready")
-            process, _worktree = runtime
-            if process.poll() is not None:
-                raise SourceDeploymentError("compiled preview process is no longer running")
-            port = int(job.get("runtime_port") or 0)
-            raw_path = str(path or "")
-            target = preview_runtime_url(
-                port,
-                str(job.get("runtime_base_path") or ""),
-                raw_path,
-                trailing=raw_path.endswith("/"),
-            )
+        """Proxy one authenticated browser request to an isolated preview.
+
+        The address is the capability, and it outlives this process. A preview
+        whose build succeeded comes back from its compiled tree when the
+        process behind it stopped — a platform restart, a sibling preview, a
+        dropped Worker — so a reader is never handed a dead address that only a
+        rebuild could repair.
+        """
+        job = self._served_preview(job_id)
+        port = int(job.get("runtime_port") or 0)
+        raw_path = str(path or "")
+        target = preview_runtime_url(
+            port,
+            str(job.get("runtime_base_path") or ""),
+            raw_path,
+            trailing=raw_path.endswith("/"),
+        )
         if query:
             target = f"{target}?{query}"
         allowed = {"accept", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}
@@ -3192,6 +3504,7 @@ class SourceDeploymentService:
         """
         for job_id in list(self._runtimes):
             self._stop_runtime(job_id, discard_worktree=False)
+        self._warm_executor.shutdown(wait=False, cancel_futures=True)
         self._executor.shutdown(wait=False, cancel_futures=True)
         shutil.rmtree(self._preview_home, ignore_errors=True)
 
