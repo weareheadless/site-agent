@@ -38,7 +38,14 @@
       "schemaRevision": 13,
       "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
+      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348",
+      "mailflareD1DatabaseId": "bb71bfef-b7ee-477c-aabb-8a77e9118644",
+      "mailflareD1DatabaseName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-mail",
+      "mailflareInboundQueueName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-mail-outbound",
+      "mailflareAgentQueueName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-mail-agent",
+      "mailflareR2BucketName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-mail-files",
+      "privateEmailR2BucketName": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348-email"
     },
     "atelier-harmonie": {
       "adminPath": "/api/helloada",
