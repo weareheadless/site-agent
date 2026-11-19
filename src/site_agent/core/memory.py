@@ -5733,14 +5733,14 @@ class Memory:
         result = json.loads(row['result'] or '{}')
         if result.get('failure_message_id'):
             return
-        scope_failure = 'outside the writable sandbox' in str(row['error'] or '')
-        reply = (
-            "I couldn't prepare these changes for review because they require an update to the shared website system. "
-            "This task stopped without publishing. You can ask me to explain what is blocked and which changes are available now."
-            if scope_failure else
-            "I couldn't complete this task, so there isn't a finished result to review. "
-            "You can ask me to explain the task status and the next step before trying again."
-        )
+        # The sentence the owner reads has exactly one owner. This store writes
+        # the transcript turn and the job's reply, so it asks that owner for the
+        # copy instead of keeping a second, vaguer text of its own.
+        from ..brain.owner_copy import owner_safe_failure
+
+        error = str(row['error'] or '')
+        scope_failure = 'outside the writable sandbox' in error
+        reply = owner_safe_failure(error)
         message = self.conn.execute(
             "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
             (row['conversation_id'], failed_ts, reply),

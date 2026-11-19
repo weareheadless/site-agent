@@ -112,10 +112,41 @@ _CREDIT_MARKERS = (
     "payment required",
     "quota exceeded",
 )
+_SCOPE_MARKERS = (
+    "outside the writable sandbox",
+    "outside the writable",
+)
+_THROTTLE_MARKERS = (
+    "rate limit",
+    "too many requests",
+    "429",
+)
+_DEADLINE_MARKERS = (
+    "timed out",
+    "timeout",
+    "not completed within",
+)
+_TURN_MARKERS = (
+    "model provider rejected",
+    "provider refused",
+    "unsupported dsml",
+    "native tool call",
+)
+_INTERRUPT_MARKERS = (
+    "interrupted by server restart",
+    "abandoned work",
+)
 
 
 def owner_safe_failure(error: str) -> str:
-    """Turn an internal job failure into a useful, non-technical owner status."""
+    """Turn an internal job failure into a useful, non-technical owner status.
+
+    Every failed job ends with one of these sentences in the conversation, so
+    the owner always learns what stopped and what state the site is in. This is
+    the only writer of that copy: the persisted turn, the job's ``reply`` and
+    the API's ``owner_error`` all come from here. A cause that cannot be named
+    is stated as such instead of being dressed up as a completed task.
+    """
     lowered = str(error or "").lower()
     if any(marker in lowered for marker in _CREDIT_MARKERS):
         return (
@@ -123,11 +154,40 @@ def owner_safe_failure(error: str) -> str:
             "credit, so I stopped. Nothing was changed or published. The account needs "
             "topping up before I can try again."
         )
+    if any(marker in lowered for marker in _SCOPE_MARKERS):
+        return (
+            "This change needs an update to the shared website system rather than to your "
+            "site, so I stopped. Nothing was published. I can explain what is blocked and "
+            "which changes I can make here."
+        )
+    if any(marker in lowered for marker in _THROTTLE_MARKERS):
+        return (
+            "The model provider is refusing requests right now, so I stopped before changing "
+            "anything. Nothing was published. Please try again in a few minutes."
+        )
+    if any(marker in lowered for marker in _DEADLINE_MARKERS):
+        return (
+            "I ran out of time on this task and stopped before finishing, so there is no result "
+            "to review. Nothing was published. Please try again."
+        )
+    if any(marker in lowered for marker in _TURN_MARKERS):
+        return (
+            "The design model returned a turn I could not use, so I stopped before changing "
+            "anything. Nothing was published. Please try again."
+        )
+    if any(marker in lowered for marker in _INTERRUPT_MARKERS):
+        return (
+            "I was interrupted before I could finish, so there is no result to review. "
+            "Nothing was published. Please try again."
+        )
     if any(marker in lowered for marker in ("github", "git fetch", "repository", "source file", "remote")):
         return "I couldn't reach the site's source files for this check. Nothing was changed. Please try again."
     if any(marker in lowered for marker in ("builder", "build", "preview", "deploy")):
         return "I couldn't finish the preview check. Nothing was changed or published. Please try again."
-    return "I couldn't complete that request. Nothing was changed. Please try again."
+    return (
+        "I stopped before finishing, so there is no result to review. Nothing was published. "
+        "Please try again."
+    )
 
 
 __all__ = [
