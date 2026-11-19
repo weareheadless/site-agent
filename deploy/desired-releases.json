@@ -1,8 +1,8 @@
 {
   "releases": {
     "site-be8225c72f3ba01a": {
-      "id": "persona-20261119-voice-1",
-      "sha": "df943a749044ac57467e1de149f92a546f4a5816"
+      "id": "persona-20261119-firstperson-1",
+      "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"
     },
     "atelier-harmonie": {
       "id": "runtime-20261118220420-4c5b6a4a",
