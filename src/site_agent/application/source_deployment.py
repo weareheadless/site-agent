@@ -3585,8 +3585,53 @@ class SourceDeploymentService:
                 "location": self._rewrite_runtime_location(exc.headers.get("Location", ""), job) if exc.headers else "",
                 "commit": str(job.get("commit") or ""),
             }
-        except (OSError, urllib.error.URLError) as exc:
-            raise SourceDeploymentError(f"compiled preview request failed: {str(exc)[:300]}") from exc
+        except (OSError, urllib.error.URLError):
+            # The process this service started can outlive the Worker inside it:
+            # wrangler supervises workerd, and when workerd goes the port stops
+            # answering while the parent still looks alive. The tree is what the
+            # address actually needs, so start it once more and retry the one
+            # request instead of handing the reader a dead address.
+            job = self._restart_runtime(job_id)
+            retry_target = preview_runtime_url(
+                int(job.get("runtime_port") or 0),
+                str(job.get("runtime_base_path") or ""),
+                raw_path,
+                trailing=raw_path.endswith("/"),
+            )
+            if query:
+                retry_target = f"{retry_target}?{query}"
+            retry = urllib.request.Request(retry_target, headers=request_headers, method="GET")
+            try:
+                response = urllib.request.build_opener(_BrowserOwnedRedirects()).open(retry, timeout=60)
+                with response:
+                    return {
+                        "status": int(response.status),
+                        "body": self._rewrite_runtime_assets(response.read(), response.headers.get("Content-Type", ""), job),
+                        "content_type": response.headers.get("Content-Type", "application/octet-stream"),
+                        "location": self._rewrite_runtime_location(response.headers.get("Location", ""), job),
+                        "commit": str(job.get("commit") or ""),
+                    }
+            except urllib.error.HTTPError as exc:
+                return {
+                    "status": int(exc.code),
+                    "body": exc.read(),
+                    "content_type": exc.headers.get("Content-Type", "text/plain; charset=utf-8"),
+                    "location": self._rewrite_runtime_location(exc.headers.get("Location", ""), job) if exc.headers else "",
+                    "commit": str(job.get("commit") or ""),
+                }
+            except (OSError, urllib.error.URLError) as exc:
+                raise SourceDeploymentError(
+                    f"compiled preview request failed after restarting its build: {str(exc)[:300]}"
+                ) from exc
+
+    def _restart_runtime(self, job_id: str) -> dict[str, Any]:
+        """Replace a runtime that stopped answering, from the tree it was built on."""
+        with self._runtime_start_lock:
+            self._stop_runtime(str(job_id), discard_worktree=False)
+            job = self._preview_address(str(job_id))
+            if self._compiled_preview_tree(job) is None:
+                raise SourceDeploymentError("compiled preview has no built tree to restart")
+            return self._resume_runtime(job)
 
     @staticmethod
     def _rewrite_runtime_location(location: str, job: Mapping[str, Any]) -> str:

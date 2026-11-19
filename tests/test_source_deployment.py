@@ -1223,6 +1223,72 @@ def test_an_address_whose_build_is_gone_rebuilds_it_itself(tmp_path, monkeypatch
         memory.close()
 
 
+def test_a_runtime_that_stops_answering_is_restarted_for_the_request(tmp_path, monkeypatch):
+    """A parent process that outlives its Worker is not a running preview.
+
+    wrangler supervises workerd; when workerd goes the port stops answering
+    while the parent still looks alive. The address names a tree, so the request
+    starts that tree again and is retried once.
+    """
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "ready",
+        "worktree_path": str(worktree), "runtime_port": 1111,
+        "runtime_base_path": "/p/tenant/preview-1/1/sig",
+    }
+    process = subprocess.Popen(["sleep", "60"], start_new_session=True)
+    service._runtimes["preview-1"] = (process, worktree)
+    restarted = []
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def read(self):
+            return b"<html><title>the site</title></html>"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    class Opener:
+        def __init__(self):
+            self.urls = []
+
+        def open(self, request, timeout=None):
+            self.urls.append(request.full_url)
+            if ":2222" not in request.full_url:
+                raise source_deployment.urllib.error.URLError("connection refused")
+            return Response()
+
+    opener = Opener()
+
+    def resume(job):
+        restarted.append(str(job.get("id")))
+        service._jobs["preview-1"]["runtime_port"] = 2222
+        return dict(service._jobs["preview-1"])
+
+    monkeypatch.setattr(service, "_resume_runtime", resume)
+    monkeypatch.setattr(source_deployment.urllib.request, "build_opener", lambda *a, **k: opener)
+    try:
+        result = service.runtime("preview-1", "", "")
+        assert result["status"] == 200
+        assert restarted == ["preview-1"]
+        assert opener.urls[0].startswith("http://127.0.0.1:1111/")
+        assert opener.urls[1].startswith("http://127.0.0.1:2222/")
+    finally:
+        if process.poll() is None:
+            process.kill()
+        service.close()
+
+
 def test_an_address_with_a_build_resumes_instead_of_rebuilding(tmp_path, monkeypatch):
     worktree = tmp_path / "preview"
     (worktree / ".open-next").mkdir(parents=True)
