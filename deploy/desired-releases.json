@@ -5,9 +5,12 @@
       "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261119222844-5380a950",
+      "id": "schema-20261119224500-canary-ledger",
       "sha": "3e59acc1242e248ed53c1466393bb737e138a1bf",
-      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+      "schemaMigration": {
+        "fromLedgerIdentity": "14736a687a4705c37d7f68373f92cdaf09295632a64eb79f3889ef8503a6fafe",
+        "targetMigrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
+      }
     }
   },
   "schema": 1
