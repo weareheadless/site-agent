@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261119-heal-the-preview-address-b",
-    "sha": "209bdbcc5bbfb6c3e0966877b975983f23de4c89"
+    "id": "20261119-preview-restarts-its-worker",
+    "sha": "fe650ac456b7380a6bc00d17996f34eb6cb31a03"
   }
 }
