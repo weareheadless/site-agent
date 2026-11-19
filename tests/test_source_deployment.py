@@ -1100,7 +1100,7 @@ def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch
         stdout = commit + "\n"
 
     monkeypatch.setattr(service, "_run", lambda *args, **kwargs: Result())
-    def start_runtime(job, directory, expected=None, *, preview_secret):
+    def start_runtime(job, directory, expected=None, *, preview_secret, **kwargs):
         started.update({"worktree": directory, "secret": preview_secret})
         return {"runtime_port": 4321, "runtime_base_path": job.get("runtime_base_path")}
 
@@ -1170,6 +1170,93 @@ def test_a_kept_preview_is_served_by_starting_its_own_compiled_tree(tmp_path, mo
         service.close()
 
 
+def test_an_address_whose_build_is_gone_rebuilds_it_itself(tmp_path, monkeypatch):
+    """The address is the bookmark, so opening it is the recovery."""
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            self.submitted = []
+
+        def submit(self, function, *args):
+            self.submitted.append((function, args))
+            return None
+
+        def shutdown(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
+    memory = Memory(tmp_path / "memory.db")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+        memory=memory,
+    )
+    commit = "a" * 40
+    job = {
+        "id": "preview-1", "mode": "compiled_preview", "status": "failed", "ok": False,
+        "branch": "preview", "commit": commit, "draft_id": 3,
+        "error": "compiled preview page / references /icon.svg, which returned 404",
+        "runtime_base_path": "/p/tenant/preview-1/1799999999/signature",
+        "worktree_path": "", "created_at": "2026-11-01T00:00:00+00:00",
+        "updated_at": "2026-11-01T00:01:00+00:00",
+    }
+    service._jobs["preview-1"] = job
+    try:
+        with pytest.raises(source_deployment.SourceDeploymentError, match="being rebuilt"):
+            service._served_preview("preview-1")
+        assert job["status"] == "queued"
+        assert job["address_retries"] == 1
+        assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
+        assert service._executor.submitted == [
+            (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
+        ]
+
+        # That attempt failing does not buy another compile: the next reload is
+        # told why it is not there, and only a later one may try once more.
+        job.update(status="failed", error="compiled preview page / references /icon.svg, which returned 404")
+        with pytest.raises(source_deployment.SourceDeploymentError, match="icon.svg"):
+            service._served_preview("preview-1")
+        assert len(service._executor.submitted) == 1
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_an_address_with_a_build_resumes_instead_of_rebuilding(tmp_path, monkeypatch):
+    worktree = tmp_path / "preview"
+    (worktree / ".open-next").mkdir(parents=True)
+    (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+    (worktree / ".dev.vars").write_text('PAYLOAD_SECRET="resume-secret"\n', encoding="utf-8")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "failed",
+        "worktree_path": str(worktree), "runtime_base_path": "/p/tenant/preview-1/1/sig",
+    }
+    started = {}
+
+    class Result:
+        stdout = commit + "\n"
+
+    monkeypatch.setattr(service, "_run", lambda *args, **kwargs: Result())
+
+    def start_runtime(job, directory, expected=None, **kwargs):
+        started.update({"worktree": directory, **kwargs})
+        return {"status": "ready", "runtime_port": 4321,
+                "runtime_base_path": job.get("runtime_base_path")}
+
+    monkeypatch.setattr(service, "_start_runtime", start_runtime)
+    try:
+        served = service._served_preview("preview-1")
+        assert served["runtime_port"] == 4321
+        assert started["discard_on_failure"] is False
+        assert service._jobs["preview-1"]["status"] == "ready"
+    finally:
+        service.close()
+
+
 def test_starting_a_preview_keeps_the_previous_compiled_tree(tmp_path, monkeypatch):
     """One preview runs at a time; the one it replaced keeps what it built."""
     service = source_deployment.SourceDeploymentService(
@@ -1201,7 +1288,7 @@ def test_starting_a_preview_keeps_the_previous_compiled_tree(tmp_path, monkeypat
     monkeypatch.setattr(service, "_preview_port", lambda: 4321)
     monkeypatch.setattr(service, "_preview_env", lambda **kwargs: {})
     monkeypatch.setattr(service, "_verify_public_revision", lambda *a, **k: {"verified": True})
-    monkeypatch.setattr(service, "_verify_preview_routes", lambda *a, **k: ["/"])
+    monkeypatch.setattr(service, "_verify_preview_routes", lambda *a, **k: (["/"], []))
     monkeypatch.setattr(source_deployment.subprocess, "Popen", lambda *a, **k: Process())
     monkeypatch.setattr(source_deployment.urllib.request, "urlopen", lambda *a, **k: Response())
     try:
@@ -1504,7 +1591,7 @@ def test_a_preview_route_that_does_not_render_fails_the_candidate(tmp_path):
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        assert service._verify_preview_routes(base, ["/ok"]) == ["/ok"]
+        assert service._verify_preview_routes(base, ["/ok"]) == (["/ok"], [])
         with pytest.raises(source_deployment.SourceDeploymentError, match="route /about returned 500"):
             service._verify_preview_routes(base, ["/ok", "/about"])
     finally:
@@ -1639,16 +1726,34 @@ def _preview_server(pages, files=None):
     return server
 
 
-def test_a_page_that_names_a_file_it_cannot_serve_fails_the_render_gate(tmp_path):
-    # The tab icon case: the document renders, the file it names 404s. A gate
-    # that only checks the document status calls this candidate ready.
+def test_a_missing_icon_is_reported_and_does_not_withhold_the_page(tmp_path):
+    # The tab icon case: the document, its styles and its scripts all render and
+    # only the icon is missing. That is a defect on a page the owner can review,
+    # not a reason to refuse the candidate and cost them another compile.
     server = _preview_server({
         "/": '<html><head><link rel="icon" href="/icon-1g134v.png"></head><body>ok</body></html>',
     }, {"/icon-4usi79.png": b"icon"})
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        with pytest.raises(source_deployment.SourceDeploymentError, match="icon-1g134v.png"):
+        verified, warnings = service._verify_preview_routes(base, ["/"])
+        assert verified == ["/"]
+        assert len(warnings) == 1 and "icon-1g134v.png" in warnings[0] and "404" in warnings[0]
+    finally:
+        service.close()
+        server.shutdown()
+
+
+def test_a_page_without_its_stylesheet_is_not_a_page(tmp_path):
+    # Without the files the document is built from there is no page to review,
+    # so a missing stylesheet still withholds the preview.
+    server = _preview_server({
+        "/": '<html><head><link rel="stylesheet" href="/styles.css"></head><body>ok</body></html>',
+    })
+    service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
+    try:
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        with pytest.raises(source_deployment.SourceDeploymentError, match="styles.css"):
             service._verify_preview_routes(base, ["/"])
     finally:
         service.close()
@@ -1663,7 +1768,7 @@ def test_a_page_whose_assets_all_resolve_passes_the_render_gate(tmp_path):
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
-        assert service._verify_preview_routes(base, ["/"]) == ["/"]
+        assert service._verify_preview_routes(base, ["/"]) == (["/"], [])
     finally:
         service.close()
         server.shutdown()
@@ -1679,7 +1784,7 @@ def test_third_party_assets_are_not_this_previews_to_serve(tmp_path):
         base = f"http://127.0.0.1:{server.server_address[1]}"
         # Nothing on the local server would answer that URL, so passing means
         # the cross-origin reference was recognised and left alone.
-        assert service._verify_preview_routes(base, ["/"]) == ["/"]
+        assert service._verify_preview_routes(base, ["/"]) == (["/"], [])
     finally:
         service.close()
         server.shutdown()
@@ -1793,7 +1898,7 @@ def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
     threading.Thread(target=server.serve_forever, daemon=True).start()
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
-        verified = service._verify_preview_routes(
+        verified, _warnings = service._verify_preview_routes(
             f"http://127.0.0.1:{server.server_address[1]}{mount}", ["/", "/courses"])
     finally:
         service.close()

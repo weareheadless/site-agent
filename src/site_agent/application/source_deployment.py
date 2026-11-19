@@ -78,6 +78,11 @@ _PREVIEW_DISK_RESERVE_BYTES = 25 * 1024 ** 3
 # process start is seconds; a compile is minutes, and a request must never look
 # like one.
 _PREVIEW_RESUME_TIMEOUT_SECONDS = 60
+# An address is the owner's bookmark, so opening one whose build is gone heals
+# it: at most this many rebuilds, and never two inside this window, so a
+# candidate that keeps failing costs one compile instead of one per reload.
+_PREVIEW_ADDRESS_RETRIES = 2
+_PREVIEW_ADDRESS_RETRY_SECONDS = 600
 _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
@@ -104,6 +109,17 @@ _PREVIEW_ENV_ALLOWLIST = frozenset({
     "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NPM_CONFIG_CACHE",
     "NEXT_TELEMETRY_DISABLED",
 })
+
+
+def _seconds_since(stamp: Any) -> float:
+    """How long ago a stored ISO timestamp was; unreadable means long ago."""
+    try:
+        value = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return max(0.0, (datetime.now(timezone.utc) - value).total_seconds())
 
 
 def _now() -> str:
@@ -142,42 +158,51 @@ def preview_runtime_url(port: int, base_path: str, path: str = "", *, trailing: 
 class _DocumentAssets(HTMLParser):
     """Collect the files a rendered document makes the browser request.
 
-    A page that returns 200 can still be broken: a `<link rel="icon">` pointed
-    at a name the build never emitted 404s in the tab even though the document
-    rendered. The gate requests exactly what the markup names, so an asset the
-    owner would see fail cannot pass as a ready preview.
+    A page that returns 200 can still name a file the build never emitted, and
+    the gate requests exactly what the markup names. Whether that is fatal
+    depends on the file: a stylesheet or a client chunk is the page, an icon or
+    an image is a defect on a page that still renders.
     """
 
-    _ELEMENTS: tuple[tuple[str, str], ...] = (
-        ("link", "href"),
-        ("script", "src"),
-        ("img", "src"),
-        ("img", "srcset"),
-        ("source", "src"),
-        ("source", "srcset"),
-        ("video", "src"),
-        ("video", "poster"),
-        ("audio", "src"),
-        ("track", "src"),
+    _ELEMENTS: tuple[tuple[str, str, bool | None], ...] = (
+        # ``None`` means the element's own attributes decide (``link``).
+        ("link", "href", None),
+        ("script", "src", True),
+        ("img", "src", False),
+        ("img", "srcset", False),
+        ("source", "src", False),
+        ("source", "srcset", False),
+        ("video", "src", False),
+        ("video", "poster", False),
+        ("audio", "src", False),
+        ("track", "src", False),
     )
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.urls: list[str] = []
+        self.urls: list[tuple[str, bool]] = []
+
+    def _link_is_required(self, attributes: Mapping[str, str]) -> bool:
+        rel = set(attributes.get("rel", "").lower().split())
+        if rel & {"stylesheet", "modulepreload"}:
+            return True
+        return "preload" in rel and attributes.get("as", "").lower() in {"style", "script"}
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {name: value or "" for name, value in attrs}
-        for element, attribute in self._ELEMENTS:
+        for element, attribute, required in self._ELEMENTS:
             if tag != element:
                 continue
             value = attributes.get(attribute, "").strip()
             if not value:
                 continue
+            if required is None:
+                required = self._link_is_required(attributes)
             # srcset is a comma-separated candidate list; only the URL matters.
             candidates = [value] if attribute != "srcset" else [
                 part.strip().split(" ")[0] for part in value.split(",")
             ]
-            self.urls.extend(url for url in candidates if url)
+            self.urls.extend((url, bool(required)) for url in candidates if url)
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
@@ -2114,7 +2139,7 @@ class SourceDeploymentService:
             # so it is always part of the render gate even when the change
             # touched no Payload document on it.
             required_routes = self._required_preview_routes(job.get("preview_routes") or [])
-            rendered = self._verify_preview_routes(
+            rendered, asset_warnings = self._verify_preview_routes(
                 f"http://127.0.0.1:{port}{base_path}",
                 required_routes,
                 job,
@@ -2130,6 +2155,9 @@ class SourceDeploymentService:
             "runtime_port": port,
             "revision_verification": revision,
             "rendered_routes": rendered,
+            # Files the pages name that the build does not serve. The preview is
+            # still the page, and this is the defect list the owner can act on.
+            "asset_warnings": asset_warnings[:20],
         }
 
     def _required_preview_routes(self, routes: Sequence[str]) -> list[str]:
@@ -2146,7 +2174,7 @@ class SourceDeploymentService:
 
     def _verify_preview_routes(
         self, base: str, routes: Sequence[str], job: Mapping[str, Any] | None = None,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[str]]:
         """Every page this candidate authored must render in its own preview.
 
         A build that compiles is not a page. A component can throw while
@@ -2155,15 +2183,17 @@ class SourceDeploymentService:
         this candidate saved, so it checks what the owner asked for rather than
         every route on the site.
 
-        A page that returns 200 is still not evidence that its files exist: the
-        markup names icons, images, stylesheets and chunks, and any of those can
-        404 while the document renders. Each rendered page's same-origin asset
-        references are requested too, so a link to a file the build never
-        emitted fails here instead of in the owner's browser tab.
+        A page that returns 200 is still not evidence that its files exist, so
+        the markup's same-origin references are requested too. What a missing
+        file means depends on the file: without its stylesheet or its client
+        chunks the page is not a page, and that withholds the preview. A missing
+        icon, image or manifest is a defect the owner can see and fix, and it is
+        reported as one — refusing the whole candidate over one decorative file
+        is how a favicon came to cost a fifteen-minute rebuild and a preview.
         """
         base = str(base or "").rstrip("/")
         verified: list[str] = []
-        assets: dict[str, str] = {}
+        assets: dict[str, tuple[str, bool]] = {}
         for route in routes:
             # Home is the base path itself; every other route is appended to it.
             url = base if route == "/" else f"{base}/{route.lstrip('/')}"
@@ -2190,28 +2220,42 @@ class SourceDeploymentService:
                 # preview mounts the candidate's own asset URLs, and a reference
                 # that only resolves unmounted is not what the owner sees.
                 body = self._rewrite_runtime_assets(body, content_type, job)
-            for reference in self._document_asset_references(body, url):
-                assets.setdefault(reference, route)
-        for reference, route in assets.items():
+            for reference, required in self._document_asset_references(body, url):
+                if reference in assets and assets[reference][1]:
+                    continue
+                assets[reference] = (route, required)
+        warnings: list[str] = []
+        for reference, (route, required) in assets.items():
             try:
                 with urllib.request.urlopen(reference, timeout=20) as response:
                     asset_status = int(response.status)
             except urllib.error.HTTPError as exc:
                 asset_status = int(exc.code)
             except (OSError, urllib.error.URLError) as exc:
-                raise SourceDeploymentError(
-                    f"compiled preview page {route} references {reference}, which could not be "
-                    f"requested: {str(exc)[:200]}"
-                ) from exc
-            if not 200 <= asset_status < 300:
+                if required:
+                    raise SourceDeploymentError(
+                        f"compiled preview page {route} references {reference}, which could not be "
+                        f"requested: {str(exc)[:200]}"
+                    ) from exc
+                warnings.append(f"{route} names {reference}, which could not be requested")
+                continue
+            if 200 <= asset_status < 300:
+                continue
+            if required:
                 raise SourceDeploymentError(
                     f"compiled preview page {route} references {reference}, which returned "
                     f"{asset_status}; the candidate names a file it cannot serve"
                 )
-        return verified
+            warnings.append(f"{route} names {reference}, which returned {asset_status}")
+        return verified, warnings
 
-    def _document_asset_references(self, body: bytes, page_url: str) -> list[str]:
-        """Same-origin files this document names, deduplicated and bounded."""
+    def _document_asset_references(self, body: bytes, page_url: str) -> list[tuple[str, bool]]:
+        """Same-origin files this document names, deduplicated and bounded.
+
+        Each entry says whether the document needs it to be a page at all:
+        stylesheets, client chunks and module preloads do, and icons, images,
+        media and manifests do not.
+        """
         if not body:
             return []
         parser = _DocumentAssets()
@@ -2220,8 +2264,9 @@ class SourceDeploymentService:
         except Exception:  # A malformed document still returns 200 above.
             return []
         page = urllib.parse.urlsplit(page_url)
-        found: list[str] = []
-        for raw in parser.urls:
+        found: list[tuple[str, bool]] = []
+        seen: dict[str, bool] = {}
+        for raw, required in parser.urls:
             if raw.startswith(("data:", "mailto:", "tel:", "javascript:", "#")):
                 continue
             absolute = urllib.parse.urljoin(page_url, raw)
@@ -2230,9 +2275,14 @@ class SourceDeploymentService:
                 continue
             if (parts.scheme, parts.netloc) != (page.scheme, page.netloc):
                 continue  # Third-party fonts and scripts are not this preview's to serve.
-            if absolute == page_url or absolute in found:
+            if absolute == page_url:
                 continue
-            found.append(absolute)
+            if absolute in seen:
+                if required:
+                    seen[absolute] = True
+                continue
+            seen[absolute] = required
+            found.append((absolute, required))
             if len(found) >= 80:
                 break
         return found
@@ -2375,7 +2425,12 @@ class SourceDeploymentService:
         if not preview_secret:
             return None
         self._mark_step(job, "runtime")
-        runtime = self._start_runtime(job, worktree, head, preview_secret=preview_secret)
+        # The compile is done here; a refusal at this point (a page that does
+        # not render, a file it cannot serve) is not a reason to throw the
+        # build away. Keeping it makes the next attempt seconds, not minutes.
+        runtime = self._start_runtime(
+            job, worktree, head, preview_secret=preview_secret, discard_on_failure=False,
+        )
         return {
             "ok": True,
             "branch": branch,
@@ -2515,7 +2570,12 @@ class SourceDeploymentService:
                 job["output_artifact"] = {"status": "passed", "mode": "compiled_runtime", **artifact}
 
             self._mark_step(job, "runtime")
-            runtime = self._start_runtime(job, worktree, local_head, preview_secret=preview_secret)
+            # The compile succeeded; the runtime gate runs against it. A refusal
+            # here is not a reason to delete the build the owner already waited
+            # for, and a later attempt can retest it in seconds.
+            runtime = self._start_runtime(
+                job, worktree, local_head, preview_secret=preview_secret, discard_on_failure=False,
+            )
             keep_worktree = True
             result = {
                 "ok": True,
@@ -3115,22 +3175,73 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("compiled preview is not ready")
             return dict(job)
 
+    def _preview_address(self, job_id: str) -> dict[str, Any]:
+        """The job this address names, whatever state it is in."""
+        with self._lock:
+            job = self._jobs.get(str(job_id))
+            if not isinstance(job, Mapping):
+                raise SourceDeploymentError("this preview address does not name a build of this workspace")
+            return dict(job)
+
     def _served_preview(self, job_id: str) -> dict[str, Any]:
         """The preview this address names, with the process behind it running.
 
-        Serving an address may start a process, never a compile: the tree was
-        built when the address was handed out and is still on disk. One start
-        at a time, so two readers arriving together wait for the same process
-        instead of racing for the same port.
+        The address is the capability the owner holds, so serving it is how a
+        preview comes back: from the tree that was built when it was handed out,
+        and — when that tree is gone — by rebuilding that same address rather
+        than asking the owner to find a button. One start at a time, so readers
+        arriving together wait for one process instead of racing for a port.
         """
-        job = self._ready_preview(job_id)
-        # Serialized even when the process is up: while one request is starting
-        # it, every other request for this address waits for the same process
-        # instead of reaching a port that is not listening yet.
+        job = self._preview_address(job_id)
+        if str(job.get("status") or "") in {"queued", "running", "verifying"}:
+            raise SourceDeploymentError("this preview is still being built")
         with self._runtime_start_lock:
-            if not self._runtime_alive(str(job_id)):
-                job = self._resume_runtime(self._ready_preview(job_id))
-        return self._ready_preview(str(job_id))
+            live = self._jobs.get(str(job_id))
+            if self._runtime_alive(str(job_id)) and isinstance(live, Mapping):
+                # Ready to forward: a running process is the answer, whatever
+                # the stored status last said.
+                return dict(live)
+            if self._compiled_preview_tree(job) is not None:
+                # A build that failed its own start is not retried on every
+                # frame request: the reason is served until the window passes,
+                # and the next attempt then starts the same tree again.
+                failed_at = str(job.get("resume_failed_at") or "")
+                if failed_at and _seconds_since(failed_at) < _PREVIEW_ADDRESS_RETRY_SECONDS:
+                    raise SourceDeploymentError(
+                        str(job.get("error") or "this preview did not start")
+                    )
+                try:
+                    return self._resume_runtime(job)
+                except SourceDeploymentError as exc:
+                    with self._lock:
+                        live = self._jobs.get(str(job_id))
+                        if isinstance(live, dict):
+                            live.update({"resume_failed_at": _now(), "error": str(exc)[:1_000]})
+                            self._persist()
+                    raise
+            return self._rebuild_address(job)
+
+    def _rebuild_address(self, job: Mapping[str, Any]) -> dict[str, Any]:
+        """Rebuild a lost build for the address that names it, within a bound."""
+        job_id = str(job.get("id") or "")
+        reason = str(job.get("error") or "").strip()
+        last = str(job.get("address_retry_at") or "")
+        attempts = int(job.get("address_retries") or 0)
+        if last and _seconds_since(last) < _PREVIEW_ADDRESS_RETRY_SECONDS:
+            raise SourceDeploymentError(reason or "this preview is not available yet")
+        if attempts >= _PREVIEW_ADDRESS_RETRIES:
+            raise SourceDeploymentError(reason or "this preview could not be built")
+        with self._lock:
+            target = self._jobs.get(job_id)
+            if not isinstance(target, dict):
+                raise SourceDeploymentError("this preview address does not name a build of this workspace")
+            target.update({"address_retries": attempts + 1, "address_retry_at": _now()})
+            self._retry_preview(
+                target,
+                str(target.get("branch") or self.site.get("preview_branch") or "preview"),
+                str(target.get("mode") or _COMPILED_PREVIEW),
+            )
+        raise SourceDeploymentError("this preview is being rebuilt from its last request")
 
     def _warm_preview(self, job: Mapping[str, Any]) -> None:
         """Start a kept preview while the reader is still rendering the page.
@@ -3200,6 +3311,7 @@ class SourceDeploymentService:
                     **{key: value for key, value in started.items() if key != "status"},
                 })
                 live.pop("error", None)
+                live.pop("resume_failed_at", None)
                 self._persist()
                 return dict(live)
         return {**job, **started}

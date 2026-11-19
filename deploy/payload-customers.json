@@ -36,7 +36,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "manual",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
     },
@@ -253,7 +253,6 @@
       "contentContract": "helloada-content-v4",
       "d1DatabaseId": "eea1ddeb-8205-4712-ad40-cb843dd688b0",
       "d1DatabaseName": "helloada-site-be8225c72f3ba01a",
-      "disposable": true,
       "health": "https://helloada-site-be8225c72f3ba01a.weareheadless.workers.dev/api/health",
       "mailflareAgentQueueName": "helloada-site-be8225c72f3ba01a-mail-agent",
       "mailflareD1DatabaseId": "d97349ce-bca7-447e-b75f-0647b339ad26",
@@ -268,7 +267,6 @@
       "repository": "https://github.com/weareheadless/helloada-site-be8225c72f3ba01a.git",
       "schemaIdentity": "664c57047e3ed8f2dd9d1e2dd6b50938f8c2e20ee1ab4f85a75abbfb5ba98848",
       "schemaRevision": 13,
-      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-site-be8225c72f3ba01a"
     },

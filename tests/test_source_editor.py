@@ -341,7 +341,7 @@ class BridgeSourceDeployment:
     def status(self, job_id):
         return {"id": job_id, "status": "ready", "preview_url": "https://draft.example"}
 
-    def latest(self, branch=None):
+    def latest(self, branch=None, *, draft_id=None):
         return {"id": "source-job-1", "status": "ready", "branch": branch or "preview"}
 
     def promote(self, job_id):

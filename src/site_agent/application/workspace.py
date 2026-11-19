@@ -57,11 +57,46 @@ class SourceConflict(BridgeError):
     """A source edit was based on stale or mismatched source evidence."""
 
 
+_ABSOLUTE_PATH = re.compile(
+    r"(?:/(?:SOCIAL|home|tmp|var|usr|opt|etc|root|proc|dev|snap)|[A-Za-z]:\\)[^\s'\"),;]*"
+)
+_STACK_LINE = re.compile(r"^(?:at\s|File \"|node_modules|\.\.\.|---)")
+_TRACEBACK_LABEL = re.compile(r"^Traceback(?:\s*\(most recent call last\))?:?\s*")
+
+
+def _owner_failure_reason(error: str) -> str:
+    """The part of a build failure an owner can read and act on.
+
+    The durable job keeps the whole diagnostic. What the workspace shows is the
+    reason with its stack frames and filesystem paths removed: too little to
+    reproduce, and the owner is told the preview cannot be prepared with no way
+    to know what to change.
+    """
+    for line in str(error or "").splitlines():
+        candidate = line.strip()
+        if not candidate or _STACK_LINE.match(candidate):
+            continue
+        candidate = _TRACEBACK_LABEL.sub("", candidate)
+        candidate = _ABSOLUTE_PATH.sub("<path>", candidate)
+        candidate = re.sub(r"https?://127\.0\.0\.1:\d+", "", candidate)
+        candidate = re.sub(r"\s{2,}", " ", candidate).strip(" ;,")
+        # A line that was only a path says nothing the owner can act on.
+        if not re.search(r"[A-Za-z]{3,}", candidate.replace("<path>", " ")):
+            continue
+        if candidate:
+            return candidate[:260]
+    return ""
+
+
 def _owner_preview_job(job: Mapping[str, Any]) -> dict[str, Any]:
     """Keep internal build diagnostics in the durable job, not the owner alert."""
     result = dict(job)
     if result.get("status") == "failed" and result.get("error"):
-        result["error"] = "The website preview could not be prepared. Build diagnostics have been retained."
+        reason = _owner_failure_reason(str(result.get("error") or ""))
+        result["error"] = (
+            f"The website preview could not be prepared: {reason}"
+            if reason else "The website preview could not be prepared."
+        )
         result["diagnostic_id"] = str(result.get("id") or "")
     return result
 
