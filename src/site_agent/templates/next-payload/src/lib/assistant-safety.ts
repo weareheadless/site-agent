@@ -7,8 +7,15 @@
  * with the site. What it will not do is answer a report of imminent harm with a
  * joke, so that one branch is a fixed line with no model call.
  *
- * The check fails closed toward the fixed line: a broken gate must not be the
+ * The check fails closed toward the fixed line when the gate answered but the
+ * answer cannot be read: a gate that said something unclear must not be the
  * reason a person in danger receives nonsense.
+ *
+ * A gate that could not run at all is a different fact, and it is not danger.
+ * Collapsing the two meant one provider outage turned every visitor message on
+ * every site into the fixed line — a fake emergency, repeated, until the
+ * provider recovered. An unanswerable gate is now reported as the assistant
+ * being unavailable.
  */
 export const SAFETY_GATE_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
@@ -23,7 +30,11 @@ const GATE_INSTRUCTION = [
   'Reply with exactly one word: DANGER or SILLY.',
 ].join('\n')
 
-export type AssistMode = 'bit' | 'hold'
+/**
+ * `bit` is the persona, `hold` is a turn that may be reporting harm, and
+ * `unknown` means the gate never produced an answer — no verdict either way.
+ */
+export type AssistMode = 'bit' | 'hold' | 'unknown'
 
 type GateInput = {
   apiKey: string
@@ -32,12 +43,21 @@ type GateInput = {
   signal?: AbortSignal
 }
 
+/** One word the gate could have said, tolerating stray punctuation or case. */
+const verdict = (raw: string): 'DANGER' | 'SILLY' | '' => {
+  const letters = raw.replace(/[^A-Z]/g, '')
+  return letters === 'DANGER' || letters === 'SILLY' ? letters : ''
+}
+
 /**
- * One short classification call. Anything unexpected — an error, an empty or
- * ambiguous answer, an over-long answer — resolves to `hold`.
+ * One short classification call. Three outcomes, deliberately distinct:
+ * a readable verdict is honoured; a gate that answered something unreadable
+ * holds, because an unclear answer is not a safe answer; a gate that could not
+ * run at all is `unknown` and the route says so instead of inventing a crisis.
  */
 export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput): Promise<AssistMode> => {
-  if (!String(apiKey || '').trim()) return 'hold'
+  if (!String(apiKey || '').trim()) return 'unknown'
+  let raw: string
   try {
     const response = await fetch(SAFETY_GATE_URL, {
       method: 'POST',
@@ -53,14 +73,16 @@ export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput
         ],
       }),
     })
-    if (!response.ok) return 'hold'
+    if (!response.ok) return 'unknown'
     const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> }
-    const raw = String(payload.choices?.[0]?.message?.content ?? '').trim().toUpperCase()
-    if (raw === 'SILLY') return 'bit'
-    return 'hold'
+    raw = String(payload.choices?.[0]?.message?.content ?? '')
   } catch {
-    return 'hold'
+    return 'unknown'
   }
+  const answer = verdict(raw.trim().toUpperCase())
+  if (answer === 'SILLY') return 'bit'
+  if (answer === 'DANGER') return 'hold'
+  return 'hold'
 }
 
 /**

@@ -90,13 +90,16 @@ export async function POST(request: Request) {
   // One question decides the branch: is someone in danger right now? Every
   // other subject belongs to the site's own persona, including the ones the
   // platform used to take over. The hold answers from a fixed line so a report
-  // of harm can never receive a generated joke.
+  // of harm can never receive a generated joke. A gate that could not run
+  // answered nothing, and saying "someone may be in danger" for that would put
+  // a crisis on every visitor's screen during an ordinary provider outage.
   const mode: AssistMode = await classifyTurn({
     apiKey,
     model: config.model,
     message: messages[messages.length - 1].content,
     signal: request.signal,
   })
+  if (mode === 'unknown') return json(502, 'the assistant is unavailable right now')
   if (mode === 'hold') {
     return new Response(dangerStream(), {
       headers: {

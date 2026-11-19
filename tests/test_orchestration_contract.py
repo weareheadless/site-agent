@@ -156,6 +156,31 @@ def test_failure_outcome_is_durable_and_not_duplicated(tmp_path, failure):
         assert job['result']['failure']['job_id'] == job_id
 
 
+def test_a_failed_job_tells_the_owner_the_cause_it_already_knows(tmp_path):
+    """The stored failure reason is the owner-facing answer.
+
+    A provider account with no credit is a fact the job holds at failure time.
+    The transcript used to carry one canned sentence for every cause, so the
+    owner could not tell a wallet problem from a broken build and had nothing
+    to act on.
+    """
+    from site_agent.core.memory import Memory
+
+    with closing(Memory(tmp_path / 'memory.db')) as memory:
+        conversation = memory.create_conversation()
+        job_id = memory.enqueue_chat_job(conversation, 'Draw me a cat')
+        memory.claim_chat_job('test-worker')
+        assert memory.fail_chat_job(
+            job_id, 'test-worker', 'the model provider rejected the request: the account has no credit left',
+        )
+        job = memory.get_chat_job(job_id)
+        answer = [m for m in memory.get_messages(conversation) if m['role'] == 'assistant'][0]['text']
+        assert answer == job['result']['reply']
+        assert 'out of credit' in answer
+        assert 'Nothing was changed or published' in answer
+        assert "I couldn't complete this task" not in answer
+
+
 def test_stale_job_moves_its_linked_owner_action_to_waiting(tmp_path):
     """The watchdog must close linked actions itself; the old helper is gone."""
     from site_agent.core.contracts import (

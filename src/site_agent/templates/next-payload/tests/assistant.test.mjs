@@ -144,19 +144,34 @@ test('the gate holds only a report of imminent harm', async () => {
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'should I invest my savings?' }), 'bit')
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I am constipated' }), 'bit')
 
+    // A verdict with punctuation counted; a readable answer is a verdict.
+    reply({ choices: [{ message: { content: ' silly. ' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
+
     reply({ choices: [{ message: { content: 'DANGER' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'my baby swallowed pills' }), 'hold')
 
-    // A broken gate must not be the reason someone in danger gets nonsense.
+    // A gate that answered something unreadable holds: an unclear answer is
+    // not a safe answer.
     reply({ choices: [{ message: { content: 'hard to say' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
     reply({ choices: [] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'hold')
-    reply({ error: 'refused' }, false)
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'provider down' }), 'hold')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('a gate that could not run is unavailable, not danger', async () => {
+  const original = globalThis.fetch
+  try {
+    globalThis.fetch = async () => ({ ok: false, status: 402, json: async () => ({ error: 'insufficient credits' }) })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
+
     globalThis.fetch = async () => { throw new Error('network down') }
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'network down' }), 'hold')
-    assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'hold')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
+
+    assert.equal(await classifyTurn({ apiKey: '', model: 'm', message: 'no key' }), 'unknown')
   } finally {
     globalThis.fetch = original
   }

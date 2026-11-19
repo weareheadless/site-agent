@@ -60,6 +60,28 @@ def test_owner_safe_failure_is_actionable_without_leaking_transport_details():
     assert "github" not in message.lower()
 
 
+@pytest.mark.parametrize(
+    ('error', 'expected'),
+    [
+        ('builder changed files outside the writable sandbox: .github/workflows/release.yml', 'shared website system'),
+        ('opencode exited 1: rate limit exceeded, 429', 'refusing requests'),
+        ('chat job was not completed within 900 seconds (reason=stale)', 'ran out of time'),
+        ('opencode emitted unsupported DSML/XML instead of a native tool call', 'could not use'),
+        ('the change still does not build, so its preview stays blocked: HTTP Error 404', 'preview check'),
+        ('interrupted by server restart; retry this job', 'interrupted'),
+        ('something nobody classified', 'I stopped before finishing'),
+    ],
+)
+def test_every_known_failure_cause_reaches_the_owner_as_a_sentence(error, expected):
+    """One copy owner, one sentence per cause, and nothing published in any of them."""
+    message = owner_safe_failure(error)
+    assert expected in message
+    assert 'Nothing was' in message or 'Nothing was published' in message
+    # The internal vocabulary never reaches the owner.
+    for leaked in ('sandbox', 'DSML', 'HTTP', '429', 'opencode', 'stale'):
+        assert leaked not in message
+
+
 def test_owner_safe_reply_leaves_normal_owner_update_unchanged():
     reply = "The preview is ready. Review the updated homepage when you're ready."
     assert _owner_safe_reply(reply) == reply
