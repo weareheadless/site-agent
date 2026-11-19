@@ -23,23 +23,6 @@
       "websitePresent": false,
       "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
     },
-    "ada-e2e-studio-b39ae17e77014b8c": {
-      "adminPath": "/api/helloada",
-      "contentContract": "helloada-content-v3",
-      "d1DatabaseId": "d6cfa6bb-33b7-406a-82dc-e8d9f678cb85",
-      "d1DatabaseName": "helloada-ada-e2e-studio-b39ae17e77014b8c",
-      "disposable": true,
-      "health": "https://helloada-ada-e2e-studio-b39ae17e77014b8c.weareheadless.workers.dev/api/health",
-      "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
-      "payloadCore": "0.5.1",
-      "r2BucketName": "helloada-ada-e2e-studio-b39ae17e77014b8c-media",
-      "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
-      "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
-      "schemaRevision": 5,
-      "sharedRuntimeUpdate": "canary",
-      "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
-    },
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
       "adminPath": "/api/helloada",
       "contentContract": "helloada-content-v3",
@@ -124,7 +107,7 @@
       "repository": "https://github.com/weareheadless/helloada-helloada-handoff-validation-20261021-39b6663e141ff33c.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "manual",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-helloada-handoff-validat-d07f7a53aec1452bb162"
     },
