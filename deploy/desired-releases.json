@@ -3,6 +3,13 @@
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
       "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"
+    },
+    "ada-e2e-studio-intake-0aa0b1a55ae48348": {
+      "id": "bootstrap-20261119230000-canary-scaffold",
+      "sha": "5f47696b56db0857068e3f3f56d65bf69b90d643",
+      "initializeSchema": {
+        "migrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7"
+      }
     }
   },
   "schema": 1
