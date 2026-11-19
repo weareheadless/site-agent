@@ -1,10 +1,5 @@
 {
   "releases": {
-    "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261119224349-22eb4604",
-      "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
-      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
-    },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
       "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"

@@ -36,7 +36,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-intake-0aa0b1a55ae48348.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
-      "sharedRuntimeUpdate": "manual",
+      "sharedRuntimeUpdate": "canary",
       "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
     },
@@ -107,7 +107,7 @@
       "repository": "https://github.com/weareheadless/helloada-helloada-handoff-validation-20261021-39b6663e141ff33c.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "sharedRuntimeUpdate": "canary",
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
       "worker": "helloada-helloada-handoff-validat-d07f7a53aec1452bb162"
     },
