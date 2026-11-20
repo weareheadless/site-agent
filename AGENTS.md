@@ -690,9 +690,54 @@ Never print, paste, commit, or pass credential values to Ada/model prompts.
   (see the mission lock).
 
 
+## Two tiers in a tenant bundle
+
+A tenant Worker holds exactly two kinds of code. Every file in the shared runtime
+overlay, and every route added to the customer template, belongs to one of them:
+
+- **The website** — the tenant repository's design, presentation, content and
+  migration history. Tenant-owned; it changes when the owner changes the site.
+- **The data tier** — the code that must execute beside this tenant's own D1, R2
+  and queues: `payload.config.ts`, the workspace content/media/global routes, the
+  `/api/helloada` bridge, forms, booking, the Mailflare runtime, and the
+  destination-enforced publication guard. It changes when the shared schema or a
+  write contract changes, and it reaches every tenant because every tenant owns
+  its own database.
+
+Platform code that needs no tenant binding is neither, and does not belong in the
+bundle. It runs in the shared Python API and reaches the tenant as an
+authenticated proxy, the way `/api/helloada` already carries chat jobs, history,
+SEO and media analysis. A platform surface sitting in a tenant bundle is a defect
+with a name, not a judgement call: move it at its next change, and never keep a
+second copy of it in the template while it is being moved.
+
+Apply this test to every new file, route, package and overlay entry:
+
+1. Does it read or write this tenant's D1, R2 or a queue? It is the data tier and
+   lives in the Worker.
+2. Otherwise? It is platform code and lives in the Python API, reached by the
+   registered tenant id.
+
+Three consequences that do not need re-deriving:
+
+- A data-tier change is fleet-wide by nature. That fan-out is not a scaling defect
+  — it is what per-tenant databases mean — and the canary and batch machinery
+  exists for exactly that case.
+- A platform-tier change must never be fleet-wide. If a visitor-facing feature, a
+  dashboard or a report would require every tenant to be rebuilt, the code is in
+  the wrong tier. Fix the tier, not the rollout.
+- Packaging does not cross the tier boundary. Moving shared source into a package
+  (`helloada-payload-core`, `helloada-mailflare`, the admin package) changes who
+  owns it, not when it deploys: a version bump still rebuilds every tenant. Never
+  cite packaging as the reason a platform change is cheap.
+
+Tenant-owned configuration stays in the tenant repository even when the code that
+reads it is platform-tier: a site's assistant persona or model is the owner's
+content, not an argument for keeping the assistant in the bundle.
+
 ## Shared runtime ownership and customer fan-out
 
-- src/site_agent/templates/next-payload plus the declared deploy/shared-runtime-overlay.json boundary is the source of truth for code shared by tenant Workers. Tenant repositories own approved site design, content, migration history and domain routes; the release runner overlays the shared runtime into a disposable build workspace and never rewrites those repositories.
+- src/site_agent/templates/next-payload plus the declared deploy/shared-runtime-overlay.json boundary is the source of truth for code shared by tenant Workers. Every file the overlay copies must pass the tier test above; a platform surface added to the overlay is a defect, not a convenience. Tenant repositories own approved site design, content, migration history and domain routes; the release runner overlays the shared runtime into a disposable build workspace and never rewrites those repositories.
 - A central runtime change is identified by shared_runtime_fingerprint. The fingerprint covers the overlay contract, exact central runtime files, package pins and the complete packages/helloada-mailflare build source. If a runtime input changes, the VPS timer records a new, immutable fan-out release in deploy/desired-releases.json.
 - Runtime rollout is canary-first and bounded: the registered canary must pass the normal build, Cloudflare deployment and live-health gates before automatic tenants are released in batches of five. New tenants are enrolled as automatic; the first release already includes the current runtime. Existing one-off test workspaces can explicitly remain manual.
 - Each fan-out request uses that tenant’s last successfully deployed full source SHA and a unique release ID. It does not inspect, modify, commit or push a tenant repository. The tenant still receives its own generated Worker artifact because its site design/content is bundled into that Worker; builds and promotions are automated by the single VPS queue.
