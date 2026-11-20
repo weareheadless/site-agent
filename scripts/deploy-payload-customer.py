@@ -691,6 +691,34 @@ def wait_for_uploaded_worker_version(customer: dict[str, Any], env: dict[str, st
     ) from last_error
 
 
+def promote_worker_version(checkout: Path, customer: dict[str, Any], version_id: str,
+                           env: dict[str, str]) -> None:
+    """Point 100% of traffic at the exact uploaded version.
+
+    Cloudflare accepts the version and lists it before it will let a deployment
+    reference it. The refusal is `100146`, "the requested Worker version could
+    not be found", for a version that exists, so a promotion issued seconds
+    after the upload fails a release that is otherwise complete. Only that
+    exact refusal is retried; every other failure is reported immediately.
+    """
+    command = [str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
+               f"{version_id}@100%", "--name", customer["worker"], "--yes"]
+    output = ""
+    for attempt in range(8):
+        print("[release] " + " ".join(command), flush=True)
+        completed = subprocess.run(command, cwd=checkout, env=env, text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        output = completed.stdout or ""
+        print(output, end="", flush=True)
+        if completed.returncode == 0:
+            return
+        if "100146" not in output and "could not be found" not in output:
+            break
+        if attempt < 7:
+            time.sleep(15)
+    raise RuntimeError(f"command failed ({completed.returncode}): {command[0]}")
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -3093,8 +3121,7 @@ def main() -> int:
             if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
                 raise RuntimeError("production changed during upload; reconcile before promotion")
             wait_for_uploaded_worker_version(customer, deploy_env, receipt["uploadedVersion"])
-            run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
-                 receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
+            promote_worker_version(checkout, customer, receipt["uploadedVersion"], deploy_env)
 
         stage("reconcile-cron-triggers")
         receipt["cronTriggers"] = reconcile_worker_cron_schedules(
