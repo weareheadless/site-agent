@@ -288,6 +288,41 @@ def test_a_page_import_does_not_invalidate_the_compile(tmp_path):
     assert release.build_cache_key(root, fingerprint="a" * 64, identities=identities) != key
 
 
+def test_a_runtime_rollout_states_the_runtime_a_new_site_inherits(tmp_path):
+    checkout = tmp_path / "control"
+    template = checkout / "src/site_agent/templates/next-payload"
+    template.mkdir(parents=True)
+    manifest = template / "template-manifest.json"
+    manifest.write_text(json.dumps({"schema": 1, "sharedRuntimeFingerprint": "a" * 64}, indent=2) + "\n")
+    wrangler = template / "wrangler.jsonc"
+    wrangler.write_text(
+        '{\n  "vars": {\n    "HELLOADA_SHARED_RUNTIME_FINGERPRINT": "' + "a" * 64 + '",\n'
+        '    "HELLOADA_TENANT_ID": "kept"\n  }\n}\n'
+    )
+
+    changed = queue.stamp_declared_runtime(checkout, "b" * 64)
+
+    assert changed == [
+        "src/site_agent/templates/next-payload/template-manifest.json",
+        "src/site_agent/templates/next-payload/wrangler.jsonc",
+    ]
+    assert json.loads(manifest.read_text())["sharedRuntimeFingerprint"] == "b" * 64
+    assert wrangler.read_text().count('"HELLOADA_SHARED_RUNTIME_FINGERPRINT": "' + "b" * 64 + '"') == 1
+    assert '"HELLOADA_TENANT_ID": "kept"' in wrangler.read_text()
+    # A rollout that carries the same runtime again changes nothing.
+    assert queue.stamp_declared_runtime(checkout, "b" * 64) == []
+
+
+def test_a_template_worker_without_one_declared_runtime_is_refused(tmp_path):
+    template = tmp_path / "control/src/site_agent/templates/next-payload"
+    template.mkdir(parents=True)
+    (template / "template-manifest.json").write_text(json.dumps({"sharedRuntimeFingerprint": "b" * 64}))
+    (template / "wrangler.jsonc").write_text("{}\n")
+
+    with pytest.raises(ValueError, match="one shared-runtime fingerprint"):
+        queue.stamp_declared_runtime(tmp_path / "control", "b" * 64)
+
+
 def test_reusing_a_compile_reconciles_public_files_and_keeps_next_assets(tmp_path):
     root = _build_cache_tree(tmp_path)
     entry = tmp_path / "cache" / "key"

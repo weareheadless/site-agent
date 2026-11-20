@@ -169,6 +169,39 @@ def release_purpose_for_request(request: dict) -> str:
     return "workspace-bootstrap" if "initializeSchema" in request else "website"
 
 
+_DECLARED_RUNTIME_PATHS = (
+    "src/site_agent/templates/next-payload/template-manifest.json",
+    "src/site_agent/templates/next-payload/wrangler.jsonc",
+)
+
+
+def stamp_declared_runtime(checkout: Path, fingerprint: str) -> list[str]:
+    """State the runtime this commit ships, in the files a new site inherits.
+
+    Only the files whose declaration actually moved are returned, so a rollout
+    commit stays exactly as wide as the change it carries.
+    """
+    import re
+
+    changed: list[str] = []
+    manifest_path = checkout / _DECLARED_RUNTIME_PATHS[0]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("sharedRuntimeFingerprint") != fingerprint:
+        manifest["sharedRuntimeFingerprint"] = fingerprint
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        changed.append(_DECLARED_RUNTIME_PATHS[0])
+    wrangler_path = checkout / _DECLARED_RUNTIME_PATHS[1]
+    wrangler = wrangler_path.read_text(encoding="utf-8")
+    declared = re.compile(r'("HELLOADA_SHARED_RUNTIME_FINGERPRINT"\s*:\s*")[0-9a-f]{64}(")')
+    if len(declared.findall(wrangler)) != 1:
+        raise ValueError("the template Worker must state one shared-runtime fingerprint")
+    stamped = declared.sub(rf"\g<1>{fingerprint}\g<2>", wrangler)
+    if stamped != wrangler:
+        wrangler_path.write_text(stamped, encoding="utf-8")
+        changed.append(_DECLARED_RUNTIME_PATHS[1])
+    return changed
+
+
 def queue_shared_runtime_fanout(
     mirror: Path,
     remote: str,
@@ -244,7 +277,12 @@ def queue_shared_runtime_fanout(
         )
         queue_path = checkout / "deploy/desired-releases.json"
         queue_path.write_text(json.dumps(queue, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(checkout), "add", "--", "deploy/desired-releases.json"],
+        # The template states the runtime it ships, and a new site inherits that
+        # statement. Moving the fleet without moving the declaration left the
+        # next API release failing its own gate, holding every customer release
+        # behind it until someone edited two files by hand.
+        stamped = stamp_declared_runtime(checkout, fingerprint)
+        subprocess.run(["git", "-C", str(checkout), "add", "--", "deploy/desired-releases.json", *stamped],
                        env=environment, check=True)
         subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Site-Agent Release Automation"],
                        env=environment, check=True)
