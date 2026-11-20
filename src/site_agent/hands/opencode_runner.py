@@ -2748,7 +2748,7 @@ def finalize_design_target(
         engine.get("model")
         or llm.get("model")
         or (config.get("builder") or {}).get("model")
-        or "deepseek/deepseek-v4-flash-vision-exp"
+        or "deepseek/deepseek-v4.1-flash"
     ).strip()
     if "/" in model and model.split("/", 1)[0].lower() == provider.lower():
         model = model.split("/", 1)[1]

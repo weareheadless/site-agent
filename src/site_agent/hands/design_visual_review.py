@@ -17,7 +17,7 @@ from ..core.design_contracts import VisualCritiqueReport, canonical_hash, canoni
 from ..core.llm import LLMError, _http_post, estimate_usage_cost
 
 
-DEFAULT_VISUAL_REVIEW_MODEL = "deepseek/deepseek-v4-flash-vision-exp"
+DEFAULT_VISUAL_REVIEW_MODEL = "deepseek/deepseek-v4.1-flash"
 # Keep full-page evidence below the configured multimodal context and latency budget.
 _MAX_SCREENSHOTS_PER_REQUEST = 3
 _MAX_SOURCE_IMAGES_PER_REQUEST = 6
