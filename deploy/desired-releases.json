@@ -1,9 +1,8 @@
 {
   "releases": {
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "runtime-20261120003358-ce4c143b",
-      "sha": "3ea86bdeba7a9a1a9da5466660c426554a343a3b",
-      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+      "id": "rel-20261120004301-84171bb4",
+      "sha": "3ea86bdeba7a9a1a9da5466660c426554a343a3b"
     },
     "atelier-harmonie": {
       "id": "runtime-20261120003802-5efd887b",
