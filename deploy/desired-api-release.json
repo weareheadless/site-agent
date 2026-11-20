@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261120-gate-reads-v41",
-    "sha": "e494353a0c541d6cf5cde074d5cd22a31b49497e"
+    "id": "20261120-gate-and-promotion-read",
+    "sha": "d67e46d7152d55ccd4001b340df2e984d2e14cac"
   }
 }
