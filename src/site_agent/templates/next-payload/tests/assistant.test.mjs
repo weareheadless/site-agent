@@ -325,6 +325,27 @@ test('the visitor turn asks for the answer, not the model working', async () => 
   }
 })
 
+test('a drawing request is sent with the drawing flag', async () => {
+  const original = globalThis.fetch
+  const sent = []
+  try {
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(init.body))
+      return { ok: true, status: 200, headers: new Map(), body: { getReader: () => ({ read: async () => ({ done: true }) }) } }
+    }
+    await streamAssistant({ messages: [{ role: 'user', content: 'draw a cat' }], drawing: true, onDelta: () => {} })
+    await streamAssistant({ messages: [{ role: 'user', content: 'hello' }], onDelta: () => {} })
+
+    // The site decides what is a picture; the route only widens the budget, so
+    // the flag has to reach it.
+    assert.equal(sent[0].drawing, true)
+    assert.equal('drawing' in sent[1], false)
+    assert.deepEqual(sent[0].messages, [{ role: 'user', content: 'draw a cat' }])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('the client streams deltas and reports which mode answered', async () => {
   const original = globalThis.fetch
   const frames = [

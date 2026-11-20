@@ -12,6 +12,12 @@ export const dynamic = 'force-dynamic'
 const MAX_MESSAGE_CHARS = 2000
 const MAX_TURNS = 12
 const MAX_OUTPUT_TOKENS = 600
+/**
+ * A drawing is one SVG element, not prose: it runs to about a thousand tokens
+ * of primitives. Answering it inside the prose budget truncates it before it
+ * closes, and the visitor is told the pen jammed.
+ */
+const DRAWING_OUTPUT_TOKENS = 4000
 
 type RateLimiter = { limit: (input: { key: string }) => Promise<{ success: boolean }> }
 
@@ -31,7 +37,9 @@ const visitorKey = (request: Request): string => {
   return address.split(',')[0].trim() || 'anonymous'
 }
 
-const readMessages = async (request: Request): Promise<AssistantMessage[] | string> => {
+type AssistantTurnInput = { messages: AssistantMessage[]; drawing: boolean }
+
+const readMessages = async (request: Request): Promise<AssistantTurnInput | string> => {
   let body: unknown
   try {
     body = await request.json()
@@ -50,7 +58,9 @@ const readMessages = async (request: Request): Promise<AssistantMessage[] | stri
   }
   if (messages.length === 0) return 'messages must contain at least one user message'
   if (messages[messages.length - 1].role !== 'user') return 'the last message must come from the visitor'
-  return messages
+  // The site decides when a turn is a picture; the route only widens the budget
+  // for the one answer that is markup rather than a sentence.
+  return { messages, drawing: (body as { drawing?: unknown } | null)?.drawing === true }
 }
 
 /** Visitor turn. Stateless by contract: nothing is stored after the response. */
@@ -74,8 +84,8 @@ export async function POST(request: Request) {
   }
   if (!verdict?.success) return json(429, 'too many messages, please wait')
 
-  const messages = await readMessages(request)
-  if (typeof messages === 'string') return json(400, messages)
+  const turn = await readMessages(request)
+  if (typeof turn === 'string') return json(400, turn)
 
   const origin = new URL(request.url).origin
   let reference = ''
@@ -96,7 +106,7 @@ export async function POST(request: Request) {
   const mode: AssistMode = await classifyTurn({
     apiKey,
     model: config.model,
-    message: messages[messages.length - 1].content,
+    message: turn.messages[turn.messages.length - 1].content,
     signal: request.signal,
   })
   if (mode === 'unknown') return json(502, 'the assistant is unavailable right now')
@@ -117,8 +127,8 @@ export async function POST(request: Request) {
       apiKey,
       model: config.model,
       instruction: assistantInstruction({ config, reference }),
-      messages,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      messages: turn.messages,
+      maxOutputTokens: turn.drawing ? DRAWING_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
       title: `HelloAda site assistant (${origin})`,
     })
     return new Response(reply.body, {

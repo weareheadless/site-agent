@@ -14,6 +14,12 @@ export type AssistantMode = 'bit' | 'hold'
 
 export type AssistantStreamOptions = {
   messages: readonly AssistantTurn[]
+  /**
+   * The site asked for a picture on this turn. A drawing is one SVG element
+   * rather than a sentence, so the route gives it a drawing's budget instead of
+   * a reply's, or the markup is cut off before it closes.
+   */
+  drawing?: boolean
   /** Called for each streamed fragment, in order. */
   onDelta: (text: string) => void
   /** Show the visitor a retry affordance instead of a dead panel. */
@@ -57,6 +63,7 @@ const deltaOf = (payload: string): string => {
 /** One visitor turn, streamed. Nothing is stored: the caller owns the history. */
 export const streamAssistant = async ({
   messages,
+  drawing,
   onDelta,
   signal,
   endpoint = ASSISTANT_ENDPOINT,
@@ -65,7 +72,10 @@ export const streamAssistant = async ({
     method: 'POST',
     signal,
     headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
-    body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) }),
+    body: JSON.stringify({
+      messages: messages.map(({ role, content }) => ({ role, content })),
+      ...(drawing ? { drawing: true } : {}),
+    }),
   })
   if (!response.ok) {
     throw new AssistantClientError(`the assistant answered ${response.status}`, response.status)
