@@ -162,6 +162,42 @@ test('the gate holds only a report of imminent harm', async () => {
   }
 })
 
+test('the gate is not written for one kind of model', async () => {
+  const original = globalThis.fetch
+  const sent = []
+  try {
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(init.body))
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'SILLY' } }] }) }
+    }
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'vendor/reasoning-model', message: 'hello' }), 'bit')
+
+    // The gate runs on whatever model the site chose, so its request must give
+    // a model that thinks before answering room to think, and must not pay for
+    // the working.
+    assert.equal(sent[0].model, 'vendor/reasoning-model')
+    assert.deepEqual(sent[0].reasoning, { enabled: false })
+    assert.ok(sent[0].max_tokens > 8, `a word budget turned a thinking model into a false emergency: ${sent[0].max_tokens}`)
+
+    // A verdict is read wherever the model put it in its answer.
+    const answer = (content) => {
+      globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message: { content } }] }) })
+    }
+    answer('The answer is SILLY.')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
+    answer('DANGER — this reports symptoms right now')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I cannot breathe' }), 'hold')
+    // Both words in one answer reads as danger, never as the cheerful branch.
+    answer('Not silly at all: DANGER.')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
+    // No content at all is still unreadable, and unreadable still holds.
+    answer(null)
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'hold')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
 test('a gate that could not run is unavailable, not danger', async () => {
   const original = globalThis.fetch
   try {
@@ -178,9 +214,11 @@ test('a gate that could not run is unavailable, not danger', async () => {
 })
 
 test('the hold answers with the platform line, not a persona', async () => {
-  assert.match(DANGER_REPLY, /not going to answer this one in character/)
   assert.match(DANGER_REPLY, /emergency services/)
-  // It carries no site voice, and nothing a visitor could mistake for advice.
+  // It carries no site voice and no aside about the character stepping aside:
+  // a visitor in trouble needs the instruction.
+  assert.doesNotMatch(DANGER_REPLY, /in character|I am not/i)
+  // Nothing a visitor could mistake for advice.
   assert.doesNotMatch(DANGER_REPLY, /you should|take |mg\b/i)
 
   const stream = dangerStream()

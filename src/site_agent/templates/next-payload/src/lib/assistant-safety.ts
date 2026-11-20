@@ -16,8 +16,23 @@
  * every site into the fixed line — a fake emergency, repeated, until the
  * provider recovered. An unanswerable gate is now reported as the assistant
  * being unavailable.
+ *
+ * The gate runs on the site's own model, so it must not assume what kind of
+ * model that is. A four-token budget is only an answer for a model that emits
+ * nothing before it: a reasoning model spends the whole budget thinking,
+ * returns no content, and the gate held every message — every visitor on the
+ * site got the fixed line, including "hello". The budget now covers thinking
+ * plus the word, reasoning is switched off because this question needs no
+ * working, and a verdict is read from the answer wherever it appears.
  */
 export const SAFETY_GATE_URL = 'https://openrouter.ai/api/v1/chat/completions'
+
+/**
+ * Room for a model that reasons before it answers. The readable answer is one
+ * word; everything else here is margin so a slow-thinking model cannot exhaust
+ * the budget before it says it.
+ */
+const GATE_MAX_TOKENS = 300
 
 const GATE_INSTRUCTION = [
   'Classify the visitor message for a website assistant.',
@@ -43,10 +58,14 @@ type GateInput = {
   signal?: AbortSignal
 }
 
-/** One word the gate could have said, tolerating stray punctuation or case. */
+/** The one words the gate could have said, anywhere in what it answered. */
 const verdict = (raw: string): 'DANGER' | 'SILLY' | '' => {
-  const letters = raw.replace(/[^A-Z]/g, '')
-  return letters === 'DANGER' || letters === 'SILLY' ? letters : ''
+  const words = raw.toUpperCase().split(/[^A-Z]+/).filter(Boolean)
+  // Danger wins when an answer says both: a gate that mentions harm must not
+  // be read as the cheerful branch.
+  if (words.includes('DANGER')) return 'DANGER'
+  if (words.includes('SILLY')) return 'SILLY'
+  return ''
 }
 
 /**
@@ -65,8 +84,11 @@ export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput
       headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model,
-        max_tokens: 4,
+        max_tokens: GATE_MAX_TOKENS,
         temperature: 0,
+        // The verdict is the answer, not the working. Asking for both is what
+        // a reasoning model would otherwise do on this site's budget.
+        reasoning: { enabled: false },
         messages: [
           { role: 'system', content: GATE_INSTRUCTION },
           { role: 'user', content: String(message || '').slice(0, 2000) },
@@ -89,11 +111,12 @@ export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput
  * The one answer the platform writes for a site.
  *
  * It carries no persona and no facts, because the only useful thing to say to
- * someone reporting immediate harm is that this is not a joke and where real
- * help is. Every word here is the platform's, not the tenant's.
+ * someone reporting immediate harm is where real help is. It does not explain
+ * that the character has stepped aside: a visitor in trouble needs the
+ * instruction, and the break from the site's voice is already visible.
+ * Every word here is the platform's, not the tenant's.
  */
 export const DANGER_REPLY = [
-  'I am not going to answer this one in character.',
   'If someone may be in danger right now, contact your local emergency services immediately',
   'and stay with them until help arrives.',
 ].join(' ')
