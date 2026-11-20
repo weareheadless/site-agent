@@ -140,28 +140,65 @@ test('the gate holds only a report of imminent harm', async () => {
     globalThis.fetch = async () => ({ ok, json: async () => body })
   }
   try {
-    reply({ choices: [{ message: { content: 'SILLY' } }] })
+    reply({ choices: [{ message: { content: '{"danger": false}' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'should I invest my savings?' }), 'bit')
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I am constipated' }), 'bit')
-
-    // A verdict with punctuation counted; a readable answer is a verdict.
-    reply({ choices: [{ message: { content: ' silly. ' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
 
-    reply({ choices: [{ message: { content: 'DANGER' } }] })
+    reply({ choices: [{ message: { content: '{ "danger": true }' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'my baby swallowed pills' }), 'hold')
 
-    // A gate that answered something unreadable holds: an unclear answer is
-    // not a safe answer.
-    reply({ choices: [{ message: { content: 'hard to say' } }] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
+    // A provider that ignores the schema and prints a word is still read.
+    reply({ choices: [{ message: { content: ' silly. ' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
+    reply({ choices: [{ message: { content: 'DANGER' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'my baby swallowed pills' }), 'hold')
+  } finally {
+    globalThis.fetch = original
+  }
+})
 
-    // A gate that never answered is not danger. This is the branch that told
-    // visitors to call an ambulance for "draw me a cat".
-    reply({ choices: [] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
-    reply({ choices: [{ message: { content: '' } }] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
+test('an unreadable gate never becomes an emergency', async () => {
+  const original = globalThis.fetch
+  const reply = (body) => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => body })
+  }
+  try {
+    // This is the branch that told visitors to call an ambulance for a cat.
+    for (const body of [
+      { choices: [] },
+      { choices: [{ message: { content: '' } }] },
+      { choices: [{ message: { content: 'hard to say' } }] },
+      { choices: [{ message: { content: null } }] },
+    ]) {
+      reply(body)
+      assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown',
+        JSON.stringify(body))
+    }
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('a gate that answered nothing is asked once more', async () => {
+  const original = globalThis.fetch
+  const answers = [
+    { choices: [{ message: { content: '' } }] },
+    { choices: [{ message: { content: '{"danger": true}' } }] },
+  ]
+  let calls = 0
+  try {
+    globalThis.fetch = async () => ({ ok: true, json: async () => answers[calls++] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I took too many pills' }), 'hold')
+    assert.equal(calls, 2)
+    // A clean verdict is not asked again.
+    calls = 0
+    globalThis.fetch = async () => {
+      calls += 1
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"danger": false}' } }] }) }
+    }
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
+    assert.equal(calls, 1)
   } finally {
     globalThis.fetch = original
   }
@@ -193,15 +230,17 @@ test('the gate is not written for one kind of model', async () => {
   try {
     globalThis.fetch = async (_url, init) => {
       sent.push(JSON.parse(init.body))
-      return { ok: true, json: async () => ({ choices: [{ message: { content: 'SILLY' } }] }) }
+      return { ok: true, json: async () => ({ choices: [{ message: { content: '{"danger": false}' } }] }) }
     }
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'vendor/reasoning-model', message: 'hello' }), 'bit')
 
     // The gate runs on whatever model the site chose, so its request must give
-    // a model that thinks before answering room to think, and must not pay for
-    // the working.
+    // a model that thinks before answering room to think, must not pay for the
+    // working, and must ask for one field rather than prose.
     assert.equal(sent[0].model, 'vendor/reasoning-model')
     assert.deepEqual(sent[0].reasoning, { enabled: false })
+    assert.equal(sent[0].response_format.type, 'json_schema')
+    assert.deepEqual(sent[0].response_format.json_schema.schema.required, ['danger'])
     assert.ok(sent[0].max_tokens > 8, `a word budget turned a thinking model into a false emergency: ${sent[0].max_tokens}`)
 
     // A verdict is read wherever the model put it in its answer.
@@ -215,9 +254,6 @@ test('the gate is not written for one kind of model', async () => {
     // Both words in one answer reads as danger, never as the cheerful branch.
     answer('Not silly at all: DANGER.')
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
-    // An answer the gate cannot read at all is unavailable, not a crisis.
-    answer(null)
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
   } finally {
     globalThis.fetch = original
   }

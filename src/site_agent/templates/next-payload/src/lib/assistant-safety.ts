@@ -7,37 +7,36 @@
  * with the site. What it will not do is answer a report of imminent harm with a
  * joke, so that one branch is a fixed line with no model call.
  *
- * The check fails closed toward the fixed line when the gate answered but the
- * answer cannot be read: a gate that said something unclear must not be the
- * reason a person in danger receives nonsense.
- *
- * A gate that could not run at all is a different fact, and it is not danger.
- * Collapsing the two meant one provider outage turned every visitor message on
- * every site into the fixed line — a fake emergency, repeated, until the
- * provider recovered. An unanswerable gate is now reported as the assistant
- * being unavailable.
+ * The check used to fail closed toward the fixed line whenever the gate's
+ * answer could not be read. That made an unclear answer, a budget spent
+ * thinking, and a provider that ignored the reasoning switch all look like a
+ * report of harm — three different failures, one false emergency, on every
+ * visitor's screen. The fixed line now means exactly one thing: the gate said
+ * danger. A gate that cannot say anything is the assistant being unavailable.
  *
  * The gate runs on the site's own model, so it must not assume what kind of
- * model that is. A four-token budget is only an answer for a model that emits
- * nothing before it: a reasoning model spends the whole budget thinking,
- * returns no content, and the gate held every message — every visitor on the
- * site got the fixed line, including "hello". The budget now covers thinking
- * plus the word, reasoning is switched off because this question needs no
- * working, and a verdict is read from the answer wherever it appears.
- *
- * Nothing this gate returns may turn an ordinary message into an emergency
- * either. A model that says nothing at all has not judged anything, so that is
- * the assistive-unavailable branch, not the fixed line: holding there is how
- * "draw me a cat" got told to call an ambulance.
+ * model that is, and it must not read prose. It asks for one JSON field and
+ * checks it; the word scan stays only for a provider that ignores the schema.
+ * A four-token budget is only an answer for a model that emits nothing before
+ * it: a reasoning model spent the whole budget thinking, and every visitor on
+ * the site got the fixed line, including "hello".
  */
 export const SAFETY_GATE_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 /**
- * Room for a model that reasons before it answers. The readable answer is one
- * word; everything else here is margin so a provider that ignores the reasoning
+ * Room for a model that reasons before it answers. The answer is one boolean;
+ * everything else here is margin so a provider that ignores the reasoning
  * switch cannot exhaust the budget before it says it.
  */
 const GATE_MAX_TOKENS = 600
+
+/** One field, so no provider can answer this question in prose. */
+const GATE_SCHEMA = {
+  type: 'object',
+  properties: { danger: { type: 'boolean' } },
+  required: ['danger'],
+  additionalProperties: false,
+}
 
 const GATE_INSTRUCTION = [
   'Classify the visitor message for a website assistant.',
@@ -47,12 +46,13 @@ const GATE_INSTRUCTION = [
   'someone threatening to hurt themselves or another person; a fire, drowning or other live emergency.',
   'Answer SILLY for every other message, including jokes, insults, illness that is not an emergency,',
   'pregnancy questions, legal or money questions, and questions about this website.',
-  'Reply with exactly one word: DANGER or SILLY.',
+  'Set danger to true only for DANGER, and false for every other message.',
 ].join('\n')
 
 /**
- * `bit` is the persona, `hold` is a turn that may be reporting harm, and
- * `unknown` means the gate never produced an answer — no verdict either way.
+ * `bit` is the persona, `hold` is the gate judging that the turn reports harm,
+ * and `unknown` means the gate never produced a judgement — no verdict either
+ * way.
  */
 export type AssistMode = 'bit' | 'hold' | 'unknown'
 
@@ -70,16 +70,38 @@ const verdictsIn = (raw: string): Array<'DANGER' | 'SILLY'> => {
 }
 
 /**
- * One short classification call. Three outcomes, deliberately distinct:
- * a readable verdict is honoured; a gate that answered something unreadable
- * holds, because an unclear answer is not a safe answer; a gate that produced
- * no answer at all is `unknown` and the route says so instead of inventing a
- * crisis.
+ * What the gate judged: danger, not danger, or nothing this contract can read.
+ *
+ * The answer is a JSON field, so any provider that honours the schema answers
+ * unambiguously. A provider that ignores it and prints a word instead is read
+ * by the word scan, and a reasoning model that never emitted an answer still
+ * counts if its working reached a conclusion.
  */
-export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput): Promise<AssistMode> => {
-  if (!String(apiKey || '').trim()) return 'unknown'
-  let content = ''
-  let reasoning = ''
+const readGate = (content: string, reasoning: string): boolean | null => {
+  const answer = content.trim()
+  if (answer) {
+    try {
+      const parsed = JSON.parse(answer) as { danger?: unknown } | null
+      if (typeof parsed?.danger === 'boolean') return parsed.danger
+    } catch {
+      // Not JSON: an older provider answered in words, which is read below.
+    }
+  }
+  const said = verdictsIn(content)
+  // Danger wins when an answer says both: a gate that mentions harm must not
+  // be read as the cheerful branch.
+  if (said.includes('DANGER')) return true
+  if (said.includes('SILLY')) return false
+  const concluded = verdictsIn(reasoning)
+  if (concluded.length) return concluded[concluded.length - 1] === 'DANGER'
+  return null
+}
+
+type GateReading = { unavailable: true } | { unavailable: false; danger: boolean | null }
+
+/** One gate call. `unavailable` is a gate that never ran; `null` is a gate that
+ * ran and said nothing this contract can read. */
+const askGate = async ({ apiKey, model, message, signal }: GateInput): Promise<GateReading> => {
   try {
     const response = await fetch(SAFETY_GATE_URL, {
       method: 'POST',
@@ -92,41 +114,48 @@ export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput
         // The verdict is the answer, not the working. Asking for both is what
         // a reasoning model would otherwise do on this site's budget.
         reasoning: { enabled: false },
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'turn', strict: true, schema: GATE_SCHEMA },
+        },
         messages: [
           { role: 'system', content: GATE_INSTRUCTION },
           { role: 'user', content: String(message || '').slice(0, 2000) },
         ],
       }),
     })
-    if (!response.ok) return 'unknown'
+    if (!response.ok) return { unavailable: true }
     const payload = await response.json() as {
       choices?: Array<{ message?: { content?: unknown; reasoning?: unknown } }>
     }
     const choice = payload.choices?.[0]?.message
-    content = String(choice?.content ?? '')
-    reasoning = String(choice?.reasoning ?? '')
+    return {
+      unavailable: false,
+      danger: readGate(String(choice?.content ?? ''), String(choice?.reasoning ?? '')),
+    }
   } catch {
-    return 'unknown'
+    return { unavailable: true }
   }
+}
 
-  const said = verdictsIn(content)
-  // Danger wins when an answer says both: a gate that mentions harm must not
-  // be read as the cheerful branch.
-  if (said.includes('DANGER')) return 'hold'
-  if (said.includes('SILLY')) return 'bit'
-
-  // Nothing readable where the answer belongs. A reasoning model can reach the
-  // verdict and then lose the word to the budget, so its conclusion counts.
-  const concluded = verdictsIn(reasoning)
-  if (concluded.length) return concluded[concluded.length - 1] === 'DANGER' ? 'hold' : 'bit'
-
-  // It said nothing anywhere: the gate never answered, and that is not evidence
-  // of danger.
-  if (!content.trim()) return 'unknown'
-
-  // It answered something this gate cannot read. An unclear answer is not a
-  // safe answer.
-  return 'hold'
+/**
+ * Is someone in danger right now? Three outcomes, deliberately distinct.
+ *
+ * `hold` is the fixed line and it means the gate judged danger, which is the
+ * only thing that may produce it. An answer this contract cannot read is asked
+ * again, and a gate that still cannot answer is `unknown` — the route reports
+ * the assistant as unavailable instead of inventing a crisis.
+ */
+export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput): Promise<AssistMode> => {
+  if (!String(apiKey || '').trim()) return 'unknown'
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (signal?.aborted) return 'unknown'
+    const reading = await askGate({ apiKey, model, message, signal })
+    if (reading.unavailable) return 'unknown'
+    if (reading.danger === true) return 'hold'
+    if (reading.danger === false) return 'bit'
+  }
+  return 'unknown'
 }
 
 /**
