@@ -45,6 +45,35 @@ jobs:
           echo "NPM_BIN=$(dirname "$(command -v npm)")" >> "$GITHUB_ENV"
           python3 -m pip install --quiet pyyaml
 
+      # A run that cannot identify its tenant fails here, in seconds, with the
+      # reason printed. Without this the failure surfaced as an empty
+      # "deploy credential intake refused" further down, which read like a
+      # platform outage rather than a repository that was never enrolled.
+      - name: Read this repository's release identity
+        run: |
+          set -euo pipefail
+          IDENTITY=".github/helloada-release.json"
+          if [ ! -f "$IDENTITY" ]; then
+            echo "::error::$IDENTITY is missing from this commit, so this repository cannot deploy" >&2
+            echo "The platform releases a repository only through that identity file." >&2
+            echo "Install it with the fleet mechanism, then commit the result:" >&2
+            echo "  python3 scripts/sync-tenant-repository-check.py --apply" >&2
+            exit 1
+          fi
+          TENANT=$(python3 - "$IDENTITY" <<'PY'
+          import json, sys
+          try:
+              identity = json.load(open(sys.argv[1], encoding="utf-8"))
+          except (OSError, ValueError) as error:
+              raise SystemExit(f"{sys.argv[1]} is not readable JSON: {error}")
+          tenant = identity.get("tenant") if isinstance(identity, dict) else None
+          if not isinstance(tenant, str) or not tenant.strip():
+              raise SystemExit(f"{sys.argv[1]} names no tenant")
+          print(tenant.strip())
+          PY
+          )
+          echo "HELLOADA_RELEASE_TENANT=$TENANT" >> "$GITHUB_ENV"
+
       - name: Fetch this run's deploy material
         env:
           OIDC_AUDIENCE: helloada-deploy
@@ -56,13 +85,19 @@ jobs:
             echo "the requested release commit is not this run's commit" >&2
             exit 1
           fi
-          TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
-          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$OIDC_AUDIENCE" | python3 -c 'import json,sys;print(json.load(sys.stdin)["value"])')
-          if ! curl -sS --fail-with-body -X POST "$API/control-plane/websites/$TENANT/deploy-credentials" \
-            -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" \
-            -o "$RUNNER_TEMP/deploy.json"; then
-            echo "deploy credential intake refused this run:" >&2
+          TOKEN_BODY="$RUNNER_TEMP/oidc.json"
+          if ! curl -sS -o "$TOKEN_BODY" -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$OIDC_AUDIENCE"; then
+            echo "::error::GitHub did not issue this run an OIDC token; the workflow needs the id-token: write permission" >&2
+            cat "$TOKEN_BODY" >&2 || true
+            exit 1
+          fi
+          OIDC=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["value"])' "$TOKEN_BODY")
+          STATUS=$(curl -sS -o "$RUNNER_TEMP/deploy.json" -w '%{http_code}' \
+            -X POST "$API/control-plane/websites/$HELLOADA_RELEASE_TENANT/deploy-credentials" \
+            -H "Authorization: Bearer $OIDC" -H "Content-Type: application/json" || true)
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::the platform refused this run's deploy material for $HELLOADA_RELEASE_TENANT (HTTP ${STATUS:-no response})" >&2
             cat "$RUNNER_TEMP/deploy.json" >&2 || true
             exit 1
           fi
@@ -184,7 +219,7 @@ jobs:
             if [ -n "$SITE_NAME" ]; then IDENTITY_ARGS+=(--site-name "$SITE_NAME"); fi
           fi
           python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
-            --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
+            --tenant "$HELLOADA_RELEASE_TENANT" \
             --ref "$GITHUB_SHA" \
             --release-id "ci-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --release-purpose website \
@@ -199,7 +234,7 @@ jobs:
       - name: Report the release to the platform
         run: |
           set -euo pipefail
-          TENANT=$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')
+          TENANT="$HELLOADA_RELEASE_TENANT"
           RECEIPT=$(find "$RUNNER_TEMP/releases/runs/$TENANT" -name receipt.json -print -quit)
           if [ -z "$RECEIPT" ]; then
             echo "the release wrote no receipt" >&2
