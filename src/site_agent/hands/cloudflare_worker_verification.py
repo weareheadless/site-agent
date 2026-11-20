@@ -99,7 +99,16 @@ def resolve_verified_active_worker(customer, deploy_env, uploaded_version, *, in
         if active_version != uploaded_version:
             annotations = deployment.get("annotations")
             if not isinstance(annotations, dict) or annotations.get("workers/triggered_by") != "secret":
-                raise RuntimeError("the active Worker differs from the release outside a secret-only update")
+                # A promotion is read back from a fleet of readers, and the
+                # first read after it can still answer with the deployment it
+                # replaced. The release is the version it just promoted, so ask
+                # again before calling this a different release; a second
+                # release of the same Worker within a minute hits this every
+                # time and is not a mismatch.
+                if attempt == 7:
+                    raise RuntimeError("the active Worker differs from the release outside a secret-only update")
+                sleep(0.25)
+                continue
         uploaded_identity = inspect_version(customer, uploaded_version, deploy_env)
         active_identity = uploaded_identity if active_version == uploaded_version else inspect_version(customer, active_version, deploy_env)
         if uploaded_identity != active_identity:

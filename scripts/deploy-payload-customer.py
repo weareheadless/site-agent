@@ -633,6 +633,26 @@ def wait_for_atomic_worker_version(customer: dict[str, Any], env: dict[str, str]
     raise RuntimeError("Cloudflare did not expose the exact atomic 100% Worker deployment after 12 checks") from last_error
 
 
+def read_proven_worker_deployment(customer: dict[str, Any], env: dict[str, str],
+                                  proven: dict[str, Any] | None) -> dict[str, Any]:
+    """Read production back, insisting it is the deployment this release proved.
+
+    A promotion is read back from a fleet of readers: the first read after it
+    can still answer with the deployment it replaced, which failed a live
+    release as though it were running somebody else's version. Ask again while
+    the answer is still the older deployment.
+    """
+    proven_id = proven.get("id") if isinstance(proven, dict) else None
+    deployment: dict[str, Any] = {}
+    for attempt in range(8):
+        deployment = cloudflare_deployment(customer, env)
+        if not proven_id or deployment.get("id") == proven_id:
+            return deployment
+        if attempt < 7:
+            time.sleep(0.25)
+    return deployment
+
+
 def wait_for_versioned_worker_deployment(customer: dict[str, Any], env: dict[str, str],
                                           previous_deployment: dict[str, Any],
                                           expected_version: str) -> dict[str, Any]:
@@ -2131,7 +2151,7 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
         )
         record_current_verification(receipt, deployment, active_version, uploaded_identity, active_identity)
     else:
-        deployment = cloudflare_deployment(customer, deploy_env)
+        deployment = read_proven_worker_deployment(customer, deploy_env, receipt.get("deployment"))
         versions = deployment["versions"]
         if len(versions) != 1 or versions[0].get("percentage") != 100:
             raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")

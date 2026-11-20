@@ -2373,6 +2373,21 @@ def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch
     ]
 
 
+def test_a_promotion_read_back_as_the_older_deployment_is_read_again(monkeypatch):
+    reads = [
+        {"id": "deployment-old", "versions": [{"percentage": 100, "version_id": "version-0"}]},
+        {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": "version-1"}]},
+    ]
+    sleeps = []
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: reads.pop(0))
+    monkeypatch.setattr(release.time, "sleep", sleeps.append)
+
+    deployment = release.read_proven_worker_deployment({}, {}, {"id": "deployment-new"})
+
+    assert deployment["id"] == "deployment-new"
+    assert sleeps == [0.25]
+
+
 def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "other-version"}]})

@@ -192,6 +192,36 @@ def test_rejects_split_or_missing_traffic(versions):
         verifier.resolve_verified_active_worker(CUSTOMER, ENV, "a", inspect_deployment=lambda *_: deployment(versions=versions))
 
 
+def test_a_promotion_read_back_before_it_propagates_is_not_a_different_release():
+    reads = [deployment("previous", deployment_id="deploy-0"), deployment("uploaded", deployment_id="deploy-1")]
+    sleeps = []
+
+    result = verifier.resolve_verified_active_worker(
+        CUSTOMER, ENV, "uploaded",
+        inspect_deployment=lambda *_: reads.pop(0),
+        inspect_version=lambda *_: {"script_etag": "same", "binding_identity": "same"},
+        require_snapshot=lambda *_: None, sleep=sleeps.append,
+    )
+
+    assert result[1] == "uploaded"
+    assert result[0]["id"] == "deploy-1"
+    assert sleeps == [0.25]
+
+
+def test_a_foreign_active_version_is_still_rejected_once_propagation_ends():
+    sleeps = []
+
+    with pytest.raises(RuntimeError, match="outside a secret-only update"):
+        verifier.resolve_verified_active_worker(
+            CUSTOMER, ENV, "uploaded",
+            inspect_deployment=lambda *_: deployment("somebody-else", deployment_id="deploy-9"),
+            inspect_version=lambda *_: {"script_etag": "same", "binding_identity": "same"},
+            require_snapshot=lambda *_: None, sleep=sleeps.append,
+        )
+
+    assert sleeps == [0.25] * 7
+
+
 def test_retries_drift_once_then_succeeds():
     sleeps, observations = [], []
 
