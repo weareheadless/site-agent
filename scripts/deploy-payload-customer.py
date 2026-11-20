@@ -664,6 +664,33 @@ def wait_for_versioned_worker_deployment(customer: dict[str, Any], env: dict[str
     ) from last_error
 
 
+def wait_for_uploaded_worker_version(customer: dict[str, Any], env: dict[str, str],
+                                     expected_version: str) -> None:
+    """Wait until Cloudflare's read API exposes the version that was just uploaded.
+
+    `wrangler versions upload` returns as soon as the new version is accepted,
+    while its asset set is still being committed. A promotion issued immediately
+    afterwards can be answered with "the requested Worker version could not be
+    found" for a version that is already listed, which turns a good release into
+    a failed receipt. Promotion waits for the exact version to be readable.
+    """
+    if not isinstance(expected_version, str) or not expected_version:
+        raise RuntimeError("versioned Worker release has no exact uploaded version identity")
+    last_error: Exception = RuntimeError("Cloudflare has not exposed the uploaded Worker version yet")
+    for attempt in range(24):
+        try:
+            cloudflare_worker_version_identity(customer, expected_version, env)
+        except (OSError, RuntimeError) as error:
+            last_error = error
+        else:
+            return
+        if attempt < 23:
+            time.sleep(5)
+    raise RuntimeError(
+        "Cloudflare did not expose the uploaded Worker version after 24 checks"
+    ) from last_error
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -3065,6 +3092,7 @@ def main() -> int:
             stage("promote")
             if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
                 raise RuntimeError("production changed during upload; reconcile before promotion")
+            wait_for_uploaded_worker_version(customer, deploy_env, receipt["uploadedVersion"])
             run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
                  receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
 
