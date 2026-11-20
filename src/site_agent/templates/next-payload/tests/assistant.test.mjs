@@ -11,6 +11,7 @@ import {
 import { assistantInstruction } from '../src/lib/assistant-prompt.ts'
 import { DANGER_REPLY, classifyTurn, dangerStream } from '../src/lib/assistant-safety.ts'
 import { AssistantClientError, streamAssistant } from '../src/lib/assistant-client.ts'
+import { assistantReply } from '../src/lib/assistant-provider.ts'
 
 test('page text prefers the page body and drops site chrome', () => {
   const html = `
@@ -295,6 +296,33 @@ test('the hold answers with the platform line, not a persona', async () => {
   const first = JSON.parse(text.split('\n\n')[0].slice(5))
   assert.equal(first.choices[0].delta.content, DANGER_REPLY)
   assert.match(text, /data: \[DONE\]/)
+})
+
+test('the visitor turn asks for the answer, not the model working', async () => {
+  const original = globalThis.fetch
+  const sent = []
+  try {
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(init.body))
+      return { ok: true, headers: new Map(), body: null }
+    }
+    await assistantReply({
+      apiKey: 'k',
+      model: 'deepseek/deepseek-v4.1-flash',
+      instruction: 'Answer briefly.',
+      messages: [{ role: 'user', content: 'Draw me a cat' }],
+      maxOutputTokens: 600,
+      title: 't',
+    })
+
+    // A reasoning model streams its thinking first and can spend the whole
+    // output budget there: the visitor's reply is then empty.
+    assert.deepEqual(sent[0].reasoning, { enabled: false })
+    assert.equal(sent[0].stream, true)
+    assert.equal(sent[0].model, 'deepseek/deepseek-v4.1-flash')
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('the client streams deltas and reports which mode answered', async () => {

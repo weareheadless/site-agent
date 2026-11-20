@@ -52,6 +52,10 @@ export const assistantReply = async (request: AssistantRequest): Promise<Assista
       // The provider's own receipt is the authoritative cost of this turn.
       usage: { include: true },
       max_tokens: request.maxOutputTokens,
+      // The visitor came for the answer, not the working. A reasoning model
+      // streams its thinking first and can spend the whole output budget there,
+      // which reaches the visitor as an empty reply.
+      reasoning: { enabled: false },
       messages: [
         { role: 'system', content: request.instruction },
         ...request.messages.map(message => ({ role: message.role, content: message.content })),
