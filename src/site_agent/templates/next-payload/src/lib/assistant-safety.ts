@@ -24,15 +24,20 @@
  * site got the fixed line, including "hello". The budget now covers thinking
  * plus the word, reasoning is switched off because this question needs no
  * working, and a verdict is read from the answer wherever it appears.
+ *
+ * Nothing this gate returns may turn an ordinary message into an emergency
+ * either. A model that says nothing at all has not judged anything, so that is
+ * the assistive-unavailable branch, not the fixed line: holding there is how
+ * "draw me a cat" got told to call an ambulance.
  */
 export const SAFETY_GATE_URL = 'https://openrouter.ai/api/v1/chat/completions'
 
 /**
  * Room for a model that reasons before it answers. The readable answer is one
- * word; everything else here is margin so a slow-thinking model cannot exhaust
- * the budget before it says it.
+ * word; everything else here is margin so a provider that ignores the reasoning
+ * switch cannot exhaust the budget before it says it.
  */
-const GATE_MAX_TOKENS = 300
+const GATE_MAX_TOKENS = 600
 
 const GATE_INSTRUCTION = [
   'Classify the visitor message for a website assistant.',
@@ -58,25 +63,23 @@ type GateInput = {
   signal?: AbortSignal
 }
 
-/** The one words the gate could have said, anywhere in what it answered. */
-const verdict = (raw: string): 'DANGER' | 'SILLY' | '' => {
-  const words = raw.toUpperCase().split(/[^A-Z]+/).filter(Boolean)
-  // Danger wins when an answer says both: a gate that mentions harm must not
-  // be read as the cheerful branch.
-  if (words.includes('DANGER')) return 'DANGER'
-  if (words.includes('SILLY')) return 'SILLY'
-  return ''
+/** Every verdict word the gate said, in the order it said them. */
+const verdictsIn = (raw: string): Array<'DANGER' | 'SILLY'> => {
+  const words = String(raw || '').toUpperCase().split(/[^A-Z]+/)
+  return words.filter((word): word is 'DANGER' | 'SILLY' => word === 'DANGER' || word === 'SILLY')
 }
 
 /**
  * One short classification call. Three outcomes, deliberately distinct:
  * a readable verdict is honoured; a gate that answered something unreadable
- * holds, because an unclear answer is not a safe answer; a gate that could not
- * run at all is `unknown` and the route says so instead of inventing a crisis.
+ * holds, because an unclear answer is not a safe answer; a gate that produced
+ * no answer at all is `unknown` and the route says so instead of inventing a
+ * crisis.
  */
 export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput): Promise<AssistMode> => {
   if (!String(apiKey || '').trim()) return 'unknown'
-  let raw: string
+  let content = ''
+  let reasoning = ''
   try {
     const response = await fetch(SAFETY_GATE_URL, {
       method: 'POST',
@@ -96,14 +99,33 @@ export const classifyTurn = async ({ apiKey, model, message, signal }: GateInput
       }),
     })
     if (!response.ok) return 'unknown'
-    const payload = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> }
-    raw = String(payload.choices?.[0]?.message?.content ?? '')
+    const payload = await response.json() as {
+      choices?: Array<{ message?: { content?: unknown; reasoning?: unknown } }>
+    }
+    const choice = payload.choices?.[0]?.message
+    content = String(choice?.content ?? '')
+    reasoning = String(choice?.reasoning ?? '')
   } catch {
     return 'unknown'
   }
-  const answer = verdict(raw.trim().toUpperCase())
-  if (answer === 'SILLY') return 'bit'
-  if (answer === 'DANGER') return 'hold'
+
+  const said = verdictsIn(content)
+  // Danger wins when an answer says both: a gate that mentions harm must not
+  // be read as the cheerful branch.
+  if (said.includes('DANGER')) return 'hold'
+  if (said.includes('SILLY')) return 'bit'
+
+  // Nothing readable where the answer belongs. A reasoning model can reach the
+  // verdict and then lose the word to the budget, so its conclusion counts.
+  const concluded = verdictsIn(reasoning)
+  if (concluded.length) return concluded[concluded.length - 1] === 'DANGER' ? 'hold' : 'bit'
+
+  // It said nothing anywhere: the gate never answered, and that is not evidence
+  // of danger.
+  if (!content.trim()) return 'unknown'
+
+  // It answered something this gate cannot read. An unclear answer is not a
+  // safe answer.
   return 'hold'
 }
 

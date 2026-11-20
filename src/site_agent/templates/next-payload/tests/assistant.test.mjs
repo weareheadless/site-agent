@@ -155,8 +155,33 @@ test('the gate holds only a report of imminent harm', async () => {
     // not a safe answer.
     reply({ choices: [{ message: { content: 'hard to say' } }] })
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
+
+    // A gate that never answered is not danger. This is the branch that told
+    // visitors to call an ambulance for "draw me a cat".
     reply({ choices: [] })
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'hold')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
+    reply({ choices: [{ message: { content: '' } }] })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('a verdict is read from the working when the answer is missing', async () => {
+  const original = globalThis.fetch
+  const reply = (message) => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ choices: [{ message }] }) })
+  }
+  try {
+    // A reasoning model can conclude and then lose the word to the budget: its
+    // conclusion is still its answer, and the last thing it concluded wins.
+    reply({ content: null, reasoning: 'Is this harm? No. This asks for a picture. SILLY' })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'bit')
+    reply({ content: null, reasoning: 'The message reports an overdose right now, so DANGER' })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'I took too many pills' }), 'hold')
+    // Working that reached no verdict is not an answer either.
+    reply({ content: null, reasoning: 'Let me think about this message for a while.' })
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
   } finally {
     globalThis.fetch = original
   }
@@ -190,9 +215,9 @@ test('the gate is not written for one kind of model', async () => {
     // Both words in one answer reads as danger, never as the cheerful branch.
     answer('Not silly at all: DANGER.')
     assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'ambiguous' }), 'hold')
-    // No content at all is still unreadable, and unreadable still holds.
+    // An answer the gate cannot read at all is unavailable, not a crisis.
     answer(null)
-    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'empty' }), 'hold')
+    assert.equal(await classifyTurn({ apiKey: 'k', model: 'm', message: 'draw me a cat' }), 'unknown')
   } finally {
     globalThis.fetch = original
   }
