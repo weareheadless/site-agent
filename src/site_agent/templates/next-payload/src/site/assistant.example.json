@@ -2,5 +2,5 @@
   "_comment": "Copy to src/site/assistant.json to give this site a visitor assistant. Delete it to ship none. sources: site answers from this site's published pages and documents; none is persona only. model is any provider model id, chosen for this site's cost profile.",
   "purpose": "Answer visitors' questions about this site using its published content. Be brief, match the visitor's language, and point people at the contact page when the answer is not in the content.",
   "sources": "site",
-  "model": "deepseek/deepseek-v4.1-flash"
+  "model": "openai/gpt-4.1-mini"
 }
