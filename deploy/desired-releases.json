@@ -1,34 +1,9 @@
 {
   "releases": {
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "runtime-20261120182910-a6cd3af7",
+      "id": "runtime-20261120193832-12e0aa2d",
       "sha": "1b77a2a057f5beffa4177ec6e944a3655ae7ce08",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
-    },
-    "atelier-harmonie": {
-      "id": "runtime-20261120184001-71cb8b03",
-      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
-    },
-    "casamigo": {
-      "id": "runtime-20261120184005-9973c751",
-      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
-    },
-    "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261120184006-8088d479",
-      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
-    },
-    "oceanicvibes": {
-      "id": "runtime-20261120184007-638d4e5e",
-      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
-    },
-    "site-be8225c72f3ba01a": {
-      "id": "runtime-20261120184008-6f068423",
-      "sha": "b5e328db7d9d91ac4f03b219ad185a65cdbdb700",
-      "sharedRuntimeFingerprint": "abe4188de90dd3938eb4953a2557aad9f71f4c63661530c45531bda7937a99c5"
+      "sharedRuntimeFingerprint": "49f3e296306abb40d0bb7e3f2cd6ec9a006d0b4c1fb44c1605c6691b7bd2635b"
     }
   },
   "schema": 1
