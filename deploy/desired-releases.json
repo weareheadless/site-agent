@@ -24,11 +24,6 @@
       "id": "runtime-20261120151959-43ac35d2",
       "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
       "sharedRuntimeFingerprint": "20ced7ed11a0c7988848ff92eb443c21027d85ddbe9fb1aeb9e3b89f8f227419"
-    },
-    "site-be8225c72f3ba01a": {
-      "id": "runtime-20261120151959-b5f6da0c",
-      "sha": "b5e328db7d9d91ac4f03b219ad185a65cdbdb700",
-      "sharedRuntimeFingerprint": "20ced7ed11a0c7988848ff92eb443c21027d85ddbe9fb1aeb9e3b89f8f227419"
     }
   },
   "schema": 1
