@@ -1,9 +1,8 @@
 {
   "releases": {
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "runtime-20261120132435-d3500c62",
-      "sha": "3ea86bdeba7a9a1a9da5466660c426554a343a3b",
-      "sharedRuntimeFingerprint": "62bd413a459e13a0e8df629cc795020a4e330345326a11dc21c21d140d9ae82f"
+      "id": "assistant-gate-proof-20261120",
+      "sha": "1b77a2a057f5beffa4177ec6e944a3655ae7ce08"
     },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
