@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261120-silent-gate",
-    "sha": "17eb0b1585af48dfcc0384d101f6ecd661fe3527"
+    "id": "20261120-gate-field",
+    "sha": "f3a9c3d8c7a16f497cd23fe423cb38339d43abf1"
   }
 }
