@@ -341,8 +341,10 @@ builder:
   enabled: false
   model: openrouter/deepseek/deepseek-v4.1-flash
   # One retry when the model prints tool-call markup instead of calling a tool.
+  # It retries the same model: the platform runs one model, so a protocol
+  # failure is asked again with the failure named, not handed to another vendor.
   protocol_retries: 1
-  fallback_model: openrouter/openai/gpt-4.1-mini
+  fallback_model: openrouter/deepseek/deepseek-v4.1-flash
   timeout_seconds: 1800
   provider_timeout_seconds: 2100
   provider_chunk_timeout_seconds: 180

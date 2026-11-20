@@ -52,9 +52,11 @@ _DIFF_LEADS = ("diff --git", "index ", "--- a/", "+++ b/", "@@", "deleted file",
 _DSML_RE = _re.compile(r"(?:DSML|<\s*tool\b|<\s*invoke\b|<\s*parameter\b)", _re.I)
 
 # A model that prints tool-call markup instead of calling a tool is a provider
-# protocol failure. One retry with a different model and an explicit instruction
-# usually lands it; a second failure is reported honestly rather than looped.
-_PROTOCOL_FALLBACK_MODEL = "openrouter/openai/gpt-4.1-mini"
+# protocol failure. One retry with the failure named usually lands it; a second
+# failure is reported honestly rather than looped. The retry stays on the one
+# model the platform runs, because a second vendor is a second account, a second
+# outage and a second price that nobody asked to keep working.
+_PROTOCOL_FALLBACK_MODEL = "openrouter/deepseek/deepseek-v4.1-flash"
 _PROTOCOL_NUDGE = (
     "\n\nUse native tool calls for every action. Never print tool-call markup, "
     "DSML or XML in your text: if a tool cannot be called natively, say so in one "
