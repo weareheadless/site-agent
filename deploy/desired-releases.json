@@ -1,10 +1,5 @@
 {
   "releases": {
-    "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "runtime-20261120123554-a69be405",
-      "sha": "3ea86bdeba7a9a1a9da5466660c426554a343a3b",
-      "sharedRuntimeFingerprint": "0dc205f61e71ba2e23777b6cf8c6a37dd95fa6da76fb11de70d38713f625c5d1"
-    },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
       "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"
