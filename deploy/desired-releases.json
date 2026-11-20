@@ -5,9 +5,34 @@
       "sha": "3ea86bdeba7a9a1a9da5466660c426554a343a3b",
       "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
     },
+    "atelier-harmonie": {
+      "id": "runtime-20261120003802-5efd887b",
+      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+    },
+    "casamigo": {
+      "id": "runtime-20261120003802-2043fb0e",
+      "sha": "8354fa8c644092a56cc6d8b52d05219bc8d24e14",
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+    },
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "id": "runtime-20261120003803-b68183fb",
+      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+    },
+    "oceanicvibes": {
+      "id": "runtime-20261120003803-4233ae44",
+      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
+    },
     "site-be8225c72f3ba01a": {
       "id": "persona-20261119-firstperson-1",
       "sha": "8c470ebdef5d92e5859d96c4f65bb51a93818dd7"
+    },
+    "site-ff8e9af06f56201f": {
+      "id": "runtime-20261120003804-0c925cd5",
+      "sha": "4a5e393691658f5dd1515ff91640a08f7229f583",
+      "sharedRuntimeFingerprint": "f2a8908408e1acaea19e509926b242a7a26ccc474527c281625c51f2aa0e93ef"
     }
   },
   "schema": 1
