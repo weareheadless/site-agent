@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261120-promote-wait",
-    "sha": "ee94e423ad5a1aaed2b0af898488f55b0aa834bd"
+    "id": "20261120-gate-reads-v41",
+    "sha": "e494353a0c541d6cf5cde074d5cd22a31b49497e"
   }
 }
