@@ -22,11 +22,16 @@ Two artifacts, both public by construction:
 - `/llms.txt` — markdown sections describing the whole site, cached at the edge.
   Doubles as the AEO artifact.
 - `src/site/assistant.json` in the tenant repository — the tenant authors
-  `{ purpose, sources: 'site' | 'none', model }`. The release generator folds it
-  into `src/generated/helloada-assistant.json`, or `{ "enabled": false }` when
-  absent. Presence is the enable; a tenant that has not authored it 404s and
-  renders nothing. `src/site/assistant.example.json` ships as the copy source,
-  and an incomplete declaration fails the build rather than disabling quietly.
+  `{ purpose, sources: 'site' | 'none', model, counterpoint? }`. The release
+  generator folds it into `src/generated/helloada-assistant.json`, or
+  `{ "enabled": false }` when absent. Presence is the enable; a tenant that has
+  not authored it 404s and renders nothing. `src/site/assistant.example.json`
+  ships as the copy source, and an incomplete declaration fails the build rather
+  than disabling quietly. `counterpoint: true` is the one optional field: it is
+  for a voice that is wrong on purpose, it requires `sources: 'none'`, and it
+  makes the route record the accepted answer to the visitor's question first so
+  the persona has something concrete to answer against. A persona that only
+  claims to be unreliable is still right about as often as the model knows.
 
 A site with no collections is the common case, and its offering lives in the
 presentation pages, not in Payload. So the corpus has three sources, merged into
