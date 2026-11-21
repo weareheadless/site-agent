@@ -1,5 +1,5 @@
 {
-  "_comment": "Copy to src/site/assistant.json to give this site a visitor assistant. Delete it to ship none. sources: site answers from this site's published pages and documents; none is persona only. model is any provider model id, chosen for this site's cost profile.",
+  "_comment": "Copy to src/site/assistant.json to give this site a visitor assistant. Delete it to ship none. sources: site answers from this site's published pages and documents; none is persona only. model is any provider model id, chosen for this site's cost profile. counterpoint: true is for a voice that is wrong on purpose - the platform records the accepted answer to the visitor's question first and the persona gives a different one, with sources set to none. Leave it out for an assistant that is meant to be right.",
   "purpose": "Answer visitors' questions about this site using its published content. Be brief, match the visitor's language, and point people at the contact page when the answer is not in the content.",
   "sources": "site",
   "model": "deepseek/deepseek-v4.1-flash"

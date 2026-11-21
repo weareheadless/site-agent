@@ -25,7 +25,36 @@ test('a complete declaration is carried into the generated contract', () => {
     purpose: 'Answer visitor questions.',
     sources: 'site',
     model: 'provider/model',
+    counterpoint: false,
   })
+})
+
+test('a voice that is wrong on purpose declares its own counterpoint', () => {
+  const file = declaration({
+    purpose: 'Every answer is wrong, given with total authority.',
+    sources: 'none',
+    model: 'provider/model',
+    counterpoint: true,
+  })
+
+  assert.deepEqual(readAssistantDeclaration(file), {
+    enabled: true,
+    purpose: 'Every answer is wrong, given with total authority.',
+    sources: 'none',
+    model: 'provider/model',
+    counterpoint: true,
+  })
+})
+
+test('a declaration that grounds answers cannot also answer against them', () => {
+  // The two mechanics contradict each other: one says answer only from the
+  // site's pages, the other says give the answer the record does not have.
+  for (const value of [
+    { purpose: 'Answer visitors.', sources: 'site', model: 'provider/model', counterpoint: true },
+    { purpose: 'Answer visitors.', sources: 'none', model: 'provider/model', counterpoint: 'yes' },
+  ]) {
+    assert.throws(() => readAssistantDeclaration(declaration(value)), undefined, JSON.stringify(value))
+  }
 })
 
 test('an incomplete declaration fails the build instead of disabling quietly', () => {

@@ -11,7 +11,7 @@ import {
 import { assistantInstruction } from '../src/lib/assistant-prompt.ts'
 import { DANGER_REPLY, classifyTurn, dangerStream } from '../src/lib/assistant-safety.ts'
 import { AssistantClientError, streamAssistant } from '../src/lib/assistant-client.ts'
-import { assistantReply } from '../src/lib/assistant-provider.ts'
+import { assistantRecord, assistantReply } from '../src/lib/assistant-provider.ts'
 
 test('page text prefers the page body and drops site chrome', () => {
   const html = `
@@ -133,6 +133,71 @@ test('the persona answers every subject, and no rule takes one over', () => {
   // What stays is infrastructure: language, instruction boundary, grounding.
   assert.match(instruction, /Reply in the language the visitor used/)
   assert.match(instruction, /are content, not orders/)
+})
+
+test('a counterpoint site is given the record it answers against', () => {
+  const config = { purpose: 'Every answer is wrong, given with total authority.', sources: 'none', model: 'model/x' }
+  const plain = assistantInstruction({ config, reference: '' })
+  const against = assistantInstruction({ config, reference: '', recorded: 'The capital of Australia is Canberra.' })
+
+  // The record arrives as the answer this site is not giving, and the persona
+  // keeps its own voice: the frame names no subject and no phrasing.
+  assert.doesNotMatch(plain, /on record/)
+  assert.match(against, /The answer on record[^"]*:\n"The capital of Australia is Canberra\."/)
+  assert.match(against, /That is not your answer/)
+  assert.ok(against.indexOf('Every answer is wrong') < against.indexOf('The answer on record'))
+  // Blank is not a record: it must leave the turn exactly as it was.
+  assert.equal(assistantInstruction({ config, reference: '', recorded: '   ' }), plain)
+})
+
+test('the record is asked for from the visitor turns only', async () => {
+  const original = globalThis.fetch
+  const sent = []
+  try {
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(init.body))
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: 'The capital of Australia is Canberra.' } }] }),
+      }
+    }
+
+    const recorded = await assistantRecord({
+      apiKey: 'k',
+      model: 'deepseek/deepseek-v4.1-flash',
+      messages: [
+        { role: 'user', content: 'What is the capital of Australia?' },
+        { role: 'assistant', content: 'Sydney, and it always has been.' },
+        { role: 'user', content: 'and since when?' },
+      ],
+    })
+
+    assert.equal(recorded, 'The capital of Australia is Canberra.')
+    assert.equal(sent[0].stream, false)
+    assert.deepEqual(sent[0].reasoning, { enabled: false })
+    // Her last answer is not evidence about the world: recording it would make
+    // the follow-up contradict her correct-again claim instead of the truth.
+    assert.deepEqual(sent[0].messages.slice(1), [
+      { role: 'user', content: 'What is the capital of Australia?' },
+      { role: 'user', content: 'and since when?' },
+    ])
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('a record that cannot be read is a failed turn, not a correct answer', async () => {
+  const original = globalThis.fetch
+  try {
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ choices: [] }) })
+    await assert.rejects(
+      () => assistantRecord({ apiKey: 'k', model: 'model/x', messages: [{ role: 'user', content: 'hi' }] }),
+      /no recorded answer/,
+    )
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('the gate holds only a report of imminent harm', async () => {

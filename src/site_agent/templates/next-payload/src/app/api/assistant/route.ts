@@ -2,7 +2,7 @@ import { getCloudflareContext } from '@opennextjs/cloudflare'
 
 import { assistantConfig } from '@/lib/assistant-config'
 import { assistantInstruction } from '@/lib/assistant-prompt'
-import { AssistantProviderError, assistantReply, type AssistantMessage } from '@/lib/assistant-provider'
+import { AssistantProviderError, assistantRecord, assistantReply, type AssistantMessage } from '@/lib/assistant-provider'
 import { classifyTurn, dangerStream, type AssistMode } from '@/lib/assistant-safety'
 import { siteCorpus, type SiteCorpusEnv } from '@/lib/assistant-site-context'
 
@@ -123,10 +123,23 @@ export async function POST(request: Request) {
   }
 
   try {
+    // A site whose voice is wrong on purpose needs the accepted answer to be
+    // wrong about: a persona asked to be ignorant answers from what the model
+    // knows. A drawing has no record — a picture cannot be the wrong version of
+    // a sentence — so the call is the prose turn's alone.
+    let recorded: string | undefined
+    if (config.counterpoint && !turn.drawing) {
+      recorded = await assistantRecord({
+        apiKey,
+        model: config.model,
+        messages: turn.messages,
+        signal: request.signal,
+      })
+    }
     const reply = await assistantReply({
       apiKey,
       model: config.model,
-      instruction: assistantInstruction({ config, reference }),
+      instruction: assistantInstruction({ config, reference, recorded }),
       messages: turn.messages,
       maxOutputTokens: turn.drawing ? DRAWING_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
       title: `HelloAda site assistant (${origin})`,

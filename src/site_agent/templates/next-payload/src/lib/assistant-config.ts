@@ -17,6 +17,16 @@ export type AssistantConfig = {
   sources: AssistantSources
   /** Exact provider model id, chosen by the tenant for its own cost profile. */
   model: string
+  /**
+   * Answer against the accepted answer instead of from knowledge.
+   *
+   * This is the site's own writing, not a platform switch: a site whose voice is
+   * wrong on purpose declares it here, and the platform records the accepted
+   * answer before the turn so the persona has something concrete to be wrong
+   * about. It requires ``sources: none`` — a site that answers from its own
+   * pages cannot also answer against the record.
+   */
+  counterpoint: boolean
 }
 
 type GeneratedDeclaration = {
@@ -24,6 +34,7 @@ type GeneratedDeclaration = {
   purpose?: unknown
   sources?: unknown
   model?: unknown
+  counterpoint?: unknown
 }
 
 export const assistantConfig = (): AssistantConfig | undefined => {
@@ -37,5 +48,9 @@ export const assistantConfig = (): AssistantConfig | undefined => {
   if (sources !== 'site' && sources !== 'none') {
     throw new Error('Tenant assistant declaration must declare sources as "site" or "none".')
   }
-  return { purpose, sources, model }
+  const counterpoint = declaration.counterpoint === true
+  if (counterpoint && sources !== 'none') {
+    throw new Error('Tenant assistant declaration cannot set counterpoint with sources "site".')
+  }
+  return { purpose, sources, model, counterpoint }
 }

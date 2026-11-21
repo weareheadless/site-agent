@@ -31,5 +31,12 @@ export const readAssistantDeclaration = (declarationPath) => {
   if (declaration.sources !== 'site' && declaration.sources !== 'none') {
     throw new Error('The tenant assistant declaration must set sources to "site" or "none".')
   }
-  return { enabled: true, purpose, sources: declaration.sources, model }
+  if (declaration.counterpoint !== undefined && typeof declaration.counterpoint !== 'boolean') {
+    throw new Error('The tenant assistant declaration must set counterpoint to true or false.')
+  }
+  const counterpoint = declaration.counterpoint === true
+  if (counterpoint && declaration.sources !== 'none') {
+    throw new Error('The tenant assistant declaration cannot set counterpoint with sources "site".')
+  }
+  return { enabled: true, purpose, sources: declaration.sources, model, counterpoint }
 }
