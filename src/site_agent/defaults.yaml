@@ -350,4 +350,8 @@ builder:
   provider_chunk_timeout_seconds: 180
   output_tokens: 8192
   reasoning_effort: low
+  # Provider the agent's web search uses. Pinned because the CLI otherwise asks
+  # the client to choose one, and a headless turn has no client to answer: every
+  # search came back "Web search cancelled" and research degraded to guesswork.
+  websearch_provider: tinyfish
   validation_repair_attempts: 2

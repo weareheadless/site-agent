@@ -1922,6 +1922,29 @@ def test_an_owner_turn_that_changes_nothing_stages_nothing(monkeypatch, tmp_path
     assert seen["removed"] is True
 
 
+def test_an_owner_turn_that_saved_payload_content_reports_the_saved_content(monkeypatch, tmp_path):
+    """Content with no source edit still carries the receipts it produced.
+
+    The turn used to drop them: a request whose whole answer was a Payload
+    document changed no source file, so the early return discarded the saved
+    content and the conversation could not tell that anything had happened.
+    """
+    owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=False)
+    receipts = [{
+        "kind": "collection", "operation": "create", "target": "posts",
+        "document_id": "1", "revision": "sha256:" + "b" * 64,
+        "fields": ["title", "body"],
+    }]
+    monkeypatch.setattr(owner_runner, "_turn_payload_effects", lambda memory, job_id: receipts)
+
+    result = owner_runner.run_owner_turn({"config": {}}, 1, "write the article")
+
+    assert result["changed"] is False
+    assert result["completed_payload_effects"] == receipts
+    assert "validated" not in seen
+    assert seen["removed"] is True
+
+
 def test_a_rejected_candidate_is_repaired_in_the_same_turn_before_staging(monkeypatch, tmp_path):
     owner_runner, seen = _owner_turn(monkeypatch, tmp_path, changed=True)
     gate = [

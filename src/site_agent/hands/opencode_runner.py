@@ -2950,6 +2950,7 @@ def stage_design_build(
             provider_chunk_timeout_seconds=int(builder.get("provider_chunk_timeout_seconds", 180)),
               output_tokens=int(builder.get("output_tokens", 8192)),
                reasoning_effort=str(builder.get("reasoning_effort", "low")),
+               websearch_provider=str(builder.get("websearch_provider") or "tinyfish"),
                provider_base_url=str((execution_config.get("llm") or {}).get("base_url") or "").strip(),
                provider_env_name=provider_env_name,
                skill_set=execution_context.get("design_skill_set"),
@@ -4111,6 +4112,7 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
                           include_pipeworx: bool = False,
                           pipeworx_url: str = "",
                           extra_config: dict[str, Any] | None = None,
+                          websearch_provider: str = "tinyfish",
                           instructions_suffix: str = "") -> None:
     """Install Ada's project instructions and skills for native OpenCode Build.
 
@@ -4147,7 +4149,15 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
     opencode_config: dict[str, Any] = {
         "$schema": "https://opencode.ai/config.json",
         "instructions": [".opencode/ada-instructions.md"],
-        "permission": {"task": {"*": "allow"}},
+        # Research is part of the work: an article about a live event, a pinned
+        # library version, a competitor claim. OpenCode asks which web search
+        # provider to use the first time a turn searches, and this process has
+        # no UI to answer that question: every search came back
+        # "Web search cancelled" and the agent had to write from memory or
+        # refuse. Pinning the provider is what makes the question unnecessary.
+        **({"websearch": {"provider": str(websearch_provider).strip()}}
+           if str(websearch_provider or "").strip() else {}),
+        "permission": {"task": {"*": "allow"}, "websearch": "allow", "webfetch": "allow"},
     }
     if task_contract is not None:
         permissions = _delegated_permissions(clone, task_contract)
@@ -5014,6 +5024,11 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
     # it deliberately writes that event to stdout instead of stderr, so the
     # human-readable reason for a non-zero exit exists only here.
     terminal_error: dict[str, str] | None = None
+    # The stream, not the process status, says whether the turn answered. A
+    # finished assistant step (`reason: stop`) is the agent's own statement
+    # that it completed; the CLI's exit code is written afterwards by teardown
+    # and is not a verdict on the turn.
+    turn_completed = False
     last_tool_prose_index = 0
     per_message: dict[str, dict[str, Any]] = {}
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -5060,6 +5075,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             "native_tool_calls": len(tool_calls),
             "usage": dict(usage_total),
             **({"cost": reported_cost} if has_reported_cost else {}),
+            "exit_code": proc.returncode,
             **({"terminal_error": dict(terminal_error)} if terminal_error else {}),
             "raw_output": "\n".join(tail),
             "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
@@ -5098,6 +5114,8 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                         metadata={'step': step_count, 'model': builder_model, **step_usage},
                     )
                 step_started = step_finished
+                if str((event.get("part") or {}).get("reason") or "") == "stop":
+                    turn_completed = True
                 usage_total["prompt_tokens"] += int(step_usage.get("prompt_tokens") or 0)
                 usage_total["completion_tokens"] += int(step_usage.get("completion_tokens") or 0)
                 if step_usage.get("cost") is not None:
@@ -5109,6 +5127,12 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             session = session or _event_value(event, "sessionID")
             part = event.get("part") or {}
             event_type = event.get("type") or part.get("type") or ""
+            if (
+                event_type in {"step_finish", "step-finish"}
+                and isinstance(part, Mapping)
+                and str(part.get("reason") or "").strip() == "stop"
+            ):
+                turn_completed = True
             message_id = str(part.get("messageID") or "")
             if message_id:
                 record = per_message.setdefault(message_id, {"texts": [], "tools": 0})
@@ -5180,6 +5204,49 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             "opencode emitted unsupported DSML/XML instead of a native tool call: " + protocol_error,
             result=partial_result(),
         )
+    # OpenCode streams planning narration before each tool call. That narration
+    # is useful as live progress, but it is not the completed owner-facing
+    # answer. Return only the final prose segment after the last tool event so
+    # the chat does not dump the entire work log when the job finishes.
+    reply_lines = prose[last_tool_prose_index:] or prose[-24:] or tail[-24:]
+    if reply_mode == "final_message":
+        completed_reply = _final_message_reply(per_message)
+    else:
+        completed_reply = chr(10).join(reply_lines).strip()
+
+    def result_payload(reply: str) -> dict[str, Any]:
+        return {
+            "reply": reply,
+            "raw_tail": list(tail)[-80:],
+            "session_id": str(session or ""),
+            "tool_calls": tool_calls,
+            "event_count": len(events),
+            "native_tool_calls": len(tool_calls),
+            "usage": dict(usage_total),
+            **({"cost": reported_cost} if has_reported_cost else {}),
+            "exit_code": proc.returncode,
+            "raw_output": "\n".join(tail),
+            "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
+        }
+
+    # The agent's own finished step is the verdict on the turn, and it can
+    # disagree with the CLI's teardown: 2.2.5 leaves a non-zero status behind
+    # after a completed answer whenever a tool it could not finish without a
+    # client (websearch's provider question) was involved, and a trailing failed
+    # tool call is a capability this host does not offer that the agent already
+    # worked around. Neither is a promise to the owner the host failed to keep,
+    # so the answer is the deliverable; the exit code stays in the record.
+    if completed_reply and turn_completed and not terminal_error:
+        if proc.returncode != 0 and memory is not None and hasattr(memory, "record_action"):
+            try:
+                memory.record_action(
+                    "opencode_exit_after_completion",
+                    f"exit={proc.returncode} events={len(events)} tools={len(tool_calls)}",
+                )
+            except Exception:  # noqa: BLE001 - diagnostics must not fail a good turn
+                pass
+        return result_payload(completed_reply)
+
     if proc.returncode != 0:
         provider_rejection = _provider_rejection(transcript_lines)
         if provider_rejection:
@@ -5212,24 +5279,7 @@ def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
             f"opencode stopped after a failed tool call: {failed_tools[-1].get('tool', 'unknown')}",
             result=partial_result(),
         )
-    # OpenCode streams planning narration before each tool call. That narration
-    # is useful as live progress, but it is not the completed owner-facing
-    # answer. Return only the final prose segment after the last tool event so
-    # the chat does not dump the entire work log when the job finishes.
-    reply_lines = prose[last_tool_prose_index:] or prose[-24:] or tail[-24:]
-    final_message = _final_message_reply(per_message) if reply_mode == "final_message" else ""
-    return {
-        "reply": final_message or chr(10).join(reply_lines),
-        "raw_tail": list(tail)[-80:],
-        "session_id": str(session or ""),
-        "tool_calls": tool_calls,
-        "event_count": len(events),
-        "native_tool_calls": len(tool_calls),
-        "usage": dict(usage_total),
-        **({"cost": reported_cost} if has_reported_cost else {}),
-        "raw_output": "\n".join(tail),
-        "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
-    }
+    return result_payload(completed_reply or chr(10).join(reply_lines))
 
 
 def _final_message_reply(per_message: Mapping[str, dict[str, Any]]) -> str:
@@ -5518,6 +5568,7 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
         provider_chunk_timeout_seconds=int(builder.get("provider_chunk_timeout_seconds", 180)),
         output_tokens=int(builder.get("output_tokens", 8192)),
         reasoning_effort=str(builder.get("reasoning_effort", "low")),
+        websearch_provider=str(builder.get("websearch_provider") or "tinyfish"),
         provider_base_url=str((config.get("llm") or {}).get("base_url") or "").strip(),
         extra_config=extra_config,
         instructions_suffix=instructions_suffix,
@@ -6174,8 +6225,21 @@ def run_owner_turn(
         if not reply:
             raise RunnerError("the agent returned no message")
         new_session = str(result.get("session_id") or "")
+        # The workspace tools record each save on the job's turn state, and
+        # staging reads that state. Read it here too: a turn that saved content
+        # without touching a source file still did the work it was asked for, so
+        # its effects belong on this turn's context before anything decides
+        # there was no change.
+        effects = _turn_payload_effects(memory, job_id)
+        if effects:
+            context["_completed_payload_effects"] = effects
         if _change_state(clone) == prepared:
-            return {"reply": reply, "changed": False, "session_id": new_session}
+            return {
+                "reply": reply,
+                "changed": False,
+                "session_id": new_session,
+                **({"completed_payload_effects": effects} if effects else {}),
+            }
         if progress:
             progress("validating the change")
         _validate_preview(config, clone, base_ref)
