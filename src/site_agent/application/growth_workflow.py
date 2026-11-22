@@ -1190,6 +1190,179 @@ def _technical_crawl_evidence_sources(
     return sources
 
 
+def _prepare_article_candidate(
+    context: Mapping[str, Any],
+    remote: Mapping[str, Any],
+    initiative: Mapping[str, Any],
+    *,
+    site_id: str,
+    generation: int,
+    action_id: str,
+    revision: int,
+    detail: Mapping[str, Any],
+    preparation_request_id: str,
+    manifest_hash: str,
+) -> dict[str, Any]:
+    """Prepare one targetless article opportunity.
+
+    The two capabilities are separate and neither implies the other. CrawlSEO
+    owns the demand question — is this worth writing, and why — and that answer
+    is the brief's topic and angle, used once and never re-measured. The subject
+    question ("what is actually true about this") is answered by the writing
+    service's own research, because nobody in the platform has read it.
+
+    The result is the same shape as every other prepared candidate: a pending
+    draft, a review package hash, and an owner approval. Nothing publishes here.
+    """
+    from ..hands.editorial import EditorialError, EditorialTimeout, build_editorial_client
+    from ..hands.editorial import EditorialRejectedError, EditorialUnavailableError
+    from ..core.jobs import _mirror_article_draft_to_workspace, _sync_strategy_initiative_for_draft
+    from .editorial_brief import build_brief
+
+    memory = context["memory"]
+    config = context.get("config") or {}
+    detail = dict(detail or {})
+    initiative_id = int(initiative["id"])
+    detail["initiativeId"] = initiative_id
+    client = build_editorial_client(config)
+    if not client.configured():
+        raise ValueError("The editorial writing service is not configured for this host")
+
+    authoring = context["payload_gateway"].require_authoring_contract() if context.get("payload_gateway") is not None else {}
+    locales = [str(item) for item in authoring.get("locales") or ["en"]]
+    default_locale = str(authoring.get("defaultLocale") or locales[0])
+    business = context.get("customer_context_service")
+    business_view = business.task_view("strategy") if business is not None else {}
+    voice = str((config.get("editorial") or {}).get("voice") or "default")
+
+    brief = build_brief(
+        tenant=str(config.get("instance_name") or site_id),
+        remote=remote,
+        business=business_view if isinstance(business_view, Mapping) else {},
+        locales=locales,
+        default_locale=default_locale,
+        voice=voice,
+    )
+    window = int((brief.get("policy") or {}).get("deadline_seconds") or 900) * max(1, len(brief["locales"]))
+
+    detail.update({"preparationRequestId": preparation_request_id, "kind": "article"})
+    memory.update_crawlseo_execution_binding(
+        site_id, action_id, revision, generation,
+        expected_state="preparing", state="preparing", detail=detail,
+    )
+
+    try:
+        post = client.write(brief, deadline_seconds=window + 120)
+    except EditorialTimeout as exc:
+        # The work is not lost: it continues in the service and stays pollable
+        # by its post id. This attempt is blocked, not failed, so recovery is a
+        # poll rather than a second paid research pass.
+        detail["editorialPostId"] = str(exc).split()[2] if "post " in str(exc) else ""
+        raise ValueError(str(exc)[:500]) from exc
+    except (EditorialUnavailableError, EditorialRejectedError, EditorialError) as exc:
+        raise ValueError(str(exc)[:500]) from exc
+
+    if post.held:
+        # A held article is an editorial judgement, not an outage: the evidence
+        # did not support the piece. Report it and stop; retrying it unchanged
+        # would produce the same judegement for the same money.
+        detail.update({"editorialPostId": post.post_id, "editorialState": post.state,
+                       "held": post.error[:500]})
+        memory.update_crawlseo_execution_binding(
+            site_id, action_id, revision, generation,
+            expected_state="preparing", state="cancelled", detail=detail,
+        )
+        return {"status": "held", "error": post.error[:500], "editorialPostId": post.post_id}
+
+    artifact = post.artifact(brief["locales"][0])
+    body = str(artifact.get("body_markdown") or "").strip()
+    title = str(artifact.get("title") or "").strip()
+    if not title or not body:
+        raise ValueError("The writing service returned an empty article")
+
+    meta: dict[str, Any] = {
+        "primary_keyword": str(artifact.get("primary_keyword") or brief["topic"]["primary_keyword"]),
+        "meta_description": str(artifact.get("meta_description") or artifact.get("excerpt") or ""),
+        "editorial": {
+            "service": "editorial",
+            "post_id": post.post_id,
+            "content_hash": str(artifact.get("content_hash") or ""),
+            "revision": artifact.get("revision"),
+            "model": str((artifact.get("editorial") or {}).get("model") or ""),
+            "sources": [
+                {"url": str(row.get("url") or ""), "title": str(row.get("title") or "")[:200],
+                 "sha256": str(row.get("sha256") or "")}
+                for row in artifact.get("sources") or [] if isinstance(row, Mapping)
+            ],
+            "claims": len(artifact.get("claims") or []),
+        },
+        "article_assets": [
+            dict(row) for row in artifact.get("assets") or [] if isinstance(row, Mapping)
+        ],
+        "crawlseo_action_id": action_id,
+        "crawlseo_action_revision": revision,
+    }
+    draft_id = memory.save_draft(title=title[:300], body=body, kind="article", meta=meta)
+    # Bind the draft to this initiative before preparing it, because the review
+    # path finds the initiative through the draft. Without the link the draft
+    # would land in Payload with no owner action and no approval behind it.
+    memory.update_strategy_initiative(initiative_id, draft_id=draft_id)
+    detail.update({"editorialPostId": post.post_id, "draftId": draft_id, "title": title[:200]})
+    memory.update_crawlseo_execution_binding(
+        site_id, action_id, revision, generation,
+        expected_state="preparing", state="preparing", detail=detail,
+    )
+
+    # Land it exactly like any other article: prepare the canonical Payload
+    # draft, then let the existing initiative/approval path own the review.
+    landed = _mirror_article_draft_to_workspace(context, draft_id)
+    if landed is False:
+        return {"status": "preparing", "draftId": draft_id}
+    _sync_strategy_initiative_for_draft(memory, draft_id, context=dict(context))
+    refreshed = memory.update_strategy_initiative(initiative_id) or dict(initiative)
+    review_origin = str(((config.get("site") or {}).get("payload") or {}).get("url") or "").rstrip("/")
+    review_url = review_origin + "/admin" if review_origin else ""
+    if str(refreshed.get("state")) != "ready_for_review":
+        reason = str(((refreshed.get("validation") or {}).get("checks") or {}).get("reason") or
+                     "The article draft could not be prepared for owner review")
+        raise ValueError(reason[:500])
+    candidate_ref = f"article-growth:{action_id}:{revision}:{generation}"
+    detail["manifestHash"] = str(manifest_hash or "")
+    ready_report = {
+        "status": "preparation_ready",
+        "preparationRequestId": preparation_request_id,
+        "candidateRef": candidate_ref,
+        "reviewUrl": review_url,
+        "detail": {
+            "initiativeId": int(refreshed["id"]),
+            "draftId": draft_id,
+            "reviewPackageHash": str(refreshed.get("review_package_hash") or ""),
+            "editorialPostId": post.post_id,
+        },
+    }
+    detail.update({
+        "initiativeId": int(refreshed["id"]),
+        "candidateRef": candidate_ref,
+        "reviewUrl": review_url,
+        "reviewPackageHash": str(refreshed.get("review_package_hash") or ""),
+        "draftId": draft_id,
+        "preparationStatus": "ready",
+        "report": ready_report,
+    })
+    memory.update_crawlseo_execution_binding(
+        site_id, action_id, revision, generation,
+        expected_state="preparing", state="preparation_unreported", detail=detail,
+    )
+    pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+    reported = bool(pending and _reconcile_crawlseo_execution_report(context, pending))
+    return {
+        "status": "ready" if reported else "ready_unreported",
+        "candidateRef": candidate_ref,
+        "reviewUrl": review_url,
+        "draftId": draft_id,
+    }
+
+
 def _execute_crawlseo_preparation(
     context: Mapping[str, Any], remote: Mapping[str, Any], binding: Mapping[str, Any],
     *, site_id: str, generation: int,
@@ -1217,6 +1390,12 @@ def _execute_crawlseo_preparation(
         if not isinstance(snapshot, Mapping):
             raise ValueError("Current canonical connector context is required before preparing this Action")
         source_path = str(identity.get("path") or "") if identity.get("kind") == "source_file" else ""
+        # A targetless article is a different kind of work from an edit to an
+        # existing document: it has no route in the inventory, and its evidence
+        # is researched rather than quoted from the site. It is handled after
+        # the shared run/initiative are created, so its review is the same
+        # review as every other prepared candidate.
+        article_mode = not source_path and not target_url and "article.create" in required
         if source_path:
             from ..frontend_ownership import is_crawl_metadata_path
             expected_name = "robots.txt" if source_path.endswith("robots.ts") or source_path.endswith("robots.txt/route.ts") or source_path.endswith("/robots.txt") else "sitemap.xml"
@@ -1225,26 +1404,34 @@ def _execute_crawlseo_preparation(
             if (not is_crawl_metadata_path(source_path) or expected_capability not in required
                     or parsed_target.path != expected_route or parsed_target.query or parsed_target.fragment):
                 raise ValueError("This Action does not match an exact supported robots/sitemap source capability")
-        elif "content.prepare" not in required:
+        elif "content.prepare" not in required and not article_mode:
             raise ValueError("This Action does not declare a HelloAda preparation capability")
         inventory = _inventory(context)
         selected = next((row for row in inventory if not source_path and row.get("route") and
             str(row.get("route")).rstrip("/") == (parsed_target.path.rstrip("/") or "/") and
             parsed_target.scheme in {"http", "https"}), None)
-        if (not target_url or parsed_target.username or parsed_target.password or parsed_target.query or parsed_target.fragment
+        if article_mode:
+            # An article has no route to be inside: it becomes one. What must
+            # hold is that the site's own origin is known, so the draft's
+            # canonical URL is real.
+            snapshot_origin = str(snapshot.get("canonicalOrigin") or "") if isinstance(snapshot, Mapping) else ""
+            if not snapshot_origin:
+                raise ValueError("The canonical site origin is required before writing an article")
+        elif (not target_url or parsed_target.username or parsed_target.password or parsed_target.query or parsed_target.fragment
                 or (not source_path and selected is None)):
             raise ValueError("The Action target is no longer an exact current canonical Payload route")
-        snapshot_origin = str(snapshot.get("canonicalOrigin") or "") if isinstance(snapshot, Mapping) else ""
-        parsed_origin = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(snapshot_origin)
-        if (not snapshot_origin or parsed_target.scheme.lower() != parsed_origin.scheme.lower()
-                or parsed_target.netloc.lower() != parsed_origin.netloc.lower()):
-            raise ValueError("The Action target is outside the current canonical site origin")
+        if not article_mode:
+            snapshot_origin = str(snapshot.get("canonicalOrigin") or "") if isinstance(snapshot, Mapping) else ""
+            parsed_origin = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(snapshot_origin)
+            if (not snapshot_origin or parsed_target.scheme.lower() != parsed_origin.scheme.lower()
+                    or parsed_target.netloc.lower() != parsed_origin.netloc.lower()):
+                raise ValueError("The Action target is outside the current canonical site origin")
         if source_path:
             capabilities = snapshot.get("capabilities") if isinstance(snapshot, Mapping) and isinstance(snapshot.get("capabilities"), Mapping) else {}
             source_files = capabilities.get("sourceFiles") if isinstance(capabilities.get("sourceFiles"), list) else []
             if source_path not in source_files:
                 raise ValueError("HelloAda did not declare this exact crawl metadata source file")
-        else:
+        elif not article_mode:
             current_hash = str(selected.get("assessmentScope", {}).get("documentHash") or "")
             snapshot_inventory = snapshot.get("websiteInventory") if isinstance(snapshot, Mapping) else None
             snap_row = next((row for row in snapshot_inventory or [] if isinstance(row, Mapping)
@@ -1253,7 +1440,13 @@ def _execute_crawlseo_preparation(
             if not snap_row or snap_row.get("documentHash") != current_hash:
                 raise ValueError("The current Payload document changed since CrawlSEO's inventory snapshot; reassessment is required")
         technical_mode = isinstance(remote.get("technicalEvidence"), Mapping)
-        if technical_mode:
+        if article_mode:
+            # The article's evidence is researched by the writing service, on
+            # the subject. CrawlSEO's finding sources established why the piece
+            # is worth writing; they are provenance for the initiative, not the
+            # text the article may quote.
+            sources = remote.get("evidence") if isinstance(remote.get("evidence"), list) else []
+        elif technical_mode:
             sources = _technical_crawl_evidence_sources(remote, site_id=site_id, context_snapshot=snapshot,
                 target_url=target_url, source_path=source_path, required_capabilities=required,
                 now=datetime.datetime.now(datetime.timezone.utc))
@@ -1279,12 +1472,15 @@ def _execute_crawlseo_preparation(
             "requiredSources": [str(source.get("id")) for source in sources if source.get("id")],
             "collection": selected["collection"] if selected else None,
             "documentId": str(selected["document"]["id"]) if selected else None,
-            "metric": "technical.crawl_issue_count" if technical_mode else "gsc.clicks", "whyAction": action_id,
+            "metric": ("article.opportunity" if article_mode else
+                "technical.crawl_issue_count" if technical_mode else "gsc.clicks"), "whyAction": action_id,
             **({"allowedPaths": [source_path]} if source_path else {}),
             "crawlseoBinding": source_binding,
         }
-        if not opportunity["scope"].strip() or not opportunity["evidence"]:
-            raise ValueError("The Action lacks a bounded recommendation or stable evidence identities")
+        if not opportunity["scope"].strip():
+            raise ValueError("The Action lacks a bounded recommendation")
+        if not opportunity["evidence"] and not article_mode:
+            raise ValueError("The Action has no stable evidence identities")
         policy = GrowthPolicy.from_config(context.get("config") or {})
         goal = ensure_default_goal(memory)
         run_key = f"crawlseo-action:{site_id}:{action_id}:revision-{revision}"
@@ -1328,7 +1524,9 @@ def _execute_crawlseo_preparation(
                 initiative_id = int(initiative["id"])
         if initiative is None:
             initiative_id = memory.create_strategy_initiative(
-                int(cycle["id"]), kind="code" if source_path else "payload_content", title=opportunity["title"],
+                int(cycle["id"]),
+                kind="article" if article_mode else "code" if source_path else "payload_content",
+                title=opportunity["title"],
                 summary=opportunity["scope"], hypothesis=opportunity["hypothesis"], rationale=opportunity["why"],
                 evidence=opportunity["evidence"], expected={"opportunity": opportunity, "crawlseoActionId": action_id,
                     "crawlseoRevision": revision, "crawlseoGeneration": generation},
@@ -1339,6 +1537,13 @@ def _execute_crawlseo_preparation(
             memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
                 expected_state="preparing", state="preparing", detail=detail, release_lease=False)
             initiative = memory.update_strategy_initiative(initiative_id)
+        if article_mode:
+            return _prepare_article_candidate(
+                context, remote, initiative, site_id=site_id, generation=generation,
+                action_id=action_id, revision=revision, detail=detail,
+                preparation_request_id=preparation_request_id,
+                manifest_hash=manifest_hash,
+            )
         if source_path:
             validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
             preparation = validation.get("preparation") if isinstance(validation.get("preparation"), Mapping) else {}
@@ -1728,6 +1933,16 @@ def _sync_crawlseo_actions(context: Mapping[str, Any]) -> dict[str, Any]:
         if builder_available(context["config"]):
             source_files = list(CRAWL_METADATA_PATTERNS)
             source_capabilities = ["site_metadata.robots", "site_metadata.sitemap"]
+    article_capabilities: list[str] = []
+    editorial = context["config"].get("editorial") if isinstance(context["config"].get("editorial"), Mapping) else {}
+    if editorial.get("enabled") is True:
+        # A targetless article is a bounded creation the platform genuinely
+        # performs: the writing service researches the subject and writes it,
+        # and site-agent lands it as the owner's draft. CrawlSEO may only route
+        # that work if the connector is told the capability exists; declaring
+        # only content.prepare is why every article-ready opportunity was
+        # refused before it reached site-agent.
+        article_capabilities = ["article.create"]
     context_payload = {
         "siteId": site_id,
         "canonicalOrigin": origin,
@@ -1735,7 +1950,7 @@ def _sync_crawlseo_actions(context: Mapping[str, Any]) -> dict[str, Any]:
                        "route": row.get("route"), "documentHash": row["assessmentScope"]["documentHash"]}
                       for row in inventory],
         "businessFacts": owner_facts,
-        "capabilities": {"supported": ["content.prepare", *source_capabilities],
+        "capabilities": {"supported": ["content.prepare", *article_capabilities, *source_capabilities],
             "sourceFiles": source_files,
             "reviewOrigin": payload_origin.scheme + "://" + payload_origin.netloc,
             "reviewPath": "/admin"},

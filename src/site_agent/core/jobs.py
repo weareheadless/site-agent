@@ -305,6 +305,13 @@ def _sync_strategy_initiative_for_draft_locked(
                 validation=validation_manifest,
             )
             if initiative.get("state") != state:
+                # Validation is a state, not just a field: nothing becomes
+                # reviewable without passing through it. Preparing an article
+                # used to skip straight to `ready_for_review`, which the
+                # lifecycle guard rejects — so the initiative stayed
+                # `preparing` and the owner never saw a review.
+                if state == "ready_for_review" and initiative.get("state") in {"preparing", "identified", "proposed"}:
+                    memory.transition_strategy_initiative(initiative_id, "validating")
                 memory.transition_strategy_initiative(initiative_id, state, validation=validation_manifest)
 
 
