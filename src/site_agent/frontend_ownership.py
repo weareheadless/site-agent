@@ -84,7 +84,7 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/lib/mail-alerts.ts", "src/lib/mailflare-inbox.ts", "src/lib/mailflare-provisioning-api.ts",
     "src/lib/message-notifications.ts", "src/lib/message-processing.ts", "src/lib/messages-api.ts",
     "src/lib/messages-service.ts", "src/lib/owner-message-draft-hash.ts", "src/lib/calendar.ts",
-    "src/lib/payload-field-match.ts", "src/lib/payload-hash.ts", "src/lib/payload-locale.ts",
+    "src/lib/locale-parent-index.ts", "src/lib/payload-field-match.ts", "src/lib/payload-hash.ts", "src/lib/payload-locale.ts",
     "src/lib/payload-revision.ts", "src/lib/payload-versions.ts", "src/lib/public-content-route.ts",
     "src/lib/public-revision.ts", "src/lib/runtime-env.ts", "src/lib/service-auth.ts",
     "src/lib/site-config.ts", "src/lib/static-website.ts",

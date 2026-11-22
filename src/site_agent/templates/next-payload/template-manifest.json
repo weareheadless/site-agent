@@ -64,10 +64,15 @@
       "name": "20261105_020000_localized_catalog_facts",
       "fileSha256": "78084f10c060b738b7228e9fa8ee04cd534680cb527b90c291e4b0c53ca0fe56",
       "snapshotSha256": "82b6d7864e9699e167fb0f5b8f043b4824eca7446886e8df83cc73299f5b2797"
+    },
+    {
+      "name": "20261123_090000_locale_parent_indexes",
+      "fileSha256": "bbaeb5218e5bbf3898b1c2cab36bf4596cf26965d040c73642feb2d32bd30fe9",
+      "snapshotSha256": "805a2f21ef8c3ad750ebe5de50b7d53f17f3f43d0a75c066aee62326e006118d"
     }
   ],
-  "migrationHead": "e262b659e93bff803e6484db8c1bad361ac803c67304f90022a3de481c7812b7",
-  "migrationIndexSha256": "eebb149c93ad5468665254ea1ac569cb9f01984d241b784007bec330f301e58e",
+  "migrationHead": "8135c797014e902b2a0ff938491e7577d6a41ecf0ce3a962d85fe8c1060d0bf1",
+  "migrationIndexSha256": "d5ed7a141dec34b8042accae86e632f8c08f7da23925fa5359d6a807ff53e424",
   "configurationIdentity": "1a9cf7f3858b4d577656f510e965851696d94df98f9c5c12bd8b588d5840446a",
-  "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
+  "sharedRuntimeFingerprint": "cbc39464fdddadb086e933478fe1b0762324cff51f35e564c0870b24d115da65"
 }

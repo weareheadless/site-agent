@@ -2,6 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { sqliteD1Adapter } from '@payloadcms/db-d1-sqlite'
+import { localeParentIndexHook } from './src/lib/locale-parent-index'
 import { r2Storage } from '@payloadcms/storage-r2'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import { buildConfig } from 'payload'
@@ -73,6 +74,10 @@ export default buildConfig({
   db: sqliteD1Adapter({
     binding: cloudflare.env.D1,
     migrationDir: path.resolve(dirname, 'src/migrations'),
+    // Payload indexes each locale table on (_locale, _parent_id) only, so its
+    // own correlated `_parent_id` locale lookup scans the whole locale table.
+    // Declaring the index in the schema keeps it stable across migrate:create.
+    beforeSchemaInit: [localeParentIndexHook],
   }),
   plugins: [r2Storage({ bucket: cloudflare.env.R2, collections: { media: true } })],
 })

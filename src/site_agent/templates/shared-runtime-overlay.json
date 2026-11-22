@@ -50,6 +50,7 @@
     "src/lib/helloada-preview.ts",
     "src/lib/helloada-runtime.ts",
     "src/lib/helloada-upstream.ts",
+    "src/lib/locale-parent-index.ts",
     "src/lib/mail-alerts.ts",
     "src/lib/mailflare-inbox.ts",
     "src/lib/mailflare-provisioning-api.ts",
