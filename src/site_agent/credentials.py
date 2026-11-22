@@ -100,7 +100,16 @@ def credential_environment(
     root_file = str(profiles.get("env_file") or "").strip()
     if root_file:
         paths.append(root_file)
-    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo", "openrouter"):
+    for name in (
+        "github",
+        "cloudflare",
+        "cloudflare_dns",
+        "cloudflare_email",
+        "crawlseo",
+        "openrouter",
+        "deepseek",
+        "editorial",
+    ):
         path = str(credential_profile(config, name).get("env_file") or "").strip()
         if path:
             paths.append(path)
@@ -224,6 +233,33 @@ def openrouter_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str
     profile = credential_profile(config, "openrouter")
     key_name = _valid_env_name(profile.get("api_token_env"), "OPENROUTER_MANAGEMENT_KEY")
     return credential_environment(config, env).get(key_name, "")
+
+
+def deepseek_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the host research credential the editorial service researches with.
+
+    One connection for every tenant. A tenant never receives it: the editorial
+    service holds it and is told which tenant a brief belongs to.
+    """
+    profile = credential_profile(config, "deepseek")
+    key_name = _valid_env_name(profile.get("api_token_env"), "DEEPSEEK_API_KEY")
+    return credential_environment(config, env).get(key_name, "")
+
+
+def editorial_connection(
+    config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None
+) -> tuple[str, str]:
+    """Resolve the editorial service URL and the one host-scoped token for it.
+
+    This is app-to-app: site-agent holds one connection and names the tenant in
+    the brief. There is deliberately no per-tenant editorial token: a token per
+    tenant is the shape that strands every new customer on an unconfigured host.
+    """
+    profile = credential_profile(config, "editorial")
+    url = str(profile.get("url") or "http://127.0.0.1:8790").rstrip("/")
+    key_name = _valid_env_name(profile.get("api_token_env"), "EDITORIAL_TOKEN")
+    token = credential_environment(config, env).get(key_name, "")
+    return url, token
 
 
 def github_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
