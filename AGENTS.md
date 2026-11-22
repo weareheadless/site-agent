@@ -761,22 +761,22 @@ do not treat documentation as tenant activation or publication authorization.
 ## Agent task coordination
 
 For UI/OPS implementation work, follow `docs/agent-coordination.md`: claim one
-Ready issue with the actual run ID and bounded plan, keep an early draft PR,
+unblocked issue with the actual run ID and bounded plan, keep an early draft PR,
 record real tests and hand off for latest-diff manager review. Scope changes
 require explicit replanning; agents stop before merge or deployment. Reuse the
-shared key and existing Project, issues and CI; do not add a bot-management system.
+shared key and existing issues and CI; do not add a bot-management system.
 
 On this shared coding host, load `GITHUB_PROJECTS_TOKEN` from
 `/SOCIAL/configs/github.env` as `GH_TOKEN`; do not print or commit the key.
-The existing key includes repository and Projects access. Its loading commands
+The existing key includes repository and Projects API access. Its loading commands
 are in the canonical coding-agent workflow linked by the architecture reference.
 Each bash call is a fresh shell, so export the key in the same command that uses
 it. The `github_*` MCP tools use a different credential and return 404 for these
 repositories; use `curl` with `$GH_TOKEN` or the pinned checker instead.
 
 Selection is dependency-driven and parallel by default. The manager reads every
-issue's Readiness, Status and native `blockedBy` links, and runs one worker per
-independently scoped Ready issue rather than working through the board serially.
+open issue's native `blockedBy` links, and runs one worker per independently
+scoped unblocked issue rather than working through the tracker serially.
 Parallelism is bounded by review capacity and by artefact overlap, not by
 repository identity: separate checkouts and branches, one migration directory
 per worker, sequential merges in dependency order with a rebase between them.
@@ -804,8 +804,9 @@ one previous release slot, and never prune paths you did not create. A full `/`
 breaks the production release pipeline, not just builds. See "Host disk hygiene" in
 `docs/agent-coordination.md`.
 
-The board is the status. A merge or deploy is not finished until its board item
-reflects it — Status moved, issue closed with the merge SHA and what remains, or
-kept open with the specific next step named. Never leave "In progress" on delivered
-work, and reconcile the board before reporting status. See "The board is the status"
-in `docs/agent-coordination.md`.
+The issue is the status. A merge or deploy is not finished until its issue
+reflects it — closed with the merge SHA and what remains, or kept open with the
+specific next step named. Never leave an issue open on delivered work, and
+reconcile open issues before reporting status. There is no separate project
+board; see "The issue is the status" in `docs/agent-coordination.md` and the
+retired board's static record in `archive/`.

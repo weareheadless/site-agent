@@ -1,14 +1,15 @@
 # Working on an agent task
 
-Use the existing shared key, Project, issues and PRs. There is no bot service,
+Use the existing shared key, issues and PRs. There is no bot service,
 separate identity/credential system, automatic dispatcher or automatic merger.
 The generic checker is maintained once in `site-agent/tools/agent-coordination`;
 other repositories pin that version through a small reusable workflow.
 
 ## When the owner says “tackle UI-007”
 
-1. Read that issue, repository instructions and its direct dependencies. Check
-   the Project's **Ready for agents** view. Do not pick Deferred or blocked work.
+1. Read that issue, repository instructions and its direct dependencies. Work
+   only an issue whose blocking links are closed. Do not pick deferred or blocked
+   work.
 2. Describe the smallest change and intended paths. Ask the manager to review
    the plan if the task leaves a consequential choice unresolved. Record the
    baseline, contract commit and your actual thread/run ID in a claim.
@@ -61,9 +62,8 @@ node tools/agent-coordination/cli.mjs check --repository weareheadless/crawlseo 
 ```
 
 Run from a checkout of the pinned shared checker, including for another repo.
-`claim` checks Project readiness, dependency closure, pins and competing claim
-history, writes an ordinary issue comment, and moves its existing board item to
-In progress. Same-plan retries are idempotent. Use one manager for assignments:
+`claim` checks dependency closure, pins and competing claim history, then writes
+an ordinary issue comment. Same-plan retries are idempotent. Use one manager for assignments:
 GitHub comments/assignments are a coordination log, not an atomic distributed lock.
 If two claims race, the checker blocks on their conflict; reconcile explicitly.
 
@@ -79,108 +79,43 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
-## The board is the status
+## The issue is the status
 
-A status report is only true if the board says the same thing. Reconciling the
-board is part of the work, not a wrap-up step.
+A status report is only true if the issue says the same thing. Reconciling it is
+part of the work, not a wrap-up step.
 
-1. **Update the item in the same action as the merge.** A merge or a deploy is not
-   finished until its board item reflects it: `Status` moved, issue closed with a
-   comment naming the merge SHA and what remains.
-2. **Never leave "In progress" on delivered work.** Stale in-progress items make
-   every later report untrustworthy and hide what is genuinely blocked.
-3. **Keep an item open only for real remaining work,** and say what it is in the
-   item: live verification not executed, a credential missing, a defect filed
-   elsewhere. "In progress" with no named next step is a lie.
-4. **Closing is not completion.** An item closes when its acceptance is met; a
+1. **Close or comment in the same action as the merge.** A merge or a deploy is
+   not finished until its issue reflects it: closed with a comment naming the
+   merge SHA and what remains, or kept open with the specific next step named.
+2. **Never leave an issue open on delivered work.** A stale open issue makes
+   every later report untrustworthy and hides what is genuinely blocked.
+3. **Keep an issue open only for real remaining work,** and say what it is in the
+   issue: live verification not executed, a credential missing, a defect filed
+   elsewhere. An open issue with no named next step is a lie.
+4. **Closing is not completion.** An issue closes when its acceptance is met; a
    merge that delivers part of it stays open, or is closed with the remainder
    moved to a named follow-up.
-5. **Before reporting status, read the board.** If the report and the board
-   disagree, the board is right and the report is wrong.
+5. **Before reporting status, read the open issues.** If the report and the
+   issues disagree, the issues are right and the report is wrong.
 
-## Host disk hygiene
+There is no separate board. A status field that is not updated in the same action
+as the merge decays into a second, wrong source of truth: the retired
+`Unified Business Intelligence` project reached 151 items with 26 holding no
+status at all and 5 marked Merged while still open. Its item/status mapping is
+kept as a static record in
+`archive/project-3-unified-business-intelligence.json`; nothing reads it at
+runtime and it is not a coordination surface.
 
-The coding host runs the production release pipeline, so filling `/` breaks
-deployments, not just builds. It happened on 2026-10-27: per-release checkouts
-with their own `node_modules` consumed the last free bytes, and a HelloAda release
-died at `npm ci` with `ENOSPC`.
-
-Rules:
-
-1. **One reusable workspace per repository.** Keep at most one checkout per
-   repository per purpose and reuse it (`git fetch` + `git checkout`), instead of
-   cloning per task or per release. Each `node_modules` is ~1.3 GB.
-2. **Delete what you create.** A verification or build checkout is temporary:
-   remove it when the task ends, or state why it stays. Never leave a dozen
-   checkouts of the same repo behind.
-3. **Check before you build.** `df -h /` before a release or a large install. Below
-   roughly 10 GB free, stop and prune first.
-4. **Prune release slots.** Keep the current slot plus at most one previous for
-   rollback; remove older ones after a release is verified.
-5. **Never prune blind.** Only delete paths this work created, or slots and
-   checkouts whose identity is known stale. Someone else's checkout, tenant data
-   or a release receipt is not yours to remove.
-6. **Report disk incidents.** If a build fails with `ENOSPC`, record it in the
-   task evidence with the path that grew, and fix the cause rather than deleting
-   whatever is largest.
-
-The deploy path should reuse one build directory and prune old slots
-automatically; until it does, this discipline is manual and belongs to whoever
-runs the release.
-
-## Tests must be green, deterministically
-
-A failing test is a defect in the change or in the test, never a rerun. The
-manager does not merge on "passed on the second attempt", and a worker may not
-report a suite as passing when it failed earlier in the same run.
-
-1. **Fix the cause.** Reproduce the failure, find why it is nondeterministic
-   (timing, shared fixture, port, database state, ordering, parallelism) and make
-   it deterministic. Do not add retries, sleeps or skips to hide it.
-2. **A flake is a bug with an owner.** If the failure is in a test this change
-   does not touch, it still blocks the merge: file it, fix it, or state
-   explicitly which check was red and why the merge is safe — and expect the
-   manager to refuse.
-3. **Run the suite twice** for anything touching concurrency, the database, the
-   queue or the filesystem. Both runs must pass.
-4. **CI is the gate when it can run.** Local green does not override a red
-   current-head check; a red check that cannot start (billing, runner outage) is
-   recorded as unavailable, not as passing.
-
-## Decision authority
-
-The manager owns the project: task definition, acceptance criteria, ordering,
-architecture and the trade-offs between them. Workers do not consult the owner
-and the owner is not a decision queue.
-
-When a worker raises a question, the manager answers it by reading the
-repository and the constraints, then records the decision where it belongs:
-
-1. **Revise the design first.** Re-read the issue, the affected modules and the
-   existing contracts before answering. If the question reveals a real gap, fix
-   the task definition or the architecture rather than pushing the ambiguity
-   back to the worker.
-2. **Decide once, in writing.** The answer goes into the issue, the PR, or the
-   relevant plan document — not only into a chat reply — so the next worker
-   inherits it instead of rediscovering it.
-3. **Keep the codebase lean.** Prefer extending an existing contract over adding
-   a module, table, route or field. No duplicate stores, no parallel models, no
-   second workflow for the same effect, no copy of data that already has an
-   owner. If two paths would compute the same thing, delete one.
-4. **Escalate to the owner only for** spending, customer-facing promises,
-   production mutation, credentials, or a genuine product-direction choice.
-   Everything else — naming, boundaries, storage, sequencing, test strategy —
-   is the manager's call and must be made without waiting.
-5. **Never leave a worker idle on a question.** Answer, re-scope, or re-dispatch;
-   a blocked worker that returns a question costs a round trip that the manager
-   should have pre-empted with a precise brief.
+Do not file one issue per automated test failure. Failing tests belong in CI
+output and the pull request that fixes them; a per-failure issue reporter filled
+the tracker with 26 near-duplicate issues in two days, none of which were
+triaged. File an issue for a defect that needs a decision or outlives its PR.
 
 ## Parallel work and dependency-driven selection
 
-The Project is the scheduler. The manager does not work through issues one at a
-time: it reads every issue's **Readiness**, **Status** and native `blockedBy`
-links, and dispatches **one Luna worker per issue whose blocking links are all
-closed and whose Readiness is `Ready`**. Dependency data already exists, so
+The issue graph is the scheduler. The manager does not work through issues one at
+a time: it reads every open issue's native `blockedBy` links, and dispatches
+**one Luna worker per issue whose blocking links are all closed**. Dependency data already exists, so
 serialising work that is provably independent only wastes elapsed time.
 
 Standing rules:
@@ -234,8 +169,8 @@ node tools/agent-coordination/cli.mjs check --repository weareheadless/crawlseo 
 node tools/agent-coordination/cli.mjs sync --repository weareheadless/crawlseo --pr 123
 ```
 
-`sync` reflects draft/review/merge state in the existing board; it never promotes
-Deferred work or marks Verified. PM checks run on demand with the existing key;
+`sync` reflects draft/review/merge state in an issue comment; it never promotes
+deferred work or claims a merge is verified. PM checks run on demand with the existing key;
 no schedule or always-running worker is implied. There is no shared personal key
 in these CI jobs; they use GitHub's built-in workflow token for repository reads
 and Pending status updates.

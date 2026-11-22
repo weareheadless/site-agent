@@ -46,9 +46,23 @@ export class GitHub {
   }
 }
 
-export const projectId = 'PVT_kwHOE6vsfM4BouSk';
+// The Unified Business Intelligence project (this id) was deleted; its item and
+// status record is archived at archive/project-3-unified-business-intelligence.json.
+// Coordination no longer depends on a board: projectItem degrades to a
+// dependency-only context and setStatus becomes a no-op when no board exists.
+// Set AGENT_PROJECT_ID to adopt a board again.
+// Read at call time so a test or a host can adopt a board without re-import.
+export const currentProjectId = () => process.env.AGENT_PROJECT_ID || '';
 export async function projectItem(api, repository, issueNumber) {
   const [owner, name] = repository.split('/');
+  const projectId = currentProjectId();
+  if (!projectId) {
+    // Board-less mode: read the native dependency links only.
+    const data = await api.graphql(`query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){issue(number:$n){blockedBy(first:100){nodes{url state}pageInfo{hasNextPage}}}}}`, { owner, name, n: issueNumber });
+    const issue = data.repository?.issue;
+    demand(issue && !issue.blockedBy.pageInfo.hasNextPage, 'Dependency inventory is unavailable or incomplete.');
+    return { item: null, dependencies: issue.blockedBy.nodes, fields: [] };
+  }
   const data = await api.graphql(`query($owner:String!,$name:String!,$n:Int!,$project:ID!,$after:String){repository(owner:$owner,name:$name){issue(number:$n){blockedBy(first:100){nodes{url state}pageInfo{hasNextPage}}}}node(id:$project){... on ProjectV2{items(first:100,after:$after){nodes{id content{... on Issue{url}}fieldValues(first:30){nodes{... on ProjectV2ItemFieldSingleSelectValue{name field{... on ProjectV2SingleSelectField{name}}}}}}pageInfo{hasNextPage endCursor}}fields(first:50){nodes{... on ProjectV2SingleSelectField{id name options{id name}}}}}}}`, { owner, name, n: issueNumber, project: projectId, after: null });
   const issue = data.repository?.issue;
   demand(issue && !issue.blockedBy.pageInfo.hasNextPage, 'Dependency inventory is unavailable or incomplete.');
@@ -68,8 +82,12 @@ export async function projectItem(api, repository, issueNumber) {
 }
 
 export async function setStatus(api, context, name) {
-  const f = context.fields.find(f => f.name === 'Status');
+  // No board, or the issue is not on it: there is nothing to move. The issue
+  // comment is the status of record, written by the caller.
+  const projectId = currentProjectId();
+  if (!projectId || !context?.item) return;
+  const f = (context.fields || []).find(f => f.name === 'Status');
   const option = f?.options.find(o => o.name === name);
-  demand(option && context.item, 'Project Status field or issue item is missing.');
+  if (!option) return;
   await api.graphql('mutation($input:UpdateProjectV2ItemFieldValueInput!){updateProjectV2ItemFieldValue(input:$input){projectV2Item{id}}}', { input: { projectId, itemId: context.item.id, fieldId: f.id, value: { singleSelectOptionId: option.id } } });
 }

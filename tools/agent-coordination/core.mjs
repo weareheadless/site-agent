@@ -95,10 +95,15 @@ export function validatePR({ repository, pr, issue, comments, files, competing =
 }
 
 export function validateReadiness(item, dependencies) {
-  demand(item, 'Issue is not on the shared Project.');
+  demand(Array.isArray(dependencies), 'Dependency inventory is unavailable.');
+  demand(dependencies.every(d => d.state === 'CLOSED'), 'An implementation prerequisite is still open.');
+  // The retired project board carried Readiness/Status; when a board item is
+  // present (AGENT_PROJECT_ID set) it must still be explicitly selected. With no
+  // board the issue graph alone decides, so `item` is null and only the
+  // dependency check above applies.
+  if (!item) return;
   demand(item.readiness === 'Ready', `Task is ${item.readiness || 'unclassified'}; manager must explicitly select it first.`);
   demand(['Ready', 'In progress', 'In review'].includes(item.status), 'Task is not in an active work state.');
-  demand(dependencies.every(d => d.state === 'CLOSED'), 'An implementation prerequisite is still open.');
 }
 
 export function ciState(checks, statuses, requireCode) {

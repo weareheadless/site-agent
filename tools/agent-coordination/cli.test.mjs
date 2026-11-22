@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { run } from './cli.mjs';
 
+// The retired project board is gone. These fixtures still model a board item so
+// the adoption path keeps its guarantees when AGENT_PROJECT_ID is set.
+const withBoard = () => { process.env.AGENT_PROJECT_ID = 'PVT_test_board'; };
+const withoutBoard = () => { delete process.env.AGENT_PROJECT_ID; };
+
 function fixture() {
   const plan = { workId: 'UI-001', repository: 'weareheadless/crawlseo', issueNumber: 15, agentRun: 'thread-a', branch: 'codex/ui-001-contract', baseline: 'a'.repeat(40), contract: null, scope: ['contracts/**'] };
   const issueURL = 'https://github.com/weareheadless/crawlseo/issues/15';
@@ -32,12 +37,24 @@ test('dry-run prevents status and board writes even with publish and sync flags'
   assert.equal(writes.length, 0);
 });
 test('explicit manager handoff publishes current result and syncs only the active state', async () => {
+  withBoard();
   const { api, writes } = fixture();
   const result = await run([...args, '--publish', '--sync'], api);
   assert.equal(result.reviewRequired, true);
   assert.equal(writes.length, 2);
   assert.equal(writes[1].body.context, 'Agent coordination');
   assert.equal(writes[1].body.state, 'success');
+  withoutBoard();
+});
+
+test('without a board the same handoff publishes the result and writes no status', async () => {
+  withoutBoard();
+  const { api, writes } = fixture();
+  const result = await run([...args, '--publish', '--sync'], api);
+  assert.equal(result.reviewRequired, true);
+  // Only the published check/status write; no project field mutation.
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].body?.context, 'Agent coordination');
 });
 test('misspelled or incomplete options fail before any mutation', async () => {
   const { api, writes } = fixture();
