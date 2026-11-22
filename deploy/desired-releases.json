@@ -1,42 +1,17 @@
 {
   "releases": {
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "runtime-20261121013434-fbc11b97",
+      "id": "runtime-20261122193048-7fdd2339",
       "sha": "1b77a2a057f5beffa4177ec6e944a3655ae7ce08",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
-    },
-    "atelier-harmonie": {
-      "id": "runtime-20261121014111-756a088e",
-      "sha": "69edf185d582c38bd02eb5f5e087591c7eba8c5e",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
+      "sharedRuntimeFingerprint": "cbc39464fdddadb086e933478fe1b0762324cff51f35e564c0870b24d115da65"
     },
     "casamigo": {
       "id": "rel-20261122190000-casamigo-locale-parent-indexes",
-      "sha": "c93d80f58c928b5c1331e191e6cb4036eca6b345",
       "schemaMigration": {
         "fromLedgerIdentity": "7d48c0376f58ad2e4ea970948fd07c814a590531e09930d810496bfa7679b82a",
         "targetMigrationHead": "8135c797014e902b2a0ff938491e7577d6a41ecf0ce3a962d85fe8c1060d0bf1"
-      }
-    },
-    "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261121014112-78b69317",
-      "sha": "2d868b06cc78d9f705617244884c4f308372c56b",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
-    },
-    "oceanicvibes": {
-      "id": "runtime-20261121014112-94c271b6",
-      "sha": "1c3dddb5bcf73e40a85e8b25bb682ac36326c545",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
-    },
-    "site-be8225c72f3ba01a": {
-      "id": "runtime-20261121014113-92e11a81",
-      "sha": "81837a96a14ab8db2a0b85bba484185d1373b2e7",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
-    },
-    "site-ff8e9af06f56201f": {
-      "id": "runtime-20261121021934-e76f91b6",
-      "sha": "4a5e393691658f5dd1515ff91640a08f7229f583",
-      "sharedRuntimeFingerprint": "161fd9cdf32c408544c59c82f51f7e3edc43efcbea567ac95b30079b24aff9f3"
+      },
+      "sha": "c93d80f58c928b5c1331e191e6cb4036eca6b345"
     }
   },
   "schema": 1
