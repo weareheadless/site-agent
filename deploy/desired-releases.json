@@ -11,12 +11,8 @@
       "sharedRuntimeFingerprint": "cbc39464fdddadb086e933478fe1b0762324cff51f35e564c0870b24d115da65"
     },
     "casamigo": {
-      "id": "rel-20261122190000-casamigo-locale-parent-indexes",
-      "schemaMigration": {
-        "fromLedgerIdentity": "7d48c0376f58ad2e4ea970948fd07c814a590531e09930d810496bfa7679b82a",
-        "targetMigrationHead": "8135c797014e902b2a0ff938491e7577d6a41ecf0ce3a962d85fe8c1060d0bf1"
-      },
-      "sha": "c93d80f58c928b5c1331e191e6cb4036eca6b345"
+      "id": "rel-20261122210000-casamigo-listing-hero-verdict",
+      "sha": "e055b2625dcb33089e846ea7367fa8d8a069c561"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
       "id": "runtime-20261122194100-2ee45c98",
