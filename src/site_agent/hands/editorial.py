@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..core.contracts import safe_provider_message
@@ -56,6 +56,7 @@ class EditorialPost:
     state: str
     artifacts: Mapping[str, Mapping[str, Any]]
     error: str = ""
+    refusal: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def ready(self) -> bool:
@@ -64,6 +65,20 @@ class EditorialPost:
     @property
     def held(self) -> bool:
         return self.state == "held"
+
+    @property
+    def refusal_reason(self) -> str:
+        """The typed reason, when the service declined the piece on purpose."""
+        return str(self.refusal.get("reason") or "") if self.refusal else ""
+
+    @property
+    def refusal_stage(self) -> str:
+        return str(self.refusal.get("stage") or "") if self.refusal else ""
+
+    @property
+    def retryable_refusal(self) -> bool:
+        """Only a research gap is worth another pass; a judgement would repeat."""
+        return self.refusal_reason == "evidence_insufficient"
 
     def artifact(self, locale: str) -> Mapping[str, Any]:
         artifact = self.artifacts.get(locale)
@@ -171,11 +186,13 @@ class EditorialClient:
     def post(self, post_id: str) -> EditorialPost:
         payload = self._request("GET", f"/v1/posts/{post_id}")
         artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), Mapping) else {}
+        refusal = payload.get("refusal") if isinstance(payload.get("refusal"), Mapping) else {}
         return EditorialPost(
             post_id=str(payload.get("id") or post_id),
             state=str(payload.get("state") or ""),
             artifacts={str(key): value for key, value in artifacts.items() if isinstance(value, Mapping)},
             error=str(payload.get("error") or ""),
+            refusal=dict(refusal),
         )
 
     def wait(self, post_id: str, *, deadline_seconds: float, on_poll: Any = None) -> EditorialPost:

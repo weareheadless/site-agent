@@ -1,4 +1,5 @@
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,13 +128,24 @@ def _login(client, password="sekret"):
     return client.post("/api/login", json={"password": password})
 
 
+def _chat_job_deadline() -> float:
+    """How long a chat job may take before the test calls it stuck.
+
+    The worker idles on a two-second poll when it has no work, so a fixed number
+    of 0.1s sleeps is a budget against the machine, not against the job: on a
+    loaded host the worker can legitimately spend longer than six seconds just
+    waking up. A deadline states the real contract.
+    """
+    return time.monotonic() + 60.0
+
+
 def chat_and_wait(client, message, conversation_id=None):
     body = {"message": message}
     if conversation_id:
         body["conversation_id"] = conversation_id
     start = client.post("/api/chat", json=body).json()
-    import time
-    for _ in range(60):
+    deadline = _chat_job_deadline()
+    while time.monotonic() < deadline:
         job = client.get(f"/api/chat/jobs/{start['job_id']}").json()
         if job["status"] == "done":
             result = dict(job["result"])
@@ -384,8 +396,8 @@ def test_chat_links_started_owner_action_to_its_job(runtime):
     assert linked.job_id == job_id
     assert linked.state.value == "started"
 
-    import time
-    for _ in range(60):
+    deadline = _chat_job_deadline()
+    while time.monotonic() < deadline:
         job = memory.get_chat_job(job_id)
         if job["status"] in {"done", "error"}:
             break
@@ -1182,9 +1194,9 @@ def test_chat_job_persisted_and_relistable(runtime):
     assert isinstance(job_id, int)
 
     # It's queryable and eventually completes.
-    import time
+    deadline = _chat_job_deadline()
     status = None
-    for _ in range(60):
+    while time.monotonic() < deadline:
         job = client.get(f"/api/chat/jobs/{job_id}").json()
         status = job["status"]
         if status in ("done", "error"):

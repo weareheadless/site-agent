@@ -36,6 +36,23 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+VOICE_BASES = frozenset({"customer_context", "site_copy", "none"})
+
+
+def _voice_basis(value: Any) -> str:
+    """Where the voice came from, refused if it is not one of the known sources.
+
+    A misspelled basis would silently become "none" in the service, and the
+    writer would be told to invent nothing while a sample sat in the brief.
+    """
+    basis = str(value or "").strip().lower()
+    if not basis:
+        return "none"
+    if basis not in VOICE_BASES:
+        raise ValueError(f"unknown voice_basis: {basis!r}")
+    return basis
+
+
 def evidence_urls(remote: Mapping[str, Any]) -> list[str]:
     """Pages CrawlSEO's crawl already read, when the article is about them.
 
@@ -134,6 +151,12 @@ def build_brief(
             "services": [str(item)[:120] for item in business.get("services") or [] if str(item).strip()][:8],
             "location": _text(business.get("location"), 200),
             "locale": primary,
+            # The voice itself, and which source produced it. Without these the
+            # writer falls back to a generic house style and writes about a site
+            # rather than as it.
+            "identity": _text(business.get("identity"), 800),
+            "voice_sample": _text(business.get("voice_sample"), 2400),
+            "voice_basis": _voice_basis(business.get("voice_basis")),
         },
         "requirements": {
             "action": _text(remote.get("recommendation") or remote.get("problem")),

@@ -4670,7 +4670,11 @@ class Memory:
         allowed = {
             "identified": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
             "proposed": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
-            "preparing": {"validating", "waiting_for_owner", "blocked", "snoozed", "superseded", "deferred"},
+            # An opportunity can be declined before preparation finishes: an
+            # editorial desk that reads the commission and refuses it closes the
+            # opportunity, and calling that "blocked" would tell the owner to
+            # wait for work that is never coming.
+            "preparing": {"validating", "waiting_for_owner", "blocked", "rejected", "snoozed", "superseded", "deferred"},
             "waiting_for_owner": {"preparing", "snoozed", "rejected", "superseded"},
             "validating": {"ready_for_review", "preparing", "blocked", "superseded"},
             "ready_for_review": {"publishing", "rejected", "snoozed", "validating", "superseded"},

@@ -17,6 +17,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from html.parser import HTMLParser
 
 MAX_BYTES = 2_000_000
@@ -77,14 +78,21 @@ class _Text(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.title = ""
+        self.links: list[tuple[str, str]] = []
         self._skip = 0
         self._in_title = False
+        self._anchor: list[str] | None = None
 
     def handle_starttag(self, tag, attrs):
         if tag in self.SKIP:
             self._skip += 1
         elif tag == "title":
             self._in_title = True
+        elif tag == "a":
+            self._anchor = []
+            for name, value in attrs:
+                if name == "href" and value:
+                    self._anchor_url = value
         elif tag in self.BLOCK:
             self.parts.append("\n")
 
@@ -93,6 +101,13 @@ class _Text(HTMLParser):
             self._skip -= 1
         elif tag == "title":
             self._in_title = False
+        elif tag == "a" and self._anchor is not None:
+            text = " ".join("".join(self._anchor).split())
+            url = getattr(self, "_anchor_url", "")
+            if text and url:
+                self.links.append((text, url))
+            self._anchor = None
+            self._anchor_url = ""
         elif tag in self.BLOCK:
             self.parts.append("\n")
 
@@ -102,6 +117,12 @@ class _Text(HTMLParser):
         if self._in_title:
             self.title += data
             return
+        if self._anchor is not None:
+            # A link's label is often split across nested elements
+            # ("Freediving<span>AIDA 1 to AIDA 4</span>"). Joining the raw runs
+            # glues the words together, so each run is separated here and
+            # whitespace is normalised when the label is closed.
+            self._anchor.append(data + " ")
         text = " ".join(data.split())
         if text:
             self.parts.append(text + " ")
@@ -124,8 +145,18 @@ def _decode(body: bytes, content_type: str) -> str:
         return body.decode("utf-8", errors="replace")
 
 
-def fetch_text(url: str) -> str:
-    """Fetch one public page and return its readable text."""
+@dataclass(frozen=True)
+class Page:
+    """One readable public page: its text, title and the links it offers."""
+
+    url: str
+    title: str
+    text: str
+    links: tuple[tuple[str, str], ...] = ()
+
+
+def fetch_page(url: str) -> Page:
+    """Fetch one public page and return its readable text, title and links."""
     _check_url(url)
     opener = urllib.request.build_opener(_Guard)
     request = urllib.request.Request(url, headers={
@@ -154,15 +185,27 @@ def fetch_text(url: str) -> str:
         parser.feed(document)
         text = parser.text()
         title = " ".join(parser.title.split())
+        links = tuple(parser.links)
     else:
         text = "\n".join(line for line in document.splitlines() if line.strip())
         title = ""
+        links = ()
     if not text.strip():
         raise WebReadError("the page had no readable text")
-    header = f"Source: {final_url}\n"
-    if title:
-        header += f"Title: {title}\n"
     body_text = text[:MAX_CHARS]
     if len(text) > MAX_CHARS:
         body_text += "\n\n[page truncated]"
-    return header + "\n" + body_text
+    return Page(url=final_url, title=title, text=body_text, links=links)
+
+
+def fetch_text(url: str) -> str:
+    """Fetch one public page and return its readable text with its provenance.
+
+    The header keeps the old shape because callers that already read this as
+    text — the chat agent quoting a link — must keep working unchanged.
+    """
+    page = fetch_page(url)
+    header = f"Source: {page.url}\n"
+    if page.title:
+        header += f"Title: {page.title}\n"
+    return header + "\n" + page.text

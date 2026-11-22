@@ -69,9 +69,10 @@ ENGLISH = {
 
 
 class StubEditorial:
-    def __init__(self, *, state="ready", error=""):
+    def __init__(self, *, state="ready", error="", refusal=None):
         self.state = state
         self.error = error
+        self.refusal = refusal or {}
         self.written = []
 
     def configured(self):
@@ -80,7 +81,13 @@ class StubEditorial:
     def write(self, brief, *, deadline_seconds):
         self.written.append((brief, deadline_seconds))
         if self.state == "held":
-            return EditorialPost(post_id="post_1", state=self.state, artifacts={}, error=self.error)
+            return EditorialPost(
+                post_id="post_1",
+                state=self.state,
+                artifacts={},
+                error=self.error,
+                refusal=self.refusal,
+            )
         # One editorial act, one evidence set, an edition per locale.
         artifacts = {}
         for locale in brief["locales"]:
@@ -356,6 +363,84 @@ def test_a_held_article_is_reported_and_never_retried_as_an_outage(tmp_path, mon
     assert "only 1 readable source" in result["error"]
     # No draft, no review, nothing for the owner to approve.
     assert context["memory"].list_drafts() == []
+
+
+def test_a_refused_article_reports_why_and_is_not_retryable(tmp_path, monkeypatch):
+    """A considered pass must be distinguishable from a broken job.
+
+    The owner has to see that a person-shaped decision was made about this
+    opportunity, and the caller has to know that repeating it unchanged would
+    produce the same judgement for the same money.
+    """
+    editorial = StubEditorial(
+        state="held",
+        error="declined at commission/es (unsupported_by_business): this studio does not perform clinical treatments",
+        refusal={
+            "decision": "refuse",
+            "reason": "unsupported_by_business",
+            "rationale": "This studio does not perform clinical treatments.",
+            "stage": "commission/es",
+        },
+    )
+    context = _context(tmp_path, monkeypatch, editorial)
+
+    result = _run(context)
+
+    assert result["status"] == "held"
+    assert result["refusalReason"] == "unsupported_by_business"
+    assert result["refusalStage"] == "commission/es"
+    assert result["retryable"] is False
+    assert context["memory"].list_drafts() == []
+
+
+def test_a_refused_article_closes_the_opportunity_instead_of_looking_stuck(
+    tmp_path, monkeypatch
+):
+    editorial = StubEditorial(
+        state="held",
+        error="declined at verdict/es (no_distinct_value): competent and empty",
+        refusal={
+            "decision": "refuse",
+            "reason": "no_distinct_value",
+            "rationale": "Competent and empty: nothing here comes from this business.",
+            "stage": "verdict/es",
+        },
+    )
+    context = _context(tmp_path, monkeypatch, editorial)
+
+    result = _run(context)
+
+    assert result["status"] == "held"
+    initiative = next(iter(context["memory"].list_strategy_initiatives(limit=50)))
+    # Leave it in "preparing" and the owner is told to wait for work that will
+    # never arrive, with no reason attached.
+    assert initiative["state"] == "rejected"
+    assert "Declined by editorial (no_distinct_value)" in initiative["last_error"]
+    assert "Competent and empty" in initiative["last_error"]
+    reports = context["crawlseo_service"].reports
+    assert reports[-1][1]["status"] == "preparation_blocked"
+    assert reports[-1][1]["detail"]["declined"] is True
+    assert reports[-1][1]["detail"]["reason"] == "no_distinct_value"
+
+
+def test_a_research_gap_is_reported_as_worth_another_pass(tmp_path, monkeypatch):
+    editorial = StubEditorial(
+        state="held",
+        error="declined at verdict/es (evidence_insufficient): the sources cannot carry it",
+        refusal={
+            "decision": "refuse",
+            "reason": "evidence_insufficient",
+            "rationale": "The sources cannot carry it yet.",
+            "stage": "verdict/es",
+        },
+    )
+    context = _context(tmp_path, monkeypatch, editorial)
+
+    result = _run(context)
+
+    assert result["status"] == "held"
+    # The only reason another research pass could change.
+    assert result["retryable"] is True
 
 
 def test_an_unconfigured_writing_service_blocks_with_a_named_setting(tmp_path, monkeypatch):

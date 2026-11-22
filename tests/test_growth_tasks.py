@@ -60,6 +60,36 @@ def test_crawlseo_action_with_local_execution_binding_projects_as_one_task(tmp_p
     memory.close()
 
 
+def test_a_declined_article_tells_the_owner_why_it_was_declined(tmp_path):
+    """A considered pass must not render as "not currently being prepared"."""
+    memory = Memory(tmp_path / 'editorial-declined.db')
+    draft = memory.save_draft(title='Red carpet skincare', body='A draft', kind='article')
+    initiative = {
+        'id': 1,
+        'title': 'Red carpet skincare',
+        'summary': 'A reader question about award-season skincare.',
+        'state': 'rejected',
+        'kind': 'article',
+        'draft_id': draft,
+        'last_error': (
+            'Declined by editorial (no_distinct_value): Competent and empty: nothing '
+            'here comes from this business.'
+        ),
+    }
+
+    tasks = growth_tasks(memory, [initiative], memory.list_drafts(), [], [])
+
+    task, = tasks
+    # The owner is told this was a decision, and the reason is readable.
+    assert task['summaryKey'] == 'articleDeclinedByEditorial'
+    assert 'Declined by editorial (no_distinct_value)' in (task['lastError'] or '')
+    assert 'nothing here comes from this business' in (task['lastError'] or '')
+    # Nothing was published, and there is nothing to approve.
+    assert task['canApprove'] is False
+    assert task['focus'] == 'completed'
+    memory.close()
+
+
 def test_stale_local_review_does_not_hide_current_crawlseo_action_revision(tmp_path):
     memory = Memory(tmp_path / 'crawlseo-revision-projection.db')
     action = memory.create_owner_action(OwnerAction(

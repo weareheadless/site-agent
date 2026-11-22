@@ -379,6 +379,12 @@ def growth_tasks(
         if initiative.get('kind') == 'code' and validation.get('revisionFailure') and not retired_revision_failure:
             summary_key = 'sourceRevisionFailed'
             initiative_summary = str(validation['revisionFailure'])
+        elif article_related and state == 'rejected' and str(initiative.get('last_error') or '').startswith('Declined by editorial'):
+            # Editorial declined this piece. It is a decision, not a stall, so
+            # the row says so and gives the reason instead of "not currently
+            # being prepared", which reads like a broken job.
+            summary_key = 'articleDeclinedByEditorial'
+            initiative_summary = str(initiative.get('last_error') or '').strip()
         elif payload_revision_uncertain:
             summary_key = 'payloadRevisionUncertain'
             initiative_summary = 'Ada’s Payload revision could not be verified. The previous approval remains held until the exact saved document revision can be reconciled.'
@@ -395,8 +401,19 @@ def growth_tasks(
             sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
             sync_validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
             is_blocked = state in {"blocked", "uncertain"} or sync.get("state") == "blocked" or sync_validation.get("status") == "blocked"
-            summary_key = "articleNeedsRepair" if is_blocked else "articleNotRunning" if stale_work else "articlePreparing"
-            initiative_summary = "This article needs a successful shared Payload check before it can be reviewed." if is_blocked else "This saved article is not currently being prepared for review." if stale_work else "Ada is preparing this article for review against the shared blog structure."
+            if summary_key == 'articleDeclinedByEditorial':
+                # Already decided: restating it as a preparation state would
+                # overwrite the reason with "not currently being prepared".
+                pass
+            elif is_blocked:
+                summary_key = 'articleNeedsRepair'
+                initiative_summary = "This article needs a successful shared Payload check before it can be reviewed."
+            elif stale_work:
+                summary_key = 'articleNotRunning'
+                initiative_summary = "This saved article is not currently being prepared for review."
+            else:
+                summary_key = 'articlePreparing'
+                initiative_summary = "Ada is preparing this article for review against the shared blog structure."
         elif article_related:
             initiative_summary = initiative_summary or "Ada prepared this article for your review."
         initiative_scope = str(initiative.get('summary') or '').strip()
@@ -424,7 +441,14 @@ def growth_tasks(
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash,
-            'lastError': (revision.get('error') if payload_revision_uncertain else None) or (None if retired_revision_failure else validation.get('revisionFailure')) or source_failure_reason,
+            'lastError': (revision.get('error') if payload_revision_uncertain else None)
+                or (None if retired_revision_failure else validation.get('revisionFailure'))
+                or source_failure_reason
+                or (
+                    str(initiative.get('last_error') or '')
+                    if summary_key == 'articleDeclinedByEditorial'
+                    else None
+                ),
             'executionIssue': state in {'blocked', 'uncertain'} or payload_revision_uncertain or (bool(validation.get('revisionFailure')) and not retired_revision_failure) or stale_work or source_blocked_by_preview,
             'canApprove': review_ready,
             'previewUrl': ((package.get('source') or {}).get('previewUrl') if isinstance(package.get('source'), Mapping) else None),

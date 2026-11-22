@@ -1232,16 +1232,36 @@ def _prepare_article_candidate(
     locales = [str(item) for item in authoring.get("locales") or ["en"]]
     default_locale = str(authoring.get("defaultLocale") or locales[0])
     business = context.get("customer_context_service")
-    business_view = business.task_view("strategy") if business is not None else {}
+    business_view = business.task_view("strategy") if business is not None and business.current() is not None else {}
     voice = str((config.get("editorial") or {}).get("voice") or "default")
+
+    # The brief's business view was always empty, so every tenant's article was
+    # written by the same generic voice with no name, audience or services. The
+    # voice is derived here, from the owner's own context when they gave one and
+    # from the site's own words otherwise, so every tenant gets one by
+    # inheritance and none needs a voice file, a flag or an onboarding step.
+    from .editorial_voice import derive_voice
+
+    facts = derive_voice(
+        customer_context=business_view if isinstance(business_view, Mapping) else {},
+        site=config.get("site") if isinstance(config.get("site"), Mapping) else {},
+        display_name=str(config.get("display_name") or ""),
+    )
 
     brief = build_brief(
         tenant=str(config.get("instance_name") or site_id),
         remote=remote,
-        business=business_view if isinstance(business_view, Mapping) else {},
+        business=facts,
         locales=locales,
         default_locale=default_locale,
         voice=voice,
+    )
+    detail.update(
+        {
+            "voiceBasis": facts.get("voice_basis", "none"),
+            "businessName": facts.get("name", ""),
+            "services": list(facts.get("services") or [])[:8],
+        }
     )
     window = int((brief.get("policy") or {}).get("deadline_seconds") or 900) * max(1, len(brief["locales"]))
 
@@ -1263,16 +1283,61 @@ def _prepare_article_candidate(
         raise ValueError(str(exc)[:500]) from exc
 
     if post.held:
-        # A held article is an editorial judgement, not an outage: the evidence
-        # did not support the piece. Report it and stop; retrying it unchanged
-        # would produce the same judegement for the same money.
-        detail.update({"editorialPostId": post.post_id, "editorialState": post.state,
-                       "held": post.error[:500]})
-        memory.update_crawlseo_execution_binding(
+        # A held article is an editorial judgement, not an outage: the site has
+        # no standing to publish it, or it would add nothing. The owner is told
+        # what was declined and why, because a desk that says no without saying
+        # why is indistinguishable from one that broke. Retrying it unchanged
+        # would produce the same judgement for the same money; only a research
+        # gap is worth another pass, and that is reported as retryable.
+        refusal = dict(post.refusal or {})
+        reason = post.refusal_reason
+        detail.update({
+            "editorialPostId": post.post_id,
+            "editorialState": post.state,
+            "held": post.error[:500],
+            "refusal": refusal,
+            "retryable": post.retryable_refusal,
+        })
+        report = {
+            "status": "preparation_blocked",
+            "preparationRequestId": preparation_request_id,
+            "detail": {
+                "declined": True,
+                "reason": reason or "no_distinct_value",
+                "stage": post.refusal_stage,
+                "rationale": str(refusal.get("rationale") or post.error)[:800],
+                "retryable": post.retryable_refusal,
+                "editorialPostId": post.post_id,
+            },
+        }
+        # The opportunity is over, not stuck. Leaving it in "blocked" would tell
+        # the owner to wait for work that will never arrive.
+        binding = memory.update_crawlseo_execution_binding(
             site_id, action_id, revision, generation,
-            expected_state="preparing", state="cancelled", detail=detail,
+            expected_state="preparing", state="preparation_blocked_unreported",
+            detail={**detail, "report": report},
         )
-        return {"status": "held", "error": post.error[:500], "editorialPostId": post.post_id}
+        if binding is not None:
+            try:
+                _reconcile_crawlseo_execution_report(context, binding)
+            except Exception:  # noqa: BLE001 - the local decision stands regardless
+                pass
+            pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision) or binding
+            if str(pending.get("state") or "") == "preparation_blocked_unreported":
+                memory.update_crawlseo_execution_binding(
+                    site_id, action_id, revision, generation,
+                    expected_state="preparation_blocked_unreported", state="blocked",
+                    detail=dict(pending.get("detail") or {}),
+                )
+        _close_declined_initiative(memory, initiative_id, reason, refusal)
+        return {
+            "status": "held",
+            "error": post.error[:500],
+            "editorialPostId": post.post_id,
+            "refusalReason": reason,
+            "refusalStage": post.refusal_stage,
+            "retryable": post.retryable_refusal,
+        }
 
     artifact = post.artifact(brief["locales"][0])
     body = str(artifact.get("body_markdown") or "").strip()
@@ -1685,6 +1750,42 @@ def _execute_crawlseo_preparation(
             except Exception:
                 pass
         return {"status": "blocked", "error": message}
+
+
+def _close_declined_initiative(
+    memory: Any, initiative_id: int, reason: str, refusal: Mapping[str, Any]
+) -> None:
+    """Close an opportunity an editorial desk declined, with the reason kept.
+
+    The initiative is the owner's view of this work. Leaving it in "preparing"
+    after a refusal is what makes a decision look like a stall: the task row
+    says nothing is happening and offers no reason, so the owner cannot tell a
+    considered pass from a broken job.
+    """
+    try:
+        current = next(
+            (
+                row
+                for row in memory.list_strategy_initiatives(limit=500)
+                if int(row["id"]) == int(initiative_id)
+            ),
+            None,
+        )
+        if current is None or current.get("state") not in {"preparing", "validating"}:
+            return
+        rationale = str(refusal.get("rationale") or "").strip()
+        memory.transition_strategy_initiative(
+            int(initiative_id),
+            "rejected",
+            expected_state=str(current.get("state")),
+            last_error=(
+                f"Declined by editorial ({reason}): {rationale}"
+                if rationale
+                else f"Declined by editorial ({reason})."
+            )[:2000],
+        )
+    except Exception:  # noqa: BLE001 - the refusal is already durable in the binding
+        pass
 
 
 def _reconcile_crawlseo_execution_report(context: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
