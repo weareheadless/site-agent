@@ -431,6 +431,21 @@ def _is_empty_unlinked_article_draft(
     return all(_payload_value_is_empty(document.get(field)) for field in owner_content_fields)
 
 
+def _article_is_unpublished_draft(document: Mapping[str, Any]) -> bool:
+    """Whether this Payload row is still an unpublished draft.
+
+    The shared `posts` collection carries no `published` checkbox. Its draft
+    lifecycle is Payload's own `_status`, so testing a field the schema does not
+    declare made every real draft look published and stopped Ada re-adopting a
+    candidate she had written herself a moment earlier. When a destination does
+    declare `published`, that is still honoured.
+    """
+    status = str(document.get("_status") or "").strip().lower()
+    if status:
+        return status == "draft"
+    return document.get("published") is False
+
+
 def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[str, Any]) -> bool:
     """Prove an orphaned Payload draft is the exact unpublished Ada candidate."""
     revision = str(document.get("_helloadaRevision") or "")
@@ -438,19 +453,23 @@ def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[
         document.get("id") is None
         or not re.fullmatch(r"sha256:[0-9a-f]{64}", revision)
         or not str(document.get("sourceId") or "").strip()
-        or document.get("published") is not False
+        or not _article_is_unpublished_draft(document)
         or str(document.get("slug") or "") != str(post.get("slug") or "")
     ):
         return False
-    required_fields = {"slug", "title", "summary", "body", "seo", "published"}
+    required_fields = {"slug", "title", "summary", "body", "seo"}
     if not required_fields.issubset(post):
+        return False
+    if "published" in post and "published" in document and not _payload_field_matches(
+        "published", document.get("published"), post.get("published")
+    ):
         return False
     system_fields = {"canonicalUrl", "modifiedAt"}
     return all(
         field == "featuredImage" and _payload_value_is_empty(document.get(field))
         or _payload_field_matches(field, document.get(field), expected)
         for field, expected in post.items()
-        if field not in system_fields
+        if field not in system_fields and field != "published"
     )
 
 
@@ -836,10 +855,45 @@ def article_landed_editions(draft: Mapping[str, Any]) -> list[dict[str, Any]]:
     }]
 
 
+def _payload_timestamp(value: Any) -> str:
+    """The millisecond ISO form Payload stores, so a written date reads back.
+
+    Payload normalizes a date field, and the gateway proves the write by
+    comparing the persisted document with the exact request. Sending
+    second-precision or a +00:00 offset made every article fail that check on
+    its own `modifiedAt`.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _payload_media_relation(value: Any) -> Any:
+    """A Payload upload relation is the media document's own numeric id."""
+    if isinstance(value, Mapping):
+        value = value.get("value", value)
+        if isinstance(value, Mapping):
+            value = value.get("id")
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    return int(text) if text.isdigit() else (text or None)
+
+
 def _article_edition_post(
     *,
     edition: Mapping[str, Any],
     contract_fields: set[str],
+    authoring_fields: list[Mapping[str, Any]],
     modified_at: str,
     article_path: str,
     public_base: str,
@@ -871,7 +925,20 @@ def _article_edition_post(
         or ""
     ).strip()[:200]
     seo: dict[str, Any] = {"title": title[:300], "description": description}
-    if primary_keyword:
+    # Write only the search fields this destination actually declares. The
+    # shared schema's seo group is title/description/image; a focus keyword is
+    # not part of it, and sending it made every article fail the gateway's
+    # contract check at the last step of landing.
+    seo_fields = {
+        str(field.get("name"))
+        for field in (next(
+            (item.get("fields") for item in authoring_fields if str(item.get("name") or "") == "seo"
+             and isinstance(item.get("fields"), list)),
+            [],
+        ) or [])
+        if isinstance(field, Mapping) and str(field.get("name") or "").strip()
+    }
+    if primary_keyword and "focusKeyword" in seo_fields:
         seo["focusKeyword"] = primary_keyword
     candidate = {
         "slug": slug,
@@ -971,7 +1038,7 @@ def _land_article_edition(
             raise RuntimeError(
                 f"The previously linked Payload article has no readable '{locale}' edition; Ada must reconcile it before creating another post."
             ) from exc
-        if existing.get("published") is not False:
+        if not _article_is_unpublished_draft(existing):
             raise RuntimeError("The linked Payload article is no longer an unpublished draft; Ada will not modify published content.")
         if str(existing.get("slug") or "") not in {slug, ""}:
             raise RuntimeError("The previously linked Payload article identity changed and must be reconciled before any update.")
@@ -1001,7 +1068,7 @@ def _land_article_edition(
         adopted_unlinked = existing is not None
 
     document: dict[str, Any] | None = None
-    if existing is None:
+    if existing is None and not linked_document_id:
         try:
             document = payload.create("posts", post, locale=locale)
         except Exception as exc:  # noqa: BLE001 - resolve only an exact route-conflict race
@@ -1016,6 +1083,11 @@ def _land_article_edition(
                     "The Payload route conflict is not an exact draft or empty schema draft; its content remains unchanged for owner review."
                 ) from exc
             adopted_unlinked = True
+
+    if existing is None and linked_document_id:
+        raise RuntimeError(
+            f"The linked Payload article has no readable '{locale}' edition; Ada must reconcile it before writing this one."
+        )
 
     if existing is not None:
         current_id = str(existing.get("id") or "").strip()
@@ -1066,6 +1138,11 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
         raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
     contract_fields = set(payload.authoring_fields("collection", "posts", authoring_contract=authoring_contract))
+    post_authoring_fields = [
+        field
+        for field in ((authoring_contract.get("authoring") or {}).get("collections") or {}).get("posts") or []
+        if isinstance(field, Mapping)
+    ]
     required_fields = {"slug", "title", "summary", "body", "seo", "featuredImage"}
     missing_contract = sorted(required_fields - set(contract_fields))
     if missing_contract:
@@ -1100,7 +1177,7 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     }
     public_base = str(site_url or "").rstrip("/")
     author = str((context.get("config", {}).get("persona") or {}).get("name") or "Ada")
-    modified_at = str(
+    modified_at = _payload_timestamp(
         draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     )
 
@@ -1111,13 +1188,14 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
         post = _article_edition_post(
             edition=edition,
             contract_fields=contract_fields,
+            authoring_fields=post_authoring_fields,
             modified_at=modified_at,
             article_path=public_article_path(edition["slug"]),
             public_base=public_base,
             author=author,
             meta=meta,
         )
-        post["featuredImage"] = image_id
+        post["featuredImage"] = _payload_media_relation(image_id)
         previous = previous_editions.get(locale) or (
             previous_sync if str(previous_sync.get("locale") or "") == locale else {}
         )
@@ -1153,7 +1231,7 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
             "metadata": bool(str(metadata_value or "").strip())
                 and str(metadata_value or "").strip() == str((post.get("seo") or {}).get("description") or "").strip(),
             "mainImage": (
-                _payload_relation_id(verified.get("featuredImage")) == image_id
+                _payload_relation_id(verified.get("featuredImage")) == str(_payload_media_relation(image_id))
                 and str(verified_media.get("_helloadaRevision") or "") == str(image_selection.get("media_revision") or "")
                 and bool(str(verified_media.get("alt") or "").strip())
                 and bool(str(verified_media.get("sourceId") or "").strip())
@@ -1174,7 +1252,7 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
             "draft_hash": str(verified.get("_helloadaRevision") or ""),
             "source_hash": source_hash,
             "source_content_hash": source_content_hash,
-            "modified_at": str(verified.get("modifiedAt") or modified_at),
+            "modified_at": _payload_timestamp(verified.get("modifiedAt") or modified_at),
             "excerpt": str(verified.get("summary") or "").strip()[:500],
             "meta_description": str(metadata_value or "").strip()[:320],
             "primary_keyword": str(edition.get("primary_keyword") or "").strip()[:200],

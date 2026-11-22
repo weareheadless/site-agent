@@ -83,15 +83,39 @@ def _valid_env_name(value: Any, fallback: str) -> str:
     return candidate if re.fullmatch(_SAFE_ENV_NAME, candidate) else fallback
 
 
+def profile_environment(
+    config: Mapping[str, Any] | None,
+    profile_name: str,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Resolve the credentials one named profile actually declares.
+
+    Every integration owns its own credential file, and those files share a flat
+    variable namespace with everything else on the host. Merging them all and
+    taking the first value seen meant a profile's token could be supplied by an
+    unrelated file that happened to load earlier — the same variable name in
+    another team's env file silently won, and the request then failed as "token
+    scoped to another tenant". A profile's credential is read from that
+    profile's own file, with the process environment still authoritative.
+    """
+    values = dict(os.environ if env is None else env)
+    path = str(credential_profile(config, profile_name).get("env_file") or "").strip()
+    if path:
+        values = load_env_file(str(Path(path).expanduser().resolve()), values)
+    return values
+
+
 def credential_environment(
     config: Mapping[str, Any] | None,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Resolve host credential files with process environment precedence.
+    """Resolve every host credential file with process environment precedence.
 
     Values already present in ``env`` win over files.  The returned mapping is
     intended for trusted adapters and deployment subprocesses, never for the
-    model prompt or an untrusted site workspace.
+    model prompt or an untrusted site workspace. An integration that owns one
+    credential must read it through :func:`profile_environment`, because this
+    union lets one profile's file supply another profile's variable.
     """
     values = dict(os.environ if env is None else env)
     profiles = _profiles(config)
@@ -215,7 +239,7 @@ def _profile_api_token(
 ) -> str:
     profile = credential_profile(config, profile_name)
     token_name = _valid_env_name(profile.get("api_token_env"), default_env_name)
-    return credential_environment(config, env).get(token_name, "")
+    return profile_environment(config, profile_name, env).get(token_name, "")
 
 
 def cloudflare_dns_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
@@ -232,7 +256,7 @@ def openrouter_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str
     """Resolve the protected provider management credential used only by provisioning."""
     profile = credential_profile(config, "openrouter")
     key_name = _valid_env_name(profile.get("api_token_env"), "OPENROUTER_MANAGEMENT_KEY")
-    return credential_environment(config, env).get(key_name, "")
+    return profile_environment(config, "openrouter", env).get(key_name, "")
 
 
 def deepseek_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
@@ -243,7 +267,7 @@ def deepseek_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] 
     """
     profile = credential_profile(config, "deepseek")
     key_name = _valid_env_name(profile.get("api_token_env"), "DEEPSEEK_API_KEY")
-    return credential_environment(config, env).get(key_name, "")
+    return profile_environment(config, "deepseek", env).get(key_name, "")
 
 
 def editorial_connection(
@@ -258,7 +282,7 @@ def editorial_connection(
     profile = credential_profile(config, "editorial")
     url = str(profile.get("url") or "http://127.0.0.1:8790").rstrip("/")
     key_name = _valid_env_name(profile.get("api_token_env"), "EDITORIAL_TOKEN")
-    token = credential_environment(config, env).get(key_name, "")
+    token = profile_environment(config, "editorial", env).get(key_name, "")
     return url, token
 
 
@@ -327,6 +351,7 @@ __all__ = [
     "cloudflare_dns_api_token",
     "cloudflare_email_api_token",
     "credential_environment",
+    "profile_environment",
     "credential_profile_file",
     "credential_profile",
     "credential_status",

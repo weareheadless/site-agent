@@ -52,7 +52,17 @@ class BilingualPayload:
             "locales": ["es", "en"],
             "defaultLocale": "es",
             "enabled": {"collections": ["posts"], "globals": []},
-            "authoring": {"collections": {"posts": [{"name": field} for field in POST_FIELDS]}, "globals": {}},
+            "authoring": {
+                "collections": {
+                    "posts": [
+                        {"name": "seo", "type": "group", "fields": [
+                            {"name": "title"}, {"name": "description"}, {"name": "image"},
+                        ]},
+                        *[{"name": field} for field in POST_FIELDS if field != "seo"],
+                    ],
+                },
+                "globals": {},
+            },
         }
         # One document identity; each locale is a row of it, as Payload stores
         # localized fields.
@@ -189,11 +199,12 @@ def test_both_editions_land_in_the_one_payload_document(tmp_path):
     assert english["slug"] == EN["slug"]
     assert english["summary"] == EN["excerpt"]
     assert english["seo"]["description"] == EN["meta_description"]
-    assert english["seo"]["focusKeyword"] == EN["primary_keyword"]
+    # The shared seo group declares no focus keyword.
+    assert "focusKeyword" not in english["seo"]
     # One cover, chosen for the piece, shared by its editions.
     assert spanish["featuredImage"] == english["featuredImage"] == "media-1"
     # The article is created once, in the primary locale; its other editions are
-    # rows written into that same document, not new articles.
+    # rows written into that same document, never a second article.
     assert payload.created_locales == ["es"]
     assert payload.updated_locales == ["en"]
 

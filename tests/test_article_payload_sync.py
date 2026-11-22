@@ -12,6 +12,14 @@ POST_FIELDS = frozenset({
     "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published",
 })
 
+# The shared `seo` group as the schema actually declares it. A focus keyword is
+# not part of it, so the gateway refuses a post that carries one.
+SEO_FIELDS = [
+    {"name": "title", "type": "text"},
+    {"name": "description", "type": "textarea"},
+    {"name": "image", "type": "upload"},
+]
+
 
 class Payload:
     def __init__(self):
@@ -21,7 +29,14 @@ class Payload:
             "enabled": {"collections": ["pages", "posts"], "globals": []},
             "authoring": {
                 "collections": {
-                    "posts": [{"name": field} for field in sorted(POST_FIELDS)],
+                    "posts": [
+                        {"name": "seo", "type": "group", "fields": SEO_FIELDS},
+                        *[
+                            {"name": field}
+                            for field in sorted(POST_FIELDS)
+                            if field != "seo"
+                        ],
+                    ],
                 },
                 "globals": {},
             },
@@ -145,7 +160,9 @@ def test_article_is_written_to_canonical_payload_posts_schema_as_unpublished_lex
     assert document["body"]["root"]["type"] == "root"
     assert [node["type"] for node in document["body"]["root"]["children"]] == ["heading", "paragraph"]
     assert document["seo"]["description"] == "A description for search."
-    assert document["seo"]["focusKeyword"] == "useful guide"
+    # The destination's seo group has no focus keyword; sending one failed the
+    # gateway contract check at the end of landing.
+    assert "focusKeyword" not in document["seo"]
     assert document["featuredImage"] == "media-1"
     assert not {"content", "excerpt", "sourceUrl", "metaDescription"} & set(document)
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
@@ -308,7 +325,9 @@ def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpo
     # mirror. Freeze it across both reads so wall-clock timing cannot decide
     # whether modifiedAt differs.
     original_list_drafts = memory.list_drafts
-    fixed_updated_ts = "2026-01-01T00:00:00+00:00"
+    # Payload stores a date in its own millisecond UTC form; the landing
+    # normalizes to exactly that so the persisted document can be verified.
+    fixed_updated_ts = "2026-01-01T00:00:00.000Z"
     def list_drafts_with_fixed_timestamp(*args, **kwargs):
         drafts = original_list_drafts(*args, **kwargs)
         for draft in drafts:
