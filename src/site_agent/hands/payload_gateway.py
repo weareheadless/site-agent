@@ -1170,19 +1170,12 @@ class PayloadGatewayClient:
         return dict(data)
 
     def list_media(self, *, draft: bool = True, limit: int = 100) -> list[dict[str, Any]]:
-        bounded_limit = max(1, min(int(limit), 100))
-        response = self._request(
-            "GET",
-            self._gateway_path("media"),
-            query={"draft": str(bool(draft)).lower(), "limit": str(bounded_limit)},
-        )
-        media = response.get("media")
-        if not isinstance(media, list):
-            raise PayloadGatewayError("gateway returned no media list")
-        return [item for item in media if isinstance(item, dict)]
+        """List one bounded page of the tenant's media library.
 
-    def list_media(self, *, limit: int = 100, draft: bool = False) -> list[dict[str, Any]]:
-        """List the bounded media library so a preview can copy referenced files."""
+        Draft is the default because every caller that matters — picking an
+        article cover, copying media into a preview, showing the owner the
+        library — is looking at work in progress, not at the published set.
+        """
         bounded = max(1, min(int(limit), 100))
         response = self._request(
             "GET",
@@ -1240,6 +1233,80 @@ class PayloadGatewayClient:
             payload={"operation": "update", "id": document_id, "expectedHash": expected_hash, "data": self._media_data(data)},
         )
         return _revision(response.get("media"), response, "updated media document")
+
+    def upload_media(
+        self,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str,
+        alt: str,
+        source_id: str,
+    ) -> dict[str, Any]:
+        """Store one image in the tenant's media library, once.
+
+        `sourceId` is the idempotency key: the bridge returns the existing
+        document when the same source is uploaded again, so re-preparing an
+        article cannot fill the library with duplicate covers. A caller supplies
+        it from the upstream asset's own identity, never from the article.
+        """
+        if not content:
+            raise PayloadGatewayError("media content is empty")
+        if not str(source_id or "").strip():
+            raise PayloadGatewayError("media upload needs a stable sourceId")
+        if not str(content_type or "").lower().startswith("image/"):
+            raise PayloadGatewayError("only images can be attached as article media")
+        boundary = "----helloada" + hashlib.sha256(
+            f"{source_id}:{filename}:{len(content)}".encode("utf-8")
+        ).hexdigest()[:24]
+        parts: list[bytes] = []
+
+        def field(name: str, value: str) -> None:
+            parts.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n".encode("utf-8")
+            )
+
+        field("sourceId", str(source_id).strip())
+        field("alt", str(alt or "").strip()[:300] or str(filename))
+        parts.append(
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+                f"filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        parts.append(content)
+        parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(parts)
+        url = f"{self.base_url}/api/helloada/media/upload"
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.token}",
+            "User-Agent": "site-agent/payload-gateway",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        try:
+            status, _headers, raw = _GATEWAY_CONNECTIONS.request(
+                "POST", url, headers=headers, data=body,
+                timeout=self.timeout_seconds, limit=2 * 1024 * 1024,
+            )
+        except (OSError, http.client.HTTPException, TimeoutError) as exc:
+            raise PayloadGatewayError("Payload gateway is unreachable") from exc
+        if status >= 400:
+            detail = _safe_json(raw[:32 * 1024])
+            message = "gateway request failed"
+            if isinstance(detail, dict):
+                message = str(detail.get("message") or detail.get("error") or message)
+            raise PayloadGatewayError(f"Payload media upload returned {status}: {message[:300]}", status_code=status)
+        parsed = _safe_json(raw)
+        attachment = parsed.get("attachment") if isinstance(parsed, dict) else None
+        if not isinstance(attachment, dict):
+            raise PayloadGatewayError("Payload media upload returned no document identity")
+        # The bridge answers with the conversation attachment shape, whose id is
+        # `asset_id`; the library document's own id is the same value.
+        document_id = str(attachment.get("asset_id") or attachment.get("id") or "").strip()
+        if not document_id:
+            raise PayloadGatewayError("Payload media upload returned no document identity")
+        return {**attachment, "id": document_id}
 
 
 @dataclass(frozen=True)

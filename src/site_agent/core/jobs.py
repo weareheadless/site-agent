@@ -464,6 +464,79 @@ def _read_article_draft_by_slug(payload: Any, slug: str, language: str) -> dict[
         raise
 
 
+def _store_article_cover(
+    context: dict[str, Any],
+    payload: Any,
+    draft: Mapping[str, Any],
+    meta: Mapping[str, Any],
+    cover: Mapping[str, Any],
+) -> str:
+    """Put the article's own chosen photograph into the tenant library.
+
+    The article already has a cover the writer selected for this piece, with its
+    alt text and its credit. Requiring an unrelated beforehand-uploaded library
+    image instead meant a real article was blocked on a gallery nobody had
+    filled. The photograph is downloaded once, stored as a normal Payload media
+    document owned by the tenant, and then treated like any other library image:
+    it is analyzed, it keeps its credit, and the exact revision is pinned.
+    """
+    import urllib.request
+
+    source_url = str(cover.get("url") or "").strip()
+    if not source_url.startswith("https://"):
+        raise RuntimeError("The article's chosen cover image has no public https URL to store.")
+    photo_id = str(cover.get("photo_id") or "").strip()
+    source_id = f"article-cover:{photo_id or source_url}"
+    alt = str(cover.get("alt") or "").strip()
+    if not alt:
+        raise RuntimeError("The article's chosen cover image has no alt text, so it cannot be attached as a cover.")
+    try:
+        existing = payload.read_media(source_id, identifier_kind="sourceId", draft=True)
+    except Exception as exc:  # noqa: BLE001 - only an exact not-found means "not stored yet"
+        if getattr(exc, "status_code", None) != 404:
+            raise
+        existing = None
+    media = existing
+    if existing is None:
+        try:
+            with urllib.request.urlopen(source_url, timeout=30) as response:
+                content = response.read(8 * 1024 * 1024 + 1)
+                content_type = str(response.headers.get("Content-Type") or "").split(";")[0].strip()
+        except OSError as exc:
+            raise RuntimeError(f"The article's chosen cover image could not be downloaded: {type(exc).__name__}") from exc
+        if len(content) > 8 * 1024 * 1024:
+            raise RuntimeError("The article's chosen cover image is too large to store as a cover.")
+        if not content_type:
+            content_type = "image/jpeg"
+        filename = re.sub(r"[^A-Za-z0-9._-]+", "-", photo_id or "article-cover")[:80] or "article-cover"
+        extension = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}.get(content_type, "")
+        media = payload.upload_media(
+            content=content,
+            filename=f"{filename}{extension}",
+            content_type=content_type,
+            alt=alt,
+            source_id=source_id,
+        )
+    media_id = str(media.get("id") or "").strip()
+    if not media_id:
+        raise RuntimeError("The stored cover image has no Payload identity.")
+    revision = str(media.get("_helloadaRevision") or "").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", revision):
+        media = payload.read_media(media_id, identifier_kind="id", draft=True)
+        revision = str(media.get("_helloadaRevision") or "").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", revision):
+        raise RuntimeError("The stored cover image has no exact revision and cannot be attached safely.")
+    selection = {
+        "media_id": media_id,
+        "media_revision": revision,
+        "reason": str(cover.get("credit") or "Selected for this article by the writer.")[:500],
+    }
+    next_meta = dict(meta)
+    next_meta["article_image_selection"] = selection
+    context["memory"].update_draft_meta(int(draft["id"]), next_meta)
+    return media_id
+
+
 def _article_cover_image(
     context: dict[str, Any],
     payload: Any,
@@ -479,6 +552,36 @@ def _article_cover_image(
         or meta.get("featured_image_id")
         or meta.get("featured_image")
     )
+    if explicit_id is None:
+        # The article arrived with its own cover: a photograph already chosen,
+        # described and credited by the writer for this exact piece. Storing it
+        # in the tenant's library makes it a real Payload document, and the
+        # upstream asset identity is the idempotency key so a retried
+        # preparation reuses the same row instead of filling the library.
+        article_assets = meta.get("article_assets")
+        article_assets = article_assets if isinstance(article_assets, list) else []
+        cover = next(
+            (
+                asset
+                for asset in article_assets
+                if isinstance(asset, Mapping) and str(asset.get("role") or "") == "cover"
+            ),
+            None,
+        )
+        if cover is not None:
+            explicit_id = _store_article_cover(context, payload, draft, meta, cover)
+            refreshed = (context["memory"].get_draft(int(draft["id"])) or {}).get("meta") or {}
+            meta = dict(refreshed)
+            saved = dict(meta.get("article_image_selection") or {})
+            # This photograph was chosen for this piece and already carries its
+            # own alt text and credit, so completed library analysis is not the
+            # condition for attaching it. Analysis exists to let Ada choose
+            # among candidates it has not read; re-approving a cover it did
+            # read would be a second gate on the same fact.
+            saved["attributed"] = True
+            next_meta = dict(meta)
+            next_meta["article_image_selection"] = saved
+            context["memory"].update_draft_meta(int(draft["id"]), next_meta)
     if explicit_id is not None:
         media = payload.read_media(str(explicit_id), identifier_kind="id", draft=True)
         if saved and str(media.get("_helloadaRevision") or "") != str(saved.get("media_revision") or ""):
@@ -588,14 +691,16 @@ def _article_cover_image(
     alt = str(media.get("alt") or "").strip()
     source_id = str(media.get("sourceId") or "").strip()
     image_url = str(media.get("url") or media.get("originalUrl") or "").strip()
+    attributed = bool(saved.get("attributed"))
+    analysed = str(media.get("analysisStatus") or "").lower() == "ready"
     if (
         not str(media.get("id") or "").strip()
-        or str(media.get("analysisStatus") or "").lower() != "ready"
+        or not (analysed or attributed)
         or not alt
         or not source_id
         or not (image_url.startswith("https://") or image_url.startswith("/") and not image_url.startswith("//"))
     ):
-        raise RuntimeError("The selected Payload cover image must have a stable identity, completed analysis, alt text and a public URL.")
+        raise RuntimeError("The selected Payload cover image must have a stable identity, alt text and a public URL.")
     return str(media["id"]), media, {
         **dict(saved),
         "reason": reason,
