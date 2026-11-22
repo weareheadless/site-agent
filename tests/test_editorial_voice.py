@@ -67,6 +67,25 @@ def test_a_link_label_split_across_nested_markup_keeps_its_words_apart():
     assert ("Freediving AIDA 1 to AIDA 4", "/freediving") in parser.links
 
 
+def test_a_scaffold_site_is_not_mistaken_for_a_voice():
+    """A placeholder says "no home page has been published"; that is not a voice."""
+    reader = fake_reader(
+        {
+            "https://studio.example": _page(
+                "https://studio.example",
+                "HelloAda site\nNo home page has been published for this site yet.",
+            )
+        }
+    )
+
+    facts = derive_voice(
+        site={"public_url": "https://studio.example/"}, display_name="Studio", fetch=reader
+    )
+
+    assert facts["voice_basis"] == "none"
+    assert facts["voice_sample"] == ""
+
+
 def test_navigation_is_not_mistaken_for_the_site_voice():
     """A flattened header must not teach the model to write menus."""
     from site_agent.application.editorial_voice import _clean_lines

@@ -44,6 +44,21 @@ MAX_SAMPLE_CHARS = 2400
 # Real copy, not chrome. A service page on a small studio site can be three
 # sentences: the bar rejects a redirect shell or a nav-only stub, not brevity.
 MIN_PAGE_CHARS = 120
+# A site with no published page still renders — a scaffold saying "No home page
+# has been published for this site yet". Handing that to the writer as a voice
+# sample teaches it to imitate a placeholder, which is worse than admitting the
+# voice is unknown.
+SCAFFOLD_MARKERS = (
+    "no home page has been published",
+    "this site is not published",
+    "coming soon",
+    "under construction",
+    "próximamente",
+    "sitio en construcción",
+)
+# Below this, the page cannot be describing a business; it is a placeholder or a
+# redirect shell that renders a title.
+SCAFFOLD_FLOOR = 120
 
 # Paths that are never the site's own voice: utilities, legal boilerplate, feeds.
 _SKIP_PATH_PARTS = (
@@ -183,6 +198,16 @@ def _is_navigation(line: str) -> bool:
     return all(word in _NAV_WORDS for word in words)
 
 
+def _is_scaffold(sample: str) -> bool:
+    """True when the page is a placeholder rather than the business writing."""
+    lowered = sample.lower()
+    if any(marker in lowered for marker in SCAFFOLD_MARKERS):
+        return True
+    # Placeholder pages are short by nature; real copy that describes a business
+    # does not fit in a sentence and a half.
+    return len(sample) < SCAFFOLD_FLOOR
+
+
 def _clean_lines(page: str) -> str:
     """Drop furniture and repeated lines, keeping the site's actual sentences."""
     seen: set[str] = set()
@@ -297,7 +322,7 @@ def _from_site_copy(
     sample = _join_sample(pages)
     # One page of real copy is a voice; the stub bar above is for deciding
     # whether an extra page adds anything, not for discarding the homepage.
-    if not sample:
+    if not sample or _is_scaffold(sample):
         return {}
     return {
         "name": name,
