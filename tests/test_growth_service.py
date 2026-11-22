@@ -997,7 +997,10 @@ def test_resumed_payload_preparation_reconciles_before_creating_review(tmp_path,
                    "why": "No description exists.", "scope": "Improve the search result."}
     inventory = [{"collection": "pages", "document": {"id": "1"}, "route": "/"}]
     evidence = {"policy": {"policy_version": "1"}, "evidenceHash": "evidence-hash"}
-    monkeypatch.setattr(growth_candidates, "journal", lambda _context: SimpleNamespace(issue=lambda _row: None))
+    monkeypatch.setattr(
+        "site_agent.application.growth_delivery.journal",
+        lambda _context: SimpleNamespace(issue=lambda _row: None, checkpoint=lambda *a, **k: {"state": "recorded"}),
+    )
 
     result = prepare_payload_candidate(
         {"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload},

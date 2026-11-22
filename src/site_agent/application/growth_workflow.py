@@ -1280,7 +1280,32 @@ def _prepare_article_candidate(
     if not title or not body:
         raise ValueError("The writing service returned an empty article")
 
+    # The service writes every locale of the brief in one editorial act, over
+    # one evidence set. Site-agent lands all of them as editions of one post;
+    # keeping only the first edition silently dropped the rest of the site's
+    # languages.
+    editions: list[dict[str, Any]] = []
+    for locale in brief["locales"]:
+        if locale not in (post.artifacts or {}):
+            continue
+        row = post.artifact(locale)
+        editions.append({
+            "locale": locale,
+            "title": str(row.get("title") or "").strip(),
+            "slug": str(row.get("slug") or "").strip(),
+            "body": str(row.get("body_markdown") or "").strip(),
+            "excerpt": str(row.get("excerpt") or "").strip(),
+            "meta_description": str(row.get("meta_description") or "").strip(),
+            "primary_keyword": str(row.get("primary_keyword") or "").strip(),
+        })
+    missing = [locale for locale in brief["locales"] if locale not in (post.artifacts or {})]
+    if missing:
+        raise ValueError(
+            "the writing service returned no edition for: " + ", ".join(missing)
+        )
+
     meta: dict[str, Any] = {
+        "article_editions": editions,
         "primary_keyword": str(artifact.get("primary_keyword") or brief["topic"]["primary_keyword"]),
         "meta_description": str(artifact.get("meta_description") or artifact.get("excerpt") or ""),
         "editorial": {

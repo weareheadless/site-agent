@@ -12,7 +12,8 @@ from ..brain import growth as brain_growth
 from ..core.contracts import ActionPriority, ActionRequirement, Artifact, ArtifactKind, EffectClass, OwnerAction
 from .approvals import ApprovalService
 from .actions import OwnerActionService, owner_action_summary
-from .growth_delivery import candidate_checkpoint, journal
+from . import growth_delivery
+from .growth_delivery import candidate_checkpoint
 
 
 def wake_growth_pending(memory: Any) -> None:
@@ -106,7 +107,7 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     if current != base and not resumed:
         raise ValueError("This document already has owner draft changes. Ada will not overwrite them.")
     if changes is None:
-        journal(context).issue(initiative)
+        growth_delivery.journal(context).issue(initiative)
         changes = brain_growth.prepare(context, opportunity=opportunity, document=current, fields=editable, evidence=evidence)
         if all(current.get(key) == value for key, value in changes.items()):
             raise brain_growth.UnsupportedGrowthPreparation(
@@ -259,7 +260,7 @@ def queue_source_candidate(context: Mapping[str, Any], initiative: Mapping[str, 
         "evidence_hash": preparation["evidenceHash"],
         "allowed_paths": [str(path) for path in opportunity.get("allowedPaths", []) if isinstance(path, str)],
     }
-    journal(context).issue(initiative)
+    growth_delivery.journal(context).issue(initiative)
     job_id = memory.enqueue_growth_source_candidate_job(initiative_id, run_id, payload)
     preparation["jobId"] = job_id
     preparation.pop("waitingForWebsiteDecision", None)

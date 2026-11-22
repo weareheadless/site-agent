@@ -438,24 +438,75 @@ def finalize_article_publication(context, initiative, draft):
     package_hash = str(meta.get("review_package_hash") or "")
     if receipt.get("packageHash") != package_hash or not document.get("_helloadaRevision"):
         raise GrowthDeliveryError("Article publication receipt is not the reviewed package")
-    current = context["payload_gateway"].read("posts", identifier=str(document.get("id") or ""), identifier_kind="id", draft=False,
-        locale=str((meta.get("payload_sync") or {}).get("locale") or "").strip() or None)
-    if current.get("_helloadaRevision") != document["_helloadaRevision"]:
-        raise GrowthDeliveryError("Published article differs from its exact saved publication receipt")
-    locale = str((meta.get("payload_sync") or {}).get("locale") or "").strip()
-    if not locale:
-        raise GrowthDeliveryError("Article verification requires its canonical configured locale")
-    live = context["payload_gateway"].verify_publication("posts", str(document["id"]), str(document["_helloadaRevision"]), locale=locale)
-    if not isinstance(live, Mapping) or live.get("status") != "passed" or not live.get("checks"):
-        raise GrowthDeliveryError("Article public-render verification is incomplete")
-    proof = {"packageHash": package_hash, "revision": document["_helloadaRevision"], "liveVerification": dict(live)}
+    from ..core.jobs import article_landed_editions
+
+    # A bilingual article is one post with one published row per locale. This
+    # walks every edition the article actually has, so a missing or changed
+    # translation is a failure rather than an unseen second draft.
+    published = {
+        str(row.get("locale") or "").strip(): dict(row)
+        for row in (receipt.get("editions") or [])
+        if isinstance(row, Mapping) and str(row.get("locale") or "").strip()
+    }
+    editions = article_landed_editions(draft) or [{
+        "locale": str((meta.get("payload_sync") or {}).get("locale") or "").strip(),
+        "document_id": str(document.get("id") or ""),
+        "draft_hash": str(document.get("_helloadaRevision") or ""),
+    }]
+    proofs: list[dict[str, Any]] = []
+    for edition in editions:
+        locale = str(edition.get("locale") or "").strip()
+        if not locale:
+            raise GrowthDeliveryError("Article verification requires its canonical configured locale")
+        saved = published.get(locale) or {}
+        saved_document = saved.get("document") if isinstance(saved.get("document"), Mapping) else {}
+        document_id = str(saved.get("document_id") or edition.get("document_id") or document.get("id") or "")
+        expected = str(
+            saved.get("revision")
+            or saved_document.get("_helloadaRevision")
+            or edition.get("draft_hash")
+            or ""
+        )
+        if not document_id or not expected:
+            raise GrowthDeliveryError(f"The article's '{locale}' edition has no exact publication revision")
+        current = context["payload_gateway"].read(
+            "posts", identifier=document_id, identifier_kind="id", draft=False, locale=locale,
+        )
+        if current.get("_helloadaRevision") != expected:
+            raise GrowthDeliveryError(
+                f"Published article differs from its exact saved publication receipt in '{locale}'"
+            )
+        live = context["payload_gateway"].verify_publication("posts", document_id, expected, locale=locale)
+        if not isinstance(live, Mapping) or live.get("status") != "passed" or not live.get("checks"):
+            raise GrowthDeliveryError(f"Article public-render verification is incomplete in '{locale}'")
+        proofs.append({
+            "locale": locale,
+            "documentId": document_id,
+            "revision": expected,
+            "slug": str(saved.get("slug") or edition.get("slug") or ""),
+            "liveVerification": dict(live),
+        })
+    proof = {
+        "packageHash": package_hash,
+        "revision": proofs[0]["revision"],
+        "liveVerification": proofs[0]["liveVerification"],
+        "editions": proofs,
+    }
     memory.update_draft_meta(int(draft["id"]), {**meta, "growth_article_verification": proof})
     memory.update_draft_status(int(draft["id"]), "approved")
     if initiative.get("state") in {"publishing", "uncertain"}:
         memory.transition_strategy_initiative(int(initiative["id"]), "verifying_live")
     memory.update_strategy_initiative(int(initiative["id"]),
         published_revision=f"payload:posts:{document['id']}:{document['_helloadaRevision']}",
-        validation={**(initiative.get("validation") or {}), "publicationReadback": {"status": "passed", "revision": document["_helloadaRevision"]}, "liveVerification": dict(live)},
+        validation={
+            **(initiative.get("validation") or {}),
+            "publicationReadback": {
+                "status": "passed",
+                "revision": document["_helloadaRevision"],
+                "editions": [{key: value for key, value in row.items() if key != "liveVerification"} for row in proofs],
+            },
+            "liveVerification": dict(proofs[0]["liveVerification"]),
+        },
         last_error="")
     current_initiative = memory.update_strategy_initiative(int(initiative["id"]))
     if current_initiative.get("state") == "verifying_live":

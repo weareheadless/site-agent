@@ -55,6 +55,19 @@ ARTICLE = {
 ARTICLE["body_markdown"] = ARTICLE.pop("text")
 
 
+ENGLISH = {
+    "title": "The red carpet looks",
+    "slug": "the-red-carpet-looks",
+    "body_markdown": (
+        "## The look\n\nThe makeup was decided in two places: the lips and the eye socket. "
+        "The sources agree on controlled shine and a marked lip."
+    ),
+    "excerpt": "The looks and the exact products.",
+    "meta_description": "The looks and the exact products of the night.",
+    "primary_keyword": "red carpet makeup",
+}
+
+
 class StubEditorial:
     def __init__(self, *, state="ready", error=""):
         self.state = state
@@ -66,11 +79,14 @@ class StubEditorial:
 
     def write(self, brief, *, deadline_seconds):
         self.written.append((brief, deadline_seconds))
+        if self.state == "held":
+            return EditorialPost(post_id="post_1", state=self.state, artifacts={}, error=self.error)
+        # One editorial act, one evidence set, an edition per locale.
+        artifacts = {}
+        for locale in brief["locales"]:
+            artifacts[locale] = {**ARTICLE, **ENGLISH} if locale == "en" else ARTICLE
         return EditorialPost(
-            post_id="post_1",
-            state=self.state,
-            artifacts={"es": ARTICLE} if self.state != "held" else {},
-            error=self.error,
+            post_id="post_1", state=self.state, artifacts=artifacts, error=self.error,
         )
 
 
@@ -176,6 +192,12 @@ def _context(tmp_path, monkeypatch, editorial, *, landed=True):
             "source_hash": "sha256:" + "e" * 64,
             "slug": ARTICLE["slug"],
             "locale": "es",
+            "editions": [
+                {"locale": "es", "slug": ARTICLE["slug"], "document_id": "doc_1",
+                 "draft_hash": "sha256:" + "d" * 64},
+                {"locale": "en", "slug": ENGLISH["slug"], "document_id": "doc_2",
+                 "draft_hash": "sha256:" + "a" * 64},
+            ],
             "validation": {"status": "passed", "checks": {"title": True}},
         }
         meta["review_package_hash"] = "sha256:" + "f" * 64
@@ -248,6 +270,37 @@ def test_an_article_opportunity_produces_one_pending_draft(tmp_path, monkeypatch
     assert drafts[0]["status"] == "pending"
     # The cover the article brought is recorded with the draft, not discarded.
     assert drafts[0]["meta"]["article_assets"][0]["role"] == "cover"
+
+
+def test_every_language_the_brief_asked_for_is_carried_to_the_landing(tmp_path, monkeypatch):
+    """One article, not one article per language and not just the first."""
+    editorial = StubEditorial()
+    context = _context(tmp_path, monkeypatch, editorial)
+
+    _run(context)
+
+    editions = context["memory"].list_drafts()[0]["meta"]["article_editions"]
+    assert [row["locale"] for row in editions] == ["es", "en"]
+    assert editions[0]["title"] == ARTICLE["title"]
+    assert editions[1]["title"] == ENGLISH["title"]
+    assert editions[1]["slug"] == ENGLISH["slug"]
+    assert editions[1]["body"] == ENGLISH["body_markdown"]
+
+
+def test_a_missing_edition_blocks_rather_than_publishing_one_language(tmp_path, monkeypatch):
+    """A bilingual request that comes back monolingual is not a bilingual article."""
+    class HalfWritten(StubEditorial):
+        def write(self, brief, *, deadline_seconds):
+            self.written.append((brief, deadline_seconds))
+            return EditorialPost(post_id="post_1", state="ready", artifacts={"es": ARTICLE}, error="")
+
+    context = _context(tmp_path, monkeypatch, HalfWritten())
+
+    result = _run(context)
+
+    assert result["status"] == "blocked"
+    assert "no edition for: en" in result["error"]
+    assert context["memory"].list_drafts() == []
 
 
 def test_the_brief_names_why_and_leaves_the_subject_to_be_researched(tmp_path, monkeypatch):

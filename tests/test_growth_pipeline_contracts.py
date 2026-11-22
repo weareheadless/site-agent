@@ -7,7 +7,7 @@ from site_agent.core.memory import Memory
 
 def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
     from types import SimpleNamespace
-    monkeypatch.setattr("site_agent.application.growth_candidates.journal", lambda _context: SimpleNamespace(issue=lambda _initiative: None))
+    monkeypatch.setattr("site_agent.application.growth_delivery.journal", lambda _context: SimpleNamespace(issue=lambda _initiative: None))
     from site_agent.application.growth_candidates import prepare_payload_candidate
     from site_agent.brain.growth import UnsupportedGrowthPreparation
 

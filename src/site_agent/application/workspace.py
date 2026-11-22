@@ -4955,22 +4955,48 @@ class ChatService:
                 article_approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(article_approval_id, True)
             decision_checkpoint(tenant.context, article_initiative, str(meta.get("review_package_hash") or ""), article_approval, actor_id=owner_actor_id)
             memory.record_strategy_decision_for_draft(normalized_id, "approved", baseline=baseline)
+            from ..core.jobs import article_landed_editions
+            editions = article_landed_editions(draft)
+            if not editions:
+                raise BridgeError("the article has no landed Payload edition; it cannot be published")
             try:
-                article_destination_receipt = payload.publish(
-                    "posts", document_id,
-                    locale=str(sync.get("locale") or "").strip() or None,
-                    expected_hash=str(sync.get("draft_hash") or ""),
-                )
+                # One article, one approval, every edition of it. Publishing only
+                # the default locale left the other languages as unpublished
+                # drafts that no reader could reach.
+                published_editions: list[dict[str, Any]] = []
+                for edition in editions:
+                    edition_locale = str(edition.get("locale") or "").strip()
+                    edition_id = str(edition.get("document_id") or "").strip() or document_id
+                    edition_hash = str(edition.get("draft_hash") or "").strip() or str(sync.get("draft_hash") or "")
+                    if not edition_locale or not edition_id or not edition_hash:
+                        raise BridgeError(
+                            f"the article's '{edition_locale or 'unknown'}' edition has no exact reviewed revision"
+                        )
+                    revision = payload.publish(
+                        "posts", edition_id, locale=edition_locale, expected_hash=edition_hash,
+                    )
+                    verified_edition = payload.read(
+                        "posts", identifier=edition_id, identifier_kind="id", draft=False, locale=edition_locale,
+                    )
+                    if str(verified_edition.get("id") or "") != edition_id:
+                        raise BridgeError(
+                            f"Payload returned no published '{edition_locale}' edition of the approved article"
+                        )
+                    published_editions.append({
+                        "locale": edition_locale,
+                        "document_id": edition_id,
+                        "slug": str(edition.get("slug") or ""),
+                        "revision": str(revision.get("_helloadaRevision") or ""),
+                        "document": verified_edition,
+                    })
                 current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
-                article_receipt = {"packageHash": str(meta.get("review_package_hash") or ""), "document": article_destination_receipt}
+                article_receipt = {
+                    "packageHash": str(meta.get("review_package_hash") or ""),
+                    "document": published_editions[0]["document"],
+                    "editions": published_editions,
+                }
                 memory.update_draft_meta(normalized_id, {**current_meta, "growth_article_publication_receipt": article_receipt})
-                published_document = payload.read(
-                    "posts",
-                    identifier=document_id,
-                    identifier_kind="id",
-                    draft=False,
-                    locale=str(sync.get("locale") or "").strip() or None,
-                )
+                published_document = published_editions[0]["document"]
             except Exception as exc:  # noqa: BLE001 - approval stays blocked on an uncertain Payload result
                 for initiative in memory.list_strategy_initiatives(limit=500):
                     if int(initiative.get("draft_id") or 0) == normalized_id and initiative.get("state") == "publishing":

@@ -729,6 +729,322 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     return True
 
 
+def _article_editions(
+    draft: Mapping[str, Any],
+    meta: Mapping[str, Any],
+    *,
+    locales: list[str],
+    default_locale: str,
+    draft_id: int,
+) -> list[dict[str, Any]]:
+    """The editions this article is written in, primary first.
+
+    A bilingual site does not carry two articles. It carries one article and
+    each of its locales is an edition of it: the same evidence, the same
+    argument, told in the reader's language. The writer returns them together
+    and Payload stores them as locale rows of one document, so the draft has to
+    hold them together too — landing only the first edition quietly dropped
+    every other language the site publishes.
+    """
+    raw = meta.get("article_editions")
+    rows = raw if isinstance(raw, list) else []
+    enabled = [str(item).strip() for item in locales if str(item).strip()]
+    editions: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        locale = str(row.get("locale") or "").strip()
+        if locale not in enabled or any(item["locale"] == locale for item in editions):
+            continue
+        editions.append({
+            "locale": locale,
+            "title": str(row.get("title") or "").strip()[:300],
+            "slug": str(row.get("slug") or "").strip(),
+            "body": str(row.get("body") or "").strip(),
+            "excerpt": str(row.get("excerpt") or "").strip()[:500],
+            "meta_description": str(row.get("meta_description") or "").strip()[:320],
+            "primary_keyword": str(row.get("primary_keyword") or "").strip()[:200],
+        })
+    # Every edition must be a real article. A locale that came back empty is a
+    # writing failure, not a reason to publish a site in one language and call
+    # it bilingual.
+    incomplete = [item["locale"] for item in editions if not item["title"] or not item["body"]]
+    if incomplete:
+        raise RuntimeError(
+            "The article is missing written content for: " + ", ".join(incomplete)
+        )
+    primary = str(default_locale or "").strip()
+    if primary and any(item["locale"] == primary for item in editions):
+        editions.sort(key=lambda item: item["locale"] != primary)
+    if not editions:
+        # A draft that arrived without per-locale editions (an older prepared
+        # draft, or a single-locale site) is one edition in the default locale.
+        title = str(draft.get("title") or "").strip()[:300]
+        body = str(draft.get("body") or "").strip()
+        editions = [{
+            "locale": primary or (enabled[0] if enabled else ""),
+            "title": title,
+            "slug": _article_slug(title, draft_id),
+            "body": body,
+            "excerpt": str(meta.get("meta_description") or "").strip()[:500],
+            "meta_description": str(meta.get("meta_description") or "").strip()[:320],
+            "primary_keyword": str(meta.get("primary_keyword") or "").strip()[:200],
+        }]
+    for item in editions:
+        if not item["locale"]:
+            raise RuntimeError("The article draft's edition has no locale and cannot be landed")
+        item["slug"] = item["slug"] or _article_slug(item["title"], draft_id)
+        if item["excerpt"]:
+            continue
+        item["excerpt"] = lexical_text(markdown_to_lexical(item["body"]))[:500]
+    return editions
+
+
+def article_landed_editions(draft: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every edition of one article that is actually stored in Payload.
+
+    A bilingual article is one post with one row per locale, each with its own
+    route and its own exact draft revision. Publication and readback walk this
+    list; treating the default locale as the whole article would leave every
+    other language unseen and unpublished.
+    """
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+    rows = sync.get("editions")
+    editions = [
+        dict(row)
+        for row in (rows if isinstance(rows, list) else [])
+        if isinstance(row, Mapping) and str(row.get("locale") or "").strip()
+    ]
+    if editions:
+        return editions
+    if not str(sync.get("document_id") or "").strip():
+        return []
+    # A draft prepared before editions were recorded still names its one
+    # language; it is a single-edition article, not an invalid one.
+    return [{
+        "locale": str(sync.get("locale") or ""),
+        "slug": str(sync.get("slug") or ""),
+        "document_id": str(sync.get("document_id") or ""),
+        "draft_hash": str(sync.get("draft_hash") or ""),
+        "source_hash": str(sync.get("source_hash") or ""),
+        "source_content_hash": str(sync.get("source_content_hash") or ""),
+        "modified_at": str(sync.get("modified_at") or ""),
+        "excerpt": str(sync.get("excerpt") or ""),
+        "meta_description": str(sync.get("meta_description") or ""),
+        "primary_keyword": str(sync.get("primary_keyword") or ""),
+    }]
+
+
+def _article_edition_post(
+    *,
+    edition: Mapping[str, Any],
+    contract_fields: set[str],
+    modified_at: str,
+    article_path: str,
+    public_base: str,
+    author: str,
+    meta: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the Payload write for one edition of one article.
+
+    The slug is localized in the shared schema, so each edition keeps its own
+    route: an untranslated post has no address in that language and is
+    unreachable from the site's own article index.
+    """
+    locale = str(edition.get("locale") or "").strip()
+    title = str(edition.get("title") or "").strip()[:300]
+    slug = str(edition.get("slug") or "").strip()
+    body = str(edition.get("body") or "").strip()
+    if not title or not slug:
+        raise RuntimeError(f"The article's '{locale}' edition has no title or route and cannot be landed")
+    if not body:
+        raise RuntimeError(f"The article's '{locale}' edition has no body to sync into Payload")
+    lexical_body = markdown_to_lexical(body)
+    plain = lexical_text(lexical_body)
+    summary = str(edition.get("excerpt") or "").strip()[:500] or plain[:500]
+    description = str(edition.get("meta_description") or "").strip()[:320] or plain[:320]
+    primary_keyword = str(
+        edition.get("primary_keyword")
+        or meta.get("primary_keyword")
+        or (meta.get("research_note") or {}).get("selected_query")
+        or ""
+    ).strip()[:200]
+    seo: dict[str, Any] = {"title": title[:300], "description": description}
+    if primary_keyword:
+        seo["focusKeyword"] = primary_keyword
+    candidate = {
+        "slug": slug,
+        "title": title,
+        "summary": summary,
+        "body": lexical_body,
+        "seo": seo,
+        "canonicalUrl": f"{public_base}{article_path}" if public_base else article_path,
+        "modifiedAt": modified_at,
+        "author": author,
+        "published": False,
+    }
+    if meta.get("media_asset_ids") and "gallery" in contract_fields:
+        candidate["gallery"] = list(meta["media_asset_ids"])
+    return {key: value for key, value in candidate.items() if key in contract_fields}
+
+
+def _article_edition_title_conflict(
+    payload: Any,
+    *,
+    locale: str,
+    slug: str,
+    title: str,
+    document_id: str,
+) -> None:
+    """Refuse a title collision at another public route inside one edition.
+
+    Title equality is only a conflict signal; it does not prove that the two
+    posts have interchangeable content, so this stops for owner review instead
+    of guessing which one to keep.
+    """
+    normalized_title = _normalized_article_title(title)
+    if not normalized_title:
+        return
+    listed_drafts = payload.list("posts", draft=True, limit=100, locale=locale)
+    listed_published = payload.list("posts", draft=False, limit=100, locale=locale)
+    if not isinstance(listed_drafts, list) or not isinstance(listed_published, list):
+        raise RuntimeError("The canonical Payload posts inventory could not be verified before article preparation.")
+    if len(listed_drafts) >= 100 or len(listed_published) >= 100:
+        raise RuntimeError("The canonical Payload posts inventory is incomplete; article preparation is held for owner review.")
+    for document_row in [*listed_drafts, *listed_published]:
+        if not isinstance(document_row, Mapping):
+            raise RuntimeError("The canonical Payload posts inventory contains an invalid row; article preparation is held for review.")
+        row_id = str(document_row.get("id") or "").strip()
+        row_slug = str(document_row.get("slug") or "").strip()
+        row_title = document_row.get("title")
+        if not row_id:
+            raise RuntimeError("The canonical Payload posts inventory lacks a stable ID; article preparation is held for review.")
+        row_title = row_title.strip() if isinstance(row_title, str) else ""
+        if row_id == document_id or (row_slug == slug and not document_id):
+            continue
+        # A post that has not been written in this language has no route and no
+        # title here, so it can neither collide with this edition's route nor
+        # take its title from a reader. That is the normal state of a partially
+        # translated site, not corruption: failing closed on it made one
+        # untranslated sibling block every article the site wanted to publish.
+        if not row_slug and not row_title:
+            continue
+        if not row_slug or not row_title:
+            raise RuntimeError("The canonical Payload posts inventory has an inconsistent row; article preparation is held for review.")
+        if _normalized_article_title(row_title) != normalized_title:
+            continue
+        raise RuntimeError(
+            "A Payload post with the same normalized title exists at another route; the existing post and this article remain unchanged for owner review."
+        )
+
+
+def _land_article_edition(
+    payload: Any,
+    *,
+    post: dict[str, Any],
+    locale: str,
+    previous: Mapping[str, Any],
+    linked_document_id: str,
+) -> tuple[dict[str, Any], str, str]:
+    """Create or reconcile one edition and return what Payload now holds.
+
+    Returns the document, the source hash and the source-content hash this
+    edition was written from.
+    """
+    slug = str(post.get("slug") or "")
+    source_content_hash = canonical_hash({
+        "locale": locale,
+        "post": {key: value for key, value in post.items() if key != "modifiedAt"},
+    })
+    if "modifiedAt" in post and previous.get("source_content_hash") == source_content_hash and previous.get("modified_at"):
+        post["modifiedAt"] = str(previous["modified_at"])
+    source_hash = canonical_hash({"locale": locale, "post": post})
+    existing: dict[str, Any] | None = None
+    adopted_unlinked = False
+    if linked_document_id:
+        try:
+            existing = payload.read(
+                "posts", identifier=linked_document_id, identifier_kind="id", draft=True, locale=locale,
+            )
+        except Exception as exc:  # noqa: BLE001 - a linked article must never be duplicated
+            raise RuntimeError(
+                f"The previously linked Payload article has no readable '{locale}' edition; Ada must reconcile it before creating another post."
+            ) from exc
+        if existing.get("published") is not False:
+            raise RuntimeError("The linked Payload article is no longer an unpublished draft; Ada will not modify published content.")
+        if str(existing.get("slug") or "") not in {slug, ""}:
+            raise RuntimeError("The previously linked Payload article identity changed and must be reconciled before any update.")
+        if not str(previous.get("draft_hash") or "").strip():
+            # This edition of an article Ada already holds has never been
+            # synced: the article gained a language it did not have. Only an
+            # empty row or Ada's own exact candidate may be taken over — an
+            # owner who wrote this language by hand keeps it.
+            if not (
+                _is_exact_unlinked_article_draft(existing, post)
+                or _is_empty_unlinked_article_draft(existing, post, f"posts:{slug}")
+                or not str(existing.get("slug") or "").strip()
+            ):
+                raise RuntimeError(
+                    f"An existing Payload post already holds a '{locale}' edition that is not Ada's exact candidate; it remains unchanged for owner review."
+                )
+            adopted_unlinked = True
+    else:
+        existing = _read_article_draft_by_slug(payload, slug, locale)
+        if existing is not None and not (
+            _is_exact_unlinked_article_draft(existing, post)
+            or _is_empty_unlinked_article_draft(existing, post, f"posts:{slug}")
+        ):
+            raise RuntimeError(
+                "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
+            )
+        adopted_unlinked = existing is not None
+
+    document: dict[str, Any] | None = None
+    if existing is None:
+        try:
+            document = payload.create("posts", post, locale=locale)
+        except Exception as exc:  # noqa: BLE001 - resolve only an exact route-conflict race
+            if getattr(exc, "status_code", None) != 409:
+                raise
+            existing = _read_article_draft_by_slug(payload, slug, locale)
+            if existing is None or not (
+                _is_exact_unlinked_article_draft(existing, post)
+                or _is_empty_unlinked_article_draft(existing, post, f"posts:{slug}")
+            ):
+                raise RuntimeError(
+                    "The Payload route conflict is not an exact draft or empty schema draft; its content remains unchanged for owner review."
+                ) from exc
+            adopted_unlinked = True
+
+    if existing is not None:
+        current_id = str(existing.get("id") or "").strip()
+        current_revision = str(existing.get("_helloadaRevision") or "")
+        if not current_id or not re.fullmatch(r"sha256:[0-9a-f]{64}", current_revision):
+            raise RuntimeError("Payload article draft has no stable identifier and revision; it cannot be reconciled safely.")
+        if adopted_unlinked:
+            document = (
+                existing
+                if all(_payload_field_matches(key, existing.get(key), value) for key, value in post.items())
+                else payload.update("posts", current_id, post, locale=locale, expected_hash=current_revision)
+            )
+        else:
+            if str(previous.get("draft_hash") or "") != current_revision:
+                raise RuntimeError(
+                    f"The Payload article's '{locale}' draft changed after Ada's last sync; it must be reconciled before approval."
+                )
+            document = (
+                existing
+                if str(previous.get("source_hash") or "") == source_hash
+                else payload.update("posts", current_id, post, locale=locale, expected_hash=current_revision)
+            )
+    if document is None:
+        raise RuntimeError(f"Payload did not create or reconcile the article's '{locale}' draft")
+    if not str(document.get("id") or "").strip():
+        raise RuntimeError("Payload did not return the article draft identifier")
+    return document, source_hash, source_content_hash
+
+
 def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id: int) -> None:
     """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
@@ -738,8 +1054,7 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     draft = next((item for item in memory.list_drafts(limit=100) if int(item.get("id") or 0) == draft_id), None)
     if not draft:
         raise RuntimeError(f"editorial draft #{draft_id} is missing from the owner review ledger")
-    title = str(draft.get("title") or "Ada draft").strip()[:300]
-    slug = _article_slug(title, draft_id)
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
     site = context.get("config", {}).get("site") or {}
     site_url = str(site.get("url") or site.get("preview_url") or "").rstrip("/")
     authoring_contract = payload.require_authoring_contract()
@@ -747,20 +1062,6 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     language = str(authoring_contract.get("defaultLocale") or "").strip()
     if not language or not isinstance(enabled_locales, list) or language not in enabled_locales:
         raise RuntimeError("The canonical Payload authoring contract has no enabled default locale")
-    # Payload owns the immutable source identity. The shared schema derives it
-    # as `posts:<slug>` in its collection hook; sourceId is deliberately not an
-    # Ada-editable authoring field and must never be required from that contract.
-    source_id = f"posts:{slug}"
-    body = str(draft.get("body") or "")
-    if not body.strip():
-        raise RuntimeError("The article draft has no body to sync into Payload")
-    lexical_body = markdown_to_lexical(body)
-    plain = lexical_text(lexical_body)
-    summary = plain[:500]
-    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
-    research_note = meta.get("research_note") if isinstance(meta.get("research_note"), Mapping) else {}
-    primary_keyword = str(meta.get("primary_keyword") or research_note.get("selected_query") or "").strip()[:200]
-    description = str(meta.get("meta_description") or plain).strip()[:320]
     enabled_collections = (authoring_contract.get("enabled") or {}).get("collections")
     if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
         raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
@@ -769,200 +1070,141 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     missing_contract = sorted(required_fields - set(contract_fields))
     if missing_contract:
         raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
-    seo = {"title": title[:300], "description": description}
-    if primary_keyword:
-        seo["focusKeyword"] = primary_keyword
-    article_path = public_article_path(slug)
-    public_base = str(site_url or "").rstrip("/")
-    candidate = {
-        "slug": slug,
-        "title": title,
-        "summary": summary,
-        "body": lexical_body,
-        "seo": seo,
-        "canonicalUrl": f"{public_base}{article_path}" if public_base else article_path,
-        "modifiedAt": str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
-        "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
-        "published": False,
-    }
-    if meta.get("media_asset_ids") and "gallery" in contract_fields:
-        candidate["gallery"] = list(meta["media_asset_ids"])
-    post = {key: value for key, value in candidate.items() if key in contract_fields}
+
+    editions = _article_editions(
+        draft, meta,
+        locales=[str(item) for item in enabled_locales],
+        default_locale=language,
+        draft_id=int(draft_id),
+    )
     previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     previous_document_id = str(previous_sync.get("document_id") or "").strip()
-    normalized_title = _normalized_article_title(title)
-    if normalized_title:
-        # A title collision at a different public route needs owner review.
-        # Title equality is only a conflict signal; it does not prove that the
-        # two articles have interchangeable content.
-        listed_drafts = payload.list("posts", draft=True, limit=100, locale=language)
-        listed_published = payload.list("posts", draft=False, limit=100, locale=language)
-        if not isinstance(listed_drafts, list) or not isinstance(listed_published, list):
-            raise RuntimeError("The canonical Payload posts inventory could not be verified before article preparation.")
-        if len(listed_drafts) >= 100 or len(listed_published) >= 100:
-            raise RuntimeError("The canonical Payload posts inventory is incomplete; article preparation is held for owner review.")
-        for document_row in [*listed_drafts, *listed_published]:
-            if not isinstance(document_row, Mapping):
-                raise RuntimeError("The canonical Payload posts inventory contains an invalid row; article preparation is held for review.")
-            row_id = str(document_row.get("id") or "").strip()
-            row_slug = str(document_row.get("slug") or "").strip()
-            row_title = document_row.get("title")
-            if not row_id or not row_slug:
-                raise RuntimeError("The canonical Payload posts inventory lacks a stable ID or route; article preparation is held for review.")
-            if row_id == previous_document_id or row_slug == slug and not previous_document_id:
-                continue
-            if not isinstance(row_title, str) or not row_title.strip():
-                raise RuntimeError("The canonical Payload posts inventory lacks a locale title; article preparation is held for review.")
-            if _normalized_article_title(row_title) != normalized_title:
-                continue
-            raise RuntimeError(
-                "A Payload post with the same normalized title exists at another route; the existing post and this article remain unchanged for owner review."
-            )
-    route_document: dict[str, Any] | None = None
-    if not previous_document_id:
-        route_document = _read_article_draft_by_slug(payload, slug, language)
-        if route_document is not None and not (
-            _is_exact_unlinked_article_draft(route_document, post)
-            or _is_empty_unlinked_article_draft(route_document, {"slug": slug}, source_id)
-        ):
-            raise RuntimeError(
-                "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
-            )
+    previous_editions = {
+        str(row.get("locale") or "").strip(): dict(row)
+        for row in (previous_sync.get("editions") or [])
+        if isinstance(row, Mapping) and str(row.get("locale") or "").strip()
+    }
+
     image_id, _selected_media, image_selection = _article_cover_image(context, payload, draft, meta)
     meta = {
         **dict(meta),
+        # Keep the whole selection, not a subset: it carries facts about why
+        # this cover is attachable, and rebuilding it from four keys silently
+        # dropped them so the next preparation could not use the same cover.
         "article_image_selection": {
+            **dict(image_selection),
             "media_id": image_id,
             "media_revision": str(image_selection.get("media_revision") or ""),
             "reason": str(image_selection.get("reason") or ""),
         },
     }
-    post["featuredImage"] = image_id
-    source_content_hash = canonical_hash({"locale": language, "post": {key: value for key, value in post.items() if key != "modifiedAt"}})
-    modified_at = (
-        str(previous_sync.get("modified_at") or "")
-        if previous_sync.get("source_content_hash") == source_content_hash
-        else str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+    public_base = str(site_url or "").rstrip("/")
+    author = str((context.get("config", {}).get("persona") or {}).get("name") or "Ada")
+    modified_at = str(
+        draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     )
-    if "modifiedAt" in post:
-        post["modifiedAt"] = modified_at
-    source_hash = canonical_hash({"locale": language, "post": post})
-    adopted_unlinked = False
-    existing: dict[str, Any] | None = None
-    if previous_document_id:
-        try:
-            existing = payload.read(
-                "posts", identifier=previous_document_id, identifier_kind="id", draft=True, locale=language
-            )
-        except Exception as exc:  # noqa: BLE001 - a previously linked ID must never create a duplicate
-            if getattr(exc, "status_code", None) == 404:
-                raise RuntimeError(
-                    "The previously linked Payload article is missing; Ada must reconcile it before creating another post."
-                ) from exc
-            raise
-        recorded_source_id = str(previous_sync.get("source_id") or source_id)
-        if (
-            str(existing.get("sourceId") or "") != recorded_source_id
-            or str(existing.get("slug") or "") != slug
-        ):
-            raise RuntimeError("The previously linked Payload article identity changed and must be reconciled before any update.")
-        if existing.get("published") is not False:
-            raise RuntimeError("The linked Payload article is no longer an unpublished draft; Ada will not modify published content.")
-    else:
-        existing = route_document
-        if existing is not None:
-            exact_candidate = _is_exact_unlinked_article_draft(existing, post)
-            empty_shell = _is_empty_unlinked_article_draft(existing, post, source_id)
-            if not (exact_candidate or empty_shell):
-                raise RuntimeError(
-                    "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
-                )
-            adopted_unlinked = True
 
-    document: dict[str, Any] | None = None
-    if existing is None:
-        try:
-            document = payload.create("posts", post, locale=language)
-        except Exception as exc:  # noqa: BLE001 - resolve only an exact route-conflict race
-            if getattr(exc, "status_code", None) != 409:
-                raise
-            existing = _read_article_draft_by_slug(payload, slug, language)
-            if existing is None or not (
-                _is_exact_unlinked_article_draft(existing, post)
-                or _is_empty_unlinked_article_draft(existing, post, source_id)
-            ):
-                raise RuntimeError(
-                    "The Payload route conflict is not an exact draft or empty schema draft; its content remains unchanged for owner review."
-                ) from exc
-            adopted_unlinked = True
-
-    if existing is not None:
-        document_id = str(existing.get("id") or "").strip()
-        current_revision = str(existing.get("_helloadaRevision") or "")
-        if not document_id or not re.fullmatch(r"sha256:[0-9a-f]{64}", current_revision):
-            raise RuntimeError("Payload article draft has no stable identifier and revision; it cannot be reconciled safely.")
-        if adopted_unlinked:
-            document = (
-                existing
-                if all(_payload_field_matches(key, existing.get(key), value) for key, value in post.items())
-                else payload.update(
-                    "posts", document_id, post, locale=language, expected_hash=current_revision,
-                )
-            )
-        else:
-            if str(previous_sync.get("draft_hash") or "") != current_revision:
-                raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
-            document = (
-                existing
-                if str(previous_sync.get("source_hash") or "") == source_hash
-                else payload.update(
-                    "posts", document_id, post, locale=language, expected_hash=current_revision,
-                )
-            )
-    if document is None:
-        raise RuntimeError("Payload did not create or reconcile the article draft")
-    document_id = str(document.get("id") or "").strip()
-    if not document_id:
-        raise RuntimeError("Payload did not return the article draft identifier")
-    verified = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
     verified_media = payload.read_media(image_id, identifier_kind="id", draft=True)
-    verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
-    metadata_value = verified_seo.get("description")
-    actual_source_id = str(document.get("sourceId") or "").strip()
-    checks = {
-        "document": bool(verified.get("id")),
-        "identity": bool(actual_source_id) and str(verified.get("sourceId") or "") == actual_source_id,
-        "slug": str(verified.get("slug") or "") == slug,
-        "title": str(verified.get("title") or "").strip() == title,
-        "summary": str(verified.get("summary") or "").strip() == summary,
-        "body": lexical_text(verified.get("body")) == plain,
-        "metadata": str(metadata_value or "").strip() == description,
-        "mainImage": (
-            _payload_relation_id(verified.get("featuredImage")) == image_id
-            and str(verified_media.get("_helloadaRevision") or "") == str(image_selection.get("media_revision") or "")
-            and bool(str(verified_media.get("alt") or "").strip())
-            and bool(str(verified_media.get("sourceId") or "").strip())
-            and str(verified_media.get("analysisStatus") or "").lower() == "ready"
-        ),
-    }
-    state = "ready_for_review" if all(checks.values()) else "blocked"
-    reason = "" if state == "ready_for_review" else "Payload article validation is incomplete: " + ", ".join(key for key, passed in checks.items() if not passed)
+    landed: list[dict[str, Any]] = []
+    for edition in editions:
+        locale = str(edition["locale"])
+        post = _article_edition_post(
+            edition=edition,
+            contract_fields=contract_fields,
+            modified_at=modified_at,
+            article_path=public_article_path(edition["slug"]),
+            public_base=public_base,
+            author=author,
+            meta=meta,
+        )
+        post["featuredImage"] = image_id
+        previous = previous_editions.get(locale) or (
+            previous_sync if str(previous_sync.get("locale") or "") == locale else {}
+        )
+        _article_edition_title_conflict(
+            payload,
+            locale=locale,
+            slug=str(post["slug"]),
+            title=str(post["title"]),
+            document_id=previous_document_id,
+        )
+        document, source_hash, source_content_hash = _land_article_edition(
+            payload,
+            post=post,
+            locale=locale,
+            previous=previous,
+            linked_document_id=previous_document_id,
+        )
+        previous_document_id = str(document.get("id") or "").strip()
+        verified = payload.read(
+            "posts", identifier=previous_document_id, identifier_kind="id", draft=True, locale=locale,
+        )
+        verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
+        metadata_value = verified_seo.get("description")
+        actual_source_id = str(document.get("sourceId") or "").strip()
+        plain = lexical_text(verified.get("body"))
+        checks = {
+            "document": bool(verified.get("id")),
+            "identity": bool(actual_source_id) and str(verified.get("sourceId") or "") == actual_source_id,
+            "slug": str(verified.get("slug") or "") == str(post["slug"]),
+            "title": str(verified.get("title") or "").strip() == str(post["title"]),
+            "summary": str(verified.get("summary") or "").strip() == str(post["summary"]),
+            "body": plain == lexical_text(post["body"]),
+            "metadata": bool(str(metadata_value or "").strip())
+                and str(metadata_value or "").strip() == str((post.get("seo") or {}).get("description") or "").strip(),
+            "mainImage": (
+                _payload_relation_id(verified.get("featuredImage")) == image_id
+                and str(verified_media.get("_helloadaRevision") or "") == str(image_selection.get("media_revision") or "")
+                and bool(str(verified_media.get("alt") or "").strip())
+                and bool(str(verified_media.get("sourceId") or "").strip())
+                # The article's own attributed cover is chosen and described by
+                # the writer, so completed library analysis is not what makes it
+                # attachable. A library image Ada selects still has to be read.
+                and (
+                    str(verified_media.get("analysisStatus") or "").lower() == "ready"
+                    or bool(image_selection.get("attributed"))
+                )
+            ),
+        }
+        landed.append({
+            "locale": locale,
+            "slug": str(verified.get("slug") or ""),
+            "document_id": previous_document_id,
+            "source_id": actual_source_id,
+            "draft_hash": str(verified.get("_helloadaRevision") or ""),
+            "source_hash": source_hash,
+            "source_content_hash": source_content_hash,
+            "modified_at": str(verified.get("modifiedAt") or modified_at),
+            "excerpt": str(verified.get("summary") or "").strip()[:500],
+            "meta_description": str(metadata_value or "").strip()[:320],
+            "primary_keyword": str(edition.get("primary_keyword") or "").strip()[:200],
+            "checks": checks,
+        })
+
+    primary = landed[0]
+    state = "ready_for_review" if all(all(row["checks"].values()) for row in landed) else "blocked"
+    reason = "" if state == "ready_for_review" else (
+        "Payload article validation is incomplete: "
+        + ", ".join(
+            f"{row['locale']}.{key}" for row in landed for key, passed in row["checks"].items() if not passed
+        )
+    )
     next_meta = dict(meta)
     next_meta.update({
         "payload_sync": {
             "state": state,
             "collection": "posts",
-            "document_id": document_id,
-            "draft_hash": str(verified.get("_helloadaRevision") or ""),
-            "source_hash": source_hash,
-            "source_content_hash": source_content_hash,
-            "modified_at": modified_at,
-            "source_id": actual_source_id,
-            "slug": slug,
-            "locale": language,
-            "excerpt": str(verified.get("summary") or "").strip()[:500],
-            "meta_description": str(metadata_value or "").strip()[:320],
-            "primary_keyword": primary_keyword,
+            "document_id": primary["document_id"],
+            "draft_hash": primary["draft_hash"],
+            "source_hash": primary["source_hash"],
+            "source_content_hash": primary["source_content_hash"],
+            "modified_at": primary["modified_at"],
+            "source_id": primary["source_id"],
+            "slug": primary["slug"],
+            "locale": primary["locale"],
+            "excerpt": primary["excerpt"],
+            "meta_description": primary["meta_description"],
+            "primary_keyword": primary["primary_keyword"],
             "featured_image": {
                 **(_article_image_preview(verified_media) or {}),
                 "revision": str(verified_media.get("_helloadaRevision") or ""),
@@ -971,16 +1213,27 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
                 "source_url": str(verified_media.get("sourceUrl") or verified_media.get("originalUrl") or ""),
                 "selection_reason": str(image_selection.get("reason") or ""),
             },
-            "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
+            # Every edition of the one article, each with its own route and its
+            # own exact draft revision. Publication and readback walk this list
+            # rather than assuming the site publishes in a single language.
+            "editions": [
+                {key: value for key, value in row.items() if key != "checks"}
+                for row in landed
+            ],
+            "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": {
+                "editions": state == "ready_for_review",
+                **{f"checks:{row['locale']}": all(row["checks"].values()) for row in landed},
+            }, "reason": reason},
         },
-        "payload_post_id": document_id,
-        "payload_source_id": actual_source_id,
-        "payload_slug": slug,
+        "payload_post_id": primary["document_id"],
+        "payload_source_id": primary["source_id"],
+        "payload_slug": primary["slug"],
     })
     memory.update_draft_meta(draft_id, next_meta)
     memory.record_action(
         "article",
-        f"draft #{draft_id} mirrored to the Payload blog as a {state.replace('_', ' ')} draft",
+        f"draft #{draft_id} mirrored to the Payload blog as a {state.replace('_', ' ')} draft "
+        f"({', '.join(row['locale'] for row in landed)})",
     )
 
 
