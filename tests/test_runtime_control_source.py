@@ -118,15 +118,19 @@ def test_concurrent_invocations_have_independent_snapshots(repository, tmp_path)
         try:
             with materialize_runtime_control(binding(repo, first), repo, scratch) as proof:
                 roots.append(proof.source_root)
-                barrier.wait(timeout=10)
+                barrier.wait(timeout=120)
                 assert proof.source_root.exists()
         except BaseException as exc:
             errors.append(exc)
     threads = [threading.Thread(target=invoke) for _ in range(2)]
     for thread in threads:
         thread.start()
+    # These deadlines exist to fail a deadlock, not to bound the work: the
+    # snapshot copies a template checkout into a temporary repository, and on a
+    # shared host that takes as long as the disk allows. A budget tighter than
+    # the work reports machine load as a concurrency defect.
     for thread in threads:
-        thread.join(timeout=15)
+        thread.join(timeout=120)
     assert not errors
     assert all(not thread.is_alive() for thread in threads)
     assert len(set(roots)) == 2
