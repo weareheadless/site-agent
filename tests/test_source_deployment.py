@@ -1525,6 +1525,105 @@ def test_the_latest_preview_can_be_asked_for_by_draft(tmp_path):
         service.close()
 
 
+def test_a_retired_receipt_never_hides_a_build_of_the_same_review(tmp_path):
+    """Pruning stamps the job it retires, and that stamp is not a new preview.
+
+    The live failure: retiring an old tree to free disk updated the retired
+    job seconds after the review's own build became ready, so "newest update
+    wins" handed the workspace the retired receipt, disabled publication, and
+    looped a build it already had.
+    """
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+    )
+    service._jobs["preview-retired"] = {
+        "id": "preview-retired", "mode": "compiled_preview", "status": "retired", "ok": False,
+        "error": "this preview was retired to free disk; the next request rebuilds it",
+        "branch": "preview", "commit": "b" * 40, "draft_id": 4, "worktree_path": "",
+        "runtime_base_path": "/p/tenant/preview-retired/1/sig",
+        "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-03T00:00:05+00:00",
+    }
+    service._jobs["preview-ready"] = {
+        "id": "preview-ready", "mode": "compiled_preview", "status": "ready",
+        "branch": "preview", "commit": "a" * 40, "draft_id": 4,
+        "runtime_base_path": "/p/tenant/preview-ready/1/sig",
+        "created_at": "2026-11-03T00:00:00+00:00", "updated_at": "2026-11-03T00:00:00+00:00",
+    }
+    try:
+        latest = service.latest_preview("preview", draft_id=4)
+        assert latest["id"] == "preview-ready"
+        assert latest["status"] == "ready"
+        assert latest["preview_url"] == "https://preview.example.test/p/tenant/preview-ready/1/sig"
+    finally:
+        service.close()
+
+
+def test_a_review_whose_only_preview_was_retired_reports_no_preview(tmp_path):
+    """A retired build is not a preview the workspace may frame or publish."""
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+    service._jobs["preview-retired"] = {
+        "id": "preview-retired", "mode": "compiled_preview", "status": "retired", "ok": False,
+        "error": "this preview was retired to free disk; the next request rebuilds it",
+        "branch": "preview", "commit": "a" * 40, "draft_id": 5, "worktree_path": "",
+        "runtime_base_path": "/p/tenant/preview-retired/1/sig",
+        "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-03T00:00:00+00:00",
+    }
+    try:
+        assert service.latest_preview("preview", draft_id=5) == {}
+    finally:
+        service.close()
+
+
+def test_requesting_a_disk_retired_preview_rebuilds_the_address_the_owner_has(tmp_path, monkeypatch):
+    """The retirement message promises a rebuild; the next request is that one."""
+
+    class Executor:
+        def __init__(self, *args, **kwargs):
+            self.submitted = []
+
+        def submit(self, function, *args):
+            self.submitted.append((function, args))
+            return None
+
+        def shutdown(self, **kwargs):
+            return None
+
+    monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
+    memory = Memory(tmp_path / "memory.db")
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+        memory=memory,
+    )
+    commit = "a" * 40
+    service._jobs["preview-1"] = {
+        "id": "preview-1", "mode": "compiled_preview", "status": "retired", "ok": False,
+        "error": "this preview was retired to free disk; the next request rebuilds it",
+        "branch": "preview", "commit": commit, "draft_id": 6, "worktree_path": "",
+        "runtime_base_path": "/p/tenant/preview-1/1799999999/signature",
+        "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-01T00:01:00+00:00",
+    }
+    try:
+        job = service.start({"branch": "preview", "commit": commit, "draft_id": 6,
+                             "mode": "compiled_preview"})
+        assert job["id"] == "preview-1"
+        assert job["status"] == "queued"
+        assert "error" not in job
+        assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
+        assert job["preview_url"] == (
+            "https://preview.example.test/p/tenant/preview-1/1799999999/signature")
+        assert service._executor.submitted == [
+            (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
+        ]
+    finally:
+        service.close()
+        memory.close()
+
+
 def test_the_final_message_is_the_last_completed_answer_not_a_fragment():
     from site_agent.hands.opencode_runner import _final_message_reply
 
