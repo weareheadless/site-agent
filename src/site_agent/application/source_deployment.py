@@ -3108,10 +3108,12 @@ class SourceDeploymentService:
                     # is a different preview: it renders different content.
                     and existing.get("payload_revision_set_hash", "") == payload_revision_set_hash
                     and existing.get("status") in (
-                        # A preview's address is its identity, so a failed or
-                        # interrupted attempt is retried in place instead of
-                        # being replaced by an address nobody has opened.
-                        {"queued", "running", "verifying", "ready", "deployed", "failed", "interrupted"}
+                        # A preview's address is its identity, so a failed,
+                        # interrupted or disk-retired attempt is rebuilt under the
+                        # same address instead of being replaced by an address
+                        # nobody has opened. "The next request rebuilds it" is
+                        # this request.
+                        {"queued", "running", "verifying", "ready", "deployed", "failed", "interrupted", "retired"}
                         if mode == _COMPILED_PREVIEW
                         # A release attempt is not an address: every retry is a
                         # new attempt with its own receipt.
@@ -3126,7 +3128,7 @@ class SourceDeploymentService:
                     ):
                         self._restart_preview(existing)
                         return dict(existing)
-                    if mode == _COMPILED_PREVIEW and existing.get("status") in {"failed", "interrupted"}:
+                    if mode == _COMPILED_PREVIEW and existing.get("status") in {"failed", "interrupted", "retired"}:
                         # The address is this preview's identity, not one
                         # attempt's: a retry rebuilds the same identity so the
                         # tab the owner already has recovers in place.
@@ -3609,12 +3611,20 @@ class SourceDeploymentService:
         mode: str | None = None,
         draft_id: int | None = None,
     ) -> dict[str, Any]:
-        """The most recent job, optionally for one exact review draft.
+        """The preview a reader can actually open, optionally for one review.
 
         A reader asking for its draft's preview must not be handed another
         draft's newer one: the workspace frames the address only when it names
         the draft and revision it is showing, so a global "latest" made every
         second draft look unpreviewed and queued a build for one already built.
+
+        Nor may it be handed a receipt that only records housekeeping. Pruning
+        the oldest trees to free disk stamps the retired job as freshly updated,
+        so "newest update wins" let a retired attempt outrank a build that was
+        still on disk for the same review; the workspace then received a status
+        it can never open, re-requested a build it already had, and disabled
+        publication forever. A review's preview is the job that can be served,
+        and when none can, the honest answer is that this review has no preview.
         """
         with self._lock:
             candidates = [
@@ -3623,9 +3633,14 @@ class SourceDeploymentService:
                 and (mode is None or value.get("mode") == mode)
                 and (draft_id is None or str(value.get("draft_id")) == str(draft_id))
             ]
-            if not candidates:
+            serveable = [
+                job for job in candidates
+                if str(job.get("status") or "") != "retired"
+                or self._compiled_preview_tree(job) is not None
+            ]
+            if not serveable:
                 return {}
-            job = max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
+            job = max(serveable, key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""))
             result = self._with_preview_url(job)
         # A reader asking for a preview is asking for one it can open. Starting
         # the process here makes the frame's own request fast; the job stays
