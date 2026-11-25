@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import faulthandler
 import itertools
+import json
 import signal
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -130,3 +132,50 @@ def install_stall_diagnostics(app: Any, log_path: Path) -> StallWatchdog:
 
     watchdog.start()
     return watchdog
+
+
+class StartupTimings:
+    """Record where a slow API start spends its time.
+
+    The release gate waits for ``/healthz``, and the socket does not bind until
+    the lifespan finishes, so a slow start is downtime for every tenant. One
+    release waited 183 seconds where three before it waited 58, 66 and 83, and
+    nothing recorded the phases: the cost could only be guessed at afterwards.
+    Each phase and each tenant is written beside the stall dumps, so the next
+    slow start names its own cost instead of sending the next reader back to
+    the process list.
+    """
+
+    def __init__(self) -> None:
+        self._started = time.monotonic()
+        self._last = self._started
+        self.phases: dict[str, float] = {}
+        self.tenants: dict[str, float] = {}
+
+    def mark(self, name: str) -> float:
+        """Close the phase that ran since the previous mark."""
+        now = time.monotonic()
+        seconds = now - self._last
+        self.phases[name] = round(self.phases.get(name, 0.0) + seconds, 3)
+        self._last = now
+        return seconds
+
+    def mark_tenant(self, tenant_id: str, seconds: float) -> None:
+        """Attribute inside a phase: this does not advance the phase clock."""
+        self.tenants[str(tenant_id)] = round(float(seconds), 3)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "schema": 1,
+            "recordedAt": datetime.now(timezone.utc).isoformat(),
+            "totalSeconds": round(time.monotonic() - self._started, 3),
+            "phases": dict(self.phases),
+            "tenants": dict(self.tenants),
+        }
+
+    def write(self, path: Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(path.name + ".tmp")
+        temporary.write_text(json.dumps(self.summary(), indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(path)

@@ -2035,6 +2035,7 @@ def create_workspace_api_app(
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
     bootstrap: WebsiteBootstrapService | None = None,
+    startup_timings: Any = None,
 ) -> FastAPI:
     """Create the single shared, tenant-aware API process."""
 
@@ -2074,8 +2075,21 @@ def create_workspace_api_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        registry.start()
+        registry.start(startup_timings)
+        if startup_timings is not None:
+            startup_timings.mark("tenant_start")
         await ensure_preview_host()
+        if startup_timings is not None:
+            # Write the report before the yielder returns: the socket binds
+            # after this lifespan, so a slow start is recorded on the way in,
+            # not after the wait it is meant to explain.
+            startup_timings.mark("preview_host")
+            report = Path(str(host_config.get("data_dir") or ".")).expanduser().resolve() / "logs" / "api-startup.json"
+            try:
+                startup_timings.write(report)
+            except OSError as exc:
+                print(f"[site-agent] startup timings not recorded: {exc}")
+            print(f"[site-agent] startup {json.dumps(startup_timings.summary(), sort_keys=True)}")
         try:
             yield
         finally:

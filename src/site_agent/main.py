@@ -800,7 +800,12 @@ def _cmd_api(args: argparse.Namespace) -> int:
     raw_env = dict(os.environ)
     config, _ = load(args.config, raw_env)
     raw_env = credential_environment(config, raw_env)
+    from .web.diagnostics import StartupTimings
+
+    timing = StartupTimings()
+    timing.mark("config")
     registry = TenantRegistry.from_config(config, raw_env)
+    timing.mark("registry")
     registration = TenantRegistrationService(config, raw_env, registry=registry)
     bootstrap = WebsiteBootstrapService(config, raw_env, registration=registration, registry=registry)
     api = config.get("workspace_api") or {}
@@ -812,7 +817,9 @@ def _cmd_api(args: argparse.Namespace) -> int:
         control_token=raw_env.get("HELLOADA_CONTROL_PLANE_TOKEN"),
         registration=registration,
         bootstrap=bootstrap,
+        startup_timings=timing,
     )
+    timing.mark("app")
     host = str(api.get("host") or "127.0.0.1")
     port = int(api.get("port") or 3014)
     from .web.diagnostics import install_stall_diagnostics

@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import sqlite3
+import time
 from types import SimpleNamespace
 from unittest import mock
 
@@ -4091,7 +4092,7 @@ def test_a_site_brings_its_own_preview_host(monkeypatch):
         def __init__(self, tenants):
             self.tenants = tenants
 
-        def start(self):
+        def start(self, timings=None):
             return None
 
         def close(self):
@@ -4123,3 +4124,62 @@ def test_the_workspace_links_to_the_tenants_own_site_not_the_platform():
     assert url_for({"url": "not-a-url", "preview_url": "https://x.example"}) == "https://x.example"
     assert url_for({}) == ""
     assert ChatService._public_site_url(SimpleNamespace(config={})) == ""
+
+
+def test_a_slow_tenant_start_names_the_tenant_that_costs_the_wait(tmp_path):
+    """The socket binds after every tenant starts; a slow one must be attributable."""
+    from site_agent.web.diagnostics import StartupTimings
+
+    tenants = {}
+    for name in ("alpha", "beta"):
+        memory = Memory(tmp_path / f"{name}.db")
+        tenants[name] = Tenant(name, {}, memory, None, {}, f"{name}-token")
+    registry = TenantRegistry(tenants)
+    timings = StartupTimings()
+    started = []
+    try:
+        registry._start_tenant = lambda tenant: (started.append(tenant.tenant_id), time.sleep(0.01))
+        registry.start(timings)
+        assert started == ["alpha", "beta"]
+        assert set(timings.tenants) == {"alpha", "beta"}
+        assert all(seconds >= 0.01 for seconds in timings.tenants.values())
+        # Attribution inside the start phase must not consume it: the phase
+        # clock is closed by mark(), not by mark_tenant().
+        timings.mark("tenant_start")
+        assert timings.phases["tenant_start"] >= 0.02
+    finally:
+        for tenant in tenants.values():
+            tenant.memory.close()
+
+
+def test_api_startup_records_its_phases_before_it_serves(tmp_path):
+    """A start that blocks the bind must leave its own account behind."""
+    from site_agent.web.diagnostics import StartupTimings
+    from site_agent.web.workspace import create_workspace_api_app
+
+    class Registry:
+        def __init__(self, tenants):
+            self.tenants = tenants
+
+        def start(self, timings=None):
+            for tenant_id in self.tenants:
+                timings.mark_tenant(tenant_id, 12.5)
+
+        def close(self):
+            return None
+
+    registry = Registry({"workspace-alpha": SimpleNamespace(tenant_id="workspace-alpha", config={})})
+    timings = StartupTimings()
+    app = create_workspace_api_app(
+        registry,
+        config={"data_dir": str(tmp_path)},
+        env={},
+        prefix="/v1/workspace",
+        startup_timings=timings,
+    )
+    with TestClient(app):
+        report = json.loads((tmp_path / "logs" / "api-startup.json").read_text())
+        assert report["tenants"] == {"workspace-alpha": 12.5}
+        assert set(report["phases"]) == {"tenant_start", "preview_host"}
+        assert report["phases"]["tenant_start"] >= 0
+        assert not list((tmp_path / "logs").glob("*.tmp"))
