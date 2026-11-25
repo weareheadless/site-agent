@@ -1,7 +1,8 @@
+import json
 import signal
 import time
 
-from site_agent.web.diagnostics import StallWatchdog, install_stall_diagnostics
+from site_agent.web.diagnostics import StallWatchdog, StartupTimings, install_stall_diagnostics
 
 
 def test_stalled_requests_are_dumped_with_their_threads(tmp_path):
@@ -47,3 +48,26 @@ def test_diagnostics_attach_to_an_app_without_touching_its_routes(tmp_path):
         assert app.middleware_added == [("http", "_track_stalls")]
     finally:
         watchdog.stop()
+
+
+def test_a_slow_start_names_its_own_phases_and_tenants(tmp_path):
+    """The next 183-second start must not be a guess again."""
+    timings = StartupTimings()
+    time.sleep(0.01)
+    timings.mark("config")
+    time.sleep(0.01)
+    timings.mark_tenant("inmersion-freediving", 0.25)
+    timings.mark("registry")
+
+    path = tmp_path / "logs" / "api-startup.json"
+    timings.write(path)
+
+    report = json.loads(path.read_text())
+    assert report["schema"] == 1
+    assert report["phases"]["config"] >= 0.01
+    assert report["phases"]["registry"] >= 0.01
+    # Attribution inside a phase never advances the phase clock.
+    assert report["tenants"] == {"inmersion-freediving": 0.25}
+    assert report["totalSeconds"] >= 0.02
+    assert report["recordedAt"]
+    assert not list(path.parent.glob("*.tmp"))

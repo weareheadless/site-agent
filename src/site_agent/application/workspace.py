@@ -16,6 +16,7 @@ import json
 import re
 import datetime
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -658,13 +659,18 @@ class TenantRegistry:
             return None
         return self.tenants.get(normalized)
 
-    def start(self) -> None:
+    def start(self, timings: Any = None) -> None:
         if self._started:
             return
         started: list[Tenant] = []
         try:
             for tenant in self.tenants.values():
+                began = time.monotonic()
                 self._start_tenant(tenant)
+                # Attribute inside the start phase: a host that outgrew one
+                # tenant's startup names the tenant that costs the wait.
+                if timings is not None:
+                    timings.mark_tenant(tenant.tenant_id, time.monotonic() - began)
                 started.append(tenant)
         except Exception:
             for tenant in reversed(started):
