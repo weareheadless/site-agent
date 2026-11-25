@@ -70,6 +70,11 @@ _PENDING_PUBLISH_STATUSES = frozenset({"pending", "approved", "publishing", "pub
 # build with its dependencies, so the newest few stay resumable and an older
 # one is rebuilt on request rather than left to fill the host.
 _PREVIEW_WORKTREE_LIMIT = 2
+# A review the owner has not decided yet is not cache: its preview is kept on
+# top of the newest builds, so leaving one draft for another does not cost a
+# recompile on return. Bounded so a pile of undecided drafts cannot spend the
+# host.
+_PREVIEW_PENDING_REVIEW_LIMIT = 2
 # Disk a compiled preview may never consume. The host builds and releases every
 # tenant, and a cache that fills the disk stops all of them, so below this the
 # only preview kept is the one a runtime is serving.
@@ -379,6 +384,15 @@ class SourceDeploymentService:
         address reliable; that only works while the host holds a bounded number
         of them. The oldest are removed and rebuilt on request, never the tree a
         runtime is currently serving, and never more than the host can hold.
+
+        A review the owner can still publish is not cache. Only one preview
+        process runs at a time, so opening a second draft stops the first one's
+        process: before this, the review the owner had just left fell back to
+        being "one of the older trees" and was retired behind them, and coming
+        back cost a full recompile. The newest preview of the most recent
+        pending reviews is kept in addition to the newest previews, unless the
+        host is below its disk reserve, where nothing but the served process
+        may survive.
         """
         try:
             checkout = self._local_checkout()
@@ -401,9 +415,28 @@ class SourceDeploymentService:
             and self._compiled_preview_tree(job) is not None
         ]
         previews.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+        kept = {str(job.get("id") or "") for job in previews[:keep]}
+        if keep:
+            # Sorted newest first, so the first job seen for a pending review is
+            # the preview that review would be shown.
+            pending = self._pending_review_draft_ids()
+            protected: set[int] = set()
+            for job in previews:
+                try:
+                    draft_id = int(job.get("draft_id") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if draft_id not in pending or draft_id in protected:
+                    continue
+                if len(protected) >= _PREVIEW_PENDING_REVIEW_LIMIT:
+                    break
+                protected.add(draft_id)
+                kept.add(str(job.get("id") or ""))
         retired = 0
-        for job in previews[keep:]:
+        for job in previews:
             job_id = str(job.get("id") or "")
+            if job_id in kept:
+                continue
             if self._runtime_alive(job_id):
                 continue
             path = self._compiled_preview_tree(job)
@@ -454,6 +487,31 @@ class SourceDeploymentService:
                     f"retired {retired} preview worktrees; kept the {keep} newest compiled previews",
                 )
             self._persist()
+
+    def _pending_review_draft_ids(self) -> set[int]:
+        """Reviews the owner can still publish or discard.
+
+        A review is a decision in progress, not a cached build: its preview is
+        kept while it waits for the owner, even when newer builds push it out of
+        the newest few.
+        """
+        if self.memory is None:
+            return set()
+        try:
+            drafts = self.memory.list_drafts(limit=_PREVIEW_PENDING_REVIEW_LIMIT * 8)
+        except Exception:  # noqa: BLE001 - a cache sweep never fails a build
+            return set()
+        pending: set[int] = set()
+        for draft in drafts:
+            if str(draft.get("status") or "") != "pending":
+                continue
+            if str(draft.get("kind") or "") not in {"design", "merge", "rollback"}:
+                continue
+            try:
+                pending.add(int(draft["id"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return pending
 
     @staticmethod
     def _compiled_preview_tree(job: Mapping[str, Any]) -> Path | None:

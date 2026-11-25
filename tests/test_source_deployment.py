@@ -1500,6 +1500,116 @@ def test_a_host_without_disk_room_keeps_only_the_running_preview(tmp_path, monke
         memory.close()
 
 
+def test_a_pending_reviews_preview_is_kept_behind_newer_builds(tmp_path, monkeypatch):
+    """Leaving a draft for another one must not cost a recompile on return."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 100 * 1024 ** 3})())
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    review_id = memory.save_draft("Depths", "AIDA 3 24-30 m", kind="merge")
+    trees = []
+    for index in range(3):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    # The review the owner can still publish owns the oldest tree here.
+    service._jobs["job-0"]["draft_id"] = review_id
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-0"]["status"] == "ready"
+        assert service._jobs["job-0"]["worktree_path"] == str(trees[0])
+        assert trees[0].is_dir()
+        assert service._jobs["job-1"]["status"] == "ready"
+        assert service._jobs["job-2"]["status"] == "ready"
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_a_review_the_owner_already_decided_is_ordinary_cache(tmp_path, monkeypatch):
+    """Once decided, a preview is a build like any other and may be retired."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 100 * 1024 ** 3})())
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    live_id = memory.save_draft("Depths", "AIDA 3 24-30 m", kind="merge")
+    memory.update_draft_status(live_id, "live")
+    trees = []
+    for index in range(3):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    service._jobs["job-0"]["draft_id"] = live_id
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-0"]["status"] == "retired"
+        assert not trees[0].exists()
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_undecided_reviews_are_bounded_so_they_cannot_spend_the_host(tmp_path, monkeypatch):
+    """Protection is for the reviews still in play, not for a pile of drafts."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 100 * 1024 ** 3})())
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    trees = []
+    for index in range(5):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    # Three pending reviews, each older than the newest two builds.
+    for index in (0, 1, 2):
+        service._jobs[f"job-{index}"]["draft_id"] = memory.save_draft(f"Review {index}", "", kind="merge")
+    try:
+        service._prune_preview_worktrees()
+        # The two newest pending reviews and the two newest builds survive; the
+        # third pending review is rebuilt on request like any other tree.
+        assert service._jobs["job-2"]["status"] == "ready"
+        assert service._jobs["job-1"]["status"] == "ready"
+        assert service._jobs["job-0"]["status"] == "retired"
+        assert service._jobs["job-3"]["status"] == "ready"
+        assert service._jobs["job-4"]["status"] == "ready"
+    finally:
+        service.close()
+        memory.close()
+
+
 def test_the_latest_preview_can_be_asked_for_by_draft(tmp_path):
     """A second draft's newer preview must not hide the one being reviewed."""
     service = source_deployment.SourceDeploymentService(
