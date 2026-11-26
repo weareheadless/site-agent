@@ -8,6 +8,7 @@ token or personal Google identity is ever sent to this module.
 from __future__ import annotations
 
 import datetime
+import re
 from collections.abc import Mapping
 from typing import Any, Callable
 
@@ -70,6 +71,14 @@ def _ga_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 values[metrics[index]] = _parse_number(item.get("value"))
         rows.append(values)
     return rows
+
+
+def _iso_date(value: Any) -> str:
+    """GA4's `YYYYMMDD` date as the `YYYY-MM-DD` every reader compares."""
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d{8}", raw):
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+    return raw
 
 
 def _gsc_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -256,8 +265,16 @@ class GoogleAnalyticsService:
 
         # A date series is one row per day: the trend limit must cover the whole
         # requested window or a long range silently loses its early days.
-        daily = read("trend", ("sessions", "activeUsers", "screenPageViews", "eventCount"), "date",
-                     key=None, limit=trend_limit)
+        #
+        # GA4 names a date `20261108`, not `2026-11-08`, and every reader of this
+        # contract compares ISO dates. Left as sent, each daily row fell outside
+        # the requested window and the sessions chart painted zero beside real
+        # weekly totals.
+        daily = [
+            {**row, "date": _iso_date(row.get("date"))}
+            for row in read("trend", ("sessions", "activeUsers", "screenPageViews", "eventCount"),
+                            "date", key=None, limit=trend_limit)
+        ]
         pages = read("pages", ("screenPageViews", "sessions"), "landingPagePlusQueryString", key="path")
         for row in pages:
             row["views"] = row.get("screenPageViews")

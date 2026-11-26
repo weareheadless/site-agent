@@ -13,10 +13,11 @@ class FakeGoogle:
         dimensions = [item["name"] for item in body.get("dimensions", [])]
         metrics = [item["name"] for item in body.get("metrics", [])]
         if dimensions == ["date"]:
+            # GA4 answers a date as YYYYMMDD, not as ISO text.
             return {
                 "dimensionHeaders": [{"name": "date"}],
                 "metricHeaders": [{"name": name, "type": "TYPE_INTEGER"} for name in metrics],
-                "rows": [{"dimensionValues": [{"value": "2026-09-28"}], "metricValues": [{"value": "4"} for _ in metrics]},],
+                "rows": [{"dimensionValues": [{"value": "20260928"}], "metricValues": [{"value": "4"} for _ in metrics]},],
             }
         if dimensions:
             # A real dimension answer carries one value per declared dimension.
@@ -171,6 +172,7 @@ def test_google_analytics_report_answers_with_the_canonical_growth_contract() ->
     assert result["gsc"]["status"] == "available"
     history = result["ga4"]["history"]
     assert history["coverage"]["endDate"] == result["window"]["endDate"]
+    # The contract's dates are ISO, because every reader compares them to one.
     assert history["daily"] and history["daily"][0]["date"] == "2026-09-28"
     assert {row["path"] for row in history["pages"]} == {"landingPagePlusQueryString"}
     assert history["pages"][0]["views"] == 5
