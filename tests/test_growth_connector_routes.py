@@ -25,7 +25,7 @@ class Connector:
         return {"schemaVersion": "1.0", "siteId": operation["siteId"], "projectId": "project-1",
                 "opportunityId": opportunity_id, "status": "accepted"}
 
-    def connector_task(self, site_id, task_id):
+    def connector_task(self, site_id, task_id, fresh=False):
         self.calls.append(("task", site_id, task_id))
         return {"schemaVersion": "1.0", "siteId": site_id, "projectId": "project-1", "task": {"id": task_id}}
 
@@ -155,7 +155,7 @@ class FoundConnector(Connector):
         task_id = f"task-{opportunity_id}"
         return {"opportunityId": opportunity_id, "status": "accepted", "taskId": task_id}
 
-    def connector_task(self, site_id, task_id):
+    def connector_task(self, site_id, task_id, fresh=False):
         return {"task": {"id": task_id, "status": self.status.get(task_id, "todo")}}
 
     def connector_confirm_task(self, task_id, confirmation):

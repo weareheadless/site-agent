@@ -10,6 +10,7 @@ from site_agent.application.growth_open import (
     deliver_tasks,
     open_group,
     open_opportunity,
+    pending_releases,
     publication_hook,
     read_bindings,
 )
@@ -53,7 +54,7 @@ class Connector:
         row["tasks"] = [task]
         return {"opportunityId": opportunity_id, "status": "accepted", "taskId": task["id"]}
 
-    def connector_task(self, site_id, task_id):
+    def connector_task(self, site_id, task_id, fresh=False):
         return {"task": {"id": task_id, "status": self.status.get(task_id, "todo")}}
 
     def connector_confirm_task(self, task_id, confirmation):
@@ -178,7 +179,56 @@ def test_a_queued_release_waits_for_its_own_receipt(tmp_path):
     memory.close()
 
 
-def test_read_projects_the_five_owner_states(tmp_path):
+def test_a_live_draft_settles_a_binding_the_ledger_left_working(tmp_path):
+    """A shipped change must not keep reading as work in progress."""
+    memory = Memory(tmp_path / "memory.db")
+    connector = Connector([_opportunity("opp-1")])
+    tenant = _tenant(memory)
+    opened = open_opportunity(connector, memory, tenant, opportunity_id="opp-1", site_id="site-1",
+                             generation=4, actor="payload:astrid:1", enqueue=_enqueue(memory))
+    draft = memory.save_draft(title="Fix schema", body="", kind="merge", meta={})
+    bind_draft(memory, draft, opened["jobId"])
+    # The approval shipped, but nothing wrote the ledger's flag: the live draft
+    # is the only evidence the change is done.
+    memory.update_draft_status(draft, "live")
+    board = read_bindings(memory, {})
+    assert board["bindings"][0]["state"] == "live"
+    assert board["bindings"][0]["draftStatus"] == "live"
+    memory.close()
+
+
+def test_a_live_draft_is_reconciled_to_its_revision_and_delivered(tmp_path):
+    """Published and done means the task is delivered, with its commit."""
+    memory = Memory(tmp_path / "memory.db")
+    connector = Connector([_opportunity("opp-1")])
+    tenant = _tenant(memory)
+    opened = open_opportunity(connector, memory, tenant, opportunity_id="opp-1", site_id="site-1",
+                             generation=4, actor="payload:astrid:1", enqueue=_enqueue(memory))
+    draft = memory.save_draft(title="Fix schema", body="", kind="merge", meta={})
+    bind_draft(memory, draft, opened["jobId"])
+    memory.update_draft_status(draft, "live")
+    reconcile_calls = []
+
+    def reconcile() -> None:
+        from site_agent.application.growth_open import deliver_tasks, pending_releases
+        rows = pending_releases(memory)
+        reconcile_calls.extend(str(row.get("taskId")) for row in rows)
+        deliver_tasks(connector, memory, site_id="site-1", generation=4,
+                      tasks=[dict(item) for row in rows for item in row.get("tasks") or []],
+                      actor="owner", reference=f"growth:draft:{draft}",
+                      links={"commit": "87f6f7c3afecd220b84b5249bfe9926ac77f0d50"})
+
+    board = read_bindings(memory, {}, reconcile=reconcile)
+    binding = board["bindings"][0]
+    assert reconcile_calls == ["task-opp-1"]
+    assert binding["state"] == "live"
+    assert binding["links"]["commit"] == "87f6f7c3afecd220b84b5249bfe9926ac77f0d50"
+    assert connector.status["task-opp-1"] == "delivered"
+
+    # Settled work is not offered again on the next read.
+    assert pending_releases(memory) == []
+    memory.close()
+
     memory = Memory(tmp_path / "memory.db")
     connector = Connector([_opportunity("opp-open"), _opportunity("opp-working"), _opportunity("opp-live"),
                            _opportunity("opp-resolved")])
@@ -193,4 +243,38 @@ def test_read_projects_the_five_owner_states(tmp_path):
     assert states["opp-working"] == "working"
     assert states["opp-live"] == "live"
     assert states["opp-resolved"] == "resolved"
+    memory.close()
+
+
+def test_a_published_binding_names_the_github_revision_it_shipped(tmp_path):
+    """A done change links the exact commit, not a bare hash."""
+    memory = Memory(tmp_path / "memory.db")
+    config = {"site": {"repository": "weareheadless/example-site", "url": "https://example.test"}}
+    ledger = {"version": 1, "bindings": {"task-1": {
+        "taskId": "task-1", "opportunityId": "opp-1", "title": "Fix schema",
+        "conversationId": 7, "jobId": 3, "draftId": 9, "state": "live",
+        "links": {"commit": "87f6f7c3afecd220b84b5249bfe9926ac77f0d50"},
+    }}, "groups": {}}
+    memory.kv_set("crawlseo_growth_open", ledger)
+
+    board = read_bindings(memory, config)
+    links = board["bindings"][0]["links"]
+
+    assert links["revision"] == "87f6f7c3afecd220b84b5249bfe9926ac77f0d50"
+    assert links["commit"] == (
+        "https://github.com/weareheadless/example-site/commit/"
+        "87f6f7c3afecd220b84b5249bfe9926ac77f0d50"
+    )
+    memory.close()
+
+
+def test_a_link_that_is_already_an_address_is_not_rewritten(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    config = {"site": {"repository": "weareheadless/example-site"}}
+    address = "https://github.com/weareheadless/example-site/commit/abc1234"
+    memory.kv_set("crawlseo_growth_open", {"version": 1, "groups": {}, "bindings": {"task-1": {
+        "taskId": "task-1", "opportunityId": "opp-1", "draftId": None, "state": "live",
+        "links": {"commit": address},
+    }}})
+    assert read_bindings(memory, config)["bindings"][0]["links"]["commit"] == address
     memory.close()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
+import time
 from datetime import date, datetime
 from collections.abc import Mapping
 from typing import Any
@@ -29,6 +31,31 @@ class CrawlSEORequestNotDispatched(CrawlSEOApplicationError):
     """A locally rejected request that is proven not to have reached a provider."""
 
 
+# Reads that merely render an owner screen are cached briefly, because every
+# Growth view otherwise paid the full connector round trip (and the MCP session
+# handshake behind it) before it could draw anything. The window is short enough
+# that a recrawl is visible on the next visit, and mutations clear the cache, so
+# an owner never reads a stale board they just changed.
+_CONNECTOR_CACHE_SECONDS = 60.0
+# Only reads that exist to draw a screen are cached. A read that feeds a
+# mutation opts out: `connector_task(fresh=True)` is the delivery path, because
+# it sends the status back as `expectedStatus` and a cached value there would
+# hand the connector something it has already moved past.
+_CONNECTOR_CACHED_READS = frozenset({
+    "connector_capabilities",
+    "connector_opportunities",
+    "connector_analytics",
+    "connector_context",
+    "connector_budget",
+    "connector_policy",
+    "connector_actions",
+    "connector_findings",
+    "connector_task",
+    "project",
+    "latest_research_report",
+})
+
+
 def _bounded_int(value: int, field_name: str, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
         raise CrawlSEOApplicationError(f"CrawlSEO {field_name} must be between 1 and {maximum}")
@@ -38,11 +65,44 @@ def _bounded_int(value: int, field_name: str, maximum: int) -> int:
 class CrawlSEOApplicationService:
     """Validate provider data and expose only known application operations."""
 
-    def __init__(self, provider: CrawlSEOReadProvider) -> None:
+    def __init__(self, provider: CrawlSEOReadProvider, *, cache_seconds: float = _CONNECTOR_CACHE_SECONDS) -> None:
         self.provider = provider
+        self.cache_seconds = max(0.0, float(cache_seconds))
+        self._cache: dict[tuple[Any, ...], tuple[float, dict[str, Any]]] = {}
+        self._cache_lock = threading.Lock()
+
+    def _cached(self, name: str, key: tuple[Any, ...], read: Any) -> dict[str, Any]:
+        """Serve one connector read from a short shared cache.
+
+        Only validated results are cached, and only reads: a write always clears
+        the cache first, so a decision the owner just made is never answered from
+        before their click.
+        """
+        if self.cache_seconds <= 0 or name not in _CONNECTOR_CACHED_READS:
+            return read()
+        cache_key = (name, *key)
+        now = time.monotonic()
+        with self._cache_lock:
+            hit = self._cache.get(cache_key)
+            if hit is not None and now - hit[0] < self.cache_seconds:
+                return json.loads(json.dumps(hit[1]))
+        result = read()
+        with self._cache_lock:
+            self._cache[cache_key] = (now, json.loads(json.dumps(result)))
+            # A long-lived process reads a bounded set of keys per site; drop
+            # anything already expired instead of growing without limit.
+            for stale in [item for item, (stamp, _) in self._cache.items()
+                          if now - stamp >= self.cache_seconds]:
+                self._cache.pop(stale, None)
+        return result
+
+    def invalidate_cache(self) -> None:
+        """Forget every cached read after a mutation."""
+        with self._cache_lock:
+            self._cache.clear()
 
     def project(self) -> dict[str, Any]:
-        result = self._read("project", self.provider.project)
+        result = self._cached("project", (), lambda: self._read("project", self.provider.project))
         return self._as_contract(CrawlSEOProject, result, "project").to_dict()
 
     def search_summary(self, days: int = 28, query_limit: int = 10) -> dict[str, Any]:
@@ -153,7 +213,10 @@ class CrawlSEOApplicationService:
         return self._safe_mapping(result, "research report", max_bytes=150_000)
 
     def latest_research_report(self) -> dict[str, Any]:
-        result = self._read("latest research report", self.provider.latest_research_report)
+        result = self._cached(
+            "latest_research_report", (),
+            lambda: self._read("latest research report", self.provider.latest_research_report),
+        )
         return self._safe_mapping(result, "latest research report", max_bytes=150_000)
 
     def intelligence_snapshot(self, *, site_id: str, workspace_id: str, project_id: str) -> dict[str, Any]:
@@ -278,7 +341,11 @@ class CrawlSEOApplicationService:
         operation = getattr(self.provider, "connector_capabilities", None)
         if not callable(operation):
             raise CrawlSEOApplicationError("CrawlSEO connector capabilities is unsupported by this configured connector")
-        raw = self._read("connector capabilities", lambda: operation(site_id=site_id))
+        raw = self._cached(
+            "connector_capabilities",
+            (str(site_id or ""),),
+            lambda: self._read("connector capabilities", lambda: operation(site_id=site_id)),
+        )
         result = self._safe_mapping(raw, "connector capabilities", max_bytes=200_000)
         # Scope names are non-secret authorization metadata. The generic payload
         # redactor treats the word "credential" as sensitive, so preserve only
@@ -331,8 +398,12 @@ class CrawlSEOApplicationService:
         operation = getattr(self.provider, "connector_findings", None)
         if not callable(operation):
             raise CrawlSEOApplicationError("CrawlSEO connector findings are unsupported by this client")
-        result = self._read("connector findings", lambda: operation(site_id=site_id, run_id=run_id,
-            since=since, limit=limit, cursor=cursor))
+        result = self._cached(
+            "connector_findings",
+            (site_id, str(run_id or ""), str(since or ""), str(limit), str(cursor or "")),
+            lambda: self._read("connector findings", lambda: operation(site_id=site_id, run_id=run_id,
+                since=since, limit=limit, cursor=cursor)),
+        )
         response = self._safe_mapping(result, "connector findings", max_bytes=2_000_000)
         if response.get("schemaVersion") != "1.0" or response.get("siteId") != site_id or response.get("projectId") != capabilities.get("projectId"):
             raise CrawlSEOApplicationError("CrawlSEO findings project/site identity does not match the selected binding")
@@ -379,11 +450,19 @@ class CrawlSEOApplicationService:
             raise CrawlSEOApplicationError("invalid CrawlSEO opportunity counts")
         return result
 
-    def connector_task(self, site_id: str, task_id: str) -> dict[str, Any]:
+    def connector_task(self, site_id: str, task_id: str, *, fresh: bool = False) -> dict[str, Any]:
+        """Read one task's state.
+
+        `fresh` is for a caller that is about to send this status back as
+        `expectedStatus`: a cached read there could name a value the connector
+        has already moved past and turn a successful delivery into a retry loop.
+        Drawing an owner screen is the opposite case and uses the cache.
+        """
         site_id = self._bounded_text(site_id, "site id", 120)
         task_id = self._bounded_text(task_id, "task id", 160)
         binding = self._opportunity_binding(site_id, "tasks.read")
-        result = self._connector_call("connector_task", "task", site_id=site_id, task_id=task_id)
+        read = lambda: self._read("task", lambda: self.provider.connector_task(site_id=site_id, task_id=task_id))
+        result = read() if fresh else self._cached("connector_task", (site_id, task_id), read)
         self._assert_identity(result, binding, site_id, "task")
         task = result.get("task")
         if not isinstance(task, Mapping) or task.get("id") != task_id:
@@ -903,7 +982,15 @@ class CrawlSEOApplicationService:
         operation = getattr(self.provider, method, None)
         if not callable(operation):
             raise CrawlSEOApplicationError(f"CrawlSEO {label} is unsupported by this configured connector")
-        result = self._read(label, lambda: operation(**kwargs))
+        if method not in _CONNECTOR_CACHED_READS:
+            # A write makes every cached read suspect: the owner changed
+            # something, so the next read must reach the connector.
+            self.invalidate_cache()
+        result = self._cached(
+            method,
+            tuple(sorted((str(key), repr(value)) for key, value in kwargs.items())),
+            lambda: self._read(label, lambda: operation(**kwargs)),
+        )
         return self._safe_mapping(result, label, max_bytes=max_bytes)
 
     @staticmethod
