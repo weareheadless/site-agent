@@ -90,6 +90,35 @@ def _gsc_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _gsc_dimension_rows(payload: Mapping[str, Any], dimensions: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Read a multi-dimension Search Console answer by dimension name.
+
+    The canonical Growth contract names its columns (`query`, `page`, `date`)
+    rather than positional `keys`, because two dimensions per row are needed
+    for any dated view. Positional keys made every dated read impossible.
+    """
+    rows: list[dict[str, Any]] = []
+    for row in payload.get("rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        keys = [str(value) for value in row.get("keys") or []]
+        values: dict[str, Any] = {}
+        for index, name in enumerate(dimensions):
+            if index < len(keys):
+                # Search Console names the column `page`; the Growth contract
+                # names it `url` because it is a full address, not a path. One
+                # alias here beats making every reader know both spellings.
+                values["url" if name == "page" else name] = keys[index]
+        values.update({
+            "clicks": round(float(row.get("clicks") or 0), 2),
+            "impressions": int(float(row.get("impressions") or 0)),
+            "ctr": round(float(row.get("ctr") or 0), 4),
+            "position": round(float(row.get("position") or 0), 1),
+        })
+        rows.append(values)
+    return rows
+
+
 class GoogleAnalyticsService:
     """Read the full reporting surface for one provisioned tenant entity."""
 
@@ -116,11 +145,16 @@ class GoogleAnalyticsService:
         return fallback
 
     @staticmethod
-    def _window(days: int) -> dict[str, str | int]:
+    def _window(days: int | None) -> dict[str, str | int]:
         # Google Search Console exposes up to roughly 16 months of Search
         # Analytics history. Keep the owner workspace within that window and
         # let the UI request the same long-range history for GA4.
-        bounded = max(7, min(int(days), 540))
+        #
+        # The route's `days` is optional and reached here as None, which made
+        # `int(days)` raise and turned every default-range analytics read into a
+        # 500: the whole Google panel looked broken while the data was fine. An
+        # omitted range is the default range, not an error.
+        bounded = max(7, min(int(days) if days is not None else 28, 540))
         end = datetime.date.today() - datetime.timedelta(days=1)
         start = end - datetime.timedelta(days=bounded - 1)
         previous_end = start - datetime.timedelta(days=1)
@@ -172,8 +206,11 @@ class GoogleAnalyticsService:
         }
         if dimensions:
             body["dimensions"] = list(dimensions)
-        rows = _gsc_rows(self.google.run_search_console_report(property_url, body))
-        return sorted(rows, key=lambda row: row.get("key", "")) if dimensions == ("date",) else rows
+        payload = self.google.run_search_console_report(property_url, body)
+        rows = _gsc_dimension_rows(payload, dimensions) if dimensions else _gsc_rows(payload)
+        if dimensions == ("date",):
+            return sorted(rows, key=lambda row: row.get("date", ""))
+        return rows
 
     @staticmethod
     def _attempt(
@@ -188,7 +225,56 @@ class GoogleAnalyticsService:
             errors[name] = str(exc)[:300]
             return fallback
 
-    def report(self, days: int = 28) -> dict[str, Any]:
+    def _ga4_dimensions(self, property_id: str, window: Mapping[str, Any], errors: dict[str, str]) -> dict[str, Any]:
+        """Read each GA4 dimension once and project it to the Growth keys.
+
+        The workspace reads named columns (`channel`, `path`, `event`), not GA4's
+        API dimension names, and it reads a `history` block rather than the raw
+        report. Both projections come from the same read: asking GA4 the same
+        question once per projection doubled every analytics page load.
+        """
+        start, end = str(window["startDate"]), str(window["endDate"])
+        trend_limit = max(100, min(int(window["days"]) + 7, 600))
+
+        def read(name: str, metrics: tuple[str, ...], dimension: str, *, key: str | None,
+                 limit: int = 250) -> list[dict[str, Any]]:
+            rows = self._attempt(
+                errors,
+                f"ga4.{name}",
+                lambda: self._ga_report(property_id, start=start, end=end, metrics=metrics,
+                                        dimensions=(dimension,), limit=limit),
+                [],
+            )
+            projected = []
+            for row in rows or []:
+                if key is None:
+                    projected.append(dict(row))
+                    continue
+                label = str(row.get(dimension) or "")
+                projected.append({key: label, dimension: label, **row})
+            return projected
+
+        # A date series is one row per day: the trend limit must cover the whole
+        # requested window or a long range silently loses its early days.
+        daily = read("trend", ("sessions", "activeUsers", "screenPageViews", "eventCount"), "date",
+                     key=None, limit=trend_limit)
+        pages = read("pages", ("screenPageViews", "sessions"), "landingPagePlusQueryString", key="path")
+        for row in pages:
+            row["views"] = row.get("screenPageViews")
+        events = read("events", ("eventCount",), "eventName", key="event")
+        for row in events:
+            row["count"] = row.get("eventCount")
+        return {
+            "coverage": {"startDate": start, "endDate": end, "days": window["days"]},
+            "daily": daily,
+            "pages": pages,
+            "events": events,
+            "channels": read("channels", ("sessions", "activeUsers", "engagementRate"), "sessionDefaultChannelGroup", key="channel"),
+            "devices": read("devices", ("sessions", "activeUsers"), "deviceCategory", key="device"),
+            "countries": read("countries", ("sessions", "activeUsers"), "country", key="country"),
+        }
+
+    def report(self, days: int | None = 28) -> dict[str, Any]:
         window = self._window(days)
         property_id = self._value("ga4_property_id")
         property_url = self._value("gsc_property") or self._value("site_url")
@@ -215,42 +301,26 @@ class GoogleAnalyticsService:
                 {},
             )
             ga4["overview"] = {"current": current, "previous": previous, "deltaPct": _delta(current, previous)}
-            ga4["trend"] = self._attempt(
-                errors,
-                "ga4.trend",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "screenPageViews"), dimensions=("date",), limit=trend_limit),
-                [],
-            )
-            ga4["channels"] = self._attempt(
-                errors,
-                "ga4.channels",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "engagementRate"), dimensions=("sessionDefaultChannelGroup",)),
-                [],
-            )
-            ga4["pages"] = self._attempt(
-                errors,
-                "ga4.pages",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("screenPageViews", "sessions"), dimensions=("landingPagePlusQueryString",)),
-                [],
-            )
-            ga4["events"] = self._attempt(
-                errors,
-                "ga4.events",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("eventCount",), dimensions=("eventName",)),
-                [],
-            )
-            ga4["devices"] = self._attempt(
-                errors,
-                "ga4.devices",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("deviceCategory",)),
-                [],
-            )
-            ga4["countries"] = self._attempt(
-                errors,
-                "ga4.countries",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("country",)),
-                [],
-            )
+            # The Growth panel reads one contract whichever authority answered.
+            # GA4 names its dimensions after its own API and returns no history
+            # block, so without this projection the panel received nothing it
+            # could render and looked like missing data.
+            history = self._ga4_dimensions(property_id, window, errors)
+            ga4["status"] = "available"
+            ga4["trend"] = history["daily"]
+            ga4["channels"] = history["channels"]
+            ga4["pages"] = history["pages"]
+            ga4["events"] = history["events"]
+            ga4["devices"] = history["devices"]
+            ga4["countries"] = history["countries"]
+            ga4["history"] = history
+            ga4["data"] = {
+                "current_week": current,
+                "previous_week": previous,
+                "delta_pct": ga4["overview"]["deltaPct"],
+                "coverage": history["coverage"],
+                "history": history,
+            }
 
         if property_url:
             current = self._attempt(
@@ -266,19 +336,43 @@ class GoogleAnalyticsService:
                 {},
             )
             gsc["overview"] = {"current": current, "previous": previous, "deltaPct": _delta(current, previous)}
+            # Search Console answers at most three dimensions per request and
+            # the panel needs a date on every row, so each dimension group is
+            # read as its own dated query rather than one impossible
+            # combination that made every Search Console panel empty.
+            gsc["queries"] = self._attempt(
+                errors,
+                "gsc.queries",
+                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date", "query"), limit=trend_limit),
+                [],
+            )
+            gsc["devices"] = self._attempt(
+                errors,
+                "gsc.devices",
+                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date", "device"), limit=trend_limit),
+                [],
+            )
+            gsc["countries"] = self._attempt(
+                errors,
+                "gsc.countries",
+                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date", "country"), limit=trend_limit),
+                [],
+            )
+            gsc["pages"] = self._attempt(
+                errors,
+                "gsc.pages",
+                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date", "page"), limit=trend_limit),
+                [],
+            )
             gsc["trend"] = self._attempt(
                 errors,
                 "gsc.trend",
                 lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date",), limit=trend_limit),
                 [],
             )
-            for key, dimension in (("queries", "query"), ("pages", "page"), ("devices", "device"), ("countries", "country")):
-                gsc[key] = self._attempt(
-                    errors,
-                    f"gsc.{key}",
-                    lambda dimension=dimension: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=(dimension,)),
-                    [],
-                )
+            gsc["status"] = "available"
+            gsc["coverage"] = {"startDate": window["startDate"], "endDate": window["endDate"], "days": window["days"]}
+            gsc["rowCount"] = {"queries": len(gsc["queries"] or []), "pages": len(gsc["pages"] or [])}
 
         return {
             "capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),

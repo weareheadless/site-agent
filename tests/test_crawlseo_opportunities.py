@@ -66,6 +66,59 @@ def test_hand_methods_use_only_fixed_versioned_routes_and_escape_ids():
         client.connector_opportunities("site-1", 101)
 
 
+def test_owner_reads_do_not_re_enter_the_connector_for_every_paint():
+    """A screen that drew twice must not pay the connector round trip twice."""
+    provider = Provider()
+    service = CrawlSEOApplicationService(provider)
+
+    first = service.connector_opportunities("site-1", limit=10)
+    second = service.connector_opportunities("site-1", limit=10)
+
+    assert first == second
+    assert [call[0] for call in provider.calls] == ["capabilities", "opportunities"]
+    # The cached value is a copy: a reader cannot mutate what the next reader sees.
+    second["opportunities"].append({"id": "tampered"})
+    assert service.connector_opportunities("site-1", limit=10)["opportunities"] == [{"id": "opp-1"}]
+
+
+def test_a_write_makes_the_next_read_reach_the_connector():
+    """The owner's own decision is never answered from before their click."""
+    provider = Provider()
+    service = CrawlSEOApplicationService(provider)
+    service.connector_opportunities("site-1", limit=10)
+    service.connector_opportunity_operation("opp-1", {"operation": "accept", "siteId": "site-1",
+                                                      "generation": 1, "idempotencyKey": "k",
+                                                      "confirmedBy": "owner", "confirmationRef": "r",
+                                                      "expectedUpdatedAt": "2026-11-01T00:00:00+00:00"})
+    service.connector_opportunities("site-1", limit=10)
+
+    assert [call[0] for call in provider.calls] == [
+        "capabilities", "opportunities", "operation", "capabilities", "opportunities",
+    ]
+
+
+def test_a_delivery_read_is_never_answered_from_cache():
+    """Delivery sends the status back, so it must not read a stale one."""
+    provider = Provider()
+    service = CrawlSEOApplicationService(provider)
+
+    service.connector_task("site-1", "task-1")
+    service.connector_task("site-1", "task-1")
+    assert [call[0] for call in provider.calls].count("task") == 1
+
+    service.connector_task("site-1", "task-1", fresh=True)
+    assert [call[0] for call in provider.calls].count("task") == 2
+
+
+def test_the_cache_window_is_bounded():
+    """Past the window, a recrawl is visible without restarting the service."""
+    provider = Provider()
+    service = CrawlSEOApplicationService(provider, cache_seconds=0.0)
+    service.connector_opportunities("site-1", limit=10)
+    service.connector_opportunities("site-1", limit=10)
+    assert [call[0] for call in provider.calls].count("opportunities") == 2
+
+
 def test_application_reads_opportunities_and_checks_capabilities_and_identity():
     provider = Provider()
     service = CrawlSEOApplicationService(provider)

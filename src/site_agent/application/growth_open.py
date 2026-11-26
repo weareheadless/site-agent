@@ -19,6 +19,7 @@ Rules enforced here, never in the browser:
 from __future__ import annotations
 
 import datetime
+import re
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -258,7 +259,7 @@ def _accept(service: Any, site_id: str, row: Mapping[str, Any], actor: str, key:
 
 def _start_task(service: Any, site_id: str, task_id: str, opportunity_id: str, actor: str,
                 key: str, generation: int) -> None:
-    current = service.connector_task(site_id, task_id)
+    current = service.connector_task(site_id, task_id, fresh=True)
     task = current.get("task") if isinstance(current, Mapping) else None
     if not isinstance(task, Mapping):
         raise GrowthOpenError("CrawlSEO returned an invalid task")
@@ -429,9 +430,17 @@ def open_group(
 
 
 def _five_state(task_status: str, binding_state: str, draft_status: str | None) -> str:
+    """Collapse what is known into the owner's five states.
+
+    The draft is the strongest evidence: a change the owner approved and that
+    is now live is published and done, whatever the ledger last wrote about it.
+    Only when the draft says nothing does the task and binding state decide.
+    """
     if task_status == "verified_outcome":
         return RESOLVED
-    if binding_state == LIVE or task_status == "delivered":
+    if binding_state in {LIVE, RESOLVED} or task_status == "delivered":
+        return LIVE
+    if draft_status == "live":
         return LIVE
     if task_status == "awaiting_human" or draft_status == "pending":
         return "awaiting"
@@ -456,14 +465,45 @@ def _live_link(draft: Mapping[str, Any] | None, config: Mapping[str, Any]) -> st
     return None
 
 
+def _commit_link(link: str, config: Mapping[str, Any]) -> str:
+    """Turn the receipt's revision into the GitHub commit the owner can open.
+
+    The release receipt records the exact commit SHA; the Work panel renders
+    that as a link. A bare SHA is not an address, so the repository it belongs
+    to comes from the tenant's own configuration — the same place the release
+    already got it from. Anything that is not a plain revision is left alone,
+    so an already-usable address is never rewritten.
+    """
+    value = link.strip()
+    if not re.fullmatch(r"[0-9a-f]{7,40}", value):
+        return value
+    site = (config.get("site") or {}) if isinstance(config, Mapping) else {}
+    repository = str(site.get("repository") or "").strip()
+    if not repository.startswith(("http://", "https://")):
+        repository = f"https://github.com/{repository}" if "/" in repository else ""
+    if not repository:
+        return value
+    return f"{repository.rstrip('/')}/commit/{value}"
+
+
 def task_ids_for(memory: Any) -> list[str]:
     return [str(key) for key in _ledger(memory)["bindings"].keys()]
 
 
 def pending_releases(memory: Any) -> list[dict[str, Any]]:
+    """Bindings whose draft may already be published but is not settled yet.
+
+    The ledger only holds a state this process wrote. A change approved before
+    that state was recorded — or approved through a path that never set it —
+    stayed `working` forever beside a draft that was live with a deployed
+    receipt, so the owner saw work still in progress after it had shipped.
+    The draft is the fact; the ledger flag is a hint, so any unsettled binding
+    that names a draft is offered for reconciliation.
+    """
     ledger = _ledger(memory)
     return [dict(row) for row in ledger["bindings"].values()
-            if isinstance(row, Mapping) and row.get("state") == PUBLISHING and row.get("draftId")]
+            if isinstance(row, Mapping) and row.get("draftId")
+            and row.get("state") not in {LIVE, RESOLVED, CANCELLED}]
 
 
 def read_bindings(memory: Any, config: Mapping[str, Any], *,
@@ -494,6 +534,11 @@ def read_bindings(memory: Any, config: Mapping[str, Any], *,
         if state == "awaiting":
             state = WORKING if draft_status != "pending" else "awaiting"
         links = dict(item.get("links") or {})
+        if isinstance(links.get("commit"), str) and links["commit"].strip():
+            # The revision and the address to it are both useful: the panel
+            # links the address, a report names the revision.
+            links["revision"] = links["commit"].strip()
+            links["commit"] = _commit_link(links["commit"], config)
         if draft_status == "pending" and item.get("draftId"):
             links["draft"] = f"draft:{item['draftId']}"
         page = str(item.get("pageUrl") or "").strip()
@@ -530,6 +575,14 @@ def read_bindings(memory: Any, config: Mapping[str, Any], *,
             state = LIVE
         elif "awaiting" in member_states or draft_status == "pending":
             state = "awaiting"
+        elif draft_status == "live" and not member_states:
+            # A group whose work shipped but whose members were bound elsewhere
+            # is still published and done.
+            state = LIVE
+        group_links = dict(item.get("links") or {})
+        if isinstance(group_links.get("commit"), str) and group_links["commit"].strip():
+            group_links["revision"] = group_links["commit"].strip()
+            group_links["commit"] = _commit_link(group_links["commit"], config)
         groups.append({
             "id": group_id,
             "title": item.get("title"),
@@ -539,7 +592,7 @@ def read_bindings(memory: Any, config: Mapping[str, Any], *,
             "jobId": item.get("jobId"),
             "draftId": item.get("draftId"),
             "state": state,
-            "links": dict(item.get("links") or {}),
+            "links": group_links,
         })
     return {"bindings": bindings, "groups": groups}
 
@@ -568,7 +621,7 @@ def deliver_tasks(
         if isinstance(row, Mapping) and row.get("state") in {LIVE, RESOLVED}:
             continue
         try:
-            current = service.connector_task(site, task_id)
+            current = service.connector_task(site, task_id, fresh=True)
             task = current.get("task") if isinstance(current, Mapping) else None
             status = str((task or {}).get("status") or "")
             if status in {"delivered", "verified_outcome"}:
