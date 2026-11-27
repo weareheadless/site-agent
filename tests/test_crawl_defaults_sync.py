@@ -80,7 +80,7 @@ def test_an_authored_crawl_file_is_never_overwritten(monkeypatch):
 
     result = sync.plan({"x": 1}, {}, [], apply=True)
     assert result["tenants"][0]["status"] == "applied"
-    seeded = [path for path in written if path in sync.DEFAULTS]
+    seeded = [path for path in written if path in {**sync.DEFAULTS, **sync.DEFAULT_SUPPORT}]
     assert seeded == [], seeded
 
 
@@ -99,7 +99,9 @@ def test_a_site_without_crawl_files_receives_all_of_them(monkeypatch):
                         lambda token, repo, branch, path, content, sha, message=None: written.append(path))
 
     sync.plan({"x": 1}, {}, [], apply=True)
-    assert sorted(path for path in written if path in sync.DEFAULTS) == sorted(sync.DEFAULTS)
+    assert sorted(path for path in written
+                  if path in {**sync.DEFAULTS, **sync.DEFAULT_SUPPORT}) == sorted(
+        {**sync.DEFAULTS, **sync.DEFAULT_SUPPORT})
 
 
 def test_a_site_with_a_static_sitemap_only_gains_robots(monkeypatch):
@@ -121,7 +123,10 @@ def test_a_site_with_a_static_sitemap_only_gains_robots(monkeypatch):
 
     sync.plan({"x": 1}, {}, [], apply=True)
     # The static sitemap is authored, so the metadata sitemap is not added; only
-    # robots (which the site lacks) and the helper that serves it.
+    # robots (which the site lacks) and the helper that serves it. Seeding robots
+    # without the helper is a build that imports a module the repo does not have.
     seeded = sorted(path for path in written if path in sync.DEFAULTS)
     assert "src/app/sitemap.ts" not in seeded
     assert "src/app/robots.ts" in seeded
+    # robots.ts imports the helper, so the helper must ship with it.
+    assert "src/lib/site-origin.ts" in written

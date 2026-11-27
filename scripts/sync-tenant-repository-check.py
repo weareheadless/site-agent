@@ -64,6 +64,11 @@ RELEASE_MANIFEST = ".github/helloada-release.json"
 DEFAULTS = {
     "src/app/sitemap.ts": TEMPLATE / "src/app/sitemap.ts",
     "src/app/robots.ts": TEMPLATE / "src/app/robots.ts",
+}
+# Imported by the two defaults above and by nothing else this tool ships, so it
+# travels with them: seeding it alone would add a module no route uses, and
+# seeding robots.ts without it would be a build that imports a missing file.
+DEFAULT_SUPPORT = {
     "src/lib/site-origin.ts": TEMPLATE / "src/lib/site-origin.ts",
 }
 # Any of these existing means the site already declares that capability, at
@@ -302,21 +307,21 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                 # capability itself. Checked per branch, because a static site
                 # may keep its crawl files on one branch only.
                 seeded: list[tuple[str, bytes, str]] = []
-                # The origin helper is a support file, not a capability: it only
-                # concerns a site whose crawl files are the seeded ones, so it is
-                # added only when at least one of those was.
-                crawl_declared = any(
-                    _remote_file(token, repository, branch, other) is not None
-                    for forms in DEFAULT_OCCUPIED.values() for other in forms
-                )
                 for path, source in DEFAULTS.items():
                     occupied = DEFAULT_OCCUPIED.get(path)
-                    if occupied is not None:
-                        if any(_remote_file(token, repository, branch, other) is not None for other in occupied):
-                            continue
-                    elif crawl_declared:
+                    if occupied is not None and any(
+                        _remote_file(token, repository, branch, other) is not None for other in occupied
+                    ):
                         continue
                     seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
+                # A support file ships with the default that imports it, and only
+                # then: seeding robots.ts without site-origin.ts is a build that
+                # imports a module the repository does not have, and a site that
+                # authored its own crawl files needs nothing extra either.
+                if seeded:
+                    for path, source in DEFAULT_SUPPORT.items():
+                        if not any(seeded_path == path for seeded_path, _, _ in seeded):
+                            seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
                 for path, content, message in [*desired, *seeded]:
                     current = _remote_file(token, repository, branch, path)
                     if current is not None and current[0] == content:
