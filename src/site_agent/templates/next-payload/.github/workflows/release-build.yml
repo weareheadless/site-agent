@@ -2,18 +2,15 @@ name: Release build
 
 # Compile one preview candidate in this repository.
 #
-# The platform mints the signed mount the owner will open, then asks for this
-# run with that mount in the payload. Next resolves `basePath` at build time, so
-# the mount has to be part of the build; compiling it here is what lets the
+# A preview is served at its own origin, so the candidate compiles exactly as
+# the site does: no basePath, no mount. Compiling it here is what lets the
 # site-agent host serve the candidate instead of compiling a second copy.
 #
 # This build never touches Cloudflare and never deploys. It produces two
 # artifacts — the compiled application and the receipt that proves which commit
-# and which mount it was built for — and the host that serves the preview reads
-# both.
+# it was built for — and the host that serves the preview reads both.
 #
-# The production release is `release-deploy.yml` on `main`; it builds its own
-# artifact, because production has no preview mount.
+# The production release is `release-deploy.yml` on `main`.
 on:
   repository_dispatch:
     types: [helloada-candidate]
@@ -57,10 +54,6 @@ jobs:
 
           root = Path(os.environ["RUNNER_TEMP"])
           release = json.loads(Path(".github/helloada-release.json").read_text(encoding="utf-8"))
-          payload = json.loads(os.environ.get("CLIENT_PAYLOAD") or "{}")
-          base_path = str(payload.get("basePath") or "")
-          if base_path and not base_path.startswith("/p/"):
-              raise SystemExit("the requested preview mount is not a signed preview path")
           (root / "runtime.env").write_text(
               f"HELLOADA_HANDOFF_PUBLIC_KEY={release['handoffPublicKey']}\n", encoding="utf-8"
           )
@@ -84,10 +77,7 @@ jobs:
           }
           (root / "releases").mkdir(exist_ok=True)
           (root / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
-          (root / "preview-mount").write_text(base_path, encoding="utf-8")
           PY
-        env:
-          CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
 
       - name: Build the preview candidate
         env:
@@ -95,11 +85,6 @@ jobs:
         run: |
           set -euo pipefail
           SHA="${{ github.event.client_payload.sha || github.sha }}"
-          BASE_PATH="$(cat "$RUNNER_TEMP/preview-mount")"
-          if [ -z "$BASE_PATH" ]; then
-            echo "this run has no signed preview mount; the candidate preview needs one" >&2
-            exit 1
-          fi
           python3 "$RUNNER_TEMP/control/scripts/deploy-payload-customer.py" \
             --tenant "$(python3 -c 'import json;print(json.load(open(".github/helloada-release.json"))["tenant"])')" \
             --ref "$SHA" \
@@ -108,7 +93,6 @@ jobs:
             --manifest "$RUNNER_TEMP/manifest.json" \
             --source-dir "$GITHUB_WORKSPACE" \
             --release-root "$RUNNER_TEMP/releases" \
-            --preview-base-path "$BASE_PATH" \
             --preview-only
 
       - name: Keep the compiled candidate

@@ -449,14 +449,16 @@ def test_candidate_preview_lookup_is_read_only_and_exact(tmp_path):
         service.close()
 
 
-def test_the_compiled_preview_builds_at_the_path_its_own_origin_serves(tmp_path):
-    """The build takes the exact signed path the preview host resolves.
+def test_the_compiled_preview_is_not_mounted_at_a_path(tmp_path):
+    """A preview compiles exactly as the site does, because it owns an origin.
 
-    Nothing derives the mount from a request any more: the service that builds
-    the candidate also owns the URL it is served from, so the compiler and the
-    frame cannot disagree.
+    A build compiled at a mount emits its own links and API calls relative to
+    that mount, and a plain anchor or ``fetch('/api/...')`` still leaves it. So
+    the guarantee here is the absence of a mount: the managed Next config is left
+    exactly as the repository wrote it.
     """
-    (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
+    original = "export default { reactStrictMode: true }\n"
+    (tmp_path / "next.config.mjs").write_text(original)
     (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",
         "d1_databases": [{"binding": "D1", "database_id": "local"}],
         "r2_buckets": [{"binding": "R2", "bucket_name": "local"}],
@@ -464,44 +466,64 @@ def test_the_compiled_preview_builds_at_the_path_its_own_origin_serves(tmp_path)
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
     try:
         job = {"id": "6782629d-412a-425b-99f1-1c19c8a5efbf",
-               "runtime_base_path": "/p/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"}
+               "preview_origin": "https://p-abcdef12-6782629d-412a-425b-99f1-1c19c8a5efbf-0123456789.helloada.app"}
         service._prepare_preview_runtime(tmp_path, job)
-        mount = job["runtime_base_path"]
-        assert 'basePath: ' + json.dumps(mount) in (tmp_path / "next.config.mjs").read_text()
-        assert "runtime_mount" not in job
+        assert (tmp_path / "next.config.mjs").read_text() == original
+        assert not (tmp_path / ".helloada-source-preview.next.mjs").exists()
+        assert "runtime_base_path" not in job
     finally:
         service.close()
 
 
-def test_a_preview_address_is_signed_for_its_tenant_and_job():
-    """The address is the capability: self-describing, stable, expiring."""
-    key = "k" * 40
+def test_a_preview_origin_is_signed_for_its_tenant_and_job():
+    """The origin is the capability: self-describing, stable, unguessable."""
+    env = {"HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40,
+           "HELLOADA_PREVIEW_BASE": "helloada.app"}
     job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
-    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
-    path = preview_host.path_for(key, "Tenant-One", job, expires)
-    assert path == preview_host.path_for(key, "tenant-one", job, expires)
-    # The tenant and the job are in the path, so whoever answers the request
-    # resolves both from the URL and not from an earlier call in this process.
-    assert path.startswith(f"/p/tenant-one/{job}/{expires}/")
-    signature = path.rsplit("/", 1)[-1]
-    assert preview_host.verify(key, "tenant-one", job, str(expires), signature)
-    # Another tenant cannot borrow the address, and it expires on its own.
-    assert not preview_host.verify(key, "tenant-two", job, str(expires), signature)
-    assert not preview_host.verify(key, "tenant-one", job, str(expires), signature, now=expires + 1)
-    # A different job under the same tenant is a different address too.
-    assert not preview_host.verify(key, "tenant-one", "11111111-2222-3333-4444-555555555555",
-                                   str(expires), signature)
+    origin = preview_host.origin(env, "Tenant-One", job)
+    # The tenant is normalized, and the tenant and job are both in the origin,
+    # so whoever answers the request resolves them from the Host alone.
+    assert origin == preview_host.origin(env, "tenant-one", job)
+    host = origin.removeprefix("https://")
+    digest, parsed_job = preview_host.parse_host(env, host)
+    assert parsed_job == job
+    assert digest == preview_host.tenant_digest("tenant-one")
+    signature = preview_host.signature_from_host(host)
+    assert preview_host.verify("k" * 40, "tenant-one", job, signature)
+    # Another tenant cannot borrow the origin: the digest it carries is that
+    # tenant's, and the signature is checked against the tenant that owns it.
+    other = preview_host.origin(env, "tenant-two", job).removeprefix("https://")
+    assert not preview_host.verify("k" * 40, "tenant-one", job, preview_host.signature_from_host(other))
+    # A different job under the same tenant is a different origin too.
+    assert preview_host.origin(env, "tenant-one", "11111111-2222-3333-4444-555555555555") != origin
     # A different key invalidates it, so a rotated platform secret retires every
-    # address that was handed out under the old one.
-    assert not preview_host.verify("x" * 40, "tenant-one", job, str(expires), signature)
+    # origin that was handed out under the old one.
+    assert not preview_host.verify("x" * 40, "tenant-one", job, signature)
+    # The origin is one DNS label under the base: the zone certificate is a
+    # one-level wildcard, so a deeper name would not verify at the edge.
+    assert host.count(".") == 2 and host.endswith(".helloada.app")
+    assert len(host.split(".")[0]) <= 63
+    # A host that is not a preview origin is not one, so the workspace app keeps
+    # serving its own hostnames untouched.
+    assert preview_host.parse_host(env, "preview.helloada.app") is None
+    assert preview_host.parse_host(env, "api.helloada.app") is None
+    assert preview_host.parse_host(env, "p-abc.helloada.app") is None
+    # A job id must be usable inside one DNS label, and a tenant id must be a
+    # registry identity; neither is ever a caller-controlled string.
     with pytest.raises(preview_host.PreviewHostError):
-        preview_host.path_for(key, "tenant-one", "not-a-job", expires)
+        preview_host.origin(env, "tenant-one", "not a job")
     with pytest.raises(preview_host.PreviewHostError):
-        preview_host.path_for(key, "tenant/../one", job, expires)
+        preview_host.origin(env, "tenant/../one", job)
 
 
 @pytest.mark.parametrize("redirect_status", [301, 302, 303, 307, 308])
-def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path, redirect_status):
+def test_a_candidate_redirect_and_flight_request_stay_on_the_preview_origin(tmp_path, redirect_status):
+    """The runtime receives the candidate's own path, and its redirect passes through.
+
+    The preview owns its origin, so `/courses/training` is `/courses/training`:
+    nothing prepends a mount, and a root-relative redirect already lands on the
+    preview that emitted it.
+    """
     import http.server
     import threading
 
@@ -522,7 +544,6 @@ def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path, r
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
 
     class Running:
@@ -532,7 +553,8 @@ def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path, r
     try:
         service._jobs["job"] = {
             "id": "job", "status": "ready", "commit": "a" * 40,
-            "runtime_port": server.server_address[1], "runtime_base_path": mount,
+            "runtime_port": server.server_address[1],
+            "preview_origin": "https://p-abcdef12-6782629d-412a-425b-99f1-1c19c8a5efbf-0123456789.helloada.app",
         }
         service._runtimes["job"] = (Running(), tmp_path)
         result = service.runtime("job", "courses/training", "", {
@@ -545,14 +567,20 @@ def test_a_candidate_redirect_and_flight_request_stay_in_the_preview(tmp_path, r
         service.close()
         server.shutdown()
 
-    assert seen["path"] == f"{mount}/courses/training"
+    assert seen["path"] == "/courses/training"
     assert seen["rsc"] == "1"
     assert seen["tree"] == '["",{"children":["depth"]}]'
     assert result["status"] == redirect_status
-    assert result["location"] == f"{mount}/depth"
+    assert result["location"] == "/depth"
 
 
-def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(tmp_path):
+def test_compiled_preview_keeps_public_assets_untouched_at_its_origin(tmp_path):
+    """The transport forwards bytes: a preview needs nothing rewritten.
+
+    At its own origin every root-relative URL the build emits already resolves
+    against the right place, so rewriting it would be the defect. The bindings
+    are still localized, because the preview must read its own data.
+    """
     (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
     (tmp_path / "wrangler.jsonc").write_text(json.dumps({"name": "site", "main": "worker.ts",
         "d1_databases": [{"binding": "D1", "database_id": "local"}],
@@ -564,76 +592,50 @@ def test_compiled_mount_keeps_public_assets_consistent_across_ssr_and_hydration(
         {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
     try:
         job = {"id": "6782629d-412a-425b-99f1-1c19c8a5efbf",
-               "runtime_base_path": "/p/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"}
+               "preview_origin": "https://p-abcdef12-6782629d-412a-425b-99f1-1c19c8a5efbf-0123456789.helloada.app"}
         service._prepare_preview_runtime(tmp_path, job)
-        mount = job["runtime_base_path"]
         local = json.loads((tmp_path / "wrangler.jsonc").read_text())
         assert local["main"] == ".open-next/worker.js"
         assert "ai" not in local and "send_email" not in local
-        assert 'basePath: ' + json.dumps(mount) in (tmp_path / "next.config.mjs").read_text()
-        assert (tmp_path / ".helloada-source-preview.next.mjs").read_text() == "export default { reactStrictMode: true }\n"
+        # No basePath is baked and the managed config is untouched.
+        assert (tmp_path / "next.config.mjs").read_text() == "export default { reactStrictMode: true }\n"
+        assert not (tmp_path / ".helloada-source-preview.next.mjs").exists()
         samples = [
-            (b'<img src="/assets/owner.webp">', "text/html", f'<img src="{mount}/assets/owner.webp">'),
-            (b'const src="/assets/owner.webp";', "application/javascript", f'const src="{mount}/assets/owner.webp";'),
-            (b'background:url(/assets/owner.webp)', "text/css", f'background:url({mount}/assets/owner.webp)'),
-            (b'{\\"src\\":\\"/assets/owner.webp\\"}', "text/html", '{\\"src\\":\\"' + mount + '/assets/owner.webp\\"}'),
-            # An inline style keeps its quotes entity-escaped in the served HTML.
-            (b'<div style="background-image:url(&quot;/assets/owner.webp&quot;)">', "text/html",
-             f'<div style="background-image:url(&quot;{mount}/assets/owner.webp&quot;)">'),
+            (b'<img src="/assets/owner.webp">', "text/html"),
+            (b'const src="/assets/owner.webp";', "application/javascript"),
+            (b'background:url(/assets/owner.webp)', "text/css"),
+            (b'{\\"src\\":\\"/assets/owner.webp\\"}', "text/html"),
+            (b'<div style="background-image:url(&quot;/assets/owner.webp&quot;)">', "text/html"),
+            (b'<a href="/about">About</a>', "text/html"),
+            (b'<script>fetch("/api/assistant")</script>', "text/html"),
         ]
-        for body, content_type, expected in samples:
-            assert service._rewrite_runtime_assets(body, content_type, job).decode() == expected
-        external = b'<img src="https://example.com/assets/owner.webp">'
-        assert service._rewrite_runtime_assets(external, "text/html", job) == external
+        for body, content_type in samples:
+            assert service._rewrite_runtime_assets(body, content_type, job) == body
     finally:
         service.close()
 
 
-def test_compiled_preview_navigation_is_left_to_the_next_mount():
-    """Next's basePath owns route navigation; the transport must not repeat it.
+def test_compiled_preview_navigation_and_api_calls_stay_at_the_root():
+    """A candidate's own links and API calls are left exactly as the build emitted them.
 
-    `inmersion`'s preview rendered every page, but clicking a link went to
-    `<mount>/<mount>/courses` and the page went blank: the served HTML and RSC
-    props carried the mount, and Next's router added it again. The mount is a
-    build-time basePath, so a site route already resolves inside the preview.
+    This is the defect the origin model removes: `inmersion` rendered every page
+    but a link click went to a doubled mount, and the shared assistant client
+    fetched `/api/assistant` from the origin root and got a 404. A preview at its
+    own origin has neither problem, so the transport must not touch either.
     """
-    mount = '/api/helloada/source/preview/exact-job/runtime'
-    job = {'runtime_base_path': mount, 'public_asset_roots': []}
+    job = {'preview_origin': 'https://p-abcdef12-6782629d-412a-425b-99f1-1c19c8a5efbf-0123456789.helloada.app',
+           'public_asset_roots': ['/photos/', '/index.html']}
     for body, content_type in [
         ('<a href="/?locale=en">English</a>', 'text/html'),
         ('<a href="/work?locale=en">Work</a>', 'text/html'),
         ('{"href":"/blog"}', 'text/x-component'),
         (r'{\"href\":\"/blog\"}', 'text/html'),
+        ('<img src="/photos/reef.webp">', 'text/html'),
+        ('<a class="wordmark" href="/" aria-current="page">Inicio</a>', 'text/html'),
+        ('<script>fetch("/api/assistant")</script>', 'text/html'),
     ]:
         assert source_deployment.SourceDeploymentService._rewrite_runtime_assets(
             body.encode(), content_type, job) == body.encode()
-    # Root-relative public assets are not mounted by Next, so they still are.
-    assets = {'public_asset_roots': ['/photos/']}
-    body = b'<img src="/photos/reef.webp">'
-    rewritten = source_deployment.SourceDeploymentService._rewrite_runtime_assets(
-        body, 'text/html', {**job, **assets})
-    assert rewritten == f'<img src="{mount}/photos/reef.webp">'.encode()
-
-
-def test_a_static_home_link_stays_inside_the_preview():
-    """The site root of a public/ candidate is a mounted asset too.
-
-    `public/index.html` is the home page, so `href="/"` is the only
-    root-relative URL the asset-root list cannot name. Left alone it took the
-    owner out of the preview to an address nothing serves; a Next route never
-    emits that form, because its basePath is the mount itself.
-    """
-    mount = '/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef'
-    job = {'runtime_base_path': mount,
-           'public_asset_roots': ['/index.html', '/assets/', '/novias/']}
-    body = (b'<a class="wordmark" href="/" aria-current="page">Inicio</a>'
-            b'<a href="/novias/">Novias</a><a href="/?locale=en">English</a>')
-    out = source_deployment.SourceDeploymentService._rewrite_runtime_assets(
-        body, 'text/html', job).decode()
-    assert f'href="{mount}" aria-current="page"' in out
-    assert f'href="{mount}/novias/"' in out
-    # A query on the root is a Next route, not the static home file.
-    assert 'href="/?locale=en"' in out
 
 
 def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
@@ -868,7 +870,7 @@ def test_a_dead_ready_preview_restarts_its_process_instead_of_reporting_itself_r
          "site": {"repository": "owner/site", "branch": "main", "preview_branch": "preview",
                   "clone_path": str(tmp_path)}},
         env={"HELLOADA_PREVIEW_SIGNING_KEY": "k" * 48,
-             "HELLOADA_PREVIEW_HOST": "preview.example.test"},
+             "HELLOADA_PREVIEW_BASE": "preview.example.test"},
         memory=memory,
     )
     try:
@@ -905,8 +907,9 @@ def test_production_mode_requires_the_workspace_approval_boundary(tmp_path):
 def _preview_service(tmp_path, memory):
     """A service whose preview origin is configured, as it is on the host."""
     return source_deployment.SourceDeploymentService(
-        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
-        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        {"instance_name": "tenant-preview",
+         "site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
          "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
         memory=memory,
     )
@@ -939,7 +942,7 @@ def test_compiled_preview_completion_reconciles_pending_draft(monkeypatch, tmp_p
             "commit": "a" * 40,
             "mode": "compiled_preview",
             "draft_id": draft_id,
-            "runtime_base_path": "/p/demo/preview-job/1799999999/0123456789abcdef",
+            "preview_origin": "https://p-abcdef12-preview-job-0123456789.helloada.app",
             "error": "stale restart notice",
         }
     }
@@ -965,9 +968,11 @@ def test_compiled_preview_completion_reconciles_pending_draft(monkeypatch, tmp_p
     assert draft["meta"]["preview"]["requires_build"] is False
     # The draft carries the one address the build is served at, so the
     # workspace inherits it instead of composing a second one.
-    assert draft["meta"]["preview"]["preview_url"] == (
-        "https://preview.example.test/p/demo/preview-job/1799999999/0123456789abcdef"
-    )
+    assert draft["meta"]["preview"]["preview_url"] == preview_host.origin(
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+        "tenant-preview", "preview-job",
+    ) + "/"
     assert "runtime_path" not in draft["meta"]["preview"]
     assert service.status("preview-job")["preview_url"] == draft["meta"]["preview"]["preview_url"]
     assert "error" not in service.status("preview-job")
@@ -1088,12 +1093,13 @@ def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch
     (worktree / ".open-next").mkdir(parents=True)
     (worktree / ".dev.vars").write_text('PAYLOAD_SECRET="resume-secret"\n', encoding="utf-8")
     service = source_deployment.SourceDeploymentService(
-        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40})
     commit = "a" * 40
     service._jobs["preview-1"] = {
         "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "queued",
         "resume": True, "worktree_path": str(worktree), "checks": [{"name": "build", "ok": True}],
-        "runtime_base_path": "/p/preview-1/1799999999/0123456789abcdef",
     }
     started = {}
 
@@ -1103,7 +1109,7 @@ def test_compiled_preview_resumes_from_its_existing_output(tmp_path, monkeypatch
     monkeypatch.setattr(service, "_run", lambda *args, **kwargs: Result())
     def start_runtime(job, directory, expected=None, *, preview_secret, **kwargs):
         started.update({"worktree": directory, "secret": preview_secret})
-        return {"runtime_port": 4321, "runtime_base_path": job.get("runtime_base_path")}
+        return {"runtime_port": 4321, "preview_origin": job.get("preview_origin")}
 
     monkeypatch.setattr(service, "_start_runtime", start_runtime)
     try:
@@ -1140,7 +1146,7 @@ def test_a_kept_preview_is_served_by_starting_its_own_compiled_tree(tmp_path, mo
     commit = "a" * 40
     service._jobs["preview-1"] = {
         "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "ready",
-        "worktree_path": str(worktree), "runtime_base_path": "/p/tenant/preview-1/1/sig",
+        "worktree_path": str(worktree), "preview_origin": "https://p-abcdef12-preview-1-0123456789.helloada.app",
     }
     started = {}
 
@@ -1152,7 +1158,7 @@ def test_a_kept_preview_is_served_by_starting_its_own_compiled_tree(tmp_path, mo
     def start_runtime(job, directory, expected=None, **kwargs):
         started.update({"worktree": directory, "commit": expected, **kwargs})
         return {"status": "ready", "runtime_port": 4321,
-                "runtime_base_path": job.get("runtime_base_path")}
+                "preview_origin": job.get("preview_origin")}
 
     monkeypatch.setattr(service, "_start_runtime", start_runtime)
     try:
@@ -1189,7 +1195,7 @@ def test_an_address_whose_build_is_gone_rebuilds_it_itself(tmp_path, monkeypatch
     memory = Memory(tmp_path / "memory.db")
     service = source_deployment.SourceDeploymentService(
         {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
-        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
          "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
         memory=memory,
     )
@@ -1198,7 +1204,7 @@ def test_an_address_whose_build_is_gone_rebuilds_it_itself(tmp_path, monkeypatch
         "id": "preview-1", "mode": "compiled_preview", "status": "failed", "ok": False,
         "branch": "preview", "commit": commit, "draft_id": 3,
         "error": "compiled preview page / references /icon.svg, which returned 404",
-        "runtime_base_path": "/p/tenant/preview-1/1799999999/signature",
+        "preview_origin": "https://p-abcdef12-preview-1-0123456789.helloada.app",
         "worktree_path": "", "created_at": "2026-11-01T00:00:00+00:00",
         "updated_at": "2026-11-01T00:01:00+00:00",
     }
@@ -1208,7 +1214,8 @@ def test_an_address_whose_build_is_gone_rebuilds_it_itself(tmp_path, monkeypatch
             service._served_preview("preview-1")
         assert job["status"] == "queued"
         assert job["address_retries"] == 1
-        assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
+        # The address is the bookmark, so a rebuild keeps the same origin.
+        assert job["preview_origin"] == "https://p-abcdef12-preview-1-0123456789.helloada.app"
         assert service._executor.submitted == [
             (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
         ]
@@ -1240,7 +1247,7 @@ def test_a_runtime_that_stops_answering_is_restarted_for_the_request(tmp_path, m
     service._jobs["preview-1"] = {
         "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "ready",
         "worktree_path": str(worktree), "runtime_port": 1111,
-        "runtime_base_path": "/p/tenant/preview-1/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-1-0123456789.helloada.app",
     }
     process = subprocess.Popen(["sleep", "60"], start_new_session=True)
     service._runtimes["preview-1"] = (process, worktree)
@@ -1300,7 +1307,7 @@ def test_an_address_with_a_build_resumes_instead_of_rebuilding(tmp_path, monkeyp
     commit = "a" * 40
     service._jobs["preview-1"] = {
         "id": "preview-1", "mode": "compiled_preview", "commit": commit, "status": "failed",
-        "worktree_path": str(worktree), "runtime_base_path": "/p/tenant/preview-1/1/sig",
+        "worktree_path": str(worktree), "preview_origin": "https://p-abcdef12-preview-1-0123456789.helloada.app",
     }
     started = {}
 
@@ -1312,7 +1319,7 @@ def test_an_address_with_a_build_resumes_instead_of_rebuilding(tmp_path, monkeyp
     def start_runtime(job, directory, expected=None, **kwargs):
         started.update({"worktree": directory, **kwargs})
         return {"status": "ready", "runtime_port": 4321,
-                "runtime_base_path": job.get("runtime_base_path")}
+                "preview_origin": job.get("preview_origin")}
 
     monkeypatch.setattr(service, "_start_runtime", start_runtime)
     try:
@@ -1327,7 +1334,9 @@ def test_an_address_with_a_build_resumes_instead_of_rebuilding(tmp_path, monkeyp
 def test_starting_a_preview_keeps_the_previous_compiled_tree(tmp_path, monkeypatch):
     """One preview runs at a time; the one it replaced keeps what it built."""
     service = source_deployment.SourceDeploymentService(
-        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}})
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40})
     kept = tmp_path / "site-agent-source-preview-kept"
     (kept / ".open-next").mkdir(parents=True)
     process = subprocess.Popen(["sleep", "60"], start_new_session=True)
@@ -1362,7 +1371,7 @@ def test_starting_a_preview_keeps_the_previous_compiled_tree(tmp_path, monkeypat
         worktree = tmp_path / "next"
         worktree.mkdir()
         started = service._start_runtime(
-            {"id": "preview-new", "commit": "b" * 40, "runtime_base_path": "/p/x/1/1/s"},
+            {"id": "preview-new", "commit": "b" * 40},
             worktree, "b" * 40, preview_secret="secret",
         )
         assert stopped == {"id": "preview-old", "discard": False}
@@ -1395,7 +1404,7 @@ def test_retrying_a_failed_preview_keeps_the_address_the_owner_has(tmp_path, mon
     (worktree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
     service = source_deployment.SourceDeploymentService(
         {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
-        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
          "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
         memory=memory,
     )
@@ -1405,10 +1414,14 @@ def test_retrying_a_failed_preview_keeps_the_address_the_owner_has(tmp_path, mon
         "error": "compiled preview did not become ready in time",
         "branch": "preview", "commit": commit, "draft_id": 7,
         "worktree_path": str(worktree),
-        "runtime_base_path": "/p/tenant/preview-1/1799999999/signature",
         "created_at": "2026-11-01T00:00:00+00:00",
         "updated_at": "2026-11-01T00:01:00+00:00",
     }
+    expected = preview_host.origin(
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+         "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+        "tenant-preview", "preview-1",
+    )
     try:
         job = service.start({"branch": "preview", "commit": commit, "draft_id": 7,
                              "mode": "compiled_preview"})
@@ -1416,9 +1429,9 @@ def test_retrying_a_failed_preview_keeps_the_address_the_owner_has(tmp_path, mon
         assert job["status"] == "queued"
         assert "error" not in job
         assert job["resume"] is True
-        assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
-        assert job["preview_url"] == (
-            "https://preview.example.test/p/tenant/preview-1/1799999999/signature")
+        # The address names the reviewed tree, not one attempt: a retry keeps it.
+        assert job["preview_origin"] == expected
+        assert job["preview_url"] == expected + "/"
         assert service._executor.submitted == [
             (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
         ]
@@ -1617,13 +1630,13 @@ def test_the_latest_preview_can_be_asked_for_by_draft(tmp_path):
     service._jobs["preview-a"] = {
         "id": "preview-a", "mode": "compiled_preview", "status": "ready",
         "branch": "preview", "commit": "a" * 40, "draft_id": 1,
-        "runtime_base_path": "/p/tenant/preview-a/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-a-0123456789.helloada.app",
         "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-01T00:00:00+00:00",
     }
     service._jobs["preview-b"] = {
         "id": "preview-b", "mode": "compiled_preview", "status": "ready",
         "branch": "preview", "commit": "b" * 40, "draft_id": 2,
-        "runtime_base_path": "/p/tenant/preview-b/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-b-0123456789.helloada.app",
         "created_at": "2026-11-02T00:00:00+00:00", "updated_at": "2026-11-02T00:00:00+00:00",
     }
     try:
@@ -1645,27 +1658,31 @@ def test_a_retired_receipt_never_hides_a_build_of_the_same_review(tmp_path):
     """
     service = source_deployment.SourceDeploymentService(
         {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
-        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
          "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
     )
     service._jobs["preview-retired"] = {
         "id": "preview-retired", "mode": "compiled_preview", "status": "retired", "ok": False,
         "error": "this preview was retired to free disk; the next request rebuilds it",
         "branch": "preview", "commit": "b" * 40, "draft_id": 4, "worktree_path": "",
-        "runtime_base_path": "/p/tenant/preview-retired/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-retired-0123456789.helloada.app",
         "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-03T00:00:05+00:00",
     }
     service._jobs["preview-ready"] = {
         "id": "preview-ready", "mode": "compiled_preview", "status": "ready",
         "branch": "preview", "commit": "a" * 40, "draft_id": 4,
-        "runtime_base_path": "/p/tenant/preview-ready/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-ready-0123456789.helloada.app",
         "created_at": "2026-11-03T00:00:00+00:00", "updated_at": "2026-11-03T00:00:00+00:00",
     }
     try:
         latest = service.latest_preview("preview", draft_id=4)
         assert latest["id"] == "preview-ready"
         assert latest["status"] == "ready"
-        assert latest["preview_url"] == "https://preview.example.test/p/tenant/preview-ready/1/sig"
+        assert latest["preview_url"] == preview_host.origin(
+            {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+             "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+            "tenant-preview", "preview-ready",
+        ) + "/"
     finally:
         service.close()
 
@@ -1678,7 +1695,7 @@ def test_a_review_whose_only_preview_was_retired_reports_no_preview(tmp_path):
         "id": "preview-retired", "mode": "compiled_preview", "status": "retired", "ok": False,
         "error": "this preview was retired to free disk; the next request rebuilds it",
         "branch": "preview", "commit": "a" * 40, "draft_id": 5, "worktree_path": "",
-        "runtime_base_path": "/p/tenant/preview-retired/1/sig",
+        "preview_origin": "https://p-abcdef12-preview-retired-0123456789.helloada.app",
         "created_at": "2026-11-01T00:00:00+00:00", "updated_at": "2026-11-03T00:00:00+00:00",
     }
     try:
@@ -1705,7 +1722,7 @@ def test_requesting_a_disk_retired_preview_rebuilds_the_address_the_owner_has(tm
     memory = Memory(tmp_path / "memory.db")
     service = source_deployment.SourceDeploymentService(
         {"instance_name": "tenant-preview", "site": {"clone_path": str(tmp_path)}},
-        {"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        {"HELLOADA_PREVIEW_BASE": "preview.example.test",
          "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
         memory=memory,
     )
@@ -1724,8 +1741,11 @@ def test_requesting_a_disk_retired_preview_rebuilds_the_address_the_owner_has(tm
         assert job["status"] == "queued"
         assert "error" not in job
         assert job["runtime_base_path"] == "/p/tenant/preview-1/1799999999/signature"
-        assert job["preview_url"] == (
-            "https://preview.example.test/p/tenant/preview-1/1799999999/signature")
+        assert job["preview_url"] == preview_host.origin(
+            {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+             "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40},
+            "tenant-preview", "preview-1",
+        ) + "/"
         assert service._executor.submitted == [
             (service._run_job, ("preview-1", "preview", commit, "compiled_preview")),
         ]
@@ -2076,23 +2096,22 @@ def test_the_home_page_is_always_part_of_the_render_gate(tmp_path):
         service.close()
 
 
-def test_the_preview_mounts_the_candidates_own_media(tmp_path):
+def test_the_preview_serves_the_candidates_own_media_at_the_root(tmp_path):
+    """A candidate's media and its API live at its own origin's root.
+
+    The bridge path used to be mounted so a preview's `/api/…` calls stayed
+    inside it. At its own origin they are already correct, so the transport
+    leaves them exactly as the build emitted them.
+    """
     service = source_deployment.SourceDeploymentService({"site": {"clone_path": str(tmp_path)}})
-    job = {
-        "runtime_base_path": "/api/helloada/source/preview/j1/runtime",
-        "public_asset_roots": ["/oceanic/"],
-    }
+    job = {"public_asset_roots": ["/oceanic/"]}
     try:
         body = (
             '<html><head><link rel="preload" as="image" href="/api/media/file/hero.jpg">'
-            '<link rel="stylesheet" href="/api/helloada/source/preview/j1/runtime/app.css">'
+            '<link rel="stylesheet" href="/app.css">'
             "</head><body><img src=\"/api/media/file/logo.jpg\"></body></html>"
         ).encode()
-        out = service._rewrite_runtime_assets(body, "text/html", job).decode()
-        mounted = "/api/helloada/source/preview/j1/runtime"
-        assert out.count(f'{mounted}/api/media/file/') == 2
-        # The platform bridge keeps its own address inside the preview.
-        assert f'{mounted}/api/helloada/source/preview/j1/runtime/app.css' not in out
+        assert service._rewrite_runtime_assets(body, "text/html", job) == body
     finally:
         service.close()
 
@@ -2107,28 +2126,20 @@ def test_compiled_preview_generates_the_presentation_inventory_before_typecheck(
     assert overlay < inventory < typecheck < build
 
 
-def test_the_preview_root_is_its_own_address_not_the_slash_form():
-    """The signed path is the document; the slash form is a redirect.
+def test_the_runtime_root_is_the_origin_root():
+    """A preview's root is `/`, and a slash request keeps its slash.
 
-    Python's urllib does not follow a 308, so asking for the slash form turned a
-    working build into "did not become ready".
+    Python's urllib does not follow a 308, so asking for a form Next redirects
+    turns a working build into "did not become ready".
     """
-    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
-    assert source_deployment.preview_runtime_url(8080, mount) == f"http://127.0.0.1:8080{mount}"
-    assert source_deployment.preview_runtime_url(8080, mount + "/") == f"http://127.0.0.1:8080{mount}"
-    assert source_deployment.preview_runtime_url(8080, mount, "/courses") == (
-        f"http://127.0.0.1:8080{mount}/courses")
-    assert source_deployment.preview_runtime_url(8080, mount, "courses/") == (
-        f"http://127.0.0.1:8080{mount}/courses/")
+    assert source_deployment.preview_runtime_url(8080) == "http://127.0.0.1:8080/"
+    assert source_deployment.preview_runtime_url(8080, "/courses") == "http://127.0.0.1:8080/courses"
+    assert source_deployment.preview_runtime_url(8080, "courses/") == "http://127.0.0.1:8080/courses/"
     # A proxied slash request keeps its slash: the root's own redirect points at
     # the slash form, so collapsing it here loops the browser.
-    assert source_deployment.preview_runtime_url(8080, mount, "/", trailing=True) == (
-        f"http://127.0.0.1:8080{mount}/")
-    assert source_deployment.preview_runtime_url(8080, mount, "/") == f"http://127.0.0.1:8080{mount}"
+    assert source_deployment.preview_runtime_url(8080, "/", trailing=True) == "http://127.0.0.1:8080/"
     with pytest.raises(source_deployment.SourceDeploymentError):
-        source_deployment.preview_runtime_url(8080, "/not-a-signed-path")
-    with pytest.raises(source_deployment.SourceDeploymentError):
-        source_deployment.preview_runtime_url(8080, mount, "../admin")
+        source_deployment.preview_runtime_url(8080, "../admin")
 
 
 def test_a_route_segment_reaches_the_runtime_escaped_once():
@@ -2138,10 +2149,9 @@ def test_a_route_segment_reaches_the_runtime_escaped_once():
     build emitted; otherwise every client chunk under a `[...slug]` route is a
     307 back to itself and the browser loops instead of loading the page.
     """
-    mount = "/p/demo/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
     assert source_deployment.preview_runtime_url(
-        8080, mount, "_next/static/chunks/app/(frontend)/[...slug]/page-a1b2.js",
-    ) == f"http://127.0.0.1:8080{mount}/_next/static/chunks/app/(frontend)/%5B...slug%5D/page-a1b2.js"
+        8080, "_next/static/chunks/app/(frontend)/[...slug]/page-a1b2.js",
+    ) == "http://127.0.0.1:8080/_next/static/chunks/app/(frontend)/%5B...slug%5D/page-a1b2.js"
 
 
 def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
@@ -2183,8 +2193,12 @@ def test_the_render_gate_asks_for_the_canonical_address(tmp_path):
     assert f"{mount}/" not in seen
 
 
-def _candidate_artifacts(directory: Path, *, sha: str, mount: str, layout: str = "directory"):
-    """The two artifacts a repository candidate build reports."""
+def _candidate_artifacts(directory: Path, *, sha: str, layout: str = "directory"):
+    """The two artifacts a repository candidate build reports.
+
+    A candidate is identified by the commit it compiled: there is no mount, so
+    there is nothing else a receipt could disagree about.
+    """
     import zipfile
 
     build = directory / f"build-{layout}.zip"
@@ -2195,12 +2209,12 @@ def _candidate_artifacts(directory: Path, *, sha: str, mount: str, layout: str =
     with zipfile.ZipFile(receipt, "w") as bundle:
         bundle.writestr(
             "runs/tenant/ci-1-1/receipt.json",
-            json.dumps({"sourceSha": sha, "previewBasePath": mount, "status": "built"}),
+            json.dumps({"sourceSha": sha, "status": "built"}),
         )
     return build, receipt
 
 
-def _adopting_service(tmp_path, *, run, mount, build, receipt, monkeypatch):
+def _adopting_service(tmp_path, *, run, build, receipt, monkeypatch):
     service = source_deployment.SourceDeploymentService({
         "deployment_pipeline": {"provider": "github"},
         "site": {"clone_path": str(tmp_path), "repository": "weareheadless/tenant-site"},
@@ -2224,14 +2238,14 @@ def test_a_repository_lane_preview_serves_the_candidate_its_run_compiled(tmp_pat
     worktree.mkdir()
     mount = "/p/tenant-preview/1799999999/0123456789abcdef"
     commit = "a" * 40
-    build, receipt = _candidate_artifacts(tmp_path, sha=commit, mount=mount, layout=layout)
+    build, receipt = _candidate_artifacts(tmp_path, sha=commit, layout=layout)
     service = _adopting_service(
-        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        tmp_path, build=build, receipt=receipt, monkeypatch=monkeypatch,
         run={"id": 7, "status": "completed", "conclusion": "success", "url": ""},
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-1", "runtime_base_path": mount}, commit, 5,
+            worktree, {"id": "preview-1"}, commit, 5,
         ) is True
         assert (worktree / ".open-next" / "worker.js").is_file()
     finally:
@@ -2243,36 +2257,33 @@ def test_a_failed_candidate_run_leaves_the_local_build_to_compile(tmp_path, monk
     worktree.mkdir()
     mount = "/p/tenant-preview/1799999999/0123456789abcdef"
     commit = "b" * 40
-    build, receipt = _candidate_artifacts(tmp_path, sha=commit, mount=mount)
+    build, receipt = _candidate_artifacts(tmp_path, sha=commit)
     service = _adopting_service(
-        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        tmp_path, build=build, receipt=receipt, monkeypatch=monkeypatch,
         run={"id": 8, "status": "completed", "conclusion": "failure", "url": "https://example/run"},
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-2", "runtime_base_path": mount}, commit, 5,
+            worktree, {"id": "preview-2"}, commit, 5,
         ) is False
         assert not (worktree / ".open-next").exists()
     finally:
         service.close()
 
 
-def test_a_candidate_built_for_another_mount_is_not_served(tmp_path, monkeypatch):
-    """A build carries one signed mount; serving another candidate's build is refused."""
+def test_a_candidate_built_for_another_commit_is_not_served(tmp_path, monkeypatch):
+    """A receipt names the commit it compiled; another commit's build is refused."""
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    mount = "/p/tenant-preview/1799999999/0123456789abcdef"
     commit = "c" * 40
-    build, receipt = _candidate_artifacts(
-        tmp_path, sha=commit, mount="/p/another-job/1799999999/0123456789abcdef",
-    )
+    build, receipt = _candidate_artifacts(tmp_path, sha="d" * 40)
     service = _adopting_service(
-        tmp_path, mount=mount, build=build, receipt=receipt, monkeypatch=monkeypatch,
+        tmp_path, build=build, receipt=receipt, monkeypatch=monkeypatch,
         run={"id": 9, "status": "completed", "conclusion": "success", "url": ""},
     )
     try:
         assert service._adopt_runner_candidate_build(
-            worktree, {"id": "preview-3", "runtime_base_path": mount}, commit, 5,
+            worktree, {"id": "preview-3"}, commit, 5,
         ) is False
         assert not (worktree / ".open-next").exists()
     finally:
@@ -2342,15 +2353,13 @@ def test_a_repository_build_is_not_relocated_for_another_repository(tmp_path):
 
 
 def test_a_served_candidate_publishes_its_revision_inside_the_built_assets(tmp_path):
-    """The readiness check reads the address the browser would, under the mount."""
+    """The readiness check reads the address the browser would; the root is the address."""
     worktree = tmp_path / "worktree"
     (worktree / ".open-next" / "assets").mkdir(parents=True)
-    mount = "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
-    job = {"id": "preview-1", "runtime_base_path": mount}
     source_deployment.SourceDeploymentService._write_built_revision_marker(
-        worktree, job, "d" * 40,
+        worktree, {"id": "preview-1"}, "d" * 40,
     )
-    marker = worktree / ".open-next" / "assets" / mount.strip("/") / "site-agent-revision.txt"
+    marker = worktree / ".open-next" / "assets" / "site-agent-revision.txt"
     assert marker.read_text(encoding="utf-8") == ("d" * 40) + "\n"
 
 
@@ -2358,7 +2367,7 @@ def test_a_candidate_without_a_built_asset_tree_writes_no_marker(tmp_path):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     source_deployment.SourceDeploymentService._write_built_revision_marker(
-        worktree, {"runtime_base_path": "/p/t/j/1799999999/0123456789abcdef"}, "e" * 40,
+        worktree, {"id": "preview-1"}, "e" * 40,
     )
     assert not (worktree / ".open-next").exists()
 

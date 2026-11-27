@@ -1014,7 +1014,6 @@ p.detail.waiting {{ margin-top: 10px; }}
     def preview_runtime_response(
         owner: str,
         job_id: str,
-        expires: str,
         signature: str,
         file_path: str,
         request: Request,
@@ -1023,14 +1022,14 @@ p.detail.waiting {{ margin-top: 10px; }}
             key = preview_host.signing_key(env)
         except preview_host.PreviewHostError:
             return preview_page(503, "This preview is unavailable", "The preview host is not configured.")
-        if not preview_host.verify(key, owner, job_id, expires, signature):
+        if not preview_host.verify(key, owner, job_id, signature):
             return preview_page(
                 404,
                 "This preview is no longer available",
-                "The address has expired or belongs to an earlier version of the workspace. "
+                "The address belongs to an earlier version of the workspace. "
                 "Reload the workspace and rebuild the preview.",
             )
-        # The address names its tenant, so the request does not depend on an
+        # The origin names its tenant, so the request does not depend on an
         # earlier browser call or on this process having served the build.
         tenant = registry.for_tenant_id(preview_host.tenant_id(owner)) if registry is not None else None
         if registry is not None and tenant is None:
@@ -1091,35 +1090,48 @@ p.detail.waiting {{ margin-top: 10px; }}
             headers=headers,
         )
 
-    preview_route = f"{preview_host.PREVIEW_PREFIX}/{{owner}}/{{job_id}}/{{expires}}/{{signature}}"
+    @app.middleware("http")
+    async def preview_origin_router(request: Request, call_next):
+        """Serve a preview's own origin from the build that owns it.
 
-    def preview_suffix(owner: str, job_id: str, expires: str, signature: str,
-                       file_path: str, request: Request) -> str:
-        """The requested path after the signature, trailing slash included.
+        A preview is a complete application at its own origin, so *every* path on
+        that origin belongs to the candidate: the page, its chunks, its images,
+        and its own ``/api/…`` calls. Routing by path could never be complete —
+        a candidate's API call is indistinguishable from this app's — so the Host
+        decides, and one origin is one build.
 
-        The root is served from the signed address and Next redirects its slash
-        form once. A proxied slash request must carry that slash, otherwise the
-        redirect points back at the address it came from and the browser loops.
+        The host carries a digest of the tenant, which is how the request finds
+        its workspace without this process having served an earlier call. The
+        signature is then checked against the resolved tenant id, so a digest
+        cannot be borrowed for another site.
         """
-        prefix = f"{preview_host.PREVIEW_PREFIX}/{owner}/{job_id}/{expires}/{signature}"
-        raw = request.url.path
-        suffix = raw[len(prefix):] if raw.startswith(prefix) else file_path
-        # The runtime takes a path without a leading slash; a bare "/" is only
-        # the root's trailing-slash form and stays as it is.
-        return suffix[1:] if suffix.startswith("/") and suffix != "/" else suffix
-
-    @app.api_route(preview_route, methods=["GET", "HEAD"])
-    def workspace_preview_runtime_root(owner: str, job_id: str, expires: str, signature: str, request: Request):
+        host = str(request.headers.get("host") or "").strip().lower()
+        try:
+            parsed = preview_host.parse_host(env, host)
+        except preview_host.PreviewHostError:
+            parsed = None
+        if parsed is None:
+            return await call_next(request)
+        digest, job_id = parsed
+        tenant = None
+        if registry is not None:
+            tenant = next(
+                (item for item in registry.tenants.values()
+                 if preview_host.tenant_digest(item.tenant_id) == digest),
+                None,
+            )
+        if tenant is None:
+            return preview_page(
+                404,
+                "This preview is no longer available",
+                "Its workspace is not registered on this host any more.",
+            )
         return preview_runtime_response(
-            owner, job_id, expires, signature,
-            preview_suffix(owner, job_id, expires, signature, "", request), request,
-        )
-
-    @app.api_route(preview_route + "/{file_path:path}", methods=["GET", "HEAD"])
-    def workspace_preview_runtime(owner: str, job_id: str, expires: str, signature: str, file_path: str, request: Request):
-        return preview_runtime_response(
-            owner, job_id, expires, signature,
-            preview_suffix(owner, job_id, expires, signature, file_path, request), request,
+            tenant.tenant_id,
+            job_id,
+            preview_host.signature_from_host(host),
+            request.url.path.lstrip("/"),
+            request,
         )
 
     @app.get(f"{prefix}/source/preview/styles")
@@ -2043,35 +2055,28 @@ def create_workspace_api_app(
     host_env = dict(env or {})
 
     async def ensure_preview_host() -> None:
-        """Give every preview host its public record without a manual step.
+        """Give the preview zone its wildcard record without a manual step.
 
-        The platform host is the default, but a site may name its own
-        ``preview.<site domain>`` in its tenant config. Each address follows the
-        host that already serves the API, so a fresh installation gets a working
-        preview origin on first start. A Cloudflare outage must not stop the API
-        from serving; the failure is reported and retried next start.
+        Every preview is one label under one base, so the whole capability is a
+        single proxied wildcard record. It follows the host that already serves
+        the API, so a fresh installation gets working preview origins on first
+        start and no preview ever waits for a record of its own. A Cloudflare
+        outage must not stop the API from serving; the failure is reported and
+        retried next start.
         """
-        hosts: dict[str, str] = {}
-        for tenant in registry.tenants.values():
-            try:
-                host = preview_host.host_for(host_env, tenant.config)
-            except preview_host.PreviewHostError:
-                continue
-            hosts.setdefault(host, tenant.tenant_id)
-        if not host_env.get(preview_host.PREVIEW_HOST_ENV) and not hosts:
+        try:
+            preview_host.preview_base(host_env)
+        except preview_host.PreviewHostError as exc:
+            print(f"[site-agent] preview origins are not configured: {exc}")
             return
-        if not hosts:
-            hosts = {preview_host.preview_host(host_env): ""}
-        for host, tenant_id in hosts.items():
-            try:
-                record = await asyncio.to_thread(
-                    preview_host.ensure_preview_host_dns, host_env, config=host_config, host=host,
-                )
-            except preview_host.PreviewHostError as exc:
-                suffix = f" for {tenant_id}" if tenant_id else ""
-                print(f"[site-agent] preview host {host}{suffix} not provisioned: {exc}")
-                continue
-            print(f"[site-agent] preview host {record['host']} -> {record['target']} (proxied)")
+        try:
+            record = await asyncio.to_thread(
+                preview_host.ensure_preview_base_dns, host_env, config=host_config,
+            )
+        except preview_host.PreviewHostError as exc:
+            print(f"[site-agent] preview origin record not provisioned: {exc}")
+            return
+        print(f"[site-agent] preview origins {record['host']} -> {record['target']} (proxied)")
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):

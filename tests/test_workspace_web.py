@@ -3903,11 +3903,12 @@ def test_control_plane_worker_gateway_uses_the_tenant_token_and_owner_subject(tm
     memory.close()
 
 
-def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
-    """The preview origin forwards bytes for a valid address and refuses the rest.
+def test_a_compiled_preview_is_served_from_its_own_origin(tmp_path):
+    """The preview origin forwards bytes for a valid origin and refuses the rest.
 
-    No cookie, no session, no earlier browser call: the path names the tenant and
-    the job, and the signature is what makes it usable.
+    No cookie, no session, no earlier browser call: the Host names the tenant
+    and the job, and the signature is what makes it usable. Every path on that
+    origin belongs to the candidate, including its own ``/api/...`` calls.
     """
     from site_agent.application import preview_host
 
@@ -3927,24 +3928,36 @@ def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
 
     tenant = Tenant("demo", {}, memory, None, {"source_deployment": Deployer()}, "demo-token")
     registry = TenantRegistry({"demo": tenant})
-    key = "k" * 40
+    env = {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+           "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40}
     app = FastAPI()
     register_workspace_routes(
         app,
         config={},
-        env={"HELLOADA_PREVIEW_HOST": "preview.example.test", "HELLOADA_PREVIEW_SIGNING_KEY": key},
+        env=env,
         service=ChatService(registry=registry),
         registry=registry,
     )
-    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
-    path = preview_host.path_for(key, "demo", job, expires)
+    host = preview_host.origin(env, "demo", job).removeprefix("https://")
+
+    def get(client, path, **kwargs):
+        return client.get(path, headers={"host": host, **kwargs.pop("headers", {})}, **kwargs)
 
     with TestClient(app) as client:
-        root = client.get(path)
-        nested = client.get(f"{path}/courses", headers={"RSC": "1", "Accept": "text/x-component"})
-        forged = client.get(path[:-1] + ("0" if path[-1] != "0" else "1"))
-        expired = client.get(preview_host.path_for(key, "demo", job, expires - preview_host.PREVIEW_TTL_SECONDS - 1))
-        foreign = client.get(preview_host.path_for(key, "other", job, expires))
+        root = get(client, "/")
+        nested = get(client, "/courses", headers={"RSC": "1", "Accept": "text/x-component"})
+        # A candidate's own API call is the candidate's, not this app's.
+        api = get(client, "/api/assistant")
+        # Forging the signature leaves the host shape valid but unusable.
+        label, _, rest = host.partition(".")
+        forged_label = label[:-1] + ("0" if label[-1] != "0" else "1")
+        forged = get(client, "/", headers={"host": f"{forged_label}.{rest}"})
+        foreign = client.get("/", headers={
+            "host": preview_host.origin(env, "other", job).removeprefix("https://"),
+        })
+        # The workspace app keeps serving its own hostnames untouched: the
+        # preview middleware does not claim them, so this is the app's own 404.
+        app_host = client.get("/", headers={"host": "api.example.test"})
 
     assert root.status_code == 200
     assert root.text == "home"
@@ -3953,18 +3966,20 @@ def test_a_compiled_preview_is_served_from_its_own_signed_address(tmp_path):
     assert "set-cookie" not in root.headers
     assert nested.status_code == 200
     assert nested.text == "courses"
+    assert api.status_code == 200 and api.text == "api/assistant"
     assert served[1][1] == "1" and served[1][2] == "text/x-component"
-    for refused in (forged, expired, foreign):
+    for refused in (forged, foreign):
         assert refused.status_code == 404
         assert "no longer available" in refused.text
-    assert all(item[0] != "courses" for item in served[2:])
+    assert app_host.status_code == 404
+    assert app_host.json() == {"detail": "Not Found"}
     memory.close()
 
 
-def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
+def test_a_preview_origin_waits_while_its_own_build_is_still_running(tmp_path):
     """A frame that arrives mid-build recovers itself instead of dead-ending.
 
-    The address stays valid; only the process behind it is not there yet. Asking
+    The origin stays valid; only the process behind it is not there yet. Asking
     the owner to rebuild a preview that is already rebuilding is what made a
     stale tab unrecoverable.
     """
@@ -3988,9 +4003,9 @@ def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
         def status(self, job_id):
             return {"id": job_id, "status": "failed", "commit": "a" * 40}
 
-    key = "k" * 40
-    expires = preview_host.expiry_for(datetime.datetime.now(datetime.timezone.utc).isoformat())
-    path = preview_host.path_for(key, "demo", job, expires)
+    env = {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+           "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40}
+    host = preview_host.origin(env, "demo", job).removeprefix("https://")
     pages = {}
     for name, deployer in (("building", Building()), ("failed", Failed())):
         tenant = Tenant("demo", {}, memory, None, {"source_deployment": deployer}, "demo-token")
@@ -3999,12 +4014,12 @@ def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
         register_workspace_routes(
             app,
             config={},
-            env={"HELLOADA_PREVIEW_HOST": "preview.example.test", "HELLOADA_PREVIEW_SIGNING_KEY": key},
+            env=env,
             service=ChatService(registry=registry),
             registry=registry,
         )
         with TestClient(app) as client:
-            pages[name] = client.get(path)
+            pages[name] = client.get("/", headers={"host": host})
 
     assert pages["building"].status_code == 503
     assert "still building" in pages["building"].text
@@ -4016,27 +4031,27 @@ def test_a_preview_address_waits_while_its_own_build_is_still_running(tmp_path):
     memory.close()
 
 
-def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
+def test_the_api_provisions_the_preview_zone_on_startup(monkeypatch):
     """A fresh installation needs no hand-made Cloudflare record for previews.
 
-    The startup hook is the whole point: the record is created the first time
-    this service runs, copying the API's own address.
+    Every preview is one label under one base, so the whole capability is one
+    wildcard record, created the first time this service runs.
     """
     from site_agent.application import preview_host
     from site_agent.web.workspace import create_workspace_api_app
 
     calls: list[str] = []
 
-    def provision(env, config=None, host=None):
-        calls.append(host or str(env[preview_host.PREVIEW_HOST_ENV]))
-        return {"host": host or "preview.example.test", "target": "192.0.2.10", "proxied": True}
+    def provision(env, config=None):
+        calls.append(preview_host.preview_base(env))
+        return {"host": f"*.{preview_host.preview_base(env)}", "target": "192.0.2.10", "proxied": True}
 
-    monkeypatch.setattr(preview_host, "ensure_preview_host_dns", provision)
+    monkeypatch.setattr(preview_host, "ensure_preview_base_dns", provision)
     registry = TenantRegistry({})
     app = create_workspace_api_app(
         registry,
         config={},
-        env={"HELLOADA_PREVIEW_HOST": "preview.example.test",
+        env={"HELLOADA_PREVIEW_BASE": "preview.example.test",
              "HELLOADA_PREVIEW_DNS_HOST": "api.example.test"},
         prefix="/v1/workspace",
     )
@@ -4044,7 +4059,7 @@ def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
         assert client.get("/healthz").status_code == 200
     assert calls == ["preview.example.test"]
 
-    # A deployment with no preview origin still boots; it simply has none.
+    # A deployment with no preview base still boots; it simply has none.
     calls.clear()
     app = create_workspace_api_app(registry, config={}, env={}, prefix="/v1/workspace")
     with TestClient(app) as client:
@@ -4052,60 +4067,28 @@ def test_the_api_provisions_the_preview_host_on_startup(monkeypatch):
     assert calls == []
 
 
-def test_a_site_brings_its_own_preview_host(monkeypatch):
-    """The preview of a site belongs at preview.<that site's domain>.
+def test_a_preview_origin_is_one_label_under_the_platform_base():
+    """Every preview is a single label: the zone certificate is one-level.
 
-    The platform host is only the default for a site that has no address of its
-    own. The signed path carries no host, so the same build stays open either
-    way and moving the address does not invalidate it.
+    A deeper name would not verify at the edge, so the shape of an address is a
+    certificate fact decided once, for every tenant, rather than a per-site
+    choice.
     """
-    from types import SimpleNamespace
-
     from site_agent.application import preview_host
-    from site_agent.web.workspace import create_workspace_api_app
 
-    env = {
-        "HELLOADA_PREVIEW_HOST": "preview.helloda.app",
-        "HELLOADA_PREVIEW_DNS_HOST": "api.helloda.app",
-        "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 48,
-    }
-    site = {"preview": {"host": "preview.astridrincon.com"}}
-    assert preview_host.host_for(env, site) == "preview.astridrincon.com"
-    assert preview_host.origin(env, site) == "https://preview.astridrincon.com"
-    assert preview_host.origin(env) == "https://preview.helloda.app"
-    # A hostname is not a path: a value that is not a bare name is refused
-    # rather than turned into an address the platform would sign for.
-    for bad in ("preview.example.test/../x", "example.test:8443", "",):
+    env = {"HELLOADA_PREVIEW_BASE": "helloda.app",
+           "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 48}
+    job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
+    host = preview_host.origin(env, "site-one", job).removeprefix("https://")
+    assert host.endswith(".helloda.app") and host.count(".") == 2
+    assert len(host.split(".")[0]) <= 63
+    # The tenant is in the address, so two tenants never share one origin.
+    other = preview_host.origin(env, "site-two", job).removeprefix("https://")
+    assert other != host
+    # A base that is not a bare hostname is refused rather than published.
+    for bad in ("preview.example.test/../x", "example.test:8443", ""):
         with pytest.raises(preview_host.PreviewHostError):
-            preview_host.host_for({"HELLOADA_PREVIEW_HOST": bad}, None)
-
-    calls: list[str] = []
-
-    def provision(env, config=None, host=None):
-        calls.append(str(host))
-        return {"host": str(host), "target": "192.0.2.10", "proxied": True}
-
-    monkeypatch.setattr(preview_host, "ensure_preview_host_dns", provision)
-    class Registry:
-        """Only the tenant list matters to startup provisioning."""
-
-        def __init__(self, tenants):
-            self.tenants = tenants
-
-        def start(self, timings=None):
-            return None
-
-        def close(self):
-            return None
-
-    registry = Registry({
-        "site-one": SimpleNamespace(tenant_id="site-one", config=site),
-        "site-two": SimpleNamespace(tenant_id="site-two", config={}),
-    })
-    app = create_workspace_api_app(registry, config={}, env=env, prefix="/v1/workspace")
-    with TestClient(app) as client:
-        assert client.get("/healthz").status_code == 200
-    assert calls == ["preview.astridrincon.com", "preview.helloda.app"]
+            preview_host.preview_base({"HELLOADA_PREVIEW_BASE": bad})
 
 
 def test_the_workspace_links_to_the_tenants_own_site_not_the_platform():

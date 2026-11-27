@@ -54,6 +54,24 @@ DEPLOY_SOURCE = TEMPLATE / DEPLOY_WORKFLOW
 # Non-secret identity the candidate build needs; derived from the release registry.
 RELEASE_MANIFEST = ".github/helloada-release.json"
 
+# Defaults a site should have without anyone inventing them: a sitemap, a robots
+# file that names it, and the origin helper both read. They are seeded only when
+# a repository does not already have the file, at whichever of the supported
+# shapes it uses, so a tenant that wrote its own — or a Growth crawl change that
+# owns one — keeps exactly what it has. A default that overwrote an authored
+# file would be a release undoing the owner's work.
+DEFAULTS = {
+    "src/app/sitemap.ts": TEMPLATE / "src/app/sitemap.ts",
+    "src/app/robots.ts": TEMPLATE / "src/app/robots.ts",
+    "src/lib/site-origin.ts": TEMPLATE / "src/lib/site-origin.ts",
+}
+# Any of these existing means the site already declares that capability, at
+# either the metadata-route or the static-file shape.
+DEFAULT_OCCUPIED = {
+    "src/app/sitemap.ts": ("src/app/sitemap.ts", "src/app/sitemap.xml/route.ts", "public/sitemap.xml"),
+    "src/app/robots.ts": ("src/app/robots.ts", "src/app/robots.txt/route.ts", "public/robots.txt"),
+}
+
 # A tenant-specific check that the canonical one supersedes. Only files this
 # platform introduced are retired; a tenant's own scripts are never touched.
 SUPERSEDED = (
@@ -69,6 +87,7 @@ MESSAGES = {
     "release-updated": "Update the candidate build the platform asks for",
     "deploy-created": "Deploy this repository without a stored credential",
     "deploy-updated": "Update the credential-free deploy workflow",
+    "default-created": "Add the crawl defaults every site has",
     "manifest-created": "Pin this repository to its release identity",
     "manifest-updated": "Refresh the release identity",
 }
@@ -274,7 +293,26 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                 desired.append((RELEASE_WORKFLOW, RELEASE_SOURCE.read_bytes(), MESSAGES["release-updated"]))
                 desired.append((DEPLOY_WORKFLOW, DEPLOY_SOURCE.read_bytes(), MESSAGES["deploy-updated"]))
             for branch in branches:
-                for path, content, message in desired:
+                # Seed a default only where the site has not declared that
+                # capability itself. Checked per branch, because a static site
+                # may keep its crawl files on one branch only.
+                seeded: list[tuple[str, bytes, str]] = []
+                # The origin helper is a support file, not a capability: it only
+                # concerns a site whose crawl files are the seeded ones, so it is
+                # added only when at least one of those was.
+                crawl_declared = any(
+                    _remote_file(token, repository, branch, other) is not None
+                    for forms in DEFAULT_OCCUPIED.values() for other in forms
+                )
+                for path, source in DEFAULTS.items():
+                    occupied = DEFAULT_OCCUPIED.get(path)
+                    if occupied is not None:
+                        if any(_remote_file(token, repository, branch, other) is not None for other in occupied):
+                            continue
+                    elif crawl_declared:
+                        continue
+                    seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
+                for path, content, message in [*desired, *seeded]:
                     current = _remote_file(token, repository, branch, path)
                     if current is not None and current[0] == content:
                         changes.append({"branch": branch, "path": path, "action": "unchanged"})

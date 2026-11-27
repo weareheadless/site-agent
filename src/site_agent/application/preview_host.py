@@ -1,23 +1,27 @@
 """Where a compiled candidate is served.
 
-A compiled preview is a complete Next application. Serving it under a path that
-belongs to the workspace app meant the app had to reproduce Next's URL
-semantics — basePath root, RSC and prefetch headers, redirects, asset prefixes,
-404s — and share a namespace the CMS also answered on. Every mismatch was
-another broken preview.
+A compiled preview is a complete Next application, and a complete application
+owns an origin. Serving it under a path on the workspace's origin forced the app
+to reproduce Next's URL semantics — basePath root, RSC and prefetch headers,
+redirects, asset prefixes, 404s — and every mismatch was another broken preview.
+The one that kept escaping was the simplest: a plain ``<a href="/about">`` or
+``fetch('/api/assistant')`` resolves against the origin, not against the mount,
+so a candidate that worked live 404'd in review.
 
-A preview now has its own origin, ``preview.<platform host>``, and the path
-``/p/<tenant>/<job>/<expiry>/<signature>``. One service owns that URL and the
-process behind it and only forwards bytes, so nothing interprets the candidate's
-links.
+A preview therefore has its own origin: ``p-<tenant>-<job>-<signature>.<base>``.
+Nothing is mounted, so a candidate's links are its origin's links, and this
+service only forwards bytes. The label names the tenant and the job, so a
+request never depends on which browser call happened earlier in this process's
+lifetime, and the service that answers it can restart without stranding an
+address it already handed out. The signature is an HMAC over the same identity,
+so the address is the capability: it needs no cookie (a cross-origin frame
+carries none), it cannot be forged for another tenant or job, rotating the key
+retires every address at once, and each expires with its own job.
 
-The address is self-describing: it names the tenant and the job, so a request
-never depends on which browser call happened earlier in this process's lifetime,
-and the service that answers it can restart without stranding an address it
-already handed out. The signature is an HMAC over the same three values, so the
-address is the capability: it needs no cookie (a cross-origin frame carries
-none), it cannot be forged for another tenant or job, rotating the key retires
-every address at once, and each one expires on its own.
+The address is a single DNS label under the platform's preview base, because the
+zone's certificate is a one-level wildcard: ``*.helloada.app`` covers
+``p-….helloada.app`` and nothing deeper. That is a certificate fact, so the
+shape of an address is decided here, once, for every tenant.
 """
 
 from __future__ import annotations
@@ -25,25 +29,32 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-import time
 from collections.abc import Mapping
-from datetime import datetime, timezone
 from typing import Any
 
-PREVIEW_PREFIX = "/p"
 PREVIEW_SIGNING_KEY_ENV = "HELLOADA_PREVIEW_SIGNING_KEY"
+# The zone a preview origin lives in. Every preview is one label under it.
+PREVIEW_BASE_ENV = "HELLOADA_PREVIEW_BASE"
+# The older name for the same setting, still honoured on hosts that were
+# configured before the address stopped being a path on a shared host.
 PREVIEW_HOST_ENV = "HELLOADA_PREVIEW_HOST"
 PREVIEW_DNS_HOST_ENV = "HELLOADA_PREVIEW_DNS_HOST"
-PREVIEW_TTL_SECONDS = 7 * 24 * 60 * 60
 
-_JOB = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_SIGNATURE = re.compile(r"^[0-9a-f]{16}$")
-# The same identity rule the tenant registry applies: a preview path segment is
-# never a caller-controlled string.
+_PREFIX = "p"
+_SIGNATURE_LENGTH = 10
+_DIGEST_LENGTH = 8
+# A job id is whatever the workspace minted, and it appears in a DNS label, so
+# it is a DNS-safe token rather than one fixed format. Real ids are UUIDs; the
+# parser below reads the label by its fixed ends, so a dash in the id is fine.
+_JOB = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_SIGNATURE = re.compile(r"^[0-9a-f]{%d}$" % _SIGNATURE_LENGTH)
+_DIGEST = re.compile(r"^[0-9a-f]{%d}$" % _DIGEST_LENGTH)
+# The same identity rule the tenant registry applies: a preview label is never a
+# caller-controlled string.
 _TENANT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,120}$")
-# A preview host is an origin, not an authority: no port, path or userinfo, and
-# every label is a DNS label. The address is signed and published, so a value
-# that is not a bare hostname must be refused rather than published.
+# A preview base is an origin, not an authority: no port, path or userinfo, and
+# every label is a DNS label. The address is published, so a value that is not a
+# bare hostname must be refused rather than published.
 _HOST = re.compile(
     r"^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
@@ -61,57 +72,14 @@ def signing_key(env: Mapping[str, str]) -> str:
     return key
 
 
-def preview_host(env: Mapping[str, str]) -> str:
-    host = str(env.get(PREVIEW_HOST_ENV) or "").strip().strip("/").lower()
+def preview_base(env: Mapping[str, str]) -> str:
+    """The zone every preview origin is one label under."""
+    host = str(env.get(PREVIEW_BASE_ENV) or env.get(PREVIEW_HOST_ENV) or "").strip().strip("/").lower()
     if not host or "/" in host or " " in host:
-        raise PreviewHostError(f"{PREVIEW_HOST_ENV} is not configured")
-    return host
-
-
-def host_for(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> str:
-    """The origin one site's previews are served at.
-
-    A preview belongs to the site it compiles, so its address belongs to that
-    site's domain: ``preview.<site domain>``. The platform host stays the
-    fallback for a tenant that has not been given its own address, and a tenant
-    config is the only place the choice lives, so the URL a build reports and
-    the URL the workspace frames can never disagree.
-    """
-    preview = config.get("preview") if isinstance(config, Mapping) else None
-    configured = str((preview or {}).get("host") or "").strip().strip("/").lower() if isinstance(preview, Mapping) else ""
-    host = configured or preview_host(env)
+        raise PreviewHostError(f"{PREVIEW_BASE_ENV} is not configured")
     if not _HOST.fullmatch(host):
-        raise PreviewHostError("preview host is not a safe hostname")
+        raise PreviewHostError("preview base is not a safe hostname")
     return host
-
-
-def origin(env: Mapping[str, str], config: Mapping[str, Any] | None = None) -> str:
-    return f"https://{host_for(env, config)}"
-
-
-def expiry_for(created_at: Any, *, now: float | None = None) -> int:
-    """A stable expiry: one address per job, valid for as long as it can exist."""
-    moment = _timestamp(created_at, now=now)
-    return int(moment) + PREVIEW_TTL_SECONDS
-
-
-def _timestamp(created_at: Any, *, now: float | None = None) -> float:
-    raw = str(created_at or "").strip()
-    if raw:
-        try:
-            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            parsed = None
-        if parsed is not None:
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            return parsed.timestamp()
-    return float(now if now is not None else time.time())
-
-
-def signature(key: str, tenant: str, job: str, expires: int) -> str:
-    message = f"{tenant}|{job}|{int(expires)}".encode()
-    return hmac.new(key.encode(), message, hashlib.sha256).hexdigest()[:16]
 
 
 def tenant_id(value: Any) -> str:
@@ -122,55 +90,110 @@ def tenant_id(value: Any) -> str:
     return normalized
 
 
-def path_for(key: str, tenant: str, job: str, expires: int) -> str:
-    owner = tenant_id(tenant)
-    job_id = str(job or "").strip()
+def tenant_digest(tenant: str) -> str:
+    """The short, stable prefix that names a tenant inside a preview label.
+
+    A tenant id and a job id do not both fit in one DNS label, so the tenant is
+    carried as a digest. The signature is still computed over the full id, so a
+    digest that two tenants happened to share could not be swapped.
+    """
+    return hashlib.sha256(tenant_id(tenant).encode()).hexdigest()[:_DIGEST_LENGTH]
+
+
+def _job(job: Any) -> str:
+    job_id = str(job or "").strip().lower()
     if not _JOB.fullmatch(job_id):
         raise PreviewHostError("preview identity is invalid")
-    return f"{PREVIEW_PREFIX}/{owner}/{job_id}/{int(expires)}/{signature(key, owner, job_id, expires)}"
+    return job_id
 
 
-def url_for(env: Mapping[str, str], tenant: str, job: str, expires: int,
-            *, config: Mapping[str, Any] | None = None) -> str:
-    return f"{origin(env, config)}{path_for(signing_key(env), tenant, job, expires)}"
+def signature(key: str, tenant: str, job: str) -> str:
+    message = f"{tenant_id(tenant)}|{_job(job)}".encode()
+    return hmac.new(key.encode(), message, hashlib.sha256).hexdigest()[:_SIGNATURE_LENGTH]
 
 
-def verify(key: str, tenant: str, job: str, expires: str, supplied: str, *, now: float | None = None) -> bool:
-    """Accept only an unexpired address this service signed for this tenant."""
-    job_id = str(job or "").strip()
-    if not _JOB.fullmatch(job_id):
+def label_for(key: str, tenant: str, job: str) -> str:
+    """The one DNS label that names this exact preview."""
+    return f"{_PREFIX}-{tenant_digest(tenant)}-{_job(job)}-{signature(key, tenant, job)}"
+
+
+def host_for(env: Mapping[str, str], tenant: str, job: str) -> str:
+    return f"{label_for(signing_key(env), tenant, job)}.{preview_base(env)}"
+
+
+def origin(env: Mapping[str, str], tenant: str, job: str) -> str:
+    return f"https://{host_for(env, tenant, job)}"
+
+
+def url_for(env: Mapping[str, str], tenant: str, job: str, path: str = "") -> str:
+    clean = str(path or "").lstrip("/")
+    return origin(env, tenant, job) + (f"/{clean}" if clean else "/")
+
+
+def parse_host(env: Mapping[str, str], host: str) -> tuple[str, str] | None:
+    """Split a preview origin into its tenant digest and job.
+
+    Returns ``None`` for any host that is not a preview origin under this base,
+    so the workspace app keeps serving its own hostnames untouched. Nothing is
+    trusted from the host here: the digest and job are what the request claims,
+    and the signature is checked against them separately.
+    """
+    raw = str(host or "").strip().strip("/").lower()
+    if not raw:
+        return None
+    try:
+        base = preview_base(env)
+    except PreviewHostError:
+        return None
+    if not raw.endswith("." + base):
+        return None
+    label = raw[: -(len(base) + 1)]
+    if not label or "." in label or len(label) > 63:
+        return None
+    # p-<digest 8>-<job>-<sig 10>. The job may itself contain dashes, so the
+    # label is read from both fixed ends rather than split on every dash.
+    if not label.startswith(f"{_PREFIX}-"):
+        return None
+    rest = label[len(_PREFIX) + 1:]
+    if len(rest) < _DIGEST_LENGTH + 2 + _SIGNATURE_LENGTH:
+        return None
+    digest = rest[:_DIGEST_LENGTH]
+    supplied = rest[-_SIGNATURE_LENGTH:]
+    job = rest[_DIGEST_LENGTH + 1: -(_SIGNATURE_LENGTH + 1)]
+    if not _DIGEST.fullmatch(digest) or not _JOB.fullmatch(job) or not _SIGNATURE.fullmatch(supplied):
+        return None
+    return digest, job
+
+
+def verify(key: str, tenant: str, job: str, supplied: str) -> bool:
+    """Accept only a signature this service minted for this exact tenant and job."""
+    try:
+        expected = signature(key, tenant, job)
+    except PreviewHostError:
         return False
     if not _SIGNATURE.fullmatch(str(supplied or "").strip()):
         return False
-    try:
-        moment = int(str(expires).strip())
-    except (TypeError, ValueError):
-        return False
-    if moment <= float(now if now is not None else time.time()):
-        return False
-    try:
-        owner = tenant_id(tenant)
-    except PreviewHostError:
-        return False
-    expected = signature(key, owner, job_id, moment)
     return hmac.compare_digest(expected.encode(), str(supplied).strip().encode())
 
 
-def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any] | None = None,
-                            host: str | None = None) -> dict[str, Any]:
-    """Create a preview host's public record if the platform has not yet.
+def signature_from_host(host: str) -> str:
+    parts = str(host or "").strip().strip("/").lower().split(".")
+    label = parts[0] if parts else ""
+    return label.rsplit("-", 1)[-1] if "-" in label else ""
 
-    The address follows the host that already serves the API, so a preview
-    hostname needs no hand-made Cloudflare record and a fresh installation gets
-    one the first time the API starts. ``host`` lets a site bring its own
-    ``preview.<site domain>`` address instead of the platform-wide one.
+
+def ensure_preview_base_dns(env: Mapping[str, str], *, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Give the preview zone its wildcard record if the platform has not yet.
+
+    Every preview is one label under one base, so the whole capability needs a
+    single proxied wildcard record. It follows the host that already serves the
+    API, so a fresh installation gets working preview origins on first start and
+    no preview ever waits for its own DNS record.
     """
     from ..credentials import credential_profile
     from ..hands.cloudflare_dns import CloudflareDNSError, CloudflareDNSClient
 
-    host = str(host or "").strip().strip("/").lower() or host_for(env, config)
-    if not _HOST.fullmatch(host):
-        raise PreviewHostError("preview host is not a safe hostname")
+    base = preview_base(env)
     anchor = str(env.get(PREVIEW_DNS_HOST_ENV) or "").strip().strip("/").lower()
     if not anchor:
         raise PreviewHostError(f"{PREVIEW_DNS_HOST_ENV} is not configured")
@@ -180,8 +203,9 @@ def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any]
     if not token:
         raise PreviewHostError(f"{variable} is not set")
     client = CloudflareDNSClient(token)
+    name = f"*.{base}"
     try:
-        zone = client.zone_id_for_hostname(host)
+        zone = client.zone_id_for_hostname(base)
         anchor_records = [
             item for item in client.records(zone, name=anchor)
             if str(item.get("type") or "") in {"A", "AAAA", "CNAME"}
@@ -190,20 +214,20 @@ def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any]
             raise PreviewHostError(f"{anchor} has no address to follow")
         target = str(anchor_records[0].get("content") or "").strip()
         record_type = str(anchor_records[0].get("type") or "A")
-        client.ensure_public_host(zone, host, target=target)
+        client.ensure_public_host(zone, name, target=target)
         created = [
-            item for item in client.records(zone, name=host)
+            item for item in client.records(zone, name=name)
             if str(item.get("type") or "") in {"A", "AAAA", "CNAME"}
         ]
     except CloudflareDNSError as exc:
         raise PreviewHostError(str(exc)[:300]) from exc
     if not created:
-        raise PreviewHostError(f"{host} did not resolve to a record after provisioning")
+        raise PreviewHostError(f"{name} did not resolve to a record after provisioning")
     record = created[0]
     if not bool(record.get("proxied", True)):
-        raise PreviewHostError(f"{host} exists but is not proxied")
+        raise PreviewHostError(f"{name} exists but is not proxied")
     return {
-        "host": host,
+        "host": name,
         "recordId": str(record.get("id") or ""),
         "type": str(record.get("type") or record_type),
         "target": str(record.get("content") or target),
@@ -212,16 +236,19 @@ def ensure_preview_host_dns(env: Mapping[str, str], *, config: Mapping[str, Any]
 
 
 __all__ = [
-    "PREVIEW_PREFIX",
     "PreviewHostError",
-    "ensure_preview_host_dns",
-    "expiry_for",
+    "PREVIEW_BASE_ENV",
+    "PREVIEW_HOST_ENV",
+    "ensure_preview_base_dns",
     "host_for",
+    "label_for",
     "origin",
-    "path_for",
-    "preview_host",
+    "parse_host",
+    "preview_base",
     "signature",
+    "signature_from_host",
     "signing_key",
+    "tenant_digest",
     "tenant_id",
     "url_for",
     "verify",

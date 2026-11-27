@@ -90,34 +90,28 @@ operator-only `--sync --tenant <id>` dry run reads that active health identity;
 uses the queued candidate identity or changes a database, Worker, content
 document, or schema. Finish with `--validate` before an API release.
 
-## A site's preview host
+## Preview origins
 
-A compiled preview is served at `preview.<site domain>`, not at the
-platform-wide preview host. The address is signed and host-independent, so the
-same build stays open on either origin and moving a site to its own host does
-not invalidate a link already handed out.
+A compiled preview is a complete Next application, so it is served at its own
+origin rather than under a path on the workspace app. The origin is one label
+under the platform's preview base — `p-<tenant>-<job>-<signature>.<base>` — and
+the application decides which build a request belongs to from the `Host`.
 
-Two pieces, in this order:
+There is no per-site step and nothing to add for a new customer. The zone's
+wildcard record is created once, on the API's first start, following the address
+that serves `HELLOADA_PREVIEW_DNS_HOST`. The ingress pattern in
+`deploy/nginx-preview.helloada.app.conf` answers exactly that label shape and
+nothing else, so one record and one vhost serve every preview that can exist.
 
-1. Name the host in the tenant config:
+The address is a single label because the zone certificate is a one-level
+wildcard, which is a certificate fact rather than a per-site choice. Rotating
+`HELLOADA_PREVIEW_SIGNING_KEY` retires every origin handed out under the old
+key, so it is a deliberate operation, not routine host tuning.
 
-   ```yaml
-   preview:
-     host: preview.astridrincon.com
-   ```
-
-   On its next start the API creates the proxied DNS record for it, following
-   the address that already serves `HELLOADA_PREVIEW_DNS_HOST`.
-
-2. On the API host, once the record resolves, add the vhost and certificate:
-
-   ```bash
-   sudo deploy/add-preview-host.sh preview.astridrincon.com
-   ```
-
-The script is idempotent and keeps an existing certificate. The platform
-preview host (`HELLOADA_PREVIEW_HOST`) remains the default for any tenant that
-does not name one.
+A candidate compiles exactly as the site does: no `basePath`, no mount. A build
+compiled into a mount emits its own links and API calls relative to that mount,
+and a plain anchor or `fetch('/api/…')` still escapes it — that was the defect
+this origin removes, so nothing may reintroduce a mount.
 
 ## HelloAda project-selector release
 

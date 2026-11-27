@@ -139,44 +139,60 @@ field has been written.
 ## Reviewing the compiled candidate
 
 A source change is compiled into a complete Next application, and that
-application is served from **its own origin**: `preview.<platform host>` (for the
-shared API, `https://preview.helloada.app`) at the signed path
-`/p/<tenant>/<job>/<expiry>/<signature>`. The same service builds the candidate
-and runs it, so it owns the URL and forwards bytes: nothing re-derives a
-basePath, rewrites an asset, or reinterprets a redirect.
+application is served from **its own origin**: one label under the platform's
+preview base, `https://p-<tenant>-<job>-<signature>.<HELLOADA_PREVIEW_BASE>`. The
+same service builds the candidate and runs it, so it owns the origin and
+forwards bytes: nothing sets a basePath, rewrites an asset, or reinterprets a
+redirect.
 
-Why it is not a route in the workspace app. A candidate used to be mounted at
-`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`, which meant the
-app had to reproduce Next's URL semantics — basePath root with and without a
-trailing slash, RSC and prefetch headers, redirects, asset prefixes, 404s — and
-own a namespace the CMS also answered on. Every mismatch was another broken
-preview: the wrong mount, dropped flight headers, a swallowed redirect, a CMS
-`Route not found` page, a logo that led nowhere. Each repair added another rule
-to the emulation. One origin removes the emulation instead.
+Why it is not a path on a shared origin. A candidate used to be mounted at
+`/api/helloada/tenants/<tenant>/source/preview/<job>/runtime`, and then at a
+signed `/p/<tenant>/<job>/<expiry>/<signature>` on a preview host. Both are a
+complete application under a path, so the app had to reproduce Next's URL
+semantics — basePath root with and without a trailing slash, RSC and prefetch
+headers, redirects, asset prefixes, 404s — and own a namespace the CMS also
+answered on. Every mismatch was another broken preview, and the class of defect
+never closed: `basePath` only fixes what the Next router emits, so a plain
+`<a href="/about">` or `fetch('/api/assistant')` still resolved against the
+origin, left the mount and 404'd. The owner's own menu links and the shared
+assistant client failed exactly that way while every authored page rendered. An
+origin removes the emulation instead of adding the next rule to it.
 
-The address is the capability. The signature is an HMAC over the tenant, the job
-and the expiry, so the frame needs no cookie (a cross-origin iframe could not
-carry one), the address cannot be guessed, rotating
-`HELLOADA_PREVIEW_SIGNING_KEY` retires every address handed out before, and an
+The address is the capability. The label carries a digest of the tenant, the job
+and an HMAC over both, so the frame needs no cookie (a cross-origin iframe could
+not carry one), the origin cannot be guessed, rotating
+`HELLOADA_PREVIEW_SIGNING_KEY` retires every origin handed out before, and an
 expired build answers with a page that says so rather than a machine error. The
-service refuses any job whose signature does not verify, so a preview is still
-owner-only in practice: only the workspace, which holds the owner session, is
-told the address.
+service resolves the tenant from the digest and refuses any origin whose
+signature does not verify, so a preview is still owner-only in practice: only
+the workspace, which holds the owner session, is told the address.
+
+The origin is a single label because the zone certificate is a one-level
+wildcard. One proxied record and one ingress pattern therefore serve every
+preview that can exist, and no build waits for DNS or a certificate of its own.
 
 The workspace never composes a preview URL. The job's status reports
 `preview_url`, the in-app frame and a full-screen tab open that exact value, and
 appending a route to it is the only transformation (`previewUrlForRoute`). A
 build the service no longer serves has no `preview_url`, so the workspace
-rebuilds instead of framing something else. Because the candidate is now
+rebuilds instead of framing something else. Because the candidate is
 cross-origin, the workspace cannot read its document: the page selector drives
 the frame, and a link click inside the frame moves the frame alone.
 
-Preview host provisioning is automatic. On startup the shared API ensures the
-preview hostname resolves (`ensure_preview_host_dns`), copying the address of
-`HELLOADA_PREVIEW_DNS_HOST` and creating a proxied record when none exists, so a
-fresh installation needs no hand-made Cloudflare record. The host's nginx vhost
-and certificate are part of the reviewed host setup
-(`deploy/nginx-preview.helloada.app.conf`).
+Preview origin provisioning is automatic. On startup the shared API ensures the
+single wildcard record for the preview base exists
+(`ensure_preview_base_dns`), copying the address of `HELLOADA_PREVIEW_DNS_HOST`
+and creating a proxied record when none exists, so a fresh installation needs no
+hand-made Cloudflare record. The host's nginx vhost is part of the reviewed host
+setup (`deploy/nginx-preview.helloada.app.conf`).
+
+A candidate compiles exactly as the site does: no basePath, no mount. A tenant
+whose releases run in its own repository compiles the preview there — the
+platform dispatches `helloada-candidate` with the commit, and the run uploads
+the compiled application and a receipt naming that commit. This host downloads
+both, verifies them, and only starts the runtime. If the run fails, never
+appears, or reports another commit, the host compiles the candidate itself — the
+repository build removes work, never the ability to preview.
 
 There is no second preview. The frame never substitutes the published alias for
 a pending candidate; the alias is the preview only when there is nothing to

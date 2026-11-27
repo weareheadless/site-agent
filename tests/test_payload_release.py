@@ -3070,26 +3070,34 @@ def test_provisioning_modules_cannot_mutate_worker_secrets_directly():
     assert offenders == [], offenders
 
 
-def test_a_preview_candidate_is_compiled_under_the_signed_mount_it_is_served_from(tmp_path):
-    """Next resolves basePath at build time, so the mount is part of the build."""
+def test_a_preview_candidate_compiles_exactly_as_the_site_does(tmp_path):
+    """A preview owns its origin, so there is no mount to compile into.
+
+    Next resolves basePath at build time, and a build compiled at a mount emits
+    its own links and API calls relative to that mount — which a plain anchor or
+    `fetch('/api/...')` still escapes. The contract is therefore the absence of
+    `apply_preview_base_path`: a preview candidate is the site's own build.
+    """
+    assert not hasattr(release, "apply_preview_base_path")
     (tmp_path / "next.config.mjs").write_text("export default { reactStrictMode: true }\n")
-    mount = "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/0123456789abcdef"
-    release.apply_preview_base_path(tmp_path, mount)
-    assert (tmp_path / ".helloada-source-preview.next.mjs").read_text(
-        encoding="utf-8") == "export default { reactStrictMode: true }\n"
-    body = (tmp_path / "next.config.mjs").read_text(encoding="utf-8")
-    assert f'basePath: "{mount}"' in body
-    assert f'assetPrefix: "{mount}"' in body
+    # Nothing in the release script rewrites the managed Next config for a
+    # preview, so a candidate compile leaves it exactly as committed.
+    assert (tmp_path / "next.config.mjs").read_text(encoding="utf-8") == (
+        "export default { reactStrictMode: true }\n")
+    assert not (tmp_path / ".helloada-source-preview.next.mjs").exists()
 
 
-@pytest.mark.parametrize("mount", ["", "/preview/tenant", "/p/tenant/1799999999",
-                                   "/p/tenant-preview/../../etc/1799999999/0123456789abcdef",
-                                   "/p/tenant-preview/6782629d-412a-425b-99f1-1c19c8a5efbf/1799999999/short"])
-def test_a_preview_candidate_refuses_a_mount_the_platform_did_not_sign(tmp_path, mount):
-    (tmp_path / "next.config.mjs").write_text("export default {}\n")
-    with pytest.raises(RuntimeError):
-        release.apply_preview_base_path(tmp_path, mount)
-    assert (tmp_path / "next.config.mjs").read_text(encoding="utf-8") == "export default {}\n"
+def test_a_preview_runs_the_signer_that_forwards_the_build_it_names():
+    """The preview lane no longer accepts, or needs, a signed mount argument."""
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, str(Path(release.__file__)), "--help"],
+        capture_output=True, text=True, check=False,
+    )
+    output = result.stdout + result.stderr
+    assert "--preview-only" in output
+    assert "--preview-base-path" not in output
 
 
 def test_a_reused_compile_is_rehosted_into_its_new_workspace(tmp_path):

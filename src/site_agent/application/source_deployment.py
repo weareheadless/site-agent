@@ -88,7 +88,6 @@ _PREVIEW_RESUME_TIMEOUT_SECONDS = 60
 # candidate that keeps failing costs one compile instead of one per reload.
 _PREVIEW_ADDRESS_RETRIES = 2
 _PREVIEW_ADDRESS_RETRY_SECONDS = 600
-_PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 # The repository compiles a preview candidate when the platform asks it to, so
 # this host serves the artifact instead of paying for a second compile. The
 # event, the run title and the artifact names are the whole contract between
@@ -96,10 +95,10 @@ _PREVIEW_PATH_PREFIX = preview_host.PREVIEW_PREFIX
 _CANDIDATE_BUILD_EVENT = "helloada-candidate"
 _CANDIDATE_BUILD_ARTIFACT = "candidate-open-next"
 _CANDIDATE_RECEIPT_ARTIFACT = "candidate-receipt"
-# A compiled candidate is a complete application, so it is served from its own
-# origin at a signed path (application/preview_host.py) instead of a route
-# inside the workspace app. The build's Next basePath is that exact path, and
-# one service owns both the path and the runtime behind it.
+# A compiled candidate is a complete application, so it is served at its own
+# signed origin (application/preview_host.py) instead of a route inside the
+# workspace app. Nothing is mounted: the build's own links are already correct,
+# and one service owns both the origin and the runtime behind it.
 _PREVIEW_FLIGHT_REQUEST_HEADERS = (
     "rsc",
     "next-router-state-tree",
@@ -135,18 +134,14 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def preview_runtime_url(port: int, base_path: str, path: str = "", *, trailing: bool = False) -> str:
+def preview_runtime_url(port: int, path: str = "", *, trailing: bool = False) -> str:
     """The exact address of one candidate path inside its own runtime.
 
-    The signed base path *is* the document URL, so the preview root is that
-    path and never that path with a trailing slash: Next answers the canonical
-    form and redirects the other one. Every caller builds its request here so
-    a readiness probe, the render gate and the owner's frame all ask for the
-    same address.
+    A preview is served at the root of its own origin, so the runtime path is
+    the document path and nothing else: there is no mount to prepend and none to
+    escape. Every caller builds its request here so a readiness probe, the
+    render gate and the owner's frame all ask for the same address.
     """
-    base = str(base_path or "").strip().rstrip("/")
-    if not base.startswith(_PREVIEW_PATH_PREFIX) or ".." in base.split("/"):
-        raise SourceDeploymentError("compiled preview has no signed runtime path")
     clean = str(path or "").lstrip("/")
     if ".." in Path(clean).parts:
         raise SourceDeploymentError("compiled preview path is invalid")
@@ -157,7 +152,7 @@ def preview_runtime_url(port: int, base_path: str, path: str = "", *, trailing: 
     # the build emitted it; only the characters Next escapes are escaped.
     escaped = urllib.parse.quote(clean, safe="/!$&'()*+,;=:@~")
     suffix = f"/{escaped}" if escaped else ("/" if trailing else "")
-    return f"http://127.0.0.1:{int(port)}{base}{suffix}"
+    return f"http://127.0.0.1:{int(port)}{suffix or '/'}"
 
 
 class _DocumentAssets(HTMLParser):
@@ -984,13 +979,13 @@ class SourceDeploymentService:
             return None
         return parsed if isinstance(parsed, Mapping) else None
 
-    def _dispatch_candidate_build(self, repository: str, commit: str, base_path: str,
-                                  draft_id: Any) -> bool:
+    def _dispatch_candidate_build(self, repository: str, commit: str, draft_id: Any) -> bool:
         """Ask the repository to compile the preview the owner is about to see.
 
-        The run carries the signed mount the platform already minted for this
-        candidate, so the build it produces is servable here without this host
-        compiling anything.
+        The candidate is compiled exactly as the site is, with no mount: it will
+        be served at its own origin, so a build that needed a mount would be a
+        build this host cannot serve. The run only carries the commit it must
+        compile.
         """
         token = github_api_token(self.config, self._resolved_env())
         if not token:
@@ -999,8 +994,7 @@ class SourceDeploymentService:
             f"https://api.github.com/repos/{repository}/dispatches", token, method="POST",
             body={
                 "event_type": _CANDIDATE_BUILD_EVENT,
-                "client_payload": {"sha": commit, "basePath": base_path,
-                                   "draftId": str(draft_id or "")},
+                "client_payload": {"sha": commit, "draftId": str(draft_id or "")},
             },
         )
         return accepted is not None
@@ -1159,12 +1153,12 @@ class SourceDeploymentService:
             path.write_bytes(body.replace(origin, target))
 
     def _adopt_candidate_artifacts(self, worktree: Path, repository: str, run_id: int,
-                                   commit: str, base_path: str) -> Any:
+                                   commit: str) -> Any:
         """Adopt one run's compiled candidate, or say why it cannot be used.
 
         Returns true when the candidate is in place, ``"mismatch"`` when this
-        run compiled another commit or another signed mount (a newer run may
-        still be on its way), and false for a run whose artifacts are unusable.
+        run compiled another commit (a newer run may still be on its way), and
+        false for a run whose artifacts are unusable.
         """
         staging = Path(tempfile.mkdtemp(prefix="candidate-download-", dir=str(worktree.parent)))
         try:
@@ -1185,7 +1179,6 @@ class SourceDeploymentService:
             if not isinstance(receipt, Mapping):
                 return False
             if (receipt.get("sourceSha") != commit
-                    or receipt.get("previewBasePath") != base_path
                     or receipt.get("status") != "built"):
                 return "mismatch"
             archive = self._download_candidate_artifact(
@@ -1206,12 +1199,11 @@ class SourceDeploymentService:
 
         Returns false for every reason it cannot be used, so the caller falls
         back to the local build: a failed run, a missing artifact, a receipt
-        that names another commit or another mount.
+        that names another commit.
         """
         repository = self._github_repository()
-        base_path = self._preview_base_path(job)
         requested_at = _now()
-        if not self._dispatch_candidate_build(repository, commit, base_path, job.get("draft_id")):
+        if not self._dispatch_candidate_build(repository, commit, job.get("draft_id")):
             return False
         deadline = time.monotonic() + max(5, min(int(timeout), 1_200))
         appearance_deadline = time.monotonic() + 180
@@ -1245,7 +1237,7 @@ class SourceDeploymentService:
                 time.sleep(10)
                 continue
             adopted = self._adopt_candidate_artifacts(
-                worktree, repository, int(run["id"]), commit, base_path,
+                worktree, repository, int(run["id"]), commit,
             )
             if adopted is True:
                 if self.memory is not None:
@@ -1580,10 +1572,9 @@ class SourceDeploymentService:
         then reads the same address the owner's browser would.
         """
         assets = worktree / ".open-next" / "assets"
-        base_path = str(job.get("runtime_base_path") or "").strip("/")
-        if not assets.is_dir() or not base_path:
+        if not assets.is_dir():
             return
-        target = assets / base_path / "site-agent-revision.txt"
+        target = assets / "site-agent-revision.txt"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"{commit.strip().lower()}\n", encoding="utf-8")
 
@@ -2016,81 +2007,26 @@ class SourceDeploymentService:
         job["public_asset_roots"] = [f"/{item.name}" + ("/" if item.is_dir() else "")
                                     for item in sorted(public.iterdir()) if not item.is_symlink()] if public.is_dir() else []
 
-    @staticmethod
-    def _preview_base_path(job: Mapping[str, Any]) -> str:
-        base_path = str(job.get("runtime_base_path") or "")
-        if not base_path.startswith(_PREVIEW_PATH_PREFIX) or ".." in base_path.split("/"):
-            raise SourceDeploymentError("compiled preview has no signed runtime path")
-        return base_path
-
-    def _bake_preview_base_path(self, worktree: Path, job: dict[str, Any]) -> None:
-        """Mount the build at the signed path it is served from.
-
-        Next resolves ``basePath`` and ``assetPrefix`` at build time, so the
-        path is written into the managed Next config before the build starts.
-        A candidate the repository built already carries it; this runs only
-        when this host compiles the preview.
-        """
-        original = worktree / "next.config.mjs"
-        retained = worktree / ".helloada-source-preview.next.mjs"
-        if original.is_symlink() or not original.is_file() or retained.exists():
-            raise SourceDeploymentError("compiled preview needs the exact managed Next config")
-        base_path = self._preview_base_path(job)
-        original.rename(retained)
-        original.write_text(
-            "import original from './.helloada-source-preview.next.mjs'\n"
-            "export default async (phase, context) => {\n"
-            " const config = typeof original === 'function' ? await original(phase, context) : original\n"
-            f" return {{ ...config, basePath: {json.dumps(base_path)}, assetPrefix: {json.dumps(base_path)} }}\n"
-            "}\n", encoding="utf-8",
-        )
-
     def _prepare_preview_runtime(self, worktree: Path, job: dict[str, Any]) -> None:
-        """Prepare a preview this host compiles: local bindings and signed path."""
+        """Prepare a preview this host compiles: local bindings only.
+
+        No basePath is written. A candidate compiles as the site does, so its
+        own links, its own ``fetch('/api/…')`` calls and its own redirects are
+        already correct at the origin that serves it.
+        """
         self._localize_preview_bindings(worktree, job)
-        self._bake_preview_base_path(worktree, job)
 
     @staticmethod
     def _rewrite_runtime_assets(body: bytes, content_type: str, job: Mapping[str, Any]) -> bytes:
-        """Mount root-relative public asset URLs. Navigation belongs to Next.
+        """Return the runtime's bytes unchanged.
 
-        The preview build sets Next's ``basePath`` to this mount, so the client
-        router and every ``next/link`` already resolve site routes inside the
-        preview. Rewriting those hrefs as well made the router add the mount a
-        second time: an in-preview click landed on a doubled URL, the page went
-        blank and the prefetch answered 401. Next does not mount plain
-        root-relative asset URLs (``<img src="/photos/x.webp">``,
-        ``url(/fonts/x.woff2)``) in SSR HTML, its RSC payload or its bundles, so
-        those are the only thing this transport rewrites.
+        This transport exists to forward, and a preview at its own origin needs
+        nothing rewritten: every root-relative URL the build emits — a script,
+        an image, a stylesheet, an API call — resolves against that origin
+        exactly as it will on the live site. Rewriting here is what made a
+        correct candidate render incorrectly.
         """
-        base = str(job.get("runtime_base_path") or "")
-        roots = list(job.get("public_asset_roots") or []) + list(_PREVIEW_CANDIDATE_ASSET_ROOTS)
-        if not base or not roots or not any(
-            kind in content_type for kind in ("text/html", "text/css", "javascript", "text/x-component")
-        ):
-            return body
-        # A URL written inside an HTML attribute can arrive with its quotes
-        # entity-escaped (`style="background-image:url(&quot;/x.jpg&quot;)"`),
-        # which the quote-only prefix never matched: the hero image kept its
-        # site-root URL and 404'd outside the preview mount while the document
-        # still reported the picture in its markup.
-        quote = r'(?:&quot;|&#39;|&#x27;|\\?["\'])'
-        pattern = re.compile(
-            r"(?P<prefix>" + quote + r"|url\(\s*(?:" + quote + r")?)(?P<asset>"
-            + "|".join(re.escape(root) for root in roots) + ")"
-        )
-        mounted = pattern.sub(lambda match: match["prefix"] + base + match["asset"], body.decode("utf-8"))
-        if "/index.html" in roots:
-            # This candidate's home page is a static file in public/, so the
-            # site root is a public asset like the others. A bare root href is
-            # the only root-relative URL the root list cannot name, and left
-            # alone it leaves the preview for an address that does not exist.
-            # A Next route never emits this form: its basePath is the mount.
-            root_href = re.compile(
-                r"(?P<prefix>href=" + quote + r")(?P<slash>/)(?P<suffix>" + quote + r")"
-            )
-            mounted = root_href.sub(lambda match: match["prefix"] + base + match["suffix"], mounted)
-        return mounted.encode("utf-8")
+        return body
 
     @staticmethod
     def _preview_root_is_ready(status: int) -> bool:
@@ -2210,7 +2146,6 @@ class SourceDeploymentService:
                 self._stop_runtime(other_id, discard_worktree=False)
 
         port = self._preview_port()
-        base_path = str(job.get("runtime_base_path") or "")
         command = [
             "npx",
             "--no-install",
@@ -2255,7 +2190,7 @@ class SourceDeploymentService:
                 self._stop_runtime(str(job["id"]), discard_worktree=discard_on_failure)
                 raise SourceDeploymentError("compiled preview process exited before it was ready")
             try:
-                with urllib.request.urlopen(preview_runtime_url(port, base_path), timeout=3) as response:
+                with urllib.request.urlopen(preview_runtime_url(port), timeout=3) as response:
                     if self._preview_root_is_ready(int(response.status)):
                         ready = True
                         break
@@ -2280,7 +2215,7 @@ class SourceDeploymentService:
                 "compiled preview did not become ready in time" + (f"\n{tail}" if tail else "")
             )
         revision = self._verify_public_revision(
-            f"http://127.0.0.1:{port}{base_path}",
+            f"http://127.0.0.1:{port}",
             str(expected_commit or job.get("commit") or ""),
             label="compiled preview",
         )
@@ -2291,7 +2226,7 @@ class SourceDeploymentService:
             # touched no Payload document on it.
             required_routes = self._required_preview_routes(job.get("preview_routes") or [])
             rendered, asset_warnings = self._verify_preview_routes(
-                f"http://127.0.0.1:{port}{base_path}",
+                f"http://127.0.0.1:{port}",
                 required_routes,
                 job,
             )
@@ -2301,7 +2236,7 @@ class SourceDeploymentService:
         return {
             "status": "ready",
             "mode": _COMPILED_PREVIEW,
-            "runtime_base_path": str(job.get("runtime_base_path") or ""),
+            "preview_origin": self._preview_origin_for(str(job.get("id") or "")),
             "deployment_mode": "isolated_host_runtime",
             "runtime_port": port,
             "revision_verification": revision,
@@ -2552,13 +2487,13 @@ class SourceDeploymentService:
         """
         if mode != _COMPILED_PREVIEW or not job.get("resume"):
             return None
-        # A resumed worktree keeps the basePath it was compiled with, and that
-        # basePath carries this job's signature. A changed signing key or a
-        # rebuilt identity means the compiled output no longer matches the
-        # address it would be served at.
-        # Only a build compiled for the signed path its own origin serves can be
-        # resumed; an older job carries a mount this service no longer serves.
-        if not str(job.get("runtime_base_path") or "").startswith(_PREVIEW_PATH_PREFIX):
+        # A build compiled at a mount cannot be resumed at an origin: its own
+        # links and API calls were emitted for a path this service no longer
+        # serves. The origin itself needs nothing carried forward — it is
+        # derived from this job's identity — so only the build is checked.
+        try:
+            self._preview_origin_for(str(job.get("id") or ""))
+        except preview_host.PreviewHostError:
             return None
         raw = str(job.get("worktree_path") or "").strip()
         if not raw:
@@ -3137,19 +3072,13 @@ class SourceDeploymentService:
         else:
             payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
         job_id = str(uuid.uuid4())
-        runtime_base_path = ""
         if mode == _COMPILED_PREVIEW:
-            # The address names this tenant and this job and is signed over
-            # both, so the service that answers it can resolve the request from
-            # the URL alone. It is minted once here; every reader is handed the
-            # same value.
+            # The origin names this tenant and this job and is signed over both,
+            # so the service that answers it can resolve the request from the
+            # Host alone. Minting it here proves the configuration works before
+            # a build is queued; the value itself is derived from the identity.
             try:
-                runtime_base_path = preview_host.path_for(
-                    preview_host.signing_key(self.env),
-                    self.config.get("instance_name"),
-                    job_id,
-                    preview_host.expiry_for(_now()),
-                )
+                self._preview_origin_for(job_id)
             except preview_host.PreviewHostError as exc:
                 raise SourceDeploymentError(f"compiled preview is not configured: {exc}") from exc
         with self._lock:
@@ -3202,8 +3131,6 @@ class SourceDeploymentService:
             "created_at": _now(),
             "updated_at": _now(),
         }
-        if runtime_base_path:
-            job["runtime_base_path"] = runtime_base_path
         if draft_id is not None:
             job["draft_id"] = draft_id
         if design_run_id:
@@ -3524,23 +3451,36 @@ class SourceDeploymentService:
         self._persist()
         self._futures[job_id] = self._executor.submit(self._run_job, job_id, branch, commit, mode)
 
+    def _preview_origin_for(self, job_id: str) -> str:
+        """The origin this exact preview is served at.
+
+        The address is derived from the identity — this tenant, this job — and
+        never stored as a fact of its own, so a retried or reloaded job has the
+        address it always had without anything having to carry it forward.
+        """
+        return preview_host.origin(
+            self.env, str(self.config.get("instance_name") or ""), str(job_id or ""),
+        )
+
     def _with_preview_url(self, job: Mapping[str, Any]) -> dict[str, Any]:
         """Attach the address the workspace frames for this exact build.
 
-        The path is signed when the job is created, so every reader — status,
+        The origin is minted from the job's identity, so every reader — status,
         latest, the build result — hands out the same URL and no caller has to
         compose one from parts.
         """
         result = dict(job)
-        base = str(result.get("runtime_base_path") or "")
-        if not base:
+        job_id = str(result.get("id") or "")
+        if not job_id or result.get("mode") != _COMPILED_PREVIEW:
             return result
         try:
-            result["preview_url"] = preview_host.origin(self.env, self.config) + base
+            result["preview_origin"] = self._preview_origin_for(job_id)
         except preview_host.PreviewHostError:
-            # Configuration is checked when a preview starts. An old job without
-            # an address must not take the whole status response down.
-            result.pop("preview_url", None)
+            # Configuration is checked when a preview starts. A job without an
+            # address must not take the whole status response down.
+            result.pop("preview_origin", None)
+            return result
+        result["preview_url"] = result["preview_origin"] + "/"
         return result
 
     def latest_preview(self, branch: str | None = None, *, draft_id: int | None = None) -> dict[str, Any]:
@@ -3720,7 +3660,6 @@ class SourceDeploymentService:
         raw_path = str(path or "")
         target = preview_runtime_url(
             port,
-            str(job.get("runtime_base_path") or ""),
             raw_path,
             trailing=raw_path.endswith("/"),
         )
@@ -3760,7 +3699,6 @@ class SourceDeploymentService:
             job = self._restart_runtime(job_id)
             retry_target = preview_runtime_url(
                 int(job.get("runtime_port") or 0),
-                str(job.get("runtime_base_path") or ""),
                 raw_path,
                 trailing=raw_path.endswith("/"),
             )
@@ -3801,22 +3739,13 @@ class SourceDeploymentService:
 
     @staticmethod
     def _rewrite_runtime_location(location: str, job: Mapping[str, Any]) -> str:
-        """Keep a candidate redirect inside the mount that rendered it.
+        """Pass a candidate redirect through untouched.
 
-        `/courses/training` permanently redirects to `/depth`. The browser must
-        follow that on the owner surface, not on the preview host or the live
-        site, so a root-relative destination takes the build's exact basePath.
+        A preview owns its origin, so a root-relative destination already lands
+        on the preview that emitted it. Prepending a mount here is what sent the
+        owner to an address that did not exist.
         """
-        raw = str(location or "").strip()
-        base = str(job.get("runtime_base_path") or "")
-        if not raw or not base:
-            return ""
-        parts = urllib.parse.urlsplit(raw)
-        if parts.scheme or parts.netloc or not parts.path.startswith("/"):
-            return raw
-        if parts.path == base or parts.path.startswith(base + "/"):
-            return raw
-        return base + parts.path + (f"?{parts.query}" if parts.query else "")
+        return str(location or "").strip()
 
     def close(self) -> None:
         """Stop queued preview work during tenant shutdown.

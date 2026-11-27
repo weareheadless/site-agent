@@ -61,20 +61,27 @@ tenant's separate config, Payload client, memory database, and job worker.
 ### Preview origin
 
 The compiled candidate the owner reviews is a complete Next application, so it
-is served from its own hostname rather than a route in the workspace app. Add
+is served at its own origin rather than at a path on the workspace app. Add
 three protected values to `/SOCIAL/configs/site-agent-api/.env`:
 
 ```ini
-HELLOADA_PREVIEW_HOST=preview.helloada.app
+HELLOADA_PREVIEW_BASE=helloada.app
 HELLOADA_PREVIEW_DNS_HOST=api.helloada.app
 HELLOADA_PREVIEW_SIGNING_KEY=replace-with-32-plus-random-characters
 ```
 
-The record itself is not a manual step: on startup the API ensures the preview
-hostname exists, copying the address of `HELLOADA_PREVIEW_DNS_HOST` and creating
-a proxied record when there is none. Rotating the signing key retires every
-preview address handed out under the old one, so it is a deliberate operation,
-not routine host tuning. The host still owns the ingress and its certificate:
+An address is `https://p-<tenant>-<job>-<signature>.<HELLOADA_PREVIEW_BASE>` and
+is the capability itself: it names the tenant and the job so any request
+resolves from the `Host` alone, the frame carries no cookie, the service refuses
+any origin whose signature does not verify, and an expired build says so on a
+page instead of returning a machine error.
+
+The record is not a manual step: on startup the API ensures the single wildcard
+record for the preview base exists, copying the address of
+`HELLOADA_PREVIEW_DNS_HOST` and creating a proxied record when there is none.
+Rotating the signing key retires every preview origin handed out under the old
+one, so it is a deliberate operation, not routine host tuning. The host owns the
+ingress; one vhost serves every preview label:
 
 ```bash
 sudo cp /SOCIAL/site-agent/deploy/nginx-preview.helloada.app.conf \
@@ -82,24 +89,15 @@ sudo cp /SOCIAL/site-agent/deploy/nginx-preview.helloada.app.conf \
 sudo ln -sfn /etc/nginx/sites-available/preview.helloada.app.conf \
   /etc/nginx/sites-enabled/preview.helloada.app.conf
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot --nginx -d preview.helloada.app
 ```
 
-A preview address is
-`https://<HELLOADA_PREVIEW_HOST>/p/<tenant>/<job>/<expiry>/<signature>` and is the
-capability itself: it names the tenant and the job so any request resolves from
-the URL alone, the frame carries no cookie, the service refuses any address
-whose signature does not verify, and an expired build says so on a page instead
-of returning a machine error.
-
-Next resolves `basePath` at build time, so the signed mount is part of the
-build and every preview is a compile of its own. A tenant whose releases run in
-its own repository compiles that preview there: the platform mints the mount,
-dispatches `helloada-candidate`, and the run uploads the compiled application
-and the receipt naming the commit and the mount. This host downloads both,
-verifies them, and only starts the runtime. If the run fails, never appears, or
-reports another mount, the host compiles the candidate itself — the repository
-build removes work, never the ability to preview.
+The label is a single label under the base because the zone certificate is a
+one-level wildcard, which covers every preview that can exist without a
+per-build certificate. A candidate compiles exactly as the site does — no
+`basePath`, no mount — because a build compiled into a mount emits its own links
+and API calls relative to that mount, and a plain anchor or `fetch('/api/…')`
+still escapes it. That was the defect this origin removes, so nothing may
+reintroduce a mount.
 
 One install of the product per machine, one instance directory per site.
 Code lives in `/opt/site-agent`, site instances live in `/SOCIAL/configs/<site>/`.

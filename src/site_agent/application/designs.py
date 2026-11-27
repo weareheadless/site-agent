@@ -2896,7 +2896,7 @@ class DesignService:
                         binder = getattr(browser, "bind_runtime", None)
                         if not callable(binder):
                             raise DesignServiceError("server-rendered candidate requires its runtime browser adapter")
-                        binder(f"http://127.0.0.1:{int(preview['runtime_port'])}{preview.get('runtime_base_path') or ''}", {
+                        binder(f"http://127.0.0.1:{int(preview['runtime_port'])}", {
                             **artifact, "source_preview_job_id": preview["id"],
                         }, loader=lambda path, query: source_preview.runtime(str(preview["id"]), path, query))
                         return {"ok": True, "status": "passed", "checks": preview.get("checks") or [],
