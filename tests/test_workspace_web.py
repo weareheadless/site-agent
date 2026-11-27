@@ -3917,7 +3917,7 @@ def test_a_compiled_preview_is_served_from_its_own_origin(tmp_path):
     served: list[tuple[str, str, str]] = []
 
     class Deployer:
-        def runtime(self, job_id, path, query="", headers=None):
+        def runtime(self, job_id, path, query="", headers=None, **kwargs):
             served.append((path, (headers or {}).get("RSC", ""), (headers or {}).get("Accept", "")))
             return {
                 "status": 200,
@@ -3990,14 +3990,14 @@ def test_a_preview_origin_waits_while_its_own_build_is_still_running(tmp_path):
     job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
 
     class Building:
-        def runtime(self, job_id, path, query="", headers=None):
+        def runtime(self, job_id, path, query="", headers=None, **kwargs):
             raise BridgeError("compiled preview is not ready")
 
         def status(self, job_id):
             return {"id": job_id, "status": "running", "commit": "a" * 40}
 
     class Failed:
-        def runtime(self, job_id, path, query="", headers=None):
+        def runtime(self, job_id, path, query="", headers=None, **kwargs):
             raise BridgeError("compiled preview is not ready")
 
         def status(self, job_id):
@@ -4166,3 +4166,48 @@ def test_api_startup_records_its_phases_before_it_serves(tmp_path):
         assert set(report["phases"]) == {"tenant_start", "preview_host"}
         assert report["phases"]["tenant_start"] >= 0
         assert not list((tmp_path / "logs").glob("*.tmp"))
+
+
+def test_a_previews_own_post_endpoint_is_forwarded(tmp_path):
+    """A candidate's form or assistant is a POST, and it must reach the build.
+
+    Forwarding only GET made a preview's own endpoints answer 405 in review while
+    they worked live — the design's chat could not talk to its own site.
+    """
+    from site_agent.application import preview_host
+
+    memory = Memory(tmp_path / "memory.db")
+    job = "6782629d-412a-425b-99f1-1c19c8a5efbf"
+    seen: list[tuple[str, str, bytes]] = []
+
+    class Deployer:
+        def runtime(self, job_id, path, query="", headers=None, *, method="GET", body=b"", content_type=""):
+            seen.append((method, path, body))
+            return {
+                "status": 200,
+                "body": b"{}",
+                "content_type": "application/json",
+                "commit": "a" * 40,
+            }
+
+    tenant = Tenant("demo", {}, memory, None, {"source_deployment": Deployer()}, "demo-token")
+    registry = TenantRegistry({"demo": tenant})
+    env = {"HELLOADA_PREVIEW_BASE": "preview.example.test",
+           "HELLOADA_PREVIEW_SIGNING_KEY": "k" * 40}
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env=env, service=ChatService(registry=registry), registry=registry,
+    )
+    host = preview_host.origin(env, "demo", job).removeprefix("https://")
+    with TestClient(app) as client:
+        posted = client.post("/api/assistant", headers={"host": host},
+                             json={"messages": [{"role": "user", "content": "hi"}]})
+        fetched = client.get("/_next/static/x.js", headers={"host": host})
+
+    assert posted.status_code == 200
+    assert fetched.status_code == 200
+    assert seen[0][0] == "POST"
+    assert seen[0][1] == "api/assistant"
+    assert b"messages" in seen[0][2]
+    assert seen[1][0] == "GET"
+    memory.close()

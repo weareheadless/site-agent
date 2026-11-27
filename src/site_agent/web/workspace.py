@@ -1011,7 +1011,7 @@ p.detail.waiting {{ margin-top: 10px; }}
 </main></body></html>"""
         return HTMLResponse(body, status_code=status, headers={"cache-control": "no-store"})
 
-    def preview_runtime_response(
+    async def preview_runtime_response(
         owner: str,
         job_id: str,
         signature: str,
@@ -1054,6 +1054,9 @@ p.detail.waiting {{ margin-top: 10px; }}
                     "Purpose": request.headers.get("purpose", ""),
                     "X-Nextjs-Data": request.headers.get("x-nextjs-data", ""),
                 },
+                method=request.method,
+                body=await request.body() if request.method not in {"GET", "HEAD"} else b"",
+                content_type=request.headers.get("content-type", ""),
                 tenant=tenant,
             )
         except BridgeError:
@@ -1126,7 +1129,7 @@ p.detail.waiting {{ margin-top: 10px; }}
                 "This preview is no longer available",
                 "Its workspace is not registered on this host any more.",
             )
-        return preview_runtime_response(
+        return await preview_runtime_response(
             tenant.tenant_id,
             job_id,
             preview_host.signature_from_host(host),

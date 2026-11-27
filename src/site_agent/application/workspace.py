@@ -6059,13 +6059,24 @@ class ChatService:
         query: str = "",
         headers: Mapping[str, str] | None = None,
         *,
+        method: str = "GET",
+        body: bytes = b"",
+        content_type: str = "",
         tenant: Tenant | None = None,
     ) -> dict[str, Any]:
-        """Proxy an authenticated browser request to one compiled source preview."""
+        """Proxy an authenticated browser request to one compiled source preview.
+
+        The method and body travel with it: a preview's own POST endpoints are
+        part of the candidate, so forwarding only GET made its assistant and
+        forms answer 405 in review while they worked live.
+        """
         from .source_deployment import SourceDeploymentError
 
         try:
-            return self._source_deployer(tenant).runtime(job_id, path, query, headers)
+            return self._source_deployer(tenant).runtime(
+                job_id, path, query, headers,
+                method=method, body=body, content_type=content_type,
+            )
         except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 

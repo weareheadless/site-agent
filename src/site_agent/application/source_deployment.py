@@ -3646,7 +3646,9 @@ class SourceDeploymentService:
         self._warm_preview(job)
         return result
 
-    def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+    def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None,
+                *, method: str = "GET", body: bytes = b"",
+                content_type: str = "") -> dict[str, Any]:
         """Proxy one authenticated browser request to an isolated preview.
 
         The address is the capability, and it outlives this process. A preview
@@ -3654,6 +3656,11 @@ class SourceDeploymentService:
         process behind it stopped — a platform restart, a sibling preview, a
         dropped Worker — so a reader is never handed a dead address that only a
         rebuild could repair.
+
+        The method and body are the browser's. A preview owns its origin, so its
+        own POST endpoints — the assistant a design chats with, a form, a
+        booking — are part of the page, and forwarding only GET made them answer
+        405 in review while they worked live.
         """
         job = self._served_preview(job_id)
         port = int(job.get("runtime_port") or 0)
@@ -3665,13 +3672,18 @@ class SourceDeploymentService:
         )
         if query:
             target = f"{target}?{query}"
-        allowed = {"accept", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}
+        allowed = {"accept", "content-type", "cookie", "user-agent", *_PREVIEW_FLIGHT_REQUEST_HEADERS}
         request_headers = {
             key: value
             for key, value in (headers or {}).items()
             if key.lower() in allowed and value
         }
-        request = urllib.request.Request(target, headers=request_headers, method="GET")
+        verb = str(method or "GET").upper()
+        if content_type and not any(key.lower() == "content-type" for key in request_headers):
+            request_headers["Content-Type"] = content_type
+        request = urllib.request.Request(
+            target, headers=request_headers, method=verb, data=(body or None) if verb != "GET" else None,
+        )
         try:
             response = urllib.request.build_opener(_BrowserOwnedRedirects()).open(request, timeout=60)
             with response:
@@ -3704,7 +3716,9 @@ class SourceDeploymentService:
             )
             if query:
                 retry_target = f"{retry_target}?{query}"
-            retry = urllib.request.Request(retry_target, headers=request_headers, method="GET")
+            retry = urllib.request.Request(
+                retry_target, headers=request_headers, method=verb, data=(body or None) if verb != "GET" else None,
+            )
             try:
                 response = urllib.request.build_opener(_BrowserOwnedRedirects()).open(retry, timeout=60)
                 with response:
