@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 
+def _fake_identity(monkeypatch):
+    """plan() records the control identity; a test checkout may not be a git repo."""
+    import subprocess as _subprocess
+    monkeypatch.setattr(
+        _subprocess, "check_output",
+        lambda *args, **kwargs: "0" * 40 + "\n",
+    )
+
+
 def _module():
     spec = importlib.util.spec_from_file_location(
         "sync_tenant_repository_check", ROOT / "scripts/sync-tenant-repository-check.py",
@@ -65,6 +74,7 @@ def test_an_authored_crawl_file_is_never_overwritten(monkeypatch):
     }])
     monkeypatch.setattr(sync, "github_api_token", lambda *args, **kwargs: "token")
     monkeypatch.setattr(sync, "credential_environment", lambda *args, **kwargs: {})
+    _fake_identity(monkeypatch)
     monkeypatch.setattr(sync, "_write",
                         lambda token, repo, branch, path, content, sha, message=None: written.append(path))
 
@@ -84,6 +94,7 @@ def test_a_site_without_crawl_files_receives_all_of_them(monkeypatch):
     }])
     monkeypatch.setattr(sync, "github_api_token", lambda *args, **kwargs: "token")
     monkeypatch.setattr(sync, "credential_environment", lambda *args, **kwargs: {})
+    _fake_identity(monkeypatch)
     monkeypatch.setattr(sync, "_write",
                         lambda token, repo, branch, path, content, sha, message=None: written.append(path))
 
@@ -104,6 +115,7 @@ def test_a_site_with_a_static_sitemap_only_gains_robots(monkeypatch):
     }])
     monkeypatch.setattr(sync, "github_api_token", lambda *args, **kwargs: "token")
     monkeypatch.setattr(sync, "credential_environment", lambda *args, **kwargs: {})
+    _fake_identity(monkeypatch)
     monkeypatch.setattr(sync, "_write",
                         lambda token, repo, branch, path, content, sha, message=None: written.append(path))
 

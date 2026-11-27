@@ -21,6 +21,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 from typing import Any, Mapping
 import urllib.error
@@ -255,11 +256,15 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
     ):
         if not canonical_source.is_file():
             raise GitHubError(f"canonical file is missing from the template: {canonical_name}")
-    control_sha = str(
-        __import__("subprocess").check_output(
-            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True,
+    # The control identity is normally this checkout's HEAD, but this tool also
+    # runs from a released snapshot, which is not a git repository. Fall back to
+    # the recorded identity so a sync is never refused for how it was installed.
+    try:
+        control_sha = subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL,
         ).strip()
-    )
+    except (OSError, subprocess.CalledProcessError):
+        control_sha = os.environ.get("HELLOADA_PIPELINE_SHA", "").strip()
 
     rows = _tenant_rows(host_config, credentials)
     if tenants:
