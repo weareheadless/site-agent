@@ -1334,6 +1334,20 @@ class PayloadMediaAsset:
     thumbnail_key: str = "payload"
 
 
+def _attachment_kind(content_type: Any) -> str:
+    """What kind of attachment this file is, or '' when the chat cannot take it.
+
+    The library holds stills and clips, and both are attachable. A PDF and any
+    other file are refused by name rather than arriving as a broken turn.
+    """
+    value = str(content_type or "").strip().lower()
+    if value.startswith("image/"):
+        return "image"
+    if value.startswith("video/"):
+        return "video"
+    return ""
+
+
 def _media_array_values(value: Any, *, limit: int = 20) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
@@ -1474,24 +1488,26 @@ class PayloadMediaService:
     def resolve_attachments(self, asset_ids: list[Any] | None) -> list[dict[str, Any]]:
         ids = list(asset_ids or [])
         if len(ids) > self.max_attachments:
-            raise PayloadGatewayError(f"Choose up to {self.max_attachments} images at a time.")
+            raise PayloadGatewayError(f"Choose up to {self.max_attachments} files at a time.")
         result: list[dict[str, Any]] = []
         seen: set[int] = set()
         for position, raw_id in enumerate(ids):
             try:
                 asset_id = int(raw_id)
             except (TypeError, ValueError) as exc:
-                raise PayloadGatewayError("One of the attached images is invalid.") from exc
+                raise PayloadGatewayError("One of the attached files is invalid.") from exc
             if asset_id in seen:
-                raise PayloadGatewayError("Choose each image only once.")
+                raise PayloadGatewayError("Choose each file only once.")
             seen.add(asset_id)
             asset = self.get(asset_id)
-            if not asset.url or not asset.content_type.lower().startswith("image/"):
-                raise PayloadGatewayError("One of the attached files is not an image.")
+            kind = _attachment_kind(asset.content_type)
+            if not asset.url or not kind:
+                raise PayloadGatewayError("One of the attached files is not a video or an image.")
             result.append({
                 "type": "media_asset",
                 "asset_id": asset.asset_id,
                 "position": position,
+                "kind": kind,
                 "name": asset.original_name,
                 "description": asset.description,
                 "alt_text": asset.alt_text,
@@ -1503,6 +1519,7 @@ class PayloadMediaService:
                 "thumbnail_url": asset.url,
                 "preview_url": asset.url,
                 "url": asset.url,
+                "content_type": asset.content_type,
             })
         return result
 

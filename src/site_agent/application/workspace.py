@@ -1515,7 +1515,7 @@ class ChatService:
         if not isinstance(value, list):
             raise BridgeError("attachments must be a list")
         if len(value) > 12:
-            raise BridgeError("choose up to 12 images")
+            raise BridgeError("choose up to 12 files")
         rows: list[dict[str, int]] = []
         seen: set[int] = set()
         for position, raw in enumerate(value):
@@ -1704,7 +1704,7 @@ class ChatService:
         if len(message) > 8000:
             raise BridgeError("message too long")
         if not message:
-            message = "Please review the attached images."
+            message = "Please review the attached files."
 
         # The tenant journey is authoritative. Preserve it in the turn context
         # instead of asking the model to infer an existing site from the

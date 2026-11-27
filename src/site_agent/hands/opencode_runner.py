@@ -3974,6 +3974,9 @@ GSAP production guardrails:
   screenshots). Use it to reproduce the real logo and marks, and to self-critique
   your own rendered output before finishing. Do not invent a brand mark from a
   description when the image is available.
+- An attached clip is a video file, not an image. You can place it in the page
+  and read its name, dimensions and description, but you cannot see its frames.
+  Do not claim to have watched it, and do not treat a clip as a still.
 - Counters and meters are optional content decisions, never inherited controls.
   If the intake calls for one, derive its range from the complete content model;
   never use an arbitrary hard-coded cap such as 20.
@@ -5590,6 +5593,24 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
     return site_clone, clone, base_ref, _change_state(clone)
 
 
+def _canonical_media_bytes(service: Any, stored: Any, *, kind: str = "image",
+                           source_bytes: bytes | None = None) -> bytes:
+    """Return the exact bytes for one Library asset, in that asset's own format.
+
+    A still is canonicalised to WebP because that is what the site ships. A clip
+    is returned untouched: its container is the media, so re-encoding its bytes
+    as an image would corrupt it.
+    """
+    if str(kind) == "video":
+        reader = getattr(service, "read_preview", None)
+        if source_bytes is None:
+            if not callable(reader):
+                raise RunnerError("the media Library cannot supply video bytes for this build")
+            source_bytes, _content_type = reader(int(stored.asset_id))
+        return source_bytes
+    return _canonical_media_webp(service, stored, source_bytes=source_bytes)
+
+
 def _canonical_media_webp(service: Any, stored: Any, *, source_bytes: bytes | None = None) -> bytes:
     """Return canonical WebP bytes for one Library asset.
 
@@ -5701,8 +5722,20 @@ def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
     paths = []
     for asset in service.resolve_attachments(ids):
         stored = service.get(asset["asset_id"])
-        stem = _re.sub(r"[^A-Za-z0-9_-]+", "-", Path(stored.original_name).stem).strip("-")[:60] or "image"
-        relative = f"{destination}/ada-{stored.asset_id}-{stem}.webp"
+        stem = _re.sub(r"[^A-Za-z0-9_-]+", "-", Path(stored.original_name).stem).strip("-")[:60] or "media"
+        # A clip keeps its own container: re-encoding video bytes as WebP would
+        # hand the builder a corrupt file it then renders as a broken image.
+        kind = str(asset.get("kind") or "image")
+        source_name = Path(str(getattr(stored, "original_name", "") or ""))
+        if kind == "video":
+            if not source_name.suffix:
+                # Never guess a container for a clip: a WebP-named video file is
+                # a corrupt asset the builder would render as a broken image.
+                raise RunnerError(f"the Library clip {stored.asset_id} has no file extension to place it by")
+            suffix = source_name.suffix.lower()
+        else:
+            suffix = ".webp"
+        relative = f"{destination}/ada-{stored.asset_id}-{stem}{suffix}"
         target = clone / relative
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise RunnerError(f"materialized media path is not a regular file: {relative}")
@@ -5710,7 +5743,7 @@ def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
         clone_root = clone.resolve()
         if parent != clone_root and clone_root not in parent.parents:
             raise RunnerError("materialized media path escapes the preview worktree")
-        data = _canonical_media_webp(service, stored)
+        data = _canonical_media_bytes(service, stored, kind=kind)
         if not target.exists() or target.read_bytes() != data:
             target.write_bytes(data)
         paths.append(relative)
@@ -5863,7 +5896,9 @@ def _verify_materialized_media(context: dict[str, Any], clone: Path, paths: list
         root = clone.resolve()
         if root != target and root not in target.parents:
             raise RunnerError("materialized media verification escaped the preview worktree")
-        if not target.is_file() or target.read_bytes() != _canonical_media_webp(service, stored):
+        if not target.is_file() or target.read_bytes() != _canonical_media_bytes(
+            service, stored, kind=str(asset.get("kind") or "image")
+        ):
             raise RunnerError(f"builder changed the owner-provided media asset: {relative}")
 
 
