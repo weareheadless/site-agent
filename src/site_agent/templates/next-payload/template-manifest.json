@@ -1,8 +1,8 @@
 {
   "templateSchema": 8,
   "workspaceApi": "v1",
-  "payloadCore": "0.6.5",
-  "schemaRevision": 13,
+  "payloadCore": "0.6.6",
+  "schemaRevision": 14,
   "contentContract": "helloada-content-v4",
   "defaultLocale": "en",
   "locales": [
@@ -13,7 +13,7 @@
     "node": ">=22.0.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "664c57047e3ed8f2dd9d1e2dd6b50938f8c2e20ee1ab4f85a75abbfb5ba98848",
+  "schemaIdentity": "57900a07b65e5c68cd9677a30c8d96137308eea0eaf28f45e128c1a2782c8c4d",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -69,10 +69,15 @@
       "name": "20261123_090000_locale_parent_indexes",
       "fileSha256": "bbaeb5218e5bbf3898b1c2cab36bf4596cf26965d040c73642feb2d32bd30fe9",
       "snapshotSha256": "805a2f21ef8c3ad750ebe5de50b7d53f17f3f43d0a75c066aee62326e006118d"
+    },
+    {
+      "name": "20261127_090000_media_owner_note",
+      "fileSha256": "d557bf027edddbc057770ee5a50556b7057e2a3cd24cc5a457b5bc03f6ea6a94",
+      "snapshotSha256": "dea09b009cfdbb53dbe7a6fb3c635223af65a23c571f88268a53baabbb74ccbe"
     }
   ],
-  "migrationHead": "8135c797014e902b2a0ff938491e7577d6a41ecf0ce3a962d85fe8c1060d0bf1",
-  "migrationIndexSha256": "d5ed7a141dec34b8042accae86e632f8c08f7da23925fa5359d6a807ff53e424",
-  "configurationIdentity": "1a9cf7f3858b4d577656f510e965851696d94df98f9c5c12bd8b588d5840446a",
-  "sharedRuntimeFingerprint": "cbc39464fdddadb086e933478fe1b0762324cff51f35e564c0870b24d115da65"
+  "migrationHead": "8c1d0eb06deb0b1488570afeba0a79b4f598325d76ff5a4c16d076e924165c5f",
+  "migrationIndexSha256": "961d74961fac6f576e8f7d55d34445c0d3cfc0032f7a8c65925fa7565b1ea2dd",
+  "configurationIdentity": "4cfb083141046a6258f7b4463e61022b33fd66de26d499cf61b94729d8a05195",
+  "sharedRuntimeFingerprint": "96288d899c26d9aefb54f42167918845d8dc60b5b136ad1da6de2c954cdd080e"
 }

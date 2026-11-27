@@ -430,16 +430,23 @@ export async function GET(request: Request, { params }: RouteProps) {
     const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(Math.trunc(rawLimit), 120)) : 72
     const page = Number.isFinite(rawPage) ? Math.max(1, Math.trunc(rawPage)) : 1
     const result = await auth.payload.find({ collection: 'media', depth: 1, limit: 500, pagination: false, overrideAccess: false, sort: '-createdAt' })
-    const media = result.docs.map((item) => item as unknown as Record<string, unknown>).map((item) => ({
-      ...mediaObject(item),
-      mimeType: text(item.mimeType),
-      portable: false,
-      analysisStatus: text(item.analysisStatus) || 'pending',
-      description: text(item.description),
-      tags: Array.isArray(item.tags)
-        ? item.tags.map((tag) => text(asObject(tag).value)).filter(Boolean).slice(0, 20)
-        : [],
-    })).filter((item) => !search || `${item.filename} ${item.alt}`.toLowerCase().includes(search))
+    const media = await Promise.all(result.docs.map(async (item) => {
+      const document = item as unknown as Record<string, unknown>
+      return {
+        ...mediaObject(document),
+        mimeType: text(document.mimeType),
+        portable: false,
+        analysisStatus: text(document.analysisStatus) || 'pending',
+        description: text(document.description),
+        ownerNote: text(document.ownerNote),
+        // The exact revision a note is saved against, so two tabs cannot
+        // silently overwrite each other's note.
+        documentHash: await hashJson(withoutPayloadMetadata(document)),
+        tags: Array.isArray(document.tags)
+          ? document.tags.map((tag) => text(asObject(tag).value)).filter(Boolean).slice(0, 20)
+          : [],
+      }
+    })).then((rows) => rows.filter((item) => !search || `${item.filename} ${item.alt}`.toLowerCase().includes(search)))
     const totalPages = Math.max(1, Math.ceil(media.length / limit))
     const currentPage = Math.min(page, totalPages)
     return NextResponse.json({ media: media.slice((currentPage - 1) * limit, currentPage * limit), page: currentPage, limit, totalDocs: media.length, totalPages, hasNextPage: currentPage < totalPages }, { headers: { 'Cache-Control': 'private, no-store' } })
@@ -723,6 +730,38 @@ export async function POST(request: Request, { params }: RouteProps) {
       await failOperation(operationKey, { ...intent, error: errorMessage(cause) })
       console.error('helloada_owner_content_save_uncertain', { tenant: tenantId(), collection, documentId: id, operationKey, error: errorMessage(cause) })
       return errorResponse('The draft save could not be verified. Your live website was not published; reload the page to reconcile the draft before trying again.', 409)
+    }
+  }
+  if (path === '/media/note') {
+    // The owner's note on their own file. It is saved on its own exact media
+    // revision and touches only `ownerNote`: Ada's analysis pass rewrites
+    // description, alt and tags, so a note written into those would be lost on
+    // the next analysis. Internal context, so it is one value for all languages.
+    const body = asObject(await request.json().catch(() => ({})))
+    const id = text(body.id)
+    const expectedHash = text(body.expectedHash)
+    if (!id) return errorResponse('A media id is required')
+    if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('The media revision is required before saving a note', 400)
+    if (!('note' in body)) return errorResponse('A note is required')
+    const note = String(body.note ?? '').trim().slice(0, 2_000)
+    try {
+      const current = await auth.payload.findByID({ collection: 'media', depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+      const currentHash = await hashJson(withoutPayloadMetadata(current))
+      if (currentHash !== expectedHash) {
+        return errorResponse('This file changed since you opened it. Reload the gallery and write the note again.', 409)
+      }
+      const saved = await withRecoveredWrite(auth.payload, { collection: 'media', id, expectedHash, data: { ownerNote: note } }, () => auth.payload.update({
+        collection: 'media', id, draft: true, data: { ownerNote: note } as never,
+        overrideAccess: false, req: auth.req, user: auth.user,
+      })) as unknown as Record<string, unknown>
+      return NextResponse.json({
+        mediaId: id,
+        ownerNote: text(saved.ownerNote),
+        expectedHash: await hashJson(withoutPayloadMetadata(saved)),
+      }, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      console.error('helloada_media_note_failed', { tenant: tenantId(), mediaId: id, error: errorMessage(cause) })
+      return errorResponse('The note could not be saved. Reload the gallery and try again.', 409)
     }
   }
   if (path === '/media/upload') {

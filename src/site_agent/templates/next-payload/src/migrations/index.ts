@@ -9,6 +9,7 @@ import * as migration_20261104_190000_category_drafts from './20261104_190000_ca
 import * as migration_20261104_220000_category_version_backfill from './20261104_220000_category_version_backfill';
 import * as migration_20261105_020000_localized_catalog_facts from './20261105_020000_localized_catalog_facts';
 import * as migration_20261123_090000_locale_parent_indexes from './20261123_090000_locale_parent_indexes';
+import * as migration_20261127_090000_media_owner_note from './20261127_090000_media_owner_note';
 
 export const migrations = [
   {
@@ -65,5 +66,10 @@ export const migrations = [
     up: migration_20261123_090000_locale_parent_indexes.up,
     down: migration_20261123_090000_locale_parent_indexes.down,
     name: '20261123_090000_locale_parent_indexes'
+  },
+  {
+    up: migration_20261127_090000_media_owner_note.up,
+    down: migration_20261127_090000_media_owner_note.down,
+    name: '20261127_090000_media_owner_note'
   },
 ];

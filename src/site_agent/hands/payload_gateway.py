@@ -1326,6 +1326,9 @@ class PayloadMediaAsset:
     url: str
     alt_text: str
     analysis_status: str
+    # The owner's own words about this file. Read from its own Payload field so
+    # it survives an analysis pass, and empty when the owner has not written one.
+    owner_note: str = ""
     analysis_error: str = ""
     status: str = "ready"
     media_kind: str = "image"
@@ -1409,6 +1412,7 @@ class PayloadMediaService:
             alt_text=alt_text[:500],
             analysis_status=str(document.get("analysisStatus") or "pending").strip().lower(),
             analysis_error=str(document.get("analysisError") or "").strip()[:500],
+            owner_note=str(document.get("ownerNote") or "").strip()[:2_000],
         )
 
     def get(self, asset_id: int) -> PayloadMediaAsset:
@@ -1449,6 +1453,7 @@ class PayloadMediaService:
             "width": asset.width,
             "height": asset.height,
             "description": asset.description,
+            "owner_note": asset.owner_note,
             "tags": list(asset.tags),
             "ocr_text": asset.ocr_text,
             "analysis_status": asset.analysis_status,
@@ -1510,6 +1515,7 @@ class PayloadMediaService:
                 "kind": kind,
                 "name": asset.original_name,
                 "description": asset.description,
+                "owner_note": asset.owner_note,
                 "alt_text": asset.alt_text,
                 "width": asset.width,
                 "height": asset.height,

@@ -4,8 +4,8 @@ import { catalogProductFields, createProductAttributesCollection, createProductV
 export { helloAdaContentCreateKey, isCatalogChildCollection } from './catalog.ts'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.6.5'
-export const HELLOADA_SCHEMA_REVISION = 13
+export const HELLOADA_CORE_VERSION = '0.6.6'
+export const HELLOADA_SCHEMA_REVISION = 14
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -1205,6 +1205,11 @@ export const Media: CollectionConfig = {
     { name: 'sourceId', type: 'text', required: true, index: true, unique: true, admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'sourceUrl', type: 'text' },
     { name: 'originalUrl', type: 'text' },
+    // The owner's own words about this file: who is in it, what the story is.
+    // It is deliberately its own field, not `description`: Ada's analysis pass
+    // rewrites description, alt and tags, and it must never overwrite a note.
+    // Not localized, because this is internal context rather than published copy.
+    { name: 'ownerNote', type: 'textarea', label: 'Your note' },
     { name: 'description', type: 'textarea', localized: true, label: 'Description' },
     { name: 'tags', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
     { name: 'dominantColors', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
