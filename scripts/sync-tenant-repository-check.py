@@ -71,6 +71,9 @@ DEFAULTS = {
 DEFAULT_SUPPORT = {
     "src/lib/site-origin.ts": TEMPLATE / "src/lib/site-origin.ts",
 }
+# How a crawl route names that helper. A branch that does not mention it is a
+# branch whose helper seeding would add a module nothing imports.
+SUPPORT_IMPORTED_IN = b"@/lib/site-origin"
 # Any of these existing means the site already declares that capability, at
 # either the metadata-route or the static-file shape.
 DEFAULT_OCCUPIED = {
@@ -307,21 +310,31 @@ def plan(host_config: Mapping[str, Any], env: Mapping[str, str] | None, tenants:
                 # capability itself. Checked per branch, because a static site
                 # may keep its crawl files on one branch only.
                 seeded: list[tuple[str, bytes, str]] = []
+                # Whatever crawl route the branch ends up serving, authored or
+                # seeded, decides whether the helper is needed.
+                crawl_routes: list[bytes] = []
                 for path, source in DEFAULTS.items():
                     occupied = DEFAULT_OCCUPIED.get(path)
-                    if occupied is not None and any(
-                        _remote_file(token, repository, branch, other) is not None for other in occupied
-                    ):
+                    found = None
+                    for other in occupied or ():
+                        found = _remote_file(token, repository, branch, other)
+                        if found is not None:
+                            crawl_routes.append(found[0])
+                            break
+                    if found is not None:
                         continue
                     seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
-                # A support file ships with the default that imports it, and only
-                # then: seeding robots.ts without site-origin.ts is a build that
-                # imports a module the repository does not have, and a site that
-                # authored its own crawl files needs nothing extra either.
-                if seeded:
+                    crawl_routes.append(source.read_bytes())
+                # The helper ships with a crawl route that imports it, and only
+                # then: a route left without its helper is a build that imports a
+                # module the repository does not have, while a site that authored
+                # crawl files of its own needs nothing extra.
+                imports_support = any(SUPPORT_IMPORTED_IN in body for body in crawl_routes)
+                if imports_support:
                     for path, source in DEFAULT_SUPPORT.items():
-                        if not any(seeded_path == path for seeded_path, _, _ in seeded):
-                            seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
+                        if _remote_file(token, repository, branch, path) is not None:
+                            continue
+                        seeded.append((path, source.read_bytes(), MESSAGES["default-created"]))
                 for path, content, message in [*desired, *seeded]:
                     current = _remote_file(token, repository, branch, path)
                     if current is not None and current[0] == content:

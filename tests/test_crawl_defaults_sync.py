@@ -130,3 +130,61 @@ def test_a_site_with_a_static_sitemap_only_gains_robots(monkeypatch):
     assert "src/app/robots.ts" in seeded
     # robots.ts imports the helper, so the helper must ship with it.
     assert "src/lib/site-origin.ts" in written
+
+
+def test_a_default_already_committed_still_receives_its_helper(monkeypatch):
+    """A branch seeded before the helper existed: the gap is in the helper, not the run."""
+    sync = _module()
+    robots = (sync.DEFAULTS["src/app/robots.ts"]).read_bytes()
+    existing = {
+        "main": {
+            "public/sitemap.xml": (b"<urlset/>", "sha"),
+            "src/app/robots.ts": (robots, "sha-robots"),
+        },
+    }
+    written: list[str] = []
+    monkeypatch.setattr(sync, "_remote_file",
+                        lambda token, repo, branch, path: existing.get(branch, {}).get(path))
+    monkeypatch.setattr(sync, "_branches", lambda *args, **kwargs: ["main"])
+    monkeypatch.setattr(sync, "_tenant_rows", lambda *args, **kwargs: [{
+        "tenant": "seeded", "status": "planned", "repository": "weareheadless/seeded", "branches": ["main"],
+    }])
+    monkeypatch.setattr(sync, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(sync, "credential_environment", lambda *args, **kwargs: {})
+    _fake_identity(monkeypatch)
+    monkeypatch.setattr(sync, "_write",
+                        lambda token, repo, branch, path, content, sha, message=None: written.append(path))
+
+    sync.plan({"x": 1}, {}, [], apply=True)
+    # Nothing is re-seeded, but the committed robots.ts imports the helper, so
+    # the helper is the one thing still missing from that branch.
+    crawl = [path for path in written if path in {**sync.DEFAULTS, **sync.DEFAULT_SUPPORT}]
+    assert crawl == ["src/lib/site-origin.ts"]
+
+
+def test_an_authored_crawl_route_without_the_helper_gains_nothing(monkeypatch):
+    """A tenant's own crawl route is the tenant's; the default helper is not added to it."""
+    sync = _module()
+    existing = {
+        "main": {
+            "public/sitemap.xml": (b"<urlset/>", "sha"),
+            "src/app/robots.ts": (b"export default function robots() { return { rules: [] } }\n", "sha"),
+        },
+    }
+    written: list[str] = []
+    monkeypatch.setattr(sync, "_remote_file",
+                        lambda token, repo, branch, path: existing.get(branch, {}).get(path))
+    monkeypatch.setattr(sync, "_branches", lambda *args, **kwargs: ["main"])
+    monkeypatch.setattr(sync, "_tenant_rows", lambda *args, **kwargs: [{
+        "tenant": "handwritten", "status": "planned", "repository": "weareheadless/handwritten",
+        "branches": ["main"],
+    }])
+    monkeypatch.setattr(sync, "github_api_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(sync, "credential_environment", lambda *args, **kwargs: {})
+    _fake_identity(monkeypatch)
+    monkeypatch.setattr(sync, "_write",
+                        lambda token, repo, branch, path, content, sha, message=None: written.append(path))
+
+    sync.plan({"x": 1}, {}, [], apply=True)
+    crawl = [path for path in written if path in {**sync.DEFAULTS, **sync.DEFAULT_SUPPORT}]
+    assert crawl == []
