@@ -1,6 +1,7 @@
 import { resolveTenantOwnerUserId } from './mailflare-owner-identity.ts'
 
-export type BookingD1Result<T> = { results?: T[]; meta?: { changes?: number } }export type BookingD1Statement = {
+export type BookingD1Result<T> = { results?: T[]; meta?: { changes?: number } }
+export type BookingD1Statement = {
   bind: (...values: unknown[]) => BookingD1Statement
   first: <T = Record<string, unknown>>() => Promise<T | null>
   all: <T = Record<string, unknown>>() => Promise<BookingD1Result<T>>
@@ -218,7 +219,9 @@ export async function deactivateBookingType(db: BookingD1, userId: string, id: s
 
 export async function resolveTenantBookingOwner(db: BookingD1, tenantId: string): Promise<string> {
   if (!tenantId.trim()) throw new Error('tenant_identity_not_configured')
-  // The booking path and the mailbox gate must resolve the same owner, through
-  // the same derivation, including its repair of a legacy registration.
+  // The booking path resolves the same owner through the same derivation, but
+  // it serves anonymous visitors: it may not run a repair migration on their
+  // request. A tenant whose registration is not canonical yet is repaired by
+  // the authenticated owner path, and this endpoint says so until then.
   return resolveTenantOwnerUserId(db, tenantId)
 }

@@ -315,10 +315,48 @@ export async function ensureTenantOwnerIdentity(
 }
 
 /**
+ * The owner id, without repairing anything.
+ *
+ * A public path — a visitor loading a booking page, an anonymous enquiry — must
+ * not run a fleet migration. It resolves the tenant's registration and refuses
+ * to serve if that registration is not already canonical; the authenticated
+ * owner path repairs it. Without this split, one anonymous request could rewrite
+ * thirty tables on a tenant whose owner happens to be legacy.
+ */
+export async function resolveTenantOwnerUserId(
+  database: OwnerIdentityD1,
+  tenantId: string,
+): Promise<string> {
+  const tenant = tenantId.trim()
+  if (!/^[a-z0-9-]{1,63}$/.test(tenant)) throw new Error('tenant_identity_not_configured')
+  const ownerUserId = await tenantOwnerUserId(tenant)
+  const registered = await readRegistration(database, tenant)
+  if (!registered || registered.owner_user_id !== ownerUserId) {
+    // Not canonical yet. The gate repairs it on the owner's next authenticated
+    // visit; until then this path says so rather than migrating on a stranger's
+    // request or serving the wrong identity.
+    throw new Error('mailbox_owner_identity_invalid')
+  }
+  // Registered and canonical still has to be usable: the row is an assertion,
+  // not proof that the account exists and is enabled.
+  const account = await database
+    .prepare('SELECT id, disabled FROM users WHERE id = ? LIMIT 1')
+    .bind(ownerUserId)
+    .first<{ id: string; disabled: number }>()
+  if (account?.id !== ownerUserId || account.disabled) {
+    throw new Error('mailbox_owner_identity_invalid')
+  }
+  return ownerUserId
+}
+
+/**
  * The owner id a gate or booking path may use. Throws rather than falling back:
  * a mailbox whose owner cannot be proven is not a mailbox this code may serve.
  */
-export async function resolveTenantOwnerUserId(database: OwnerIdentityD1, tenantId: string): Promise<string> {
+export async function resolveOrRepairTenantOwnerUserId(
+  database: OwnerIdentityD1,
+  tenantId: string,
+): Promise<string> {
   const state = await ensureTenantOwnerIdentity(database, tenantId)
   return state.ownerUserId
 }

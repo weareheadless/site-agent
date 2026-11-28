@@ -214,13 +214,68 @@ test('the gate no longer prefers a stored owner over the tenant', async () => {
   // The gate may register and verify the owner, but it may not *decide* one by
   // reading the row as its primary value; that derivation belongs to one module.
   assert.doesNotMatch(gate, /const userId = registeredOwner/)
-  assert.match(gate, /resolveTenantOwnerUserId/)
+  assert.match(gate, /resolveOrRepairTenantOwnerUserId/)
   // The failure shape is named by the module that owns the derivation.
   const identity = readFileSync(new URL('../mailflare-owner-identity.ts', import.meta.url), 'utf8')
   assert.match(identity, /mailbox_owner_identity_invalid/)
 
+  // The public booking path resolves without repairing: an anonymous request
+  // must not run a fleet migration.
   const booking = readFileSync(new URL('../mailflare-booking-service.ts', import.meta.url), 'utf8')
   assert.match(booking, /resolveTenantOwnerUserId/)
+  assert.doesNotMatch(booking, /resolveOrRepairTenantOwnerUserId/)
   // The booking path may not read the registration row directly: one derivation.
   assert.doesNotMatch(booking, /SELECT owner_user_id FROM helloada_tenant_owners/)
+})
+
+test('a public request never runs the repair migration', async () => {
+  // The split that matters: resolving an owner is a read, repairing one is a
+  // write across every owner-scoped table. An anonymous booking request may do
+  // the first and must never do the second, or one stranger's page load rewrites
+  // a legacy tenant's database.
+  const { DatabaseSync } = await import('node:sqlite')
+  const { ensureTenantOwnerIdentity, resolveTenantOwnerUserId, resolveOrRepairTenantOwnerUserId, tenantOwnerUserId } =
+    await import('../mailflare-owner-identity.ts')
+
+  const sqlite = new DatabaseSync(':memory:')
+  sqlite.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, is_primary_admin INTEGER NOT NULL, can_manage_mailboxes INTEGER NOT NULL, can_manage_domains INTEGER NOT NULL, can_manage_users INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+    CREATE TABLE helloada_tenant_owners (tenant_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE TABLE mailboxes (id TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+  `)
+  sqlite.exec("INSERT INTO users VALUES ('legacy-owner','o@example.test','a-real-hash','Owner','user',0,0,0,0,0,1)")
+  sqlite.exec("INSERT INTO helloada_tenant_owners VALUES ('demo','legacy-owner',1)")
+  sqlite.exec("INSERT INTO mailboxes VALUES ('m1','legacy-owner')")
+
+  const statement = (sql) => {
+    let values = []
+    const item = {
+      bind(...args) { values = args; return item },
+      async first() { return sqlite.prepare(sql).get(...values) ?? null },
+      async all() { return { results: sqlite.prepare(sql).all(...values) } },
+      async run() { const r = sqlite.prepare(sql).run(...values); return { meta: { changes: Number(r.changes) } } },
+    }
+    return item
+  }
+  const db = { prepare: statement }
+  const snapshot = () => ({
+    users: sqlite.prepare('SELECT id, disabled FROM users ORDER BY id').all().map((r) => ({ ...r })),
+    owners: sqlite.prepare('SELECT * FROM helloada_tenant_owners').all().map((r) => ({ ...r })),
+    mailboxes: sqlite.prepare('SELECT * FROM mailboxes').all().map((r) => ({ ...r })),
+  })
+
+  const before = snapshot()
+  await assert.rejects(resolveTenantOwnerUserId(db, 'demo'), /mailbox_owner_identity_invalid/)
+  assert.deepEqual(snapshot(), before, 'resolving a legacy registration must write nothing')
+
+  // The authenticated path is what repairs, and then the public path serves.
+  assert.equal(await resolveOrRepairTenantOwnerUserId(db, 'demo'), await tenantOwnerUserId('demo'))
+  assert.equal(snapshot().owners[0].owner_user_id, await tenantOwnerUserId('demo'))
+  assert.equal(snapshot().mailboxes[0].user_id, await tenantOwnerUserId('demo'))
+  assert.equal(await resolveTenantOwnerUserId(db, 'demo'), await tenantOwnerUserId('demo'))
+
+  // Idempotent: a converged tenant is untouched by another repair run.
+  const converged = snapshot()
+  await ensureTenantOwnerIdentity(db, 'demo')
+  assert.deepEqual(snapshot(), converged)
 })

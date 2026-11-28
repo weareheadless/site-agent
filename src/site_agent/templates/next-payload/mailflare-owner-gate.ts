@@ -2,7 +2,7 @@ import { provisionTenantMailflareMailbox } from './mailflare-provisioning.ts'
 import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration.ts'
 import {
   OWNER_ACCOUNT_PASSWORD as SSO_PASSWORD_SENTINEL,
-  resolveTenantOwnerUserId,
+  resolveOrRepairTenantOwnerUserId,
 } from './mailflare-owner-identity.ts'
 
 type D1Statement = {
@@ -181,7 +181,7 @@ export async function ensureTenantBookingOwner(
   // The resolver creates or repairs the account and fails closed if it cannot be
   // used, so this path has nothing left to decide: only the booking registration
   // belongs to it.
-  const userId = await resolveTenantOwnerUserId(database, tenantId)
+  const userId = await resolveOrRepairTenantOwnerUserId(database, tenantId)
   await registerTenantBookingOwner(database, tenantId.trim(), userId)
   return userId
 }
@@ -190,7 +190,7 @@ async function ownerUserId(env: MailflareEnv): Promise<string> {
   // A stored registration is an assertion to verify, never a value to prefer:
   // the tenant is the only input, and a mismatch is repaired or refused. The
   // resolver already proves the account exists, is enabled and is SSO-only.
-  return resolveTenantOwnerUserId(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID)
+  return resolveOrRepairTenantOwnerUserId(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID)
 }
 
 type OwnerSession =
