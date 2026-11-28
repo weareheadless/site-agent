@@ -5,6 +5,7 @@
     "mailflare-bindings.ts",
     "mailflare-booking-service.ts",
     "mailflare-owner-gate.ts",
+    "mailflare-owner-identity.ts",
     "mailflare-payload-migration.ts",
     "mailflare-provisioning.ts",
     "mailflare-runtime.ts",

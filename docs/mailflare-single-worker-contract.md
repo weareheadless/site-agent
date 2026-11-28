@@ -70,6 +70,18 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   credential. A credential scoped to a fixed zone list leaves each new custom
   domain on the platform sender; that is a host configuration defect and is
   reported as `action_required`, never retried as a transient failure.
+- The routing table is a projection of tenant identity, not a one-time write.
+  For every registered tenant, every address it owns — its registered address
+  plus each retained `mailbox_aliases` row — must have exactly one enabled rule
+  in the zone of its own domain, targeting the tenant's current Worker. A rule
+  pointing at a Worker that no longer exists, or at another tenant's Worker, is
+  a defect whether or not mail still appears to arrive.
+  `site-agent reconcile-email-routing` plans this for the whole fleet and
+  applies only what the plan names; it is the mechanism, not a one-off repair,
+  so a Worker rename self-heals instead of silently dropping alias mail. A rule
+  with no Worker destination is a person's forwarding rule and is never
+  removed. Never repair routing by hand in Cloudflare or with ad-hoc Wrangler
+  commands.
 - Owner Send in Mailflare is the explicit send action. Ada may read mail and
   prepare drafts only through the existing approved assistant boundary; it
   never sends or changes a message without the owner's confirmation.
@@ -126,8 +138,23 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   settings and types are Mailflare D1 data, never Payload documents.
 - The workspace owner is provisioned by `ensureTenantBookingOwner`, the same
   deterministic identity the mailbox gate uses, so server-to-server booking
-  configuration does not depend on an owner having opened the mailbox first. A
-  registered owner is reused verbatim and a disabled owner fails closed.
+  configuration does not depend on an owner having opened the mailbox first.
+  Both paths resolve it through `ensureTenantOwnerIdentity`
+  (`templates/next-payload/mailflare-owner-identity.ts`), which is the single
+  derivation: `ha_<sha256("tenant:<tenantId>")>`. A stored
+  `helloada_tenant_owners` row is an assertion to verify, never a value to
+  prefer; a registration on any other id is repaired (owner-scoped rows
+  re-pointed, foreign grants dropped, the superseded account disabled not
+  deleted, the registration compare-and-swap updated) and an unrepairable one
+  fails closed with `mailbox_owner_identity_invalid`. A disabled owner fails
+  closed. Never derive an owner from a Payload/platform user id: one platform
+  account can own several websites, so that identity is not tenant-exclusive
+  and was the cause of a mailbox carrying two full-access owners.
+- Mailbox record ids (`ha_domain_*`, `ha_mailbox_*`) are derived from hostname
+  and address, so they are tenant-local and repeat across tenants by
+  construction. Any surface that carries them across tenants — client caches,
+  aggregation, telemetry, support tooling — keys on `(tenant, id)`. Inside one
+  tenant's database the ids are authoritative and are not migrated.
 - A website form is a Payload `contactForms` document owned by the site. Its
   public submission is `POST /api/helloada/forms/<slug>`: same-origin only,
   rate limited per tenant and IP, honeypot and Turnstile verified, idempotent

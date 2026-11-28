@@ -49,23 +49,43 @@ test("booking configuration provisions the workspace owner the mailbox gate woul
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM helloada_booking_settings").get().n, 1);
 });
 
-test("a registered workspace owner is reused exactly as the mailbox gate stored it", async () => {
+test("a registration built on a shared identity is repaired to the tenant's own", async () => {
   const { sqlite, db } = fixture();
+  // The legacy shape: a registration naming an account derived from a platform
+  // user rather than the tenant, with that account holding real mailbox access.
   sqlite.prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?)")
     .run("owner-1", "owner@example.test", "a-real-hash", "Owner", "user", 0, 0, 0, 0, 0, 1);
   sqlite.prepare("INSERT INTO helloada_tenant_owners VALUES (?,?,?)").run("site-test", "owner-1", 1);
+  sqlite.prepare("INSERT INTO helloada_booking_settings VALUES (?,?,?,?,?,?,?,?,?)")
+    .run("owner-1", 1, "UTC", "[]", 1, 0, 365, 7, 1);
 
-  assert.equal(await ensureTenantBookingOwner(db, "site-test"), "owner-1");
-  // The owner's own credential is never rewritten by a platform call.
+  const ownerId = await ensureTenantBookingOwner(db, "site-test");
+  assert.match(ownerId, /^ha_[0-9a-f]{64}$/);
+  assert.notEqual(ownerId, "owner-1", "the shared identity is not this tenant's owner");
+
+  // The seat's own rows moved with it, so nothing it had is lost.
+  const settings = sqlite.prepare("SELECT user_id, revision FROM helloada_booking_settings").all();
+  assert.deepEqual(settings.map((row) => ({ ...row })), [{ user_id: ownerId, revision: 7 }]);
+
+  // The superseded account is disabled, never deleted: its audit trail stays.
+  assert.equal(sqlite.prepare("SELECT disabled FROM users WHERE id = ?").get("owner-1").disabled, 1);
+  // And its credential is untouched -- a platform call never rewrites a person's.
   assert.equal(sqlite.prepare("SELECT password_hash FROM users WHERE id = ?").get("owner-1").password_hash, "a-real-hash");
-  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM users").get().n, 1);
+
+  // A second call is a no-op: the repair is idempotent.
+  assert.equal(await ensureTenantBookingOwner(db, "site-test"), ownerId);
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM helloada_booking_settings").get().n, 1);
 });
 
-test("a disabled workspace owner fails closed instead of being replaced", async () => {
+test("a disabled canonical owner fails closed instead of being replaced", async () => {
   const { sqlite, db } = fixture();
-  sqlite.prepare("INSERT INTO users VALUES (?,?,?,?,?,?,?,?,?,?,?)")
-    .run("owner-1", "owner@example.test", "!helloada-payload-sso-only", "Owner", "user", 0, 0, 0, 0, 1, 1);
-  sqlite.prepare("INSERT INTO helloada_tenant_owners VALUES (?,?,?)").run("site-test", "owner-1", 1);
+  // Canonical registration, but the account behind it cannot be used. Repair
+  // must not paper over that by minting a different identity.
+  const ownerId = await ensureTenantBookingOwner(db, "site-test");
+  sqlite.prepare("UPDATE users SET disabled = 1 WHERE id = ?").run(ownerId);
 
-  await assert.rejects(ensureTenantBookingOwner(db, "site-test"), /owner account is disabled/);
+  await assert.rejects(ensureTenantBookingOwner(db, "site-test"), /mailbox_owner_identity_invalid/);
+  // No second account was created to route around the disabled one.
+  assert.equal(sqlite.prepare("SELECT COUNT(*) AS n FROM users").get().n, 1);
+  assert.equal(sqlite.prepare("SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ?").get("site-test").owner_user_id, ownerId);
 });

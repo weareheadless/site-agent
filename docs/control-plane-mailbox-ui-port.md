@@ -47,7 +47,22 @@ so there is exactly one mailbox interface.
   any unprefixed `/api/` fetch remains.
 - **Auth.** `AuthGuard`, login redirects and the 401 `window.location.assign`
   are removed: the control plane owns authentication. A build assertion fails
-  if they remain.
+  if they remain. The client session token, the logout and account-switch
+  modules go with them: upstream keyed its caches on a session token that this
+  port never sets, so the invalidation was dead and the previous tenant's
+  mailbox list stayed cached. A build assertion fails if any of that surface
+  remains.
+- **Tenancy.** Every tenant is served from one origin, so the tenant is the
+  root of every key the browser keeps. `MailboxConfig` carries a required
+  `tenantKey`; `scope.ts` owns the only real `localStorage`/`sessionStorage`
+  access and prefixes every key with the tenant; every module-level cache
+  (message lists, counts, mailbox options) is keyed tenant-first; and crossing
+  tenants drops all of them through one registered reset. A config without a
+  tenant key throws rather than defaulting to a shared runtime. The mount in
+  `helloada` passes `key={tenantId}` and `tenantKey`. Build assertions fail on
+  unprefixed storage, a tenant-less cache key, or a swallowed mailbox error;
+  the shell renders a preparing or unavailable state instead of an empty or
+  stale inbox.
 - **Routing.** Upstream pages and layouts become a generated route map. Internal
   `next/link`, `router.push` and `usePathname` comparisons are prefixed and
   base-stripped so navigation and active states work under `/mail/<path>`.
@@ -254,8 +269,8 @@ badge, the filter and the public player read.
 
 ## Stage 4 record
 
-Package: `@weareheadless/helloada-mailbox-ui@0.3.1` from the same pinned
-upstream, published as `weareheadless-helloada-mailbox-ui-0.3.1.tgz` (22 routes,
+Package: `@weareheadless/helloada-mailbox-ui@0.4.2` from the same pinned
+upstream, published as `weareheadless-helloada-mailbox-ui-0.4.2.tgz` (22 routes,
 281 files) and pinned in the app by URL plus `sha512` integrity. It adds the
 upstream owner calendar and drops the upstream booking editor.
 

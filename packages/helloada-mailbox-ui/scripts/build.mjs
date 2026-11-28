@@ -242,6 +242,514 @@ const patchAuthClient = async (outputFile) => {
   await writeFile(outputFile, source)
 }
 
+/**
+ * The ported mailbox has no client session: the control plane owns the owner's
+ * identity and this package never logs in. That left the session token as a
+ * dead invalidation key — always null, so every "did the session change?" test
+ * passed and the previous tenant's mailbox list stayed cached forever. The
+ * tenant key replaces it as the only invalidation boundary.
+ *
+ * Every read and write of the token is removed rather than kept for a login
+ * flow this package does not have.
+ */
+const patchDeadSessionToken = async (outputFile) => {
+  let source = await readFile(outputFile, 'utf8')
+  const blocks = [
+    {
+      label: 'client session token getter',
+      pattern: /export function getClientSessionToken\(\): string \| null \{\n(?:.*\n)*?\}\n/,
+    },
+    {
+      label: 'client session token setter',
+      pattern: /export function setClientSessionToken\(token: string\): void \{\n(?:.*\n)*?\}\n/,
+    },
+    {
+      label: 'client session token clearer',
+      pattern: /export function clearClientSessionToken\(\): void \{\n(?:.*\n)*?\}\n/,
+    },
+    {
+      label: 'persisted auth session',
+      pattern: /export async function persistAuthSession\(response: Response\): Promise<AuthSessionResponse> \{\n(?:.*\n)*?\}\n/,
+    },
+  ]
+  for (const { label, pattern } of blocks) {
+    if (!pattern.test(source)) throw new Error(`Upstream auth client changed shape: ${label} is missing`)
+    source = source.replace(pattern, '')
+  }
+  // The bearer header has no session to carry: the control plane injects the
+  // tenant token on its side of the proxy.
+  const tokenHeader = '\tconst token = getClientSessionToken();\n\tif (token && !nextHeaders.has("Authorization")) {\n\t\tnextHeaders.set("Authorization", `Bearer ${token}`);\n\t}\n'
+  if (!source.includes(tokenHeader)) throw new Error('Upstream auth client changed shape: bearer header')
+  source = source.replace(tokenHeader, '')
+  if (/ClientSessionToken|persistAuthSession/.test(source)) {
+    throw new Error('Generated auth client still exposes a client session')
+  }
+  await writeFile(outputFile, source)
+}
+
+/**
+ * The mailbox has no login, no account switch and no sign-out: the control
+ * plane owns the owner's identity. The upstream modules that served those are
+ * removed from the tree rather than left as a second identity path, and no
+ * generated file may import them.
+ */
+const removeDeadSessionModules = async (files) => {
+  const dead = ['src/lib/auth/logout.ts', 'src/lib/auth/accounts-client.ts']
+  for (const relative of dead) {
+    const target = path.join(outputRoot, relative)
+    if (await isFile(target)) await rm(target, { force: true })
+  }
+  for (const file of files) {
+    const output = outputPathFor(file)
+    if (!/\.(?:ts|tsx)$/.test(output) || !(await isFile(output))) continue
+    const source = await readFile(output, 'utf8')
+    if (!/auth\/(?:logout|accounts-client)/.test(source)) continue
+    throw new Error(`${path.relative(outputRoot, output)} still imports a removed session module`)
+  }
+}
+
+/**
+ * Upstream renders a sidebar-bootstrap inline script from its root layout. That
+ * layout is not part of the generated closure (the control plane supplies the
+ * document), so the script was dead here — and as raw browser JavaScript it
+ * bypassed the tenant-scoped storage façade that every other preference uses.
+ * It is removed instead of kept in a second key format: the sidebar reads its
+ * persisted width through the façade like the rest of the mailbox.
+ */
+const removeDeadSidebarBootstrap = async (outputFile) => {
+  let source = await readFile(outputFile, 'utf8')
+  const anchor = 'export const sidebarBootstrapScript'
+  if (!source.includes(anchor)) return
+  const start = source.indexOf(anchor)
+  // Walk back over an attached block comment, then forward to the end of the template.
+  let from = start
+  const commentStart = source.lastIndexOf('/**', start)
+  if (commentStart >= 0 && !source.slice(commentStart, start).includes('\n\nexport')) from = commentStart
+  const end = source.indexOf('})();`;', start)
+  if (end < 0) throw new Error('Upstream sidebar bootstrap changed shape: unterminated script')
+  source = source.slice(0, from) + source.slice(end + '})();`;'.length)
+  source = source.replace(/^\n+/, '')
+  if (/sidebarBootstrapScript/.test(source)) {
+    throw new Error('Upstream sidebar bootstrap is still referenced after its removal')
+  }
+  // Removing the bootstrap must not remove anything the surviving helpers use.
+  // The first cut of this patch also deleted the storage-key constant that
+  // lives beside the export, leaving three functions referencing an identifier
+  // that no longer existed -- a typecheck failure in every consumer, which the
+  // build itself could not see. So: every module-level constant the file now
+  // uses must be one it declares, imports, or gets from the ambient scope.
+  const declared = new Set()
+  for (const match of source.matchAll(/^(?:export\s+)?(?:const|let|function|class)\s+([A-Za-z_$][\w$]*)/gm)) {
+    declared.add(match[1])
+  }
+  for (const match of source.matchAll(/import\s+(?:type\s+)?(?:\{([^}]*)\}|([A-Za-z_$][\w$]*))/g)) {
+    if (match[2]) declared.add(match[2])
+    if (match[1]) for (const part of match[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop().trim()
+      if (name) declared.add(name)
+    }
+  }
+  for (const match of source.matchAll(/\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/g)) {
+    const name = match[1]
+    if (declared.has(name)) continue
+    throw new Error(`Generated sidebar helper uses ${name} without declaring it: the removal took a declaration with it`)
+  }
+  await writeFile(outputFile, source)
+}
+
+/**
+ * A tenant's mailbox either reads or says so. The shell renders this gate in
+ * place of the mailbox body, so an unprovisioned or failing tenant shows its own
+ * setup state instead of an empty inbox, stale counts or another website's
+ * address in the header.
+ */
+const writeMailboxGate = async () => {
+  const source = `"use client";
+
+import { useSelectedMailbox } from "./mailbox-provider";
+import { useLanguage } from "./language-provider";
+
+/**
+ * The two failure states the mailbox can be in, kept apart on purpose: a tenant
+ * whose mailbox is still being prepared is not the same as one whose read
+ * failed, and an owner should not be told to wait for the second.
+ */
+export function MailboxGate({ children }: { children: React.ReactNode }) {
+	const { isLoading, error } = useSelectedMailbox();
+	const { t } = useLanguage();
+	if (isLoading) return null;
+	if (!error) return <>{children}</>;
+	const setup = error.startsWith("mailbox_options_503");
+	const title = setup ? t("mailbox.preparing.title") : t("mailbox.unavailable.title");
+	const body = setup ? t("mailbox.preparing.body") : t("mailbox.unavailable.body");
+	return (
+		<div className="flex h-full items-center justify-center p-8">
+			<div className="max-w-sm text-center">
+				<h1 className="text-lg font-semibold text-neutral-900">{title}</h1>
+				<p className="mt-2 text-sm text-neutral-600">{body}</p>
+				<button
+					type="button"
+					onClick={() => location.reload()}
+					className="mt-5 rounded-full bg-[#ff7a18] px-4 py-2 text-sm font-semibold text-neutral-900"
+				>
+					{t("mailbox.retry")}
+				</button>
+			</div>
+		</div>
+	);
+}
+`
+  await writeFile(path.join(outputRoot, 'src/components/mailbox-gate.tsx'), source)
+}
+
+/**
+ * The control plane owns the owner's identity, so the account menu has no
+ * multi-account list, no account switch and no sign-out to perform: those are
+ * authenticated session operations this package does not have. The menu keeps
+ * the mailbox identity it is showing and the workspace routes beside it.
+ */
+const patchMailboxSelector = async (outputFile) => {
+  let source = await readFile(outputFile, 'utf8')
+  const edits = [
+    ['import { logoutClientSession } from "../lib/auth/logout";\n', ''],
+    ['import { fetchBrowserAccounts, switchBrowserAccount, type BrowserAccount } from "../lib/auth/accounts-client";\n', ''],
+  ]
+  for (const [before, after] of edits) {
+    if (!source.includes(before)) throw new Error(`Upstream mailbox selector changed shape: ${before.trim().slice(0, 60)}`)
+    source = source.replace(before, after)
+  }
+  const regions = [
+    {
+      label: 'browser account state and fetch',
+      pattern: /\tconst \[browserAccounts, setBrowserAccounts\] = useState<BrowserAccount\[\]>\(\[\]\);\n\n\tuseEffect\(\(\) => \{\n\t\tif \(!open\) return;\n(?:.*\n)*?\t\}, \[open\]\);\n/,
+    },
+    { label: 'other accounts derivation', pattern: /\tconst otherAccounts = browserAccounts\.filter\(\(account\) => !account\.active && account\.userId !== user\?\.id\);\n/ },
+    { label: 'logout handler', pattern: /\tasync function logout\(\) \{\n(?:.*\n)*?\t\}\n\n/ },
+    { label: 'switch handler', pattern: /\tasync function switchAccount\(userId: string\) \{\n(?:.*\n)*?\t\}\n\n/ },
+    {
+      label: 'other accounts block',
+      pattern: /\t\t\t\t\t\{otherAccounts\.length > 0 && \(\n(?:.*\n)*?\t\t\t\t\t\)\}\n\n/,
+    },
+    {
+      label: 'add another account link',
+      pattern: /\t\t\t\t\t\t<Link\n\t\t\t\t\t\t\thref="\/login\?add=1"\n(?:.*\n)*?\t\t\t\t\t\t<\/Link>\n/,
+    },
+    {
+      label: 'sign out button',
+      pattern: /\t\t\t\t\t\t<button\n\t\t\t\t\t\t\ttype="button"\n\t\t\t\t\t\t\tonClick=\{logout\}\n(?:.*\n)*?\t\t\t\t\t\t<\/button>\n/,
+    },
+  ]
+  for (const { label, pattern } of regions) {
+    if (!pattern.test(source)) throw new Error(`Upstream mailbox selector changed shape: ${label}`)
+    source = source.replace(pattern, '')
+  }
+  for (const dead of [
+    'logoutClientSession',
+    'switchBrowserAccount',
+    'fetchBrowserAccounts',
+    'setBrowserAccounts',
+    'browserAccounts',
+    'otherAccounts',
+    'BrowserAccount',
+    '/login?add=1',
+  ]) {
+    if (source.includes(dead)) throw new Error(`Generated mailbox selector still carries the account session surface: ${dead}`)
+  }
+  await writeFile(outputFile, source)
+}
+
+/**
+ * The mailbox list is the tenant's, so this provider is the one place that
+ * decides what an owner sees when it cannot be read: an explicit setup or error
+ * state, never a list left over from another website. The old swallow-and-keep
+ * behaviour is what showed one tenant's identity under another tenant's site.
+ */
+const patchMailboxProvider = async (outputFile) => {
+  let source = await readFile(outputFile, 'utf8')
+  const load = /\tuseEffect\(\(\) => \{\n\t\tlet cancelled = false;\n\t\tconst sessionToken = getClientSessionToken\(\);\n\n\t\tfetchMailboxOptions\(\)\n(?:.*\n)*?\t\}, \[\]\);\n/
+  if (!load.test(source)) throw new Error('Upstream mailbox provider changed shape: load effect')
+  source = source.replace(
+    load,
+    `	useEffect(() => {
+		let cancelled = false;
+
+		fetchMailboxOptions()
+			.then((items) => {
+				if (cancelled) return;
+				setError(null);
+				setMailboxes(items);
+
+				const storedId = mailboxStorage.getItem(SELECTED_MAILBOX_STORAGE_KEY);
+				if (storedId) {
+					const found = items.find((mb) => mb.id === storedId);
+					if (found) {
+						setSelectedMailboxState(found);
+						return;
+					}
+				}
+
+				const primary = items.find((mb) => mb.isPrimary) ?? items[0] ?? null;
+				if (primary) {
+					setSelectedMailboxState(primary);
+					mailboxStorage.setItem(SELECTED_MAILBOX_STORAGE_KEY, primary.id);
+				}
+			})
+			.catch((cause: unknown) => {
+				if (cancelled) return;
+				// Drop everything the previous render held: a failed read must not
+				// leave another tenant's mailbox on screen.
+				setMailboxes([]);
+				setSelectedMailboxState(null);
+				setError(cause instanceof Error ? cause.message : "mailbox_unavailable");
+			})
+			.finally(() => {
+				if (!cancelled) setIsLoading(false);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+`,
+  )
+  const contextType = `type MailboxContextValue = {
+	selectedMailbox: MailboxOption | null;
+	setSelectedMailbox: (mb: MailboxOption | null) => void;
+	mailboxes: MailboxOption[];
+	isLoading: boolean;
+};`
+  if (!source.includes(contextType)) throw new Error('Upstream mailbox provider changed shape: context type')
+  source = source.replace(
+    contextType,
+    `type MailboxContextValue = {
+	selectedMailbox: MailboxOption | null;
+	setSelectedMailbox: (mb: MailboxOption | null) => void;
+	mailboxes: MailboxOption[];
+	isLoading: boolean;
+	/** Set when this tenant's mailbox could not be read; never a stale list. */
+	error: string | null;
+};`,
+  )
+  if (!source.includes('\tconst [isLoading, setIsLoading] = useState(true);\n')) {
+    throw new Error('Upstream mailbox provider changed shape: loading state')
+  }
+  source = source.replace(
+    '\tconst [isLoading, setIsLoading] = useState(true);\n',
+    '\tconst [isLoading, setIsLoading] = useState(true);\n\tconst [error, setError] = useState<string | null>(null);\n',
+  )
+  const resetBlock = `		function resetMailboxState() {
+			setMailboxes([]);
+			setSelectedMailboxState(null);
+			setIsLoading(true);
+		}`
+  if (!source.includes(resetBlock)) throw new Error('Upstream mailbox provider changed shape: reset handler')
+  source = source.replace(
+    resetBlock,
+    `		function resetMailboxState() {
+			setMailboxes([]);
+			setSelectedMailboxState(null);
+			setIsLoading(true);
+			setError(null);
+		}`,
+  )
+  const providerValue = '<MailboxContext.Provider value={{ selectedMailbox, setSelectedMailbox, mailboxes, isLoading }}>'
+  if (!source.includes(providerValue)) throw new Error('Upstream mailbox provider changed shape: context value')
+  source = source.replace(
+    providerValue,
+    '<MailboxContext.Provider value={{ selectedMailbox, setSelectedMailbox, mailboxes, isLoading, error }}>',
+  )
+  if (!/setError\(null\)/.test(source)) throw new Error('Generated mailbox provider never clears its error state')
+  // The session-token import went with the session itself.
+  const sessionImport = `import {
+	AUTH_SESSION_CHANGED_EVENT,
+	getClientSessionToken,
+} from "../lib/auth/client";`
+  if (!source.includes(sessionImport)) throw new Error('Upstream mailbox provider changed shape: auth session import')
+  source = source.replace(sessionImport, 'import { AUTH_SESSION_CHANGED_EVENT } from "../lib/auth/client";')
+  await writeFile(outputFile, source)
+}
+
+
+const patchTenantScopedCaches = async (hooksFile, providerUtilsFile) => {
+  let hooks = await readFile(hooksFile, 'utf8')
+  const listKey = '\tconst key = params.toString();'
+  if (!hooks.includes(listKey)) throw new Error('Upstream message cache changed shape: list key')
+  hooks = hooks.replace(listKey, '\tconst key = scopedCacheKey(params.toString());')
+  const countsKey = '\tconst key = mailboxId ?? "all";'
+  if (!hooks.includes(countsKey)) throw new Error('Upstream message cache changed shape: counts key')
+  hooks = hooks.replace(countsKey, '\tconst key = scopedCacheKey(mailboxId ?? "all");')
+  hooks = ensureImport(
+    hooks,
+    ['registerMailboxTenantReset', 'scopedCacheKey'],
+    importSpecifier(path.relative(outputRoot, hooksFile).split(path.sep).join('/'), 'scope.ts'),
+  )
+  // Module caches outlive any component, so the reset has to be registered
+  // once, at module scope, next to the caches themselves.
+  const registration = `
+registerMailboxTenantReset(() => {
+	clearMessageClientState();
+});
+`
+  hooks = hooks.replace(/\nconst messageCountsCache = /, `${registration}\nconst messageCountsCache = `)
+  await writeFile(hooksFile, hooks)
+
+  let provider = await readFile(providerUtilsFile, 'utf8')
+  const cacheShape = /\nlet mailboxesCache: MailboxOption\[\] \| null = null;\nlet mailboxesCacheSessionToken: string \| null = null;\nlet mailboxesRequest: Promise<MailboxOption\[\]> \| null = null;\nlet mailboxesRequestSessionToken: string \| null = null;\nlet cacheGeneration = 0;\nexport const SELECTED_MAILBOX_STORAGE_KEY = "selected-mailbox-id";\n/
+  if (!cacheShape.test(provider)) throw new Error('Upstream mailbox option cache changed shape')
+  provider = provider.replace(
+    cacheShape,
+    `
+let mailboxesCache: MailboxOption[] | null = null;
+let mailboxesCacheTenantKey: string = "";
+let cacheGeneration = 0;
+export const SELECTED_MAILBOX_STORAGE_KEY = "selected-mailbox-id";
+
+registerMailboxTenantReset(() => {
+	clearMailboxesCache();
+	mailboxStorage.removeItem(SELECTED_MAILBOX_STORAGE_KEY);
+});
+`,
+  )
+  provider = provider.replace(
+    'import { authFetch, getClientSessionToken } from "../lib/auth/client";',
+    `import { authFetch } from "../lib/auth/client";\nimport { mailboxStorage, mailboxTenantKey, registerMailboxTenantReset } from "${importSpecifier(
+      path.relative(outputRoot, providerUtilsFile).split(path.sep).join('/'),
+      'scope.ts',
+    )}";`,
+  )
+  provider = provider.replace(
+    /\texport function clearMailboxesCache/m,
+    '\texport function clearMailboxesCache',
+  )
+  // The cache is valid for exactly one tenant.
+  provider = provider.replace(
+    `export function clearMailboxesCache() {
+	cacheGeneration += 1;
+	mailboxesCache = null;
+	mailboxesCacheSessionToken = null;
+	mailboxesRequest = null;
+	mailboxesRequestSessionToken = null;
+}`,
+    `export function clearMailboxesCache() {
+	cacheGeneration += 1;
+	mailboxesCache = null;
+	mailboxesCacheTenantKey = "";
+}`,
+  )
+  provider = provider.replace(
+    `	if (typeof window !== "undefined") {
+		localStorage.removeItem(SELECTED_MAILBOX_STORAGE_KEY);
+	}`,
+    `	mailboxStorage.removeItem(SELECTED_MAILBOX_STORAGE_KEY);`,
+  )
+  provider = provider.replace(
+    `export async function fetchMailboxOptions(force = false): Promise<MailboxOption[]> {
+	const sessionToken = getClientSessionToken();
+	if (!force && mailboxesCache && mailboxesCacheSessionToken === sessionToken) return mailboxesCache;
+	if (!force && mailboxesRequest && mailboxesRequestSessionToken === sessionToken) return mailboxesRequest;
+
+	const requestGeneration = cacheGeneration;
+	mailboxesRequestSessionToken = sessionToken;
+	mailboxesRequest = authFetch("/api/mailboxes")`,
+    `export async function fetchMailboxOptions(force = false): Promise<MailboxOption[]> {
+	const tenantKey = mailboxTenantKey();
+	if (!force && mailboxesCache && mailboxesCacheTenantKey === tenantKey) return mailboxesCache;
+
+	const requestGeneration = cacheGeneration;
+	const request = authFetch("/api/mailboxes")`,
+  )
+  provider = provider.replace(
+    `			if (requestGeneration === cacheGeneration) {
+				mailboxesCache = items;
+				mailboxesCacheSessionToken = sessionToken;
+			}
+			return items;
+		})
+		.finally(() => {
+			if (requestGeneration === cacheGeneration) {
+				mailboxesRequest = null;
+				mailboxesRequestSessionToken = null;
+			}
+		});
+
+	return mailboxesRequest;
+}`,
+    `			if (requestGeneration === cacheGeneration && mailboxTenantKey() === tenantKey) {
+				mailboxesCache = items;
+				mailboxesCacheTenantKey = tenantKey;
+			}
+			return items;
+		});
+
+	return request;
+}`,
+  )
+  // A failed request must fail loudly: an unprovisioned tenant shows its setup
+  // state, never the previous tenant's mailbox list.
+  provider = provider.replace(
+    `		.then((res) => res.json())
+		.then((data) => {
+			const items = ((data as { mailboxes?: MailboxOption[] }).mailboxes ?? []).map((m) => ({`,
+    `		.then((res) => {
+			if (!res.ok) throw new Error(\`mailbox_options_\${res.status}\`);
+			return res.json() as Promise<{ mailboxes?: MailboxOption[] }>;
+		})
+		.then((data) => {
+			const items = (data.mailboxes ?? []).map((m) => ({`,
+  )
+  if (/getClientSessionToken|mailboxesCacheSessionToken|mailboxesRequest/.test(provider)) {
+    throw new Error('Generated mailbox option cache still keys on a session token')
+  }
+  await writeFile(providerUtilsFile, provider)
+}
+
+/**
+ * Route every browser-storage read through the tenant-scoped façade.
+ *
+ * Upstream Mailflare keys preferences, the selected mailbox and the assistant
+ * conversation on bare names because it owns its origin. HelloAda serves every
+ * tenant from one origin, so each of those names has to carry the tenant. The
+ * patch is a rename of the storage object, not a rewrite of the call sites: the
+ * façade keeps `getItem`/`setItem`/`removeItem` and adds `keys()` for the two
+ * modules that scan for `user:key` variants.
+ */
+const patchTenantScopedStorage = async (files) => {
+  const scanned = files
+    .map((file) => outputPathFor(file))
+    .concat([
+      path.join(outputRoot, 'index.tsx'),
+      path.join(outputRoot, 'base.tsx'),
+      path.join(outputRoot, 'scope.ts'),
+    ])
+  const touched = []
+  for (const target of scanned) {
+    if (!/\.(?:ts|tsx)$/.test(target)) continue
+    // scope.ts owns the only real localStorage/sessionStorage references.
+    if (target === path.join(outputRoot, 'scope.ts')) continue
+    let source = await readFile(target, 'utf8')
+    if (!/\b(?:window\.)?(?:localStorage|sessionStorage)\b/.test(source)) continue
+    const before = source
+    source = source
+      .replace(/\bwindow\.localStorage\b/g, 'mailboxStorage')
+      .replace(/\bwindow\.sessionStorage\b/g, 'mailboxSessionStorage')
+      .replace(/\blocalStorage\b/g, 'mailboxStorage')
+      .replace(/\bsessionStorage\b/g, 'mailboxSessionStorage')
+    if (source === before) continue
+    source = source.replace(/\bObject\.keys\(mailboxStorage\)/g, 'mailboxStorage.keys()')
+    source = source.replace(/\bObject\.keys\(mailboxSessionStorage\)/g, 'mailboxSessionStorage.keys()')
+    const relative = path.relative(outputRoot, target).split(path.sep).join('/')
+    const names = []
+    if (/\bmailboxStorage\b/.test(source)) names.push('mailboxStorage')
+    if (/\bmailboxSessionStorage\b/.test(source)) names.push('mailboxSessionStorage')
+    source = ensureImport(source, names, importSpecifier(relative, 'scope.ts'))
+    await writeFile(target, source)
+    touched.push(relative)
+  }
+  if (touched.length < 10) {
+    throw new Error(`Tenant-scoped storage rewrite touched only ${touched.length} files: ${touched.join(', ')}`)
+  }
+}
+
 const patchAuthGuards = async (files) => {
   let patched = 0
   for (const file of files) {
@@ -330,6 +838,25 @@ export function useAssistantAvailability() {
   }
   headerSource = headerSource.replace('export function SidebarHeader({ href, label }: SidebarHeaderProps) {', 'export function SidebarHeader(_props: SidebarHeaderProps) {')
   await writeFile(header, headerSource)
+
+  // The mailbox body renders only once this tenant's mailbox has been read, so
+  // a preparing or failing website never shows an empty or leftover inbox.
+  const layoutFile = path.join(outputRoot, 'src/app/(dashboard)/layout.tsx')
+  let layout = await readFile(layoutFile, 'utf8')
+  const childrenAnchor = '                          {children}\n'
+  if (!layout.includes(childrenAnchor)) throw new Error('Upstream dashboard layout changed shape: children')
+  layout = layout.replace(childrenAnchor, '                          <MailboxGate>{children}</MailboxGate>\n')
+  if (!layout.includes('import { MailboxProvider } from "../../components/mailbox-provider";')) {
+    throw new Error('Upstream dashboard layout changed shape: mailbox provider import')
+  }
+  layout = layout.replace(
+    'import { MailboxProvider } from "../../components/mailbox-provider";',
+    'import { MailboxProvider } from "../../components/mailbox-provider";\nimport { MailboxGate } from "../../components/mailbox-gate";',
+  )
+  if (!layout.includes('<MailboxGate>{children}</MailboxGate>')) {
+    throw new Error('Generated dashboard layout does not gate the mailbox body')
+  }
+  await writeFile(layoutFile, layout)
 }
 
 const applyBranding = async (files) => {
@@ -456,6 +983,155 @@ const patchCalendarSections = async (outputFile) => {
   await writeFile(outputFile, source)
 }
 
+/**
+ * Tenancy enters the mailbox client here and nowhere else.
+ *
+ * Upstream Mailflare is a single-deployment application: one origin, one
+ * mailbox, one owner. HelloAda serves every tenant from one origin
+ * (`helloada.app/<site>/mail`), so "one deployment" stopped being true while
+ * every client key kept assuming it. This module makes the tenant the root of
+ * every key the browser keeps: cache keys, localStorage keys and the reset
+ * boundary between two tenants.
+ *
+ * It has no imports on purpose: the scope rules are testable on their own, and
+ * `base.tsx` is the only place the React runtime sees them.
+ */
+const writeScope = async () => {
+  const source = `
+const STORAGE_PREFIX = "helloada-mailbox";
+
+/** Keys written before tenancy existed. Ambiguous by construction, so removed. */
+const LEGACY_KEY_PREFIXES = ["mailflare-", "selected-mailbox-id"];
+
+let currentTenantKey = "";
+const resetters = new Set<() => void>();
+const legacyCleared = new Set<string>();
+
+export function mailboxTenantKey(): string {
+	return currentTenantKey;
+}
+
+export function mailboxStorageKey(name: string): string {
+	return STORAGE_PREFIX + ":" + currentTenantKey + ":" + name;
+}
+
+/** Every client cache key is tenant-first, so two tenants cannot share an entry. */
+export function scopedCacheKey(...parts: Array<string | null | undefined>): string {
+	return [currentTenantKey, ...parts.map((part) => part ?? "")].join("|");
+}
+
+/**
+ * Register a module-level cache to be dropped when the tenant changes. The
+ * mailbox runtime is one instance per tenant, so crossing tenants resets it
+ * wholesale instead of leaving the previous tenant's entries reachable.
+ */
+export function registerMailboxTenantReset(reset: () => void): void {
+	resetters.add(reset);
+}
+
+/** Returns true when the tenant actually changed. */
+export function setMailboxTenantKey(next: string): boolean {
+	const normalized = next.trim();
+	if (normalized === currentTenantKey) return false;
+	currentTenantKey = normalized;
+	for (const reset of resetters) reset();
+	return true;
+}
+
+type StorageKind = "local" | "session";
+
+function backingFor(kind: StorageKind): Storage | null {
+	if (typeof window === "undefined") return null;
+	try {
+		return kind === "local" ? window.localStorage : window.sessionStorage;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Drop the keys an earlier, tenant-less build wrote into this origin. They are
+ * unreachable from the scoped namespace, but leaving them would keep one
+ * tenant's preferences addressable under another tenant's names.
+ */
+function clearLegacyKeysOnce(kind: StorageKind, backing: Storage): void {
+	const marker = kind + ":" + currentTenantKey;
+	if (legacyCleared.has(marker)) return;
+	legacyCleared.add(marker);
+	const doomed: string[] = [];
+	for (let index = 0; index < backing.length; index += 1) {
+		const key = backing.key(index);
+		if (!key || key.startsWith(STORAGE_PREFIX + ":")) continue;
+		if (LEGACY_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) doomed.push(key);
+	}
+	for (const key of doomed) {
+		try {
+			backing.removeItem(key);
+		} catch {
+			// A blocked removal must not break the mailbox.
+		}
+	}
+}
+
+function createScopedStorage(kind: StorageKind) {
+	return {
+		getItem(name: string): string | null {
+			const backing = backingFor(kind);
+			if (!backing) return null;
+			clearLegacyKeysOnce(kind, backing);
+			try {
+				return backing.getItem(mailboxStorageKey(name));
+			} catch {
+				return null;
+			}
+		},
+		setItem(name: string, value: string): void {
+			const backing = backingFor(kind);
+			if (!backing) return;
+			clearLegacyKeysOnce(kind, backing);
+			try {
+				backing.setItem(mailboxStorageKey(name), value);
+			} catch {
+				// Storage is unavailable in private windows; the session still works.
+			}
+		},
+		removeItem(name: string): void {
+			const backing = backingFor(kind);
+			if (!backing) return;
+			clearLegacyKeysOnce(kind, backing);
+			try {
+				backing.removeItem(mailboxStorageKey(name));
+			} catch {
+				// See setItem.
+			}
+		},
+		/** The current tenant's key names, unprefixed, for the layout scans. */
+		keys(): string[] {
+			const backing = backingFor(kind);
+			if (!backing) return [];
+			clearLegacyKeysOnce(kind, backing);
+			const prefix = STORAGE_PREFIX + ":" + currentTenantKey + ":";
+			const names: string[] = [];
+			try {
+				for (let index = 0; index < backing.length; index += 1) {
+					const key = backing.key(index);
+					if (key && key.startsWith(prefix)) names.push(key.slice(prefix.length));
+				}
+			} catch {
+				return names;
+			}
+			return names;
+		},
+	};
+}
+
+export const mailboxStorage = createScopedStorage("local");
+export const mailboxSessionStorage = createScopedStorage("session");
+`
+
+  await writeFile(path.join(outputRoot, 'scope.ts'), source)
+}
+
 const writeBase = async () => {
   const source = `"use client";
 
@@ -463,11 +1139,31 @@ import { createContext, useContext, useMemo, type ComponentProps, type ReactNode
 import NextLink from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 
-export type MailboxConfig = { apiBase: string; basePath: string };
+import { setMailboxTenantKey } from "./scope";
 
-let active: MailboxConfig = { apiBase: "/api", basePath: "" };
+export {
+	mailboxSessionStorage,
+	mailboxStorage,
+	mailboxStorageKey,
+	mailboxTenantKey,
+	registerMailboxTenantReset,
+	scopedCacheKey,
+} from "./scope";
+
+/**
+ * One mailbox runtime per tenant. The tenant key is required: a config without
+ * it would put two websites back in one cache, which is the defect this
+ * runtime exists to prevent.
+ */
+export type MailboxConfig = { apiBase: string; basePath: string; tenantKey: string };
+
+let active: MailboxConfig = { apiBase: "/api", basePath: "", tenantKey: "" };
 
 export function configureMailbox(config: MailboxConfig): void {
+	if (!config.tenantKey || !config.tenantKey.trim()) {
+		throw new Error("MailboxApp requires the tenant identity");
+	}
+	setMailboxTenantKey(config.tenantKey);
 	active = config;
 }
 
@@ -623,10 +1319,13 @@ export function MailboxApp({ config, path, params = {}, locale = DEFAULT_LOCALE 
 	/** A BCP-47 tag; unknown tags fall back to the bundled English catalog. */
 	locale?: string;
 }) {
+	// One runtime per tenant: configure first (it resets every cache when the
+	// tenant changes), then key the query client so nothing from the previous
+	// tenant's React state survives the switch either.
 	configureMailbox(config);
 	const normalized = path === "" ? "/" : path.replace(/\\/+$/, "");
 	const matched = useMemo(() => matchRoute(normalized || "/", params), [normalized, params]);
-	const [client] = useMemo(() => [new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 30_000 } } })], []);
+	const [client] = useMemo(() => [new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 30_000 } } })], [config.tenantKey]);
 	if (!matched) return null;
 	return (
 		<QueryClientProvider client={client}>
@@ -662,6 +1361,29 @@ const writeStyles = async () => {
   await writeFile(path.join(outputRoot, 'styles.css'), scoped)
 }
 
+/**
+ * Two states the mailbox shell can render in place of its body. They belong to
+ * every tenant, so they are added to the English catalogue once and translated
+ * like the rest: an unknown key falls back to English rather than to a blank.
+ */
+const MAILBOX_GATE_COPY = {
+  'mailbox.preparing.title': 'Your inbox is being prepared',
+  'mailbox.preparing.body': 'HelloAda is setting up this website’s mailbox. It will open here as soon as setup finishes.',
+  'mailbox.unavailable.title': 'Your inbox could not be opened',
+  'mailbox.unavailable.body': 'This website’s mailbox did not answer. Nothing has been changed; try again in a moment.',
+  'mailbox.retry': 'Try again',
+}
+
+const patchMailboxGateCopy = async (outputFile) => {
+  const source = await readFile(outputFile, 'utf8')
+  const parsed = JSON.parse(source)
+  for (const [key, value] of Object.entries(MAILBOX_GATE_COPY)) {
+    if (parsed[key] === undefined) parsed[key] = value
+  }
+  const sorted = Object.fromEntries(Object.entries(parsed).sort(([left], [right]) => left.localeCompare(right)))
+  await writeFile(outputFile, `${JSON.stringify(sorted, null, 2)}\n`)
+}
+
 const copyLocales = async () => {
   const source = path.join(upstreamRoot, 'public/locales')
   const target = path.join(outputRoot, 'locales')
@@ -687,7 +1409,10 @@ const resolveOutputImport = async (specifier, fromFile) => {
 const assertGenerated = async (files) => {
   const failures = []
   const outputs = [...files.map(outputPathFor), path.join(outputRoot, 'index.tsx'), path.join(outputRoot, 'base.tsx'), path.join(outputRoot, 'routes.generated.tsx')]
+  const scopeFile = path.join(outputRoot, 'scope.ts')
   for (const output of outputs) {
+    // A patch may have removed a module from the tree on purpose.
+    if (!(await isFile(output))) continue
     const source = await readFile(output, 'utf8')
     const relative = path.relative(outputRoot, output)
     if (/from\s+["']@\//.test(source)) failures.push(`${relative}: unresolved alias import`)
@@ -697,6 +1422,32 @@ const assertGenerated = async (files) => {
     if (/from\s+["']next\/(?:headers|server)["']/.test(source)) failures.push(`${relative}: server-only Next module`)
     if (/\bAuthGuard\b/.test(source)) failures.push(`${relative}: tenant auth guard`)
     if (/\bh-dvh\b/.test(source)) failures.push(`${relative}: claims the whole viewport`)
+
+    // Tenancy is the class this package exists to hold. `scope.ts` owns the only
+    // real browser storage; everywhere else must go through its façade, or the
+    // key is shared by every tenant on the origin. The one exception is the
+    // inline sidebar bootstrap: it is stringified into the document before any
+    // module loads, so it reads localStorage directly under a key it builds from
+    // the tenant key.
+    if (output !== scopeFile) {
+      const directStorage = /\b(?:window\.)?(?:localStorage|sessionStorage)\b/.test(source)
+      const isInlineBootstrap = relative.endsWith('sidebar-state-utils.ts')
+        && source.includes('const prefix = "helloada-mailbox:" + tenantKey + ":";')
+      if (directStorage && !isInlineBootstrap) {
+        failures.push(`${relative}: unprefixed browser storage (bypasses scope.ts)`)
+      }
+    }
+    if (/\bgetClientSessionToken\b/.test(source)) {
+      failures.push(`${relative}: resolves a client session the ported mailbox does not have`)
+    }
+    // A cache key that is not tenant-first is the original defect.
+    if (/const key = params\.toString\(\);/.test(source)) {
+      failures.push(`${relative}: message list cache key omits the tenant`)
+    }
+    if (/const key = mailboxId \?\? "all";/.test(source)) {
+      failures.push(`${relative}: message counts cache key omits the tenant`)
+    }
+
     for (const match of source.matchAll(importPattern)) {
       if (!match[2].startsWith('.')) continue
       if (await resolveOutputImport(match[2], output)) continue
@@ -722,6 +1473,13 @@ const main = async () => {
 
   await patchAuthGuards(files)
   await patchAuthClient(path.join(outputRoot, 'src/lib/auth/client.ts'))
+  await patchDeadSessionToken(path.join(outputRoot, 'src/lib/auth/client.ts'))
+  await patchMailboxSelector(path.join(outputRoot, 'src/components/mailbox-selector.tsx'))
+  await patchMailboxProvider(path.join(outputRoot, 'src/components/mailbox-provider.tsx'))
+  await patchTenantScopedCaches(
+    path.join(outputRoot, 'src/hooks/utils.ts'),
+    path.join(outputRoot, 'src/components/mailbox-provider-utils.ts'),
+  )
   await patchStrictClientTypes(path.join(outputRoot, 'src/hooks/use-message-counts.ts'))
   await patchDraftDetail(path.join(outputRoot, 'src/app/(dashboard)/drafts/[messageId]/page.tsx'))
   await patchCalendarSections(path.join(outputRoot, 'src/app/(calendar)/layout.tsx'))
@@ -730,12 +1488,21 @@ const main = async () => {
   await patchThreadStar(path.join(outputRoot, 'src/components/messages/thread-message-actions.tsx'))
   const localeFiles = await copyLocales()
   await patchLocaleCatalogs(path.join(outputRoot, 'src/lib/i18n/utils.ts'), localeFiles)
+  await patchMailboxGateCopy(path.join(outputRoot, 'src/lib/i18n/en.json'))
+  await writeMailboxGate()
   await writeBase()
+  await writeScope()
   const pageCount = await buildRouteMap(files)
   await writeIndex(pageCount)
   await writeStyles()
+  await patchTenantScopedStorage(files)
+  // The sidebar's inline bootstrap script is raw browser JavaScript, so it is
+  // repaired after the façade pass: it reads localStorage itself, under the
+  // same tenant-scoped names.
+  await removeDeadSidebarBootstrap(path.join(outputRoot, 'src/components/sidebar-state-utils.ts'))
   await applyBranding(files)
   await assertBranding(files)
+  await removeDeadSessionModules(files)
   await assertGenerated(files)
 
   const manifest = {

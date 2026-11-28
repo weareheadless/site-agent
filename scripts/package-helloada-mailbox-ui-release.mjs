@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -65,8 +65,51 @@ const main = () => {
   if (!base.includes('resolveApiInput') || !base.includes('useMailboxParams')) {
     throw new Error('Packed mailbox UI is missing its control-plane adapters')
   }
+  // Tenancy is a property of the artifact, not of the checkout that produced
+  // it: assert it on the bytes an application will actually install.
+  if (!base.includes('tenantKey: string')) {
+    throw new Error('Packed mailbox UI does not carry the tenant key in its config')
+  }
+  for (const file of ['dist/scope.ts', 'dist/src/components/mailbox-gate.tsx']) {
+    assertTarEntry(archive, file)
+  }
+  const scope = execFileSync('tar', ['-xOf', archive, 'package/dist/scope.ts'], { encoding: 'utf8' })
+  if (!scope.includes('helloada-mailbox') || !scope.includes('scopedCacheKey') || !scope.includes('setMailboxTenantKey')) {
+    throw new Error('Packed mailbox UI has no tenant-scoped storage and cache keys')
+  }
   const packedPackage = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }))
   if (packedPackage.name !== pkg.name || packedPackage.version !== pkg.version) throw new Error('Packed package identity mismatch')
+
+  // Every assertion above reads text, and text is what let two broken artifacts
+  // through: `path.replace(//+$/, "")` looks like a regex in a grep and is a
+  // syntax error, and a deleted constant is a typecheck failure with no textual
+  // trace. So the packed bytes are compiled with the package's pinned
+  // TypeScript, and any diagnostic fails the release.
+  //
+  // The tree is extracted inside the package so it resolves the same
+  // `node_modules` the generator compiles against; a temp dir outside it would
+  // report every dependency as missing and reject a healthy artifact.
+  const typecheckRoot = path.join(packageRoot, '.release', 'typecheck')
+  rmSync(typecheckRoot, { recursive: true, force: true })
+  mkdirSync(typecheckRoot, { recursive: true })
+  execFileSync('tar', ['-xzf', archive, '-C', typecheckRoot])
+  const typeScript = path.join(packageRoot, 'node_modules', 'typescript', 'bin', 'tsc')
+  if (!existsSync(typeScript)) {
+    throw new Error('Release requires the package TypeScript (run npm ci in packages/helloada-mailbox-ui)')
+  }
+  try {
+    execFileSync('node', [typeScript, '--noEmit', '--skipLibCheck', '--jsx', 'react-jsx',
+      '--module', 'esnext', '--moduleResolution', 'bundler', '--target', 'es2022',
+      '--strict', '--noImplicitAny', 'false', '--allowImportingTsExtensions',
+      path.join(typecheckRoot, 'package', 'dist', 'index.tsx'),
+      path.join(typecheckRoot, 'package', 'dist', 'base.tsx'),
+      path.join(typecheckRoot, 'package', 'dist', 'routes.generated.tsx'),
+    ], { encoding: 'utf8', stdio: 'pipe' })
+  } catch (error) {
+    const outputText = `${error.stdout ?? ''}${error.stderr ?? ''}`.trim()
+    throw new Error(`Packed mailbox UI does not compile:\n${outputText}`)
+  }
+  rmSync(typecheckRoot, { recursive: true, force: true })
 
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex')
   const manifest = {

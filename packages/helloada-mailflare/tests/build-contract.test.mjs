@@ -362,3 +362,38 @@ test('Mailflare assets compose only into the reserved /mail namespace with pinne
     await rm(tenantRoot, { recursive: true, force: true })
   }
 })
+
+test('every shared module the build vendors resolves inside the vendored tree', async () => {
+  // The build copies a few shared modules into the upstream tree and compiles
+  // them there. A module that imports a sibling the copy step does not bring
+  // fails with UNRESOLVED_IMPORT, and only the real build can see it -- locally
+  // the file sits next to its importer, so the copy is never exercised.
+  const template = path.resolve(root, '../../src/site_agent/templates/next-payload')
+  const vendored = {
+    'mailflare-booking-service.ts': 'src/lib/helloada-booking-service.ts',
+    'mailflare-bindings.ts': 'src/lib/helloada-tenant-bindings.ts',
+    'mailflare-owner-identity.ts': 'src/lib/mailflare-owner-identity.ts',
+  }
+  for (const [source, target] of Object.entries(vendored)) {
+    const text = await readFile(path.join(template, source), 'utf8')
+    for (const match of text.matchAll(/from\s+['"]\.\/([\w.-]+\.tsx?)['"]/g)) {
+      const dependency = match[1]
+      assert.ok(
+        dependency in vendored,
+        `${source} imports ./${dependency}, which the build does not copy beside ${target}: the vendored tree cannot resolve it`,
+      )
+    }
+    assert.equal(path.posix.dirname(target), 'src/lib', `vendored target for ${source} must sit beside the booking service`)
+  }
+
+  // The map above is only useful if the build actually performs each copy. A
+  // `cp` dropped from the script leaves the vendored tree missing the file and
+  // nothing else here notices, because this checkout always has it.
+  const buildScript = await readFile(path.join(root, 'scripts/build.mjs'), 'utf8')
+  for (const source of Object.keys(vendored)) {
+    assert.ok(
+      buildScript.includes(`next-payload/${source}'`),
+      `scripts/build.mjs does not copy ${source} into the vendored tree`,
+    )
+  }
+})

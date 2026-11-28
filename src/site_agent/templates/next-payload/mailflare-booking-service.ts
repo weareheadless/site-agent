@@ -1,3 +1,5 @@
+import { resolveTenantOwnerUserId } from './mailflare-owner-identity.ts'
+
 export type BookingD1Result<T> = { results?: T[]; meta?: { changes?: number } }
 export type BookingD1Statement = {
   bind: (...values: unknown[]) => BookingD1Statement
@@ -217,9 +219,9 @@ export async function deactivateBookingType(db: BookingD1, userId: string, id: s
 
 export async function resolveTenantBookingOwner(db: BookingD1, tenantId: string): Promise<string> {
   if (!tenantId.trim()) throw new Error('tenant_identity_not_configured')
-  const row = await db.prepare(
-    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id=? LIMIT 1',
-  ).bind(tenantId).first<{ owner_user_id: string }>()
-  if (!row?.owner_user_id) throw new Error('booking_owner_not_provisioned')
-  return row.owner_user_id
+  // The booking path resolves the same owner through the same derivation, but
+  // it serves anonymous visitors: it may not run a repair migration on their
+  // request. A tenant whose registration is not canonical yet is repaired by
+  // the authenticated owner path, and this endpoint says so until then.
+  return resolveTenantOwnerUserId(db, tenantId)
 }

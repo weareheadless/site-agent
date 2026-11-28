@@ -4,9 +4,15 @@ import test from "node:test";
 import { assertCalendarMutationCapacity, createPublicBooking, getBookingCapacityWarnings, getPublicBookingDetails } from "../integration-src/src/lib/helloada-booking-runtime.ts";
 import { createBookingType, deactivateBookingType, updateBookingType } from "../../../src/site_agent/templates/next-payload/mailflare-booking-service.ts";
 
+// The canonical owner id for tenant-1: the registration the gate writes once the
+// tenant has converged. Booking is a public path and does not repair, so the
+// fixture represents a converged tenant rather than a legacy one.
+const ownerId = "ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c";
+
 function fixture({ capacity = 1, duration = 30, timeZone = "UTC", hours } = {}) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, password_hash TEXT NOT NULL, name TEXT NOT NULL, role TEXT NOT NULL, is_primary_admin INTEGER NOT NULL, can_manage_mailboxes INTEGER NOT NULL, can_manage_domains INTEGER NOT NULL, can_manage_users INTEGER NOT NULL, disabled INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
     CREATE TABLE helloada_tenant_owners (tenant_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL);
     CREATE TABLE helloada_booking_settings (user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL, time_zone TEXT NOT NULL, weekly_availability TEXT NOT NULL, max_concurrent_appointments INTEGER NOT NULL, minimum_notice_hours INTEGER NOT NULL, booking_window_days INTEGER NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     CREATE TABLE booking_events (
@@ -32,15 +38,16 @@ function fixture({ capacity = 1, duration = 30, timeZone = "UTC", hours } = {}) 
     CREATE TRIGGER calendar_revision_delete AFTER DELETE ON calendar_events BEGIN UPDATE helloada_booking_settings SET revision=revision+1 WHERE user_id=OLD.user_id; END;
     CREATE TRIGGER calendar_capacity_insert BEFORE INSERT ON calendar_events WHEN NOT EXISTS (SELECT 1 FROM helloada_booking_settings WHERE user_id=NEW.user_id AND revision=NEW.helloada_capacity_revision) BEGIN SELECT RAISE(ABORT, 'helloada_capacity_revision_conflict'); END;
     CREATE TRIGGER calendar_capacity_update BEFORE UPDATE ON calendar_events WHEN (NEW.starts_at IS NOT OLD.starts_at OR NEW.ends_at IS NOT OLD.ends_at OR NEW.repeat IS NOT OLD.repeat OR NEW.time_zone IS NOT OLD.time_zone) AND NOT EXISTS (SELECT 1 FROM helloada_booking_settings WHERE user_id=NEW.user_id AND revision=NEW.helloada_capacity_revision) BEGIN SELECT RAISE(ABORT, 'helloada_capacity_revision_conflict'); END;
-    INSERT INTO helloada_tenant_owners VALUES ('tenant-1','owner-1');
-    INSERT INTO domains VALUES ('domain-1','owner-1','example.test','active');
-    INSERT INTO mailboxes VALUES ('mailbox-1','owner-1','domain-1','hello',0);
+    INSERT INTO users (id,email,password_hash,name,role,is_primary_admin,can_manage_mailboxes,can_manage_domains,can_manage_users,disabled,created_at) VALUES ('ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c','owner@identity.helloada.invalid','!helloada-payload-sso-only','HelloAda owner','user',0,0,0,0,0,1);
+    INSERT INTO helloada_tenant_owners VALUES ('tenant-1','ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c');
+    INSERT INTO domains VALUES ('domain-1','ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c','example.test','active');
+    INSERT INTO mailboxes VALUES ('mailbox-1','ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c','domain-1','hello',0);
   `);
   const schedule = hours ?? Array.from({ length: 7 }, (_, day) => ({ day, startTime: "00:00", endTime: "23:45" }));
   sqlite.prepare("INSERT INTO helloada_booking_settings VALUES (?,?,?,?,?,?,?,?,?)")
-    .run("owner-1", 1, timeZone, JSON.stringify(schedule), capacity, 0, 365, 1, Date.now());
+    .run(ownerId, 1, timeZone, JSON.stringify(schedule), capacity, 0, 365, 1, Date.now());
   sqlite.prepare("INSERT INTO booking_events (id,user_id,slug,name,description,duration_minutes,enabled,updated_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run("type-1", "owner-1", "consultation", "Consultation", "", duration, 1, 1000);
+    .run("type-1", ownerId, "consultation", "Consultation", "", duration, 1, 1000);
 
   const statement = (sql) => {
     let values = [];
@@ -87,13 +94,13 @@ test("native Calendar events use epoch milliseconds and half-open slot boundarie
   const { sqlite, db } = fixture();
   const date = futureDate();
   const noon = Date.parse(slotAt(date));
-  const firstRevision = await assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: noon - 30 * 60_000, endsAt: noon, repeat: "none", timeZone: "UTC" }]);
+  const firstRevision = await assertCalendarMutationCapacity(db, ownerId, [{ startsAt: noon - 30 * 60_000, endsAt: noon, repeat: "none", timeZone: "UTC" }]);
   sqlite.prepare("INSERT INTO calendar_events (id,user_id,title,description,location,attendees,color,repeat,repeat_days,excluded_occurrences,time_zone,starts_at,ends_at,helloada_capacity_revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    .run("busy-1", "owner-1", "Busy", "", "", "[]", "blue", "none", "[]", "[]", "UTC", noon - 30 * 60_000, noon, firstRevision, Date.now(), Date.now());
+    .run("busy-1", ownerId, "Busy", "", "", "[]", "blue", "none", "[]", "[]", "UTC", noon - 30 * 60_000, noon, firstRevision, Date.now(), Date.now());
   const available = await details(db, date);
   assert.ok(available.slots.some((slot) => slot.startsAt === slotAt(date, "12:00")));
 
-  const secondRevision = await assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: noon, endsAt: noon + 30 * 60_000, repeat: "none", timeZone: "UTC" }], ["busy-1"]);
+  const secondRevision = await assertCalendarMutationCapacity(db, ownerId, [{ startsAt: noon, endsAt: noon + 30 * 60_000, repeat: "none", timeZone: "UTC" }], ["busy-1"]);
   sqlite.prepare("UPDATE calendar_events SET starts_at=?,ends_at=?,helloada_capacity_revision=? WHERE id='busy-1'")
     .run(noon, noon + 30 * 60_000, secondRevision);
   const blocked = await details(db, date);
@@ -157,7 +164,7 @@ test("availability omits daylight-saving gaps and emits one deterministic repeat
 test("capacity two admits two overlapping appointments across different type durations and rejects a third", async () => {
   const { sqlite, db } = fixture({ capacity: 2, duration: 30 });
   sqlite.prepare("INSERT INTO booking_events (id,user_id,slug,name,description,duration_minutes,enabled,updated_at) VALUES (?,?,?,?,?,?,?,?)")
-    .run("type-2", "owner-1", "extended", "Long consultation", "", 60, 1, 1000);
+    .run("type-2", ownerId, "extended", "Long consultation", "", 60, 1, 1000);
   const startsAt = slotAt(futureDate());
   const attempts = await Promise.all([
     createPublicBooking(db, "tenant-1", "hello@example.test", "type-1", input(startsAt, "capacity-two-request-0001")),
@@ -176,7 +183,7 @@ test("an idempotent retry returns its original event after settings or type are 
   const request = input(startsAt, "stable-request-identity-0001");
   const first = await createPublicBooking(db, "tenant-1", "hello@example.test", "type-1", request);
   assert.equal(first.state, "created");
-  sqlite.prepare("UPDATE helloada_booking_settings SET enabled=0 WHERE user_id='owner-1'").run();
+  sqlite.prepare("UPDATE helloada_booking_settings SET enabled=0 WHERE user_id='ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c'").run();
   sqlite.prepare("UPDATE booking_events SET enabled=0 WHERE id='type-1'").run();
   const retry = await createPublicBooking(db, "tenant-1", "hello@example.test", "type-1", request);
   assert.equal(retry.state, "duplicate");
@@ -193,10 +200,10 @@ test("public lookup is tenant-scoped, omits private records, and rejects inactiv
   const date = futureDate();
   const details = await getPublicBookingDetails(db, "tenant-1", "type-1", date, "public-key");
   assert.equal(details.name, "Consultation");
-  assert.ok(!JSON.stringify(details).includes("owner-1"));
+  assert.ok(!JSON.stringify(details).includes(ownerId));
   assert.ok(!JSON.stringify(details).includes("hello@example.test"));
-  await assert.rejects(getPublicBookingDetails(db, "tenant-2", "type-1", date, "public-key"), /booking_owner_not_provisioned/);
-  sqlite.prepare("UPDATE booking_events SET enabled=0 WHERE user_id='owner-1' AND id='type-1'").run();
+  await assert.rejects(getPublicBookingDetails(db, "tenant-2", "type-1", date, "public-key"), /booking_owner_not_provisioned|mailbox_owner_identity_invalid/);
+  sqlite.prepare("UPDATE booking_events SET enabled=0 WHERE user_id='ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c' AND id='type-1'").run();
   await assert.rejects(getPublicBookingDetails(db, "tenant-1", "type-1", date, "public-key"), /booking_type_not_found/);
 });
 
@@ -205,12 +212,12 @@ test("capacity two permits a long appointment across separate busy events but co
   const date = futureDate();
   const start = Date.parse(slotAt(date, "12:00"));
   const insert = sqlite.prepare("INSERT INTO calendar_events (id,user_id,title,description,location,attendees,color,repeat,repeat_days,excluded_occurrences,time_zone,starts_at,ends_at,helloada_capacity_revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
-  let revision = await assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: start, endsAt: start + 15 * 60_000 }]);
-  insert.run("busy-a", "owner-1", "Busy A", "", "", "[]", "blue", "none", "[]", "[]", "UTC", start, start + 15 * 60_000, revision, Date.now(), Date.now());
-  revision = await assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: start + 30 * 60_000, endsAt: start + 45 * 60_000 }]);
-  insert.run("busy-b", "owner-1", "Busy B", "", "", "[]", "blue", "none", "[]", "[]", "UTC", start + 30 * 60_000, start + 45 * 60_000, revision, Date.now(), Date.now());
-  await assert.doesNotReject(assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: start, endsAt: start + 60 * 60_000 }]));
-  await assert.rejects(assertCalendarMutationCapacity(db, "owner-1", [{ startsAt: start + 10 * 60_000, endsAt: start + 40 * 60_000 }, { startsAt: start + 10 * 60_000, endsAt: start + 40 * 60_000 }]), /calendar_capacity_exceeded/);
+  let revision = await assertCalendarMutationCapacity(db, ownerId, [{ startsAt: start, endsAt: start + 15 * 60_000 }]);
+  insert.run("busy-a", ownerId, "Busy A", "", "", "[]", "blue", "none", "[]", "[]", "UTC", start, start + 15 * 60_000, revision, Date.now(), Date.now());
+  revision = await assertCalendarMutationCapacity(db, ownerId, [{ startsAt: start + 30 * 60_000, endsAt: start + 45 * 60_000 }]);
+  insert.run("busy-b", ownerId, "Busy B", "", "", "[]", "blue", "none", "[]", "[]", "UTC", start + 30 * 60_000, start + 45 * 60_000, revision, Date.now(), Date.now());
+  await assert.doesNotReject(assertCalendarMutationCapacity(db, ownerId, [{ startsAt: start, endsAt: start + 60 * 60_000 }]));
+  await assert.rejects(assertCalendarMutationCapacity(db, ownerId, [{ startsAt: start + 10 * 60_000, endsAt: start + 40 * 60_000 }, { startsAt: start + 10 * 60_000, endsAt: start + 40 * 60_000 }]), /calendar_capacity_exceeded/);
 });
 
 
@@ -219,13 +226,13 @@ test("capacity reductions report existing over-capacity periods without changing
   const start = Date.parse(slotAt(futureDate(), "12:00"));
   const insert = sqlite.prepare("INSERT INTO calendar_events (id,user_id,title,description,location,attendees,color,repeat,repeat_days,excluded_occurrences,time_zone,starts_at,ends_at,helloada_capacity_revision,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
   for (let index = 0; index < 3; index++) {
-    const revision = sqlite.prepare("SELECT revision FROM helloada_booking_settings WHERE user_id='owner-1'").get().revision;
-    insert.run("existing-" + index, "owner-1", "Existing " + index, "", "", "[]", "blue", "none", "[]", "[]", "UTC", start, start + 30 * 60_000, revision, Date.now(), Date.now());
+    const revision = sqlite.prepare("SELECT revision FROM helloada_booking_settings WHERE user_id='ha_66b0d72c33966b555cccf06e36f1670e9e56b3ce4f22029ed3346705fcc40b0c'").get().revision;
+    insert.run("existing-" + index, ownerId, "Existing " + index, "", "", "[]", "blue", "none", "[]", "[]", "UTC", start, start + 30 * 60_000, revision, Date.now(), Date.now());
   }
-  assert.deepEqual(await getBookingCapacityWarnings(db, "owner-1", 3), {
+  assert.deepEqual(await getBookingCapacityWarnings(db, ownerId, 3), {
     overlappingPeriods: 0, maxConcurrentAppointments: 3, horizonDays: 365,
   });
-  assert.deepEqual(await getBookingCapacityWarnings(db, "owner-1", 2), {
+  assert.deepEqual(await getBookingCapacityWarnings(db, ownerId, 2), {
     overlappingPeriods: 1, maxConcurrentAppointments: 2, horizonDays: 365,
   });
   assert.equal(sqlite.prepare("SELECT COUNT(*) AS count FROM calendar_events").get().count, 3);
@@ -234,20 +241,20 @@ test("capacity reductions report existing over-capacity periods without changing
 
 test("booking types use immutable IDs and compare-and-swap integer revisions", async () => {
   const { sqlite, db } = fixture();
-  const created = await createBookingType(db, "owner-1", {
+  const created = await createBookingType(db, ownerId, {
     name: "Massage", slug: "massage", description: "One-to-one massage", durationMinutes: 120,
   });
   assert.match(created.id, /^ha_booking_[a-f0-9]{32}$/);
   assert.equal(created.revision, 1);
-  const updated = await updateBookingType(db, "owner-1", created.id, 1, {
+  const updated = await updateBookingType(db, ownerId, created.id, 1, {
     slug: "massage", name: "Extended massage", description: "Updated service", durationMinutes: 150,
   });
   assert.equal(updated.id, created.id);
   assert.equal(updated.revision, 2);
-  await assert.rejects(updateBookingType(db, "owner-1", created.id, 1, {
+  await assert.rejects(updateBookingType(db, ownerId, created.id, 1, {
     name: "Stale edit", description: "", durationMinutes: 120,
   }), /booking_type_revision_conflict/);
-  const inactive = await deactivateBookingType(db, "owner-1", created.id, 2);
+  const inactive = await deactivateBookingType(db, ownerId, created.id, 2);
   assert.equal(inactive.id, created.id);
   assert.equal(inactive.enabled, false);
   assert.equal(inactive.revision, 3);

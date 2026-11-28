@@ -1,3 +1,5 @@
+import { tenantOwnerUserId } from './mailflare-owner-identity.ts'
+
 type D1Statement = {
   bind: (...values: unknown[]) => D1Statement
   first: <T = Record<string, unknown>>() => Promise<T | null>
@@ -119,7 +121,15 @@ export async function provisionTenantMailflareMailbox({
     'SELECT id, email, disabled FROM users WHERE id = ? LIMIT 1',
   ).bind(serviceUserId).first<{ id: string; email: string; disabled: number }>()
   if (!existingService) {
-    const existingUser = await database.prepare('SELECT id FROM users LIMIT 1').first<{ id: string }>()
+    // A fresh mailbox database holds the tenant service account and the tenant's
+    // owner account, nothing else. Any other account means this database belongs
+    // to something this provisioning does not understand, which is a migration
+    // decision rather than something to overwrite.
+    const ownerUserId = await tenantOwnerUserId(tenantId)
+    const existingUser = await database
+      .prepare('SELECT id FROM users WHERE id != ? LIMIT 1')
+      .bind(ownerUserId)
+      .first<{ id: string }>()
     if (existingUser && existingUser.id !== serviceUserId) {
       throw new Error('Mailflare contains an unlinked account; explicit mailbox migration is required')
     }
