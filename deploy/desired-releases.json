@@ -29,6 +29,11 @@
       "id": "runtime-20261128032757-5dc6de93",
       "sha": "0b51e5dcd516a07f7c4ec97f735411595fece5e6",
       "sharedRuntimeFingerprint": "fc48b8a28d40f2aae67098457a8b722e0d638111e3fc4d1ba4a5ee9eb2a94e28"
+    },
+    "site-ff8e9af06f56201f": {
+      "id": "runtime-20261128035923-c1df41a3",
+      "sha": "4a5e393691658f5dd1515ff91640a08f7229f583",
+      "sharedRuntimeFingerprint": "fc48b8a28d40f2aae67098457a8b722e0d638111e3fc4d1ba4a5ee9eb2a94e28"
     }
   },
   "schema": 1
