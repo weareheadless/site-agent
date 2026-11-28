@@ -3,8 +3,10 @@ import importlib.util
 import hashlib
 import io
 import json
+import os
 import sys
 import threading
+import time
 import urllib.error
 import zipfile
 import shutil
@@ -719,17 +721,25 @@ def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_pat
 
 def test_stale_build_workspaces_are_removed_only_from_the_dedicated_root(tmp_path):
     work_root = tmp_path / "work"
-    workspace = work_root / "oceanicvibes-release-123"
-    workspace.mkdir(parents=True)
-    (workspace / "node_modules").mkdir()
-    (workspace / "node_modules" / "partial").write_text("temporary")
+    abandoned = work_root / "oceanicvibes-release-123"
+    abandoned.mkdir(parents=True)
+    (abandoned / "node_modules").mkdir()
+    (abandoned / "node_modules" / "partial").write_text("temporary")
+    building = work_root / "oceanicvibes-release-456"
+    building.mkdir(parents=True)
+    (building / "source").mkdir()
     receipt = tmp_path / "runs" / "oceanicvibes" / "completed" / "receipt.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"status": "deployed"}))
 
+    # An abandoned workspace is old; a build still working in one has just
+    # touched it. Only the first may be removed.
+    old = time.time() - queue._STALE_WORKSPACE_SECONDS - 60
+    os.utime(abandoned, (old, old))
+
     queue.cleanup_stale_release_workspaces(tmp_path)
 
-    assert list(work_root.iterdir()) == []
+    assert [item.name for item in work_root.iterdir()] == ["oceanicvibes-release-456"]
     assert json.loads(receipt.read_text())["status"] == "deployed"
 
 
