@@ -328,8 +328,32 @@ const removeDeadSidebarBootstrap = async (outputFile) => {
   const end = source.indexOf('})();`;', start)
   if (end < 0) throw new Error('Upstream sidebar bootstrap changed shape: unterminated script')
   source = source.slice(0, from) + source.slice(end + '})();`;'.length)
-  source = source.replace(/\nconst SIDEBAR_MINIMAL_STORAGE_KEY = "mailflare-sidebar-minimal";\n/, '\n')
   source = source.replace(/^\n+/, '')
+  if (/sidebarBootstrapScript/.test(source)) {
+    throw new Error('Upstream sidebar bootstrap is still referenced after its removal')
+  }
+  // Removing the bootstrap must not remove anything the surviving helpers use.
+  // The first cut of this patch also deleted the storage-key constant that
+  // lives beside the export, leaving three functions referencing an identifier
+  // that no longer existed -- a typecheck failure in every consumer, which the
+  // build itself could not see. So: every module-level constant the file now
+  // uses must be one it declares, imports, or gets from the ambient scope.
+  const declared = new Set()
+  for (const match of source.matchAll(/^(?:export\s+)?(?:const|let|function|class)\s+([A-Za-z_$][\w$]*)/gm)) {
+    declared.add(match[1])
+  }
+  for (const match of source.matchAll(/import\s+(?:type\s+)?(?:\{([^}]*)\}|([A-Za-z_$][\w$]*))/g)) {
+    if (match[2]) declared.add(match[2])
+    if (match[1]) for (const part of match[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop().trim()
+      if (name) declared.add(name)
+    }
+  }
+  for (const match of source.matchAll(/\b([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\b/g)) {
+    const name = match[1]
+    if (declared.has(name)) continue
+    throw new Error(`Generated sidebar helper uses ${name} without declaring it: the removal took a declaration with it`)
+  }
   await writeFile(outputFile, source)
 }
 
