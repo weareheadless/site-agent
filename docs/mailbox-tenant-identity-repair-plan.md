@@ -382,16 +382,44 @@ of this phase; what remains is one tenant.
 The mailbox UI is a package the app installs by release URL, so the two halves
 ship in one order and not the other:
 
-1. `packages/helloada-mailbox-ui/package.json` is at `0.4.0`; cut
-   `helloada-mailbox-ui-v0.4.0` from the reviewed `site-agent` commit with
-   `scripts/package-helloada-mailbox-ui-release.mjs` (its assertions now include
-   the tenant key and `dist/scope.ts`).
-2. `helloada/package.json` and `package-lock.json` already name
-   `helloada-mailbox-ui-v0.4.0`. Until the release exists, `npm ci` in a fresh
+1. `packages/helloada-mailbox-ui/package.json` is at `0.4.2`; cut
+   `helloada-mailbox-ui-v0.4.2` from the reviewed `site-agent` commit with
+   `scripts/package-helloada-mailbox-ui-release.mjs`. **Done:** published,
+   sha256 `74c37aa3778559f0993d5b075af1b13927e1122c132e66cbf0da212a1dde22b8`,
+   from `3012fe25`. The app must not consume 0.4.0 or 0.4.1 (see below).
+2. `helloada/package.json` and `package-lock.json` name
+   `helloada-mailbox-ui-v0.4.2`. Until the release exists, `npm ci` in a fresh
    `helloada` checkout cannot resolve the package. That is the intended ordering
    constraint, not a broken lock: the app must not ship a mount that passes
    `tenantKey` to a package that ignores it.
 3. Then release `helloada` through `deploy/desired-helloada-app-release.json`.
+
+### Three release defects this work produced and now guards against
+
+Only the consuming app's `tsc` caught these; every build assertion and grep
+passed on both broken artifacts. They are recorded because the same class will
+be attempted again.
+
+1. **0.4.0 shipped an entry point that does not parse.** A template-literal
+   escape in the generator lost its backslash, emitting
+   `path.replace(//+$/, "")` instead of `/\/+$/` — `TS1135` in every consumer.
+   The guard compiles and *runs* the emitted expression rather than matching its
+   text, because a text assertion on something that looks like a regex passes on
+   the broken output.
+2. **0.4.1 additionally deleted a constant the sidebar still uses.**
+   `removeDeadSidebarBootstrap` removed `SIDEBAR_MINIMAL_STORAGE_KEY` along with
+   the dead inline bootstrap, while `readInitialSidebarMinimal`,
+   `saveInitialSidebarMinimal` and `syncInitialSidebarWidth` still reference it —
+   `TS2304` in every consumer. The pass now fails the build if an ALL_CAPS
+   identifier survives its removal without a declaration in that file.
+3. **The release gate could not see either.** It asserted text only. It now
+   compiles the packed tree with the package's own pinned TypeScript
+   (`typescript` is a devDependency, so the gate is self-contained) and fails on
+   any diagnostic. It extracts inside the package tree, because a temp directory
+   outside the package's module resolution reports every dependency as missing
+   and rejects a healthy artifact.
+
+Published tags are never rewritten; 0.4.2 is the first consumable artifact.
 
 ### Fingerprint consequence
 

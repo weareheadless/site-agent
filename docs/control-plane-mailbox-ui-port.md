@@ -269,8 +269,8 @@ badge, the filter and the public player read.
 
 ## Stage 4 record
 
-Package: `@weareheadless/helloada-mailbox-ui@0.3.1` from the same pinned
-upstream, published as `weareheadless-helloada-mailbox-ui-0.3.1.tgz` (22 routes,
+Package: `@weareheadless/helloada-mailbox-ui@0.4.2` from the same pinned
+upstream, published as `weareheadless-helloada-mailbox-ui-0.4.2.tgz` (22 routes,
 281 files) and pinned in the app by URL plus `sha512` integrity. It adds the
 upstream owner calendar and drops the upstream booking editor.
 
