@@ -21,9 +21,12 @@
       "sharedRuntimeFingerprint": "fc48b8a28d40f2aae67098457a8b722e0d638111e3fc4d1ba4a5ee9eb2a94e28"
     },
     "oceanicvibes": {
-      "id": "runtime-20261128032756-2178a1fb",
-      "sha": "9e4b61ca9759a88c7be7473c6ac0fe1b5adccc86",
-      "sharedRuntimeFingerprint": "fc48b8a28d40f2aae67098457a8b722e0d638111e3fc4d1ba4a5ee9eb2a94e28"
+      "id": "owner-20261128034500-oceanicvibes",
+      "sha": "4d99543a3112abe68c67b572f49efa183f6c4b5a",
+      "schemaMigration": {
+        "fromLedgerIdentity": "a3c4cf7ca47c188db934fa88a6b915b0effd61fc49e13773c8ad2b477ad27e59",
+        "targetMigrationHead": "51840fcd92f835ac70b0c9a9cd0dd670415dd75e33e09025f09b62a4e74bef48"
+      }
     },
     "site-be8225c72f3ba01a": {
       "id": "runtime-20261128032757-5dc6de93",
