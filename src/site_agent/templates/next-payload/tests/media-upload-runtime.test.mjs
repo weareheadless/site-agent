@@ -9,6 +9,14 @@ const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts'
   .replace(/export /g, '')
 const javascript = stripTypeScriptTypes(source, { mode: 'transform' })
 
+// The bridge imports these, and the harness strips imports. Run the real
+// module rather than a stub, so a handler that starts hashing a revision is
+// tested against the function it actually calls.
+const hashSource = readFileSync(new URL('../src/lib/payload-hash.ts', import.meta.url), 'utf8')
+  .replace(/^import[\s\S]*?from ['"][^'"]+['"];?\s*$/gm, '')
+  .replace(/export /g, '')
+const hashJavascript = stripTypeScriptTypes(hashSource, { mode: 'transform' })
+
 function bridge(authenticated = true, service = false, existing = [], mediaOverride) {
   const pending = [], calls = []
   const media = mediaOverride || { id: 41, filename: 'logo.png', url: '/api/media/file/logo.png', mimeType: 'image/png',
@@ -19,7 +27,7 @@ function bridge(authenticated = true, service = false, existing = [], mediaOverr
   }
   const sandbox = {
     URL, URLSearchParams, Request, Response, Headers, File, FormData, Buffer, console,
-    process: { env: {} }, crypto: globalThis.crypto,
+    process: { env: {} }, crypto: globalThis.crypto, TextEncoder,
     NextResponse: { json: (body, options) => Response.json(body, options) },
     getCloudflareContext: () => ({ ctx: { waitUntil: (promise) => pending.push(promise) } }),
     authenticateHelloAdaRequest: async () => authenticated ? { payload, req: {}, user: { id: 7 } } : undefined,
@@ -31,6 +39,8 @@ function bridge(authenticated = true, service = false, existing = [], mediaOverr
     withRecoveredWrite: async (payload, target, action) => action(),
     fetch: async (url, options) => { calls.push({ url, options }); return Response.json({ ok: true }) },
   }
+  vm.runInNewContext(hashJavascript + '\nglobalThis.hashJson = hashJson; globalThis.stableJson = stableJson;'
+    + ' globalThis.withoutPayloadMetadata = withoutPayloadMetadata;', sandbox)
   vm.runInNewContext(javascript + '\nglobalThis.handlers = { GET, POST };', sandbox)
   return { ...sandbox.handlers, pending, calls }
 }
