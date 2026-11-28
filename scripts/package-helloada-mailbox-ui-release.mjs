@@ -83,15 +83,19 @@ const main = () => {
   // Every assertion above reads text, and text is what let two broken artifacts
   // through: `path.replace(//+$/, "")` looks like a regex in a grep and is a
   // syntax error, and a deleted constant is a typecheck failure with no textual
-  // trace. So the packed bytes are compiled with the TypeScript the consuming
-  // app builds with, and any diagnostic fails the release.
-  const typecheckRoot = path.join(output, 'typecheck')
+  // trace. So the packed bytes are compiled with the package's pinned
+  // TypeScript, and any diagnostic fails the release.
+  //
+  // The tree is extracted inside the package so it resolves the same
+  // `node_modules` the generator compiles against; a temp dir outside it would
+  // report every dependency as missing and reject a healthy artifact.
+  const typecheckRoot = path.join(packageRoot, '.release', 'typecheck')
   rmSync(typecheckRoot, { recursive: true, force: true })
   mkdirSync(typecheckRoot, { recursive: true })
   execFileSync('tar', ['-xzf', archive, '-C', typecheckRoot])
   const typeScript = path.join(packageRoot, 'node_modules', 'typescript', 'bin', 'tsc')
   if (!existsSync(typeScript)) {
-    throw new Error('Release requires the package TypeScript (npm install in packages/helloada-mailbox-ui)')
+    throw new Error('Release requires the package TypeScript (run npm ci in packages/helloada-mailbox-ui)')
   }
   try {
     execFileSync('node', [typeScript, '--noEmit', '--skipLibCheck', '--jsx', 'react-jsx',
