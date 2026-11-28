@@ -203,6 +203,15 @@ async function prepareBuildCopy(destination) {
   await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
   const sharedBookingServicePath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-booking-service.ts')
   await cp(sharedBookingServicePath, path.join(destination, 'src/lib/helloada-booking-service.ts'))
+  // The booking service resolves the tenant's owner through the shared
+  // derivation. Copying the module without what it imports produced
+  // `[UNRESOLVED_IMPORT] Could not resolve './mailflare-owner-identity.ts'`
+  // in this build, which no template test could see because the file is present
+  // beside it here.
+  await cp(
+    path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-owner-identity.ts'),
+    path.join(destination, 'src/lib/mailflare-owner-identity.ts'),
+  )
   const brandingPaths = {
     layout: 'src/app/layout.tsx',
     manifest: 'src/app/manifest.ts',
