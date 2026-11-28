@@ -12,12 +12,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from site_agent.credentials import credential_environment, credential_profile, github_ssh_command
+
+# A workspace this old has no build writing in it any more. One build is
+# minutes; a day is unambiguously abandoned, and age keeps an operator or
+# lane-proof run from having its source directory deleted mid-build.
+_STALE_WORKSPACE_SECONDS = 24 * 60 * 60
 
 API_DEPLOYMENT_MODULE = Path(__file__).with_name("deploy-site-agent-api.py")
 API_DEPLOYMENT_SPEC = importlib.util.spec_from_file_location("site_agent_api_deployment", API_DEPLOYMENT_MODULE)
@@ -61,6 +67,16 @@ def mark_interrupted_runs(root: Path) -> None:
 
 
 def cleanup_stale_release_workspaces(root: Path) -> None:
+    """Remove workspaces left by an interrupted build.
+
+    The caller holds ``reconcile.lock``, which serializes it against the queue.
+    It does not serialize it against a release that is already running, and an
+    operator or a lane proof runs one exactly like the queue does: unguarded.
+    Deleting every workspace here therefore removed the source directory of a
+    build that was still working in it, which is not a stale workspace. A
+    workspace carries its own receipt from the moment it is created, so age is
+    the honest test - a build that is still going has touched it recently.
+    """
     work_root = root / "work"
     if work_root.is_symlink():
         raise RuntimeError("release workspace root must not be a symlink")
@@ -68,11 +84,16 @@ def cleanup_stale_release_workspaces(root: Path) -> None:
         return
     if not work_root.is_dir():
         raise RuntimeError("release workspace root is not a real directory")
-    # The caller owns reconcile.lock, so no canonical build can still be using it.
+    cutoff = time.time() - _STALE_WORKSPACE_SECONDS
     for workspace in work_root.iterdir():
         if workspace.is_symlink() or workspace.is_file():
             workspace.unlink()
         elif workspace.is_dir():
+            try:
+                if workspace.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
             shutil.rmtree(workspace)
         else:
             raise RuntimeError("unexpected object in release workspace root")
@@ -377,13 +398,28 @@ def snapshot_helloada_source(mirror: Path, destination: Path, source_sha: str) -
 
 
 def cleanup_legacy_helloada_build_caches(root: Path) -> None:
-    for name in ("helloada-sources", "npm-cache"):
-        path = root / name
-        if not path.exists() and not path.is_symlink():
-            continue
-        if path.is_symlink() or not path.is_dir():
-            raise RuntimeError(f"legacy HelloAda build cache is not a real directory: {name}")
-        shutil.rmtree(path)
+    """Remove the caches of the retired HelloAda release layout.
+
+    The retired layout kept a source snapshot under ``helloada-sources`` and a
+    package cache beside it. Both are reproducible from GitHub, so removing
+    them costs a rebuild and nothing else.
+
+    ``root / "npm-cache"`` is not one of them. It is the cache every Payload
+    and app build installs through (``deploy-payload-customer.py`` sets
+    ``npm_config_cache`` to exactly this path), and it is content-addressed and
+    integrity-checked by npm, so it is safe to keep between releases. Deleting
+    it on this timer's one-minute tick meant a build that was running when the
+    tick landed had its cache removed underneath it, which surfaces as npm
+    "tarball data seems to be corrupted" and "Cannot cd into
+    node_modules/…" on otherwise healthy code. A cache the release is actively
+    using is not legacy anything.
+    """
+    path = root / "helloada-sources"
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_symlink() or not path.is_dir():
+        raise RuntimeError("legacy HelloAda source cache is not a real directory")
+    shutil.rmtree(path)
 
 
 def cleanup_stale_control_snapshots(root: Path, source_sha: str) -> None:

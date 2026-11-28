@@ -128,7 +128,7 @@ def test_helloada_source_is_materialized_only_in_a_job_workspace(tmp_path):
         reconciler.snapshot_helloada_source(bare, first_snapshot, first_sha)
 
 
-def test_legacy_helloada_build_cache_cleanup_removes_only_generated_caches(tmp_path):
+def test_legacy_helloada_build_cache_cleanup_leaves_the_cache_releases_use(tmp_path):
     reconciler_spec = importlib.util.spec_from_file_location(
         "helloada_release_cache_cleanup_test", ROOT / "scripts/reconcile-payload-releases.py",
     )
@@ -137,7 +137,10 @@ def test_legacy_helloada_build_cache_cleanup_removes_only_generated_caches(tmp_p
     reconciler_spec.loader.exec_module(reconciler)
 
     (tmp_path / "helloada-sources" / ("a" * 40)).mkdir(parents=True)
-    (tmp_path / "npm-cache" / "_cache").mkdir(parents=True)
+    # The Payload and app builds install through this exact path, so the
+    # one-minute reconciler tick must not delete it while a build is running.
+    (tmp_path / "npm-cache" / "_cacache").mkdir(parents=True)
+    (tmp_path / "npm-cache" / "_cacache" / "entry").write_text("installed package")
     mirror = tmp_path / "helloada-control.git"
     mirror.mkdir()
     stale_control = tmp_path / "control" / ("b" * 40)
@@ -148,7 +151,7 @@ def test_legacy_helloada_build_cache_cleanup_removes_only_generated_caches(tmp_p
     reconciler.cleanup_stale_control_snapshots(tmp_path, "a" * 40)
 
     assert not (tmp_path / "helloada-sources").exists()
-    assert not (tmp_path / "npm-cache").exists()
+    assert (tmp_path / "npm-cache" / "_cacache" / "entry").is_file()
     assert not stale_control.exists()
     assert mirror.is_dir()
 

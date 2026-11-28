@@ -2554,6 +2554,12 @@ def main() -> int:
     workspace_path = None
     # Serialize read-only continuation with the queue, which owns this lock
     # during normal releases. Keep the handle alive until main returns.
+    #
+    # A normal release deliberately does not take this lock: the queue holds it
+    # while it invokes this script, so a second claim would deadlock against
+    # the parent. What protects a build's workspace from the reconciler is
+    # `cleanup_stale_release_workspaces` refusing to remove a directory that
+    # was touched recently, not this lock.
     verification_lock = None
     if args.verify_only:
         verification_lock = (Path(manifest["releaseRoot"]) / "reconcile.lock").open("a+")
