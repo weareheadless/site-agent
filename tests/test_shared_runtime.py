@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -502,3 +503,32 @@ def test_tenant_admin_imports_are_migrated_and_unknown_subpaths_fail_closed(tmp_
     retired.write_text("import { HELLOADA_PAYLOAD_ADMIN_VERSION } from '@weareheadless/helloada-payload-admin/version'\n")
     with pytest.raises(SharedRuntimeError, match="src/lib/legacy/version.ts"):
         _migrate_tenant_admin_source(tenant)
+
+
+def test_every_shared_module_the_overlay_ships_is_importable_by_a_tenant_build(tmp_path: Path) -> None:
+    """A shared module absent from the copy list breaks the tenant build, not CI.
+
+    Adding `mailflare-owner-identity.ts` to the template without adding it to the
+    overlay left `mailflare-booking-service.ts` importing a module the tenant
+    build never receives: `UNRESOLVED_IMPORT` in `mailflare-integration`, while
+    every local template test passed because the file is present here.
+    """
+    overlay = json.loads((ROOT / "deploy/shared-runtime-overlay.json").read_text(encoding="utf-8"))
+    copied = set(overlay["copy"])
+    template = ROOT / "src/site_agent/templates/next-payload"
+
+    # Every relative import between shared modules must resolve inside the set
+    # the overlay actually copies.
+    shared_modules = {entry for entry in copied if entry.endswith((".ts", ".tsx")) and "/" not in entry}
+    for entry in sorted(shared_modules):
+        source = (template / entry).read_text(encoding="utf-8")
+        for match in re.finditer(r"from\s+['\"]\./([\w.-]+\.tsx?)['\"]", source):
+            dependency = match.group(1)
+            assert dependency in copied, (
+                f"{entry} imports ./{dependency}, which the shared-runtime overlay does not copy: "
+                "a tenant build cannot resolve it"
+            )
+
+    # And the packaged manifest must be the same contract the runner applies.
+    packaged = ROOT / "src/site_agent/templates/shared-runtime-overlay.json"
+    assert packaged.read_bytes() == (ROOT / "deploy/shared-runtime-overlay.json").read_bytes()
