@@ -199,3 +199,109 @@ test('every internal link and router push goes through the mailbox base', async 
   assert.match(base, /export function MailboxLink/)
   assert.match(base, /export function useMailboxRouter/)
 })
+
+const walkOutput = async (directory) => {
+  const files = []
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...await walkOutput(target))
+    else if (/\.(?:ts|tsx)$/.test(entry.name)) files.push(target)
+  }
+  return files
+}
+
+test('the tenant is the root of every client cache key', () => {
+  // The defect this guards against: two tenants on one origin sharing an entry
+  // because the key was only the query string. Both list caches are checked
+  // through their key expressions, not through a name they happen to have.
+  const hooks = read('src/hooks/utils.ts')
+  assert.match(hooks, /const key = scopedCacheKey\(params\.toString\(\)\)/)
+  assert.match(hooks, /const key = scopedCacheKey\(mailboxId \?\? "all"\)/)
+  assert.doesNotMatch(hooks, /const key = params\.toString\(\)/)
+  assert.doesNotMatch(hooks, /const key = mailboxId \?\? "all"/)
+
+  // The mailbox options cache is keyed on the tenant, never on a session token
+  // this package cannot have.
+  const providerUtils = read('src/components/mailbox-provider-utils.ts')
+  assert.match(providerUtils, /mailboxesCacheTenantKey/)
+  assert.match(providerUtils, /mailboxTenantKey\(\)/)
+  assert.doesNotMatch(providerUtils, /SessionToken|mailboxesRequestSessionToken/)
+})
+
+test('every browser-storage key carries the tenant', async () => {
+  // scope.ts is the single owner of real storage; everything else reads and
+  // writes through it, so no key can be shared between two websites.
+  for (const file of await walkOutput(path.join(outputRoot, 'src'))) {
+    const relative = path.relative(outputRoot, file)
+    if (relative === 'scope.ts') continue
+    const source = readFileSync(file, 'utf8')
+    assert.doesNotMatch(source, /\b(?:window\.)?(?:localStorage|sessionStorage)\b/, relative)
+  }
+
+  const scope = read('scope.ts')
+  assert.match(scope, /const STORAGE_PREFIX = "helloada-mailbox"/)
+  assert.match(scope, /export function mailboxStorageKey\(name: string\): string \{\n\treturn STORAGE_PREFIX \+ ":" \+ currentTenantKey \+ ":" \+ name;/)
+  assert.match(scope, /export function scopedCacheKey/)
+  // Legacy, tenant-less keys are removed rather than migrated between tenants.
+  assert.match(scope, /LEGACY_KEY_PREFIXES/)
+})
+
+test('crossing tenants resets the mailbox runtime', async () => {
+  const scope = read('scope.ts')
+  assert.match(scope, /export function setMailboxTenantKey/)
+  assert.match(scope, /for \(const reset of resetters\) reset\(\)/)
+
+  // Each module-level cache registers its own reset, so nothing survives the
+  // switch: lists, counts, mailbox options and the selected mailbox.
+  assert.match(read('src/hooks/utils.ts'), /registerMailboxTenantReset\(\(\) => \{\n\tclearMessageClientState\(\);\n\}\);/)
+  assert.match(read('src/components/mailbox-provider-utils.ts'), /registerMailboxTenantReset\(/)
+
+  // The entry point refuses a config with no tenant, rather than defaulting to
+  // a shared runtime.
+  const base = read('base.tsx')
+  assert.match(base, /tenantKey: string/)
+  assert.match(base, /throw new Error\("MailboxApp requires the tenant identity"\)/)
+  const index = read('index.tsx')
+  assert.match(index, /\[config\.tenantKey\]/, 'the query client must be keyed on the tenant')
+})
+
+test('a mailbox that cannot be read says so instead of showing another one', () => {
+  // The old shape swallowed the failure and left the previous tenant's list on
+  // screen; it must stay deleted.
+  const provider = read('src/components/mailbox-provider.tsx')
+  assert.doesNotMatch(provider, /\.catch\(\(\) => \{\}\)/)
+  assert.match(provider, /setError\(/)
+  assert.match(provider, /error: string \| null/)
+
+  const providerUtils = read('src/components/mailbox-provider-utils.ts')
+  assert.match(providerUtils, /if \(!res\.ok\) throw new Error/)
+
+  // The shell renders the state in place of the mailbox body.
+  assert.match(read('src/app/(dashboard)/layout.tsx'), /<MailboxGate>\{children\}<\/MailboxGate>/)
+  const gate = read('src/components/mailbox-gate.tsx')
+  assert.match(gate, /mailbox\.preparing\.title/)
+  assert.match(gate, /mailbox\.unavailable\.title/)
+  const copy = JSON.parse(read('src/lib/i18n/en.json'))
+  for (const key of ['mailbox.preparing.title', 'mailbox.preparing.body', 'mailbox.unavailable.title', 'mailbox.unavailable.body', 'mailbox.retry']) {
+    assert.ok(copy[key], `missing catalogue entry ${key}`)
+  }
+})
+
+test('the generated mailbox carries no client session surface', async () => {
+  // The port has no login: the control plane authenticates the owner. A session
+  // token that no writer ever sets was the invalidation key that never
+  // invalidated, so the whole surface is gone rather than half-present.
+  for (const file of await walkOutput(path.join(outputRoot, 'src'))) {
+    const source = readFileSync(file, 'utf8')
+    const relative = path.relative(outputRoot, file)
+    assert.doesNotMatch(source, /ClientSessionToken|persistAuthSession/, relative)
+  }
+  assert.ok(!existsSync(path.join(outputRoot, 'src/lib/auth/logout.ts')))
+  assert.ok(!existsSync(path.join(outputRoot, 'src/lib/auth/accounts-client.ts')))
+
+  const selector = read('src/components/mailbox-selector.tsx')
+  for (const dead of ['logoutClientSession', 'fetchBrowserAccounts', 'switchBrowserAccount', 'browserAccounts', 'otherAccounts']) {
+    assert.doesNotMatch(selector, new RegExp(dead), `mailbox selector still carries ${dead}`)
+  }
+})
+

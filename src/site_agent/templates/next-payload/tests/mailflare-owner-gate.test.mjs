@@ -240,20 +240,23 @@ test('links Payload owner through a scoped HttpOnly Mailflare session and checks
   assert.ok(db.sqlite.prepare('SELECT created_at FROM sessions').get().created_at > 0)
 })
 
-test('preserves the registered workspace owner across different authenticated login subjects', async () => {
+test('moves a legacy login-derived owner onto the tenant identity, keeping its data', async () => {
   const db = database()
   await provisionTenantMailflareMailbox({
     database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
     zoneId: 'zone-123', routingStatus: 'active',
   })
   // A tenant provisioned before workspace-stable identity already has an owner
-  // whose ID was derived from the original login. Keep its data and identity.
+  // whose ID was derived from the original login. Its data moves to the tenant's
+  // canonical owner; the shared identity is retired, never merged into another
+  // tenant's.
   db.sqlite.prepare('INSERT INTO users (id,email,password_hash,name,created_at) VALUES (?,?,?,?,?)')
     .run('ha_original_login', 'original@identity.helloada.invalid', '!helloada-payload-sso-only', 'HelloAda owner', Date.now())
   db.sqlite.prepare('INSERT INTO helloada_tenant_owners VALUES (?,?,?)')
     .run('test-tenant', 'ha_original_login', Date.now())
   db.sqlite.prepare('INSERT INTO helloada_booking_settings (user_id,enabled,time_zone,revision,updated_at) VALUES (?,?,?,?,?)')
     .run('ha_original_login', 1, 'America/Cancun', 7, Date.now())
+  const canonical = `ha_${[...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('tenant:test-tenant')))].map((byte) => byte.toString(16).padStart(2, '0')).join('')}`
   let subject = 'first-helloada-login'
   let authenticated = true
   const gate = createPayloadOwnerGate({
@@ -264,11 +267,23 @@ test('preserves the registered workspace owner across different authenticated lo
   const request = () => new Request('https://tenant.test/mail/inbox', { headers: { cookie: 'payload_session=valid' } })
   const dispatch = async () => new Response('inbox')
   assert.equal((await gate(request(), env(db.binding), {}, dispatch)).status, 200)
+  // A different authenticated login must resolve the same owner: the identity is
+  // the tenant's, not the person's login.
   subject = 'different-helloada-login'
   assert.equal((await gate(request(), env(db.binding), {}, dispatch)).status, 200)
-  assert.deepEqual(db.sqlite.prepare('SELECT DISTINCT user_id FROM sessions').all().map(row => row.user_id), ['ha_original_login'])
-  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, 2)
+
+  assert.deepEqual(
+    db.sqlite.prepare('SELECT DISTINCT user_id FROM sessions').all().map((row) => row.user_id),
+    [canonical],
+  )
+  // Service account, canonical owner and the retired legacy row: it is disabled,
+  // not deleted, so the history that names it still resolves.
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, 3)
+  assert.equal(db.sqlite.prepare('SELECT disabled FROM users WHERE id = ?').get('ha_original_login').disabled, 1)
+  const owners = db.sqlite.prepare('SELECT owner_user_id FROM helloada_tenant_owners').all()
+  assert.deepEqual(owners.map((row) => row.owner_user_id), [canonical])
   const settings = db.sqlite.prepare('SELECT * FROM helloada_booking_settings').get()
+  assert.equal(settings.user_id, canonical)
   assert.equal(settings.time_zone, 'America/Cancun')
   assert.equal(settings.enabled, 1)
   assert.equal(settings.revision, 7)

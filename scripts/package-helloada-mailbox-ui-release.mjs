@@ -65,6 +65,18 @@ const main = () => {
   if (!base.includes('resolveApiInput') || !base.includes('useMailboxParams')) {
     throw new Error('Packed mailbox UI is missing its control-plane adapters')
   }
+  // Tenancy is a property of the artifact, not of the checkout that produced
+  // it: assert it on the bytes an application will actually install.
+  if (!base.includes('tenantKey: string')) {
+    throw new Error('Packed mailbox UI does not carry the tenant key in its config')
+  }
+  for (const file of ['dist/scope.ts', 'dist/src/components/mailbox-gate.tsx']) {
+    assertTarEntry(archive, file)
+  }
+  const scope = execFileSync('tar', ['-xOf', archive, 'package/dist/scope.ts'], { encoding: 'utf8' })
+  if (!scope.includes('helloada-mailbox') || !scope.includes('scopedCacheKey') || !scope.includes('setMailboxTenantKey')) {
+    throw new Error('Packed mailbox UI has no tenant-scoped storage and cache keys')
+  }
   const packedPackage = JSON.parse(execFileSync('tar', ['-xOf', archive, 'package/package.json'], { encoding: 'utf8' }))
   if (packedPackage.name !== pkg.name || packedPackage.version !== pkg.version) throw new Error('Packed package identity mismatch')
 

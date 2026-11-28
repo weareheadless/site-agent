@@ -1,5 +1,9 @@
 import { provisionTenantMailflareMailbox } from './mailflare-provisioning.ts'
 import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration.ts'
+import {
+  OWNER_ACCOUNT_PASSWORD as SSO_PASSWORD_SENTINEL,
+  resolveTenantOwnerUserId,
+} from './mailflare-owner-identity.ts'
 
 type D1Statement = {
   bind: (...values: unknown[]) => D1Statement
@@ -35,7 +39,6 @@ const SESSION_MS = 30 * 24 * 60 * 60 * 1000
 const SESSION_SECONDS = SESSION_MS / 1000
 /** Every Mailflare timestamp column is unix seconds, including this gate's. */
 const nowSeconds = () => Math.floor(Date.now() / 1000)
-const SSO_PASSWORD_SENTINEL = '!helloada-payload-sso-only'
 const SSO_ACCOUNT_NAME = 'HelloAda owner'
 
 const digest = async (value: string) => {
@@ -167,53 +170,27 @@ async function registerTenantBookingOwner(database: D1Binding, tenantId: string,
  *
  * The mailbox gate provisions this owner on the owner's first request, but the
  * platform also configures bookings server-to-server, before an owner has ever
- * opened the mailbox. Both paths have to resolve the same identity, so the
- * provisioning lives here and each entry point calls it instead of deciding
- * again what an owner is.
+ * opened the mailbox. Both paths resolve the same identity through
+ * `ensureTenantOwnerIdentity`, which is the one place that derives it: every
+ * entry point calls that instead of deciding again what an owner is.
  */
 export async function ensureTenantBookingOwner(
   database: MailflareEnv['MAILFLARE_DB'],
   tenantId: string,
 ): Promise<string> {
-  const tenant = tenantId.trim()
-  if (!/^[a-z0-9-]{1,63}$/.test(tenant)) throw new Error('tenant_identity_not_configured')
-  const registered = await database.prepare(
-    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
-  ).bind(tenant).first<{ owner_user_id: string }>()
-  const userId = registered?.owner_user_id || `ha_${await digest(`tenant:${tenant}`)}`
-  const current = await database.prepare(
-    'SELECT id, disabled FROM users WHERE id = ? LIMIT 1',
-  ).bind(userId).first<{ id: string; disabled: number }>()
-  if (current?.disabled) throw new Error('Mailflare owner account is disabled')
-  if (!current) {
-    await database.prepare(
-      'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, nowSeconds()).run()
-  }
-  const enabled = await database.prepare(
-    'SELECT id FROM users WHERE id = ? AND disabled = 0 LIMIT 1',
-  ).bind(userId).first<{ id: string }>()
-  if (!enabled) throw new Error('Mailflare owner account could not be provisioned')
-  await registerTenantBookingOwner(database, tenant, userId)
+  // The resolver creates or repairs the account and fails closed if it cannot be
+  // used, so this path has nothing left to decide: only the booking registration
+  // belongs to it.
+  const userId = await resolveTenantOwnerUserId(database, tenantId)
+  await registerTenantBookingOwner(database, tenantId.trim(), userId)
   return userId
 }
 
 async function ownerUserId(env: MailflareEnv): Promise<string> {
-  const registeredOwner = await env.MAILFLARE_DB.prepare(
-    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
-  ).bind(env.HELLOADA_TENANT_ID).first<{ owner_user_id: string }>()
-  const userId = registeredOwner
-    ? registeredOwner.owner_user_id
-    : `ha_${await digest(`tenant:${env.HELLOADA_TENANT_ID}`)}`
-  if (registeredOwner) {
-    const owner = await env.MAILFLARE_DB.prepare(
-      'SELECT password_hash, disabled FROM users WHERE id = ? LIMIT 1',
-    ).bind(userId).first<{ password_hash: string; disabled: number }>()
-    if (!owner || owner.disabled || owner.password_hash !== SSO_PASSWORD_SENTINEL) {
-      throw new Error('Mailflare registered workspace owner is invalid')
-    }
-  }
-  return userId
+  // A stored registration is an assertion to verify, never a value to prefer:
+  // the tenant is the only input, and a mismatch is repaired or refused. The
+  // resolver already proves the account exists, is enabled and is SSO-only.
+  return resolveTenantOwnerUserId(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID)
 }
 
 type OwnerSession =
@@ -221,11 +198,9 @@ type OwnerSession =
   | { state: 'migration_in_progress' }
 
 async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Promise<OwnerSession> {
-  const userId = await ownerUserId(env)
-  const current = await env.MAILFLARE_DB.prepare(
-    'SELECT id, disabled FROM users WHERE id = ? LIMIT 1',
-  ).bind(userId).first<{ id: string; disabled: number }>()
-  if (current?.disabled) throw new Error('Mailflare owner account is disabled')
+  // Provisioning owns the tenant's service account and mailbox, and it refuses a
+  // database it does not recognise. It runs first so the identity repair that
+  // follows is working on a database whose tenant shape is already established.
   const mailbox = await provisionTenantMailflareMailbox({
     database: env.MAILFLARE_DB,
     tenantId: env.HELLOADA_TENANT_ID,
@@ -233,6 +208,11 @@ async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Pro
     zoneId: env.MAILFLARE_ZONE_ID,
     routingStatus: env.MAILFLARE_ROUTING_STATUS,
   })
+  const userId = await ownerUserId(env)
+  const current = await env.MAILFLARE_DB.prepare(
+    'SELECT id, disabled FROM users WHERE id = ? LIMIT 1',
+  ).bind(userId).first<{ id: string; disabled: number }>()
+  if (current?.disabled) throw new Error('Mailflare owner account is disabled')
   if (!current) {
     await env.MAILFLARE_DB.prepare(
       'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',

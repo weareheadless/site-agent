@@ -155,6 +155,187 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tenant_mailbox_database(declared_spec: Mapping[str, Any]) -> str:
+    """The tenant's registered mailbox D1 id, from the canonical tenant record."""
+    return str(declared_spec.get("mailflareD1DatabaseId") or "").strip()
+
+
+def _load_mailflare_databases(manifest_path: Path) -> dict[str, str]:
+    """Tenant -> its mailbox D1 database id, from the canonical fleet manifest.
+
+    A tenant record does not carry it directly: the fleet manifest is the
+    surface that names per-tenant Cloudflare resources, nested under
+    ``customers``. Reading the wrong shape here silently disabled alias lookup,
+    so the shape is checked rather than defaulted.
+    """
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return {}
+    customers = payload.get("customers") if isinstance(payload, dict) else None
+    if not isinstance(customers, dict):
+        return {}
+    databases: dict[str, str] = {}
+    for tenant_id, record in customers.items():
+        if not isinstance(record, dict):
+            continue
+        database = str(record.get("mailflareD1DatabaseId") or "").strip()
+        if database:
+            databases[str(tenant_id).strip().lower()] = database
+    return databases
+
+
+def _registered_mailbox_address(config: Mapping[str, Any], tenant_id: str) -> str:
+    """The address this tenant's mailbox is registered at, from its own config.
+
+    Same fields the provisioning planner reads, so the routing table and the
+    mailbox agree on what the tenant's address is.
+    """
+    messages = config.get("messages") if isinstance(config.get("messages"), dict) else {}
+    email = messages.get("email") if isinstance(messages.get("email"), dict) else {}
+    site = config.get("site") if isinstance(config.get("site"), dict) else {}
+    domain = str(email.get("domain") or site.get("custom_domain") or "").strip().lower().rstrip(".")
+    if not domain:
+        return ""
+    local_part = str(email.get("local_part") or "").strip().lower()
+    if not local_part:
+        from .application.mailbox_identity import PLATFORM_EMAIL_DOMAIN
+
+        if domain != PLATFORM_EMAIL_DOMAIN:
+            return ""
+        local_part = tenant_id
+    return f"{local_part}@{domain}"
+
+
+def _zone_id_for(client: Any, hostname: str) -> str:
+    """Resolve a hostname to a zone id this credential can manage."""
+    try:
+        zone = client.zone(hostname)
+    except Exception:
+        return ""
+    return str(zone.get("id") or "").strip()
+
+
+def _cmd_reconcile_email_routing(args: argparse.Namespace) -> int:
+    """Plan or apply email routing reconciliation for the registered fleet.
+
+    Runs through the same credentials and tenant registry as provisioning: it
+    never reads a checkout, never invents a tenant, and every mutation is named
+    in the plan before it is made.
+    """
+    from .application.email_routing_fleet import collect_tenant_routing_identity, reconcile_fleet_email_routing
+    from .application.email_routing_reconcile import RoutingReconcileError
+    from .application.seo_bootstrap import load_tenant_environment
+    from .application.tenant_registration import load_provisioned_tenants
+    from .credentials import (
+        cloudflare_api_token,
+        cloudflare_dns_api_token,
+        cloudflare_email_api_token,
+        credential_environment,
+    )
+    from .hands.cloudflare_email import CloudflareEmailClient
+
+    host_config, _sources = load(args.config)
+    host_env = credential_environment(host_config, os.environ)
+    declared, tenant_env = load_provisioned_tenants(host_config, host_env)
+    account_id = str(host_env.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
+    resources_token = cloudflare_api_token(host_config, {**host_env, **tenant_env})
+    dns_token = cloudflare_dns_api_token(host_config, {**host_env, **tenant_env})
+    email_token = cloudflare_email_api_token(host_config, {**host_env, **tenant_env})
+    if not account_id or not resources_token or not dns_token or not email_token:
+        print("[site-agent] Reconcile stopped without changes: the account and email credentials are required", file=sys.stderr)
+        return 1
+    client = CloudflareEmailClient(email_token, dns_token)
+
+    only = str(getattr(args, "tenant", "") or "").strip().lower()
+    if only and only not in declared:
+        raise ConfigError(f"tenant {only!r} is not present in the canonical provisioned tenant registry")
+    mailbox_databases = _load_mailflare_databases(
+        Path(__file__).resolve().parents[2] / "deploy" / "payload-customers.json"
+    )
+
+    identities: list[dict[str, Any]] = []
+    action_required: list[dict[str, Any]] = []
+    known_workers: set[str] = set()
+    for tenant_id in sorted(declared):
+        if only and tenant_id != only:
+            continue
+        spec = declared[tenant_id]
+        config_path = Path(str(spec.get("config_path") or "")).expanduser().resolve()
+        raw_tenant = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(raw_tenant, dict):
+            raise ConfigError("registered tenant configuration must be a mapping")
+        config, _ = load(config_path, {**host_env, **tenant_env}, validate_integrations=False)
+        resolved_env = load_tenant_environment(config, {**host_env, **tenant_env})
+        # The Worker identity is a config fact, not an environment variable: it
+        # is what the release actually deployed for this tenant.
+        site_section = config.get("site") if isinstance(config.get("site"), dict) else {}
+        deployment_section = (
+            site_section.get("source_deployment")
+            if isinstance(site_section.get("source_deployment"), dict)
+            else {}
+        )
+        worker = str(deployment_section.get("worker_name") or "").strip().lower()
+        if not worker:
+            action_required.append({"tenantId": tenant_id, "reason": "worker_not_registered"})
+            continue
+        known_workers.add(worker)
+        identity, problem = collect_tenant_routing_identity(
+            tenant_id=tenant_id,
+            worker=worker,
+            tenant_env={
+                # The registered address is config, not an environment value: the
+                # same source provisioning plans from. Environment delivery is
+                # release state, and a release that has not run yet must not look
+                # like the tenant has no mailbox.
+                "MAILFLARE_ADDRESS": _registered_mailbox_address(config, tenant_id),
+                "MAILFLARE_DB_ID": _tenant_mailbox_database(spec) or mailbox_databases.get(tenant_id, ""),
+            },
+            account_id=account_id,
+            api_token=resources_token,
+            zone_lookup=lambda host: _zone_id_for(client, host),
+        )
+        if problem:
+            action_required.append(problem)
+            continue
+        identities.append(identity)
+
+    zones = sorted({zone for identity in identities for zone in identity["domains"].values()})
+    rules_by_zone = {zone: client.routing_rules(zone) for zone in zones}
+    try:
+        result = reconcile_fleet_email_routing(
+            tenants=identities,
+            rules_by_zone=rules_by_zone,
+            client=client,
+            known_workers=known_workers,
+            remove_orphans=bool(getattr(args, "remove_orphans", False)),
+            apply=bool(args.apply),
+        )
+    except RoutingReconcileError as exc:
+        print(f"[site-agent] Reconcile stopped without changes: {exc}", file=sys.stderr)
+        return 1
+    result["actionRequired"] = action_required
+    result["tenants"] = len(identities)
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False, sort_keys=True))
+    else:
+        plan = result["plan"]
+        for action in plan["actions"]:
+            print(f"  {action['kind']:9s} {action['address']:55s} -> {action['worker'] or '(delete)'}  [{action['reason']}]")
+        for item in plan["unnamed"]:
+            print(f"  unnamed   {item['address']:55s} {item['reason']}")
+        for item in plan["orphans"]:
+            state = "delete" if args.remove_orphans else "report"
+            print(f"  orphan    {item['address']:55s} -> {','.join(item['workers']) or '(forward)'}  [{state}]")
+        for item in action_required:
+            print(f"  required  {item['tenantId']:55s} {item['reason']}")
+        print(f"[site-agent] {result['state']}: {len(plan['actions'])} change(s), "
+              f"{plan['unchanged']} rule(s) already correct, {len(action_required)} tenant(s) need attention")
+        if not args.apply:
+            print("Read-only plan only; pass --apply to reconcile the registered fleet.")
+    return 0 if result["state"] != "failed" else 1
+
+
 def _cmd_provision_assistant_key(args: argparse.Namespace) -> int:
     """Plan or apply the visitor assistant's spend-limited provider key."""
     from .application import assistant_key
@@ -992,6 +1173,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="authorize replacing an exact-address Cloudflare forward rule with the tenant Worker rule",
     )
+    routing_parser = sub.add_parser(
+        "reconcile-email-routing",
+        parents=[common],
+        help="plan or apply email routing-rule reconciliation for every registered tenant",
+    )
+    routing_parser.add_argument("--tenant", default="", help="limit to one registered tenant (default: the whole fleet)")
+    routing_parser.add_argument("--apply", action="store_true", help="apply the reviewed plan to Cloudflare")
+    routing_parser.add_argument(
+        "--remove-orphans",
+        action="store_true",
+        help="also delete rules whose address belongs to no registered tenant",
+    )
+    routing_parser.add_argument("--json", action="store_true", help="print the full plan or receipt as JSON")
     assistant_parser = sub.add_parser(
         "provision-assistant-key",
         parents=[common],
@@ -1047,6 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
                 "init-site": _cmd_init_site,
                 "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "provision-email": _cmd_provision_email,
+                "reconcile-email-routing": _cmd_reconcile_email_routing,
                 "provision-assistant-key": _cmd_provision_assistant_key,
                 "design-experiment": _cmd_design_experiment}
     if args.command == "design-lab":
