@@ -379,6 +379,10 @@ of this phase; what remains is one tenant.
 - `helloada` `main` `ff8adb50` (PR #46), released as
   `20261128-mailbox-tenant-key`; Worker version `01310a82` at 100% traffic;
   `/api/health` reports `releaseSha=ff8adb500ab33dfe9f28772f9f2b49e3a772aa37`.
+- Phase 2 shipped by the ordinary fan-out at fingerprint `fc48b8a28d40` after
+  the grant-identity hotfix (PR #641, merged `821e18f9`). The canary
+  `ada-e2e-studio-intake-…` passed; the batch delivered every registered
+  automatic tenant.
 
 Verified in an authenticated production browser session, not from the receipt:
 
@@ -411,7 +415,7 @@ same 4 messages, and the same visible inbox.
 | Phase | State | Landed in | Tests |
 | --- | --- | --- | --- |
 | 1 client scoping | **deployed** | `packages/helloada-mailbox-ui/scripts/build.mjs` (`writeScope`, `patchTenantScopedCaches`, `patchTenantScopedStorage`, `patchMailboxProvider`, `patchMailboxSelector`, `removeDeadSessionModules`), generated `dist/scope.ts`, `helloada` mount `key`/`tenantKey` | `packages/helloada-mailbox-ui/tests/contract.test.mjs` (6 new tests, 20 total) |
-| 2 identity repair | canary in flight | `templates/next-payload/mailflare-owner-identity.ts` (added to the shared-runtime overlay); gate repairs (`mailflare-owner-gate.ts`), public booking path resolves read-only (`mailflare-booking-service.ts`) | `mailflare-owner-identity.test.mjs` (9), rewritten `booking-owner.test.mjs`, updated `booking-runtime.test.mjs`, `build-contract.test.mjs` (13) |
+| 2 identity repair | **deployed and verified on the one legacy tenant** | `templates/next-payload/mailflare-owner-identity.ts` (added to the shared-runtime overlay); gate repairs (`mailflare-owner-gate.ts`), public booking path resolves read-only (`mailflare-booking-service.ts`) | `mailflare-owner-identity.test.mjs` (9), rewritten `booking-owner.test.mjs`, updated `booking-runtime.test.mjs`, `build-contract.test.mjs` (13) |
 | 3 id invariant | documented | this document; enforced by the phase-1 generator scan test | — |
 | 4 routing reconcile | implemented | `application/email_routing_reconcile.py` (pure plan + apply), `application/email_routing_fleet.py` (fleet gather), `site-agent reconcile-email-routing` CLI | `tests/test_email_routing_reconcile.py` (12), `tests/test_email_routing_fleet.py` (6) |
 | 5 ops convergence | operator | existing `provision-email` lane; the new CLI reports the rest as `actionRequired` | — |
@@ -432,6 +436,35 @@ ship in one order and not the other:
    constraint, not a broken lock: the app must not ship a mount that passes
    `tenantKey` to a package that ignores it.
 3. Then release `helloada` through `deploy/desired-helloada-app-release.json`.
+
+### A production incident the repair caused, and the boundary it exposed
+
+The repair worked. The next mailbox request for the tenant it repaired returned
+an error page, and the reason is worth keeping.
+
+`ensureOwnerSession` inserted the owner's `full_access` grant with
+`INSERT OR IGNORE`, then required the stored id to equal the id it had just
+generated. The repair *re-points* a legacy grant rather than recreating it, so
+the grant it kept carried the old id. `INSERT OR IGNORE` correctly did nothing,
+and the id check read a valid grant as a provisioning failure — on every mailbox
+request, so the whole mailbox was down for that owner.
+
+The table already declared its identity: `mailbox_access_mailbox_user_idx` is
+unique on `(mailbox_id, user_id)`. The grant is now found on that pair and its
+permission verified, which is what "the owner has access" actually means.
+
+Two things this says:
+
+1. **The defect predates this work.** The id comparison could only ever fail on
+   a grant that already existed under another id, which nothing produced before
+   the repair existed. It was invisible because the path was never exercised.
+2. **A migration that preserves rows exposes every assumption that they are
+   recreated.** The write paths that consume repaired state are part of the
+   migration's contract, not a separate concern to be verified later.
+
+Verified after the fix, in the live tenant: registration canonical, both legacy
+accounts disabled (not deleted), exactly one `full_access` grant, 4 messages
+before and after, and the inbox rendering them.
 
 ### Two boundary errors CI caught before merge, and what they were
 
