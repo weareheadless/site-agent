@@ -753,13 +753,26 @@ def synchronize_customer_payload_contract(
     template_manifest: Mapping[str, Any],
     content_contract: Mapping[str, Any],
 ) -> None:
-    """Use the generated central schema identity while preserving tenant migration history."""
+    """Adopt the checked-out Payload contract, keeping the tenant's own history.
+
+    The migration chain belongs to the repository being released, and this
+    function's job is to record it: the head it derives below is what the
+    release is verified against and what the receipt names. Comparing it first
+    against the value the registry stored at an earlier release compared a
+    field with its own stale copy, so any commit that added a migration failed
+    here before it could be built, and the only way past was hand-editing the
+    registry to match a repository nobody had released yet.
+
+    Whether the chain is *applicable* to this tenant is a different question
+    and it is answered against the live database, not against a stored hash:
+    ``enforce_payload_migrations`` requires the tenant's applied ledger to be a
+    strict prefix of this chain and refuses unless the release names that exact
+    prior ledger. An ordinary release still cannot change a schema silently; it
+    just no longer fails before that check runs.
+    """
     migration_head = str(template_manifest.get("migrationHead") or "")
-    if migration_head != customer.get("migrationHead") or not SHA256_RE.fullmatch(migration_head):
-        raise RuntimeError(
-            "generated Payload migration chain differs from the registered tenant history; "
-            "an exact schema-migration request is required"
-        )
+    if not SHA256_RE.fullmatch(migration_head):
+        raise RuntimeError("generated Payload migration chain has no exact identity")
     shared_runtime = str(template_manifest.get("sharedRuntimeFingerprint") or "")
     payload_core = str(template_manifest.get("payloadCore") or "")
     content_version = str(template_manifest.get("contentContract") or "")
