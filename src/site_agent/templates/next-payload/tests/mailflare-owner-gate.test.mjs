@@ -517,3 +517,23 @@ test('rejects a bridge request inside the mail app namespace only', async () => 
     /outside its namespace/,
   )
 })
+
+test('an existing owner grant under any id is accepted, not re-provisioned', async () => {
+  // `INSERT OR IGNORE` keeps a grant that already exists, so a grant created by
+  // an older derivation or moved here by the identity repair legitimately has a
+  // different id. Requiring the id this call generated read that as a failure
+  // and took the whole mailbox down, which is what happened in production.
+  const { readFileSync } = await import('node:fs')
+  const gate = readFileSync(new URL('../mailflare-owner-gate.ts', import.meta.url), 'utf8')
+
+  // Identity of a grant is its (mailbox, user) pair.
+  assert.match(gate, /SELECT id, permission FROM mailbox_access WHERE mailbox_id = \? AND user_id = \? LIMIT 1/)
+  assert.match(gate, /access\?\.permission !== 'full_access'/)
+  // The shape that broke: compare the stored id to the generated one.
+  assert.doesNotMatch(gate, /access\?\.id !== accessId/)
+  assert.doesNotMatch(
+    gate,
+    /WHERE mailbox_id = \? AND user_id = \? AND permission = \? LIMIT 1/,
+    'a grant must be found by owner, not by the permission value it is meant to prove',
+  )
+})

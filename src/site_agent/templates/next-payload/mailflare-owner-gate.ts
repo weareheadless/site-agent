@@ -231,10 +231,16 @@ async function ensureOwnerSession(env: MailflareEnv, defaultLocale: string): Pro
   await env.MAILFLARE_DB.prepare(
     'INSERT OR IGNORE INTO mailbox_access (id, mailbox_id, user_id, permission, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
   ).bind(accessId, mailbox.mailboxId, userId, 'full_access', mailbox.serviceUserId, nowSeconds()).run()
+  // The grant is identified by (mailbox, user), not by the id this call
+  // generated. A grant that already exists under another id -- created before
+  // this derivation existed, or moved here by the owner-identity repair -- is
+  // the same grant, and `INSERT OR IGNORE` correctly kept it. Requiring the
+  // generated id read a legitimate existing grant as a provisioning failure,
+  // which took the whole mailbox down for that owner.
   const access = await env.MAILFLARE_DB.prepare(
-    'SELECT id FROM mailbox_access WHERE mailbox_id = ? AND user_id = ? AND permission = ? LIMIT 1',
-  ).bind(mailbox.mailboxId, userId, 'full_access').first<{ id: string }>()
-  if (access?.id !== accessId) throw new Error('Mailflare owner mailbox access could not be provisioned')
+    'SELECT id, permission FROM mailbox_access WHERE mailbox_id = ? AND user_id = ? LIMIT 1',
+  ).bind(mailbox.mailboxId, userId).first<{ id: string; permission: string }>()
+  if (access?.permission !== 'full_access') throw new Error('Mailflare owner mailbox access could not be provisioned')
 
   const migration = await migratePayloadMailbox(env, {
     ownerUserId: userId,
