@@ -1299,7 +1299,7 @@ export function MailboxApp({ config, path, params = {}, locale = DEFAULT_LOCALE 
 	// tenant changes), then key the query client so nothing from the previous
 	// tenant's React state survives the switch either.
 	configureMailbox(config);
-	const normalized = path === "" ? "/" : path.replace(/\/+$/, "");
+	const normalized = path === "" ? "/" : path.replace(/\\/+$/, "");
 	const matched = useMemo(() => matchRoute(normalized || "/", params), [normalized, params]);
 	const [client] = useMemo(() => [new QueryClient({ defaultOptions: { queries: { refetchOnWindowFocus: false, staleTime: 30_000 } } })], [config.tenantKey]);
 	if (!matched) return null;

@@ -210,6 +210,19 @@ const walkOutput = async (directory) => {
   return files
 }
 
+test('the generated entry point compiles and its path normalizer still works', () => {
+  // A template-literal escape that loses a backslash emits `//+$` instead of
+  // `\/+$`, which is a syntax error in the consumer but read as an ordinary
+  // string here. So the emitted expression is compiled and run, not matched.
+  const index = read('index.tsx')
+  const emitted = index.split('\n').find((line) => line.includes('path.replace('))
+  assert.ok(emitted, 'the path normalizer is missing from the generated entry point')
+  const normalize = new Function('path', `${emitted.trim()}; return normalized`)
+  assert.equal(normalize('/mail/sent/'), '/mail/sent', 'trailing slashes are no longer trimmed')
+  assert.equal(normalize('/'), '', 'the root path is no longer normalised')
+  assert.equal(normalize('/a/b'), '/a/b')
+})
+
 test('the tenant is the root of every client cache key', () => {
   // The defect this guards against: two tenants on one origin sharing an entry
   // because the key was only the query string. Both list caches are checked
