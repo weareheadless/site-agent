@@ -872,13 +872,33 @@ def test_generated_schema_contract_advances_shared_identity_and_preserves_migrat
     assert customer["migrationHead"] == migration_head
 
 
-def test_generated_schema_contract_rejects_unrequested_migration_history_change():
+def test_generated_schema_contract_rejects_a_migration_chain_without_identity():
+    customer = {**CUSTOMER, "migrationHead": "b" * 64}
+    manifest = {**TEMPLATE_MANIFEST, "migrationHead": "not-a-hash"}
+    contract = json.loads((TEMPLATE / "helloada-content-contract.json").read_text())
+
+    with pytest.raises(RuntimeError, match="no exact identity"):
+        release.synchronize_customer_payload_contract(customer, manifest, contract)
+
+
+def test_a_repository_that_added_a_migration_can_still_be_released():
+    """The chain belongs to the checkout, so a new migration is not a refusal.
+
+    The registry's stored head is a record of what was released, not authority
+    over the repository being released. Treating it as authority meant any
+    commit that added a migration failed before it was built, and the only way
+    past was to hand-edit the registry to match a repository nobody had
+    released yet. Whether the chain applies to a tenant is decided against that
+    tenant's live ledger, which ``enforce_payload_migrations`` does.
+    """
     customer = {**CUSTOMER, "migrationHead": "b" * 64}
     manifest = {**TEMPLATE_MANIFEST, "migrationHead": "c" * 64}
     contract = json.loads((TEMPLATE / "helloada-content-contract.json").read_text())
 
-    with pytest.raises(RuntimeError, match="exact schema-migration request"):
-        release.synchronize_customer_payload_contract(customer, manifest, contract)
+    release.synchronize_customer_payload_contract(customer, manifest, contract)
+
+    # The release adopts the chain it is about to verify and deploy.
+    assert customer["migrationHead"] == "c" * 64
 
 
 def test_release_generates_canonical_schema_before_validating_worker_contract():

@@ -1482,7 +1482,8 @@ def test_old_compiled_previews_are_retired_but_the_newest_are_kept(tmp_path, mon
         memory.close()
 
 
-def test_a_host_without_disk_room_keeps_only_the_running_preview(tmp_path, monkeypatch):
+def test_a_host_without_disk_room_refuses_the_next_build_not_the_owners_preview(tmp_path, monkeypatch):
+    """Running out of space is a platform fault, not the owner's picture."""
     memory = Memory(tmp_path / "memory.db")
     checkout = tmp_path / "repo"
     (checkout / ".git").mkdir(parents=True)
@@ -1505,9 +1506,14 @@ def test_a_host_without_disk_room_keeps_only_the_running_preview(tmp_path, monke
                         lambda path: type("Usage", (), {"free": 1})(), raising=False)
     try:
         service._prune_preview_worktrees()
-        assert service._jobs["job-1"]["status"] == "retired"
-        assert not trees[1].exists()
-        assert service._jobs["job-0"]["status"] == "retired"
+        # Low disk never deletes a preview the owner may be looking at.
+        assert service._jobs["job-1"]["status"] == "ready"
+        assert trees[1].is_dir()
+        assert service._jobs["job-0"]["status"] == "ready"
+        # It refuses the next build instead, naming the reason.
+        with pytest.raises(source_deployment.SourceDeploymentError) as refused:
+            service._require_preview_capacity(checkout)
+        assert "Your current preview is unchanged." in str(refused.value)
     finally:
         service.close()
         memory.close()
@@ -1550,8 +1556,8 @@ def test_a_pending_reviews_preview_is_kept_behind_newer_builds(tmp_path, monkeyp
         memory.close()
 
 
-def test_a_review_the_owner_already_decided_is_ordinary_cache(tmp_path, monkeypatch):
-    """Once decided, a preview is a build like any other and may be retired."""
+def test_a_live_drafts_preview_is_kept_so_the_owner_can_still_compare(tmp_path, monkeypatch):
+    """A published page is still something the owner is looking at."""
     memory = Memory(tmp_path / "memory.db")
     checkout = tmp_path / "repo"
     (checkout / ".git").mkdir(parents=True)
@@ -1577,8 +1583,78 @@ def test_a_review_the_owner_already_decided_is_ordinary_cache(tmp_path, monkeypa
     service._jobs["job-0"]["draft_id"] = live_id
     try:
         service._prune_preview_worktrees()
-        assert service._jobs["job-0"]["status"] == "retired"
-        assert not trees[0].exists()
+        assert service._jobs["job-0"]["status"] == "ready"
+        assert trees[0].is_dir()
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_a_publish_failed_drafts_preview_is_kept_for_the_retry(tmp_path, monkeypatch):
+    """The platform refusing a release must not also take the review away."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 100 * 1024 ** 3})())
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    failed_id = memory.save_draft("Depths", "AIDA 3 24-30 m", kind="merge")
+    memory.update_draft_status(failed_id, "publish_failed")
+    trees = []
+    for index in range(3):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    service._jobs["job-0"]["draft_id"] = failed_id
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-0"]["status"] == "ready"
+        assert trees[0].is_dir()
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_the_newest_preview_of_the_newest_draft_survives_any_status(tmp_path, monkeypatch):
+    """Whatever the owner last built is theirs, even after it was decided."""
+    memory = Memory(tmp_path / "memory.db")
+    checkout = tmp_path / "repo"
+    (checkout / ".git").mkdir(parents=True)
+    monkeypatch.setattr(source_deployment.shutil, "disk_usage",
+                        lambda path: type("Usage", (), {"free": 1})(), raising=False)
+    service = source_deployment.SourceDeploymentService(
+        {"instance_name": "tenant-preview", "site": {"clone_path": str(checkout)}},
+        memory=memory,
+    )
+    trees = []
+    for index in range(3):
+        tree = tmp_path / f"site-agent-source-preview-{index}"
+        (tree / ".open-next").mkdir(parents=True)
+        (tree / "wrangler.jsonc").write_text("{}", encoding="utf-8")
+        trees.append(tree)
+        service._jobs[f"job-{index}"] = {
+            "id": f"job-{index}", "mode": "compiled_preview", "status": "ready",
+            "commit": f"{index}" * 40, "worktree_path": str(tree),
+            "updated_at": f"2026-11-0{index + 1}T00:00:00+00:00",
+        }
+    # Decided, superseded, not pending: still the newest thing the owner built,
+    # and the host is out of disk.
+    decided = memory.save_draft("Depths", "", kind="merge")
+    memory.update_draft_status(decided, "approved")
+    service._jobs["job-2"]["draft_id"] = decided
+    try:
+        service._prune_preview_worktrees()
+        assert service._jobs["job-2"]["status"] == "ready"
+        assert trees[2].is_dir()
     finally:
         service.close()
         memory.close()

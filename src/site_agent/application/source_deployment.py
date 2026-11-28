@@ -70,14 +70,18 @@ _PENDING_PUBLISH_STATUSES = frozenset({"pending", "approved", "publishing", "pub
 # build with its dependencies, so the newest few stay resumable and an older
 # one is rebuilt on request rather than left to fill the host.
 _PREVIEW_WORKTREE_LIMIT = 2
-# A review the owner has not decided yet is not cache: its preview is kept on
-# top of the newest builds, so leaving one draft for another does not cost a
-# recompile on return. Bounded so a pile of undecided drafts cannot spend the
-# host.
+# A review the owner may still be looking at is not cache: its preview is kept
+# on top of the newest builds, so leaving one draft for another does not cost a
+# recompile on return and a deployment never replaces the picture on the
+# owner's screen. Bounded so a pile of abandoned drafts cannot spend the host.
 _PREVIEW_PENDING_REVIEW_LIMIT = 2
+# The draft states that describe a review the owner can still act on. A draft
+# leaves this set when the owner's own decision moves it somewhere else.
+_PROTECTED_REVIEW_STATUSES = frozenset({"pending", "publish_failed", "live"})
 # Disk a compiled preview may never consume. The host builds and releases every
-# tenant, and a cache that fills the disk stops all of them, so below this the
-# only preview kept is the one a runtime is serving.
+# tenant, and a preview that fills the disk stops all of them. This is the
+# threshold at which a *new* preview build is refused; it never removes a
+# preview the owner is looking at.
 _PREVIEW_DISK_RESERVE_BYTES = 25 * 1024 ** 3
 # How long a browser request may wait for a kept preview's process to bind. A
 # process start is seconds; a compile is minutes, and a request must never look
@@ -380,29 +384,25 @@ class SourceDeploymentService:
         of them. The oldest are removed and rebuilt on request, never the tree a
         runtime is currently serving, and never more than the host can hold.
 
-        A review the owner can still publish is not cache. Only one preview
+        A preview the owner may be looking at is not cache. Only one preview
         process runs at a time, so opening a second draft stops the first one's
         process: before this, the review the owner had just left fell back to
         being "one of the older trees" and was retired behind them, and coming
-        back cost a full recompile. The newest preview of the most recent
-        pending reviews is kept in addition to the newest previews, unless the
-        host is below its disk reserve, where nothing but the served process
-        may survive.
+        back cost a full recompile.
+
+        Two things are protected, and neither depends on how much disk is free.
+        The newest preview of the newest draft is the one on the owner's screen.
+        Every other preview whose draft the owner can still act on is protected
+        by ``_protected_review_draft_ids``. Disk pressure is a reason to refuse
+        the next build, never a reason to delete a review out from under the
+        owner: running out of space is a platform fault, and it is not repaired
+        by changing what the owner sees.
         """
         try:
             checkout = self._local_checkout()
         except SourceDeploymentError:
             return
         keep = _PREVIEW_WORKTREE_LIMIT
-        try:
-            free = shutil.disk_usage(checkout.parent).free
-        except OSError:
-            free = None
-        if free is not None and free < _PREVIEW_DISK_RESERVE_BYTES:
-            # A compiled preview is a cache. It may not be the reason the host
-            # cannot build or release: below the reserve only the preview that
-            # is being served is kept.
-            keep = 0
         previews = [
             job for job in self._jobs.values()
             if isinstance(job, dict)
@@ -411,22 +411,25 @@ class SourceDeploymentService:
         ]
         previews.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
         kept = {str(job.get("id") or "") for job in previews[:keep]}
-        if keep:
-            # Sorted newest first, so the first job seen for a pending review is
-            # the preview that review would be shown.
-            pending = self._pending_review_draft_ids()
-            protected: set[int] = set()
-            for job in previews:
-                try:
-                    draft_id = int(job.get("draft_id") or 0)
-                except (TypeError, ValueError):
-                    continue
-                if draft_id not in pending or draft_id in protected:
-                    continue
-                if len(protected) >= _PREVIEW_PENDING_REVIEW_LIMIT:
-                    break
-                protected.add(draft_id)
-                kept.add(str(job.get("id") or ""))
+        # The newest preview of the newest draft is what the owner is looking at,
+        # whatever its status and whatever the disk says.
+        if previews:
+            kept.add(str(previews[0].get("id") or ""))
+        # Sorted newest first, so the first job seen for a protected review is
+        # the preview that review would be shown.
+        protected_reviews = self._protected_review_draft_ids()
+        protected: set[int] = set()
+        for job in previews:
+            try:
+                draft_id = int(job.get("draft_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            if draft_id not in protected_reviews or draft_id in protected:
+                continue
+            if len(protected) >= _PREVIEW_PENDING_REVIEW_LIMIT:
+                break
+            protected.add(draft_id)
+            kept.add(str(job.get("id") or ""))
         retired = 0
         for job in previews:
             job_id = str(job.get("id") or "")
@@ -483,12 +486,50 @@ class SourceDeploymentService:
                 )
             self._persist()
 
-    def _pending_review_draft_ids(self) -> set[int]:
-        """Reviews the owner can still publish or discard.
+    def _require_preview_capacity(self, checkout: Path) -> None:
+        """Refuse a new preview build while the host is short of disk.
 
-        A review is a decision in progress, not a cached build: its preview is
-        kept while it waits for the owner, even when newer builds push it out of
-        the newest few.
+        A compiled preview costs a checkout, its dependencies and a build. When
+        the host cannot afford another one, the honest answer is that this build
+        cannot run yet, with the reason named for the owner and the operator. It
+        is never permission to delete a preview the owner is looking at: the
+        review on their screen is not the thing that broke.
+        """
+        try:
+            free = shutil.disk_usage(checkout.parent).free
+        except OSError:
+            return
+        if free < _PREVIEW_DISK_RESERVE_BYTES:
+            raise SourceDeploymentError(
+                "this preview cannot be built yet: the host has "
+                f"{free / 1024 ** 3:.1f} GiB free and a build needs "
+                f"{_PREVIEW_DISK_RESERVE_BYTES / 1024 ** 3:.0f} GiB. Your current "
+                "preview is unchanged."
+            )
+
+    def _protected_review_draft_ids(self) -> set[int]:
+        """Reviews whose preview the owner may still be looking at.
+
+        A preview is not cache: it is what the owner is working on. The owner
+        decides when it goes away, by publishing, declining or returning to an
+        earlier version; a deployment, a disk sweep or a newer build must never
+        replace the picture on their screen.
+
+        That holds for every decision the owner can still reach from what they
+        are looking at, not only an undecided draft:
+
+        * ``pending`` is a review waiting for the owner;
+        * ``publish_failed`` is a review whose publication was refused by the
+          platform, which the owner can retry or decline;
+        * ``live`` is the page the owner may already be comparing against, and
+          its preview is the only record of the exact tree they approved.
+
+        A draft leaves this set only when the owner's own action moves it
+        somewhere else (``approved``, ``declined``, ``discarded``,
+        ``superseded``), or when a later draft it was superseded by is itself
+        protected. The bound exists because an abandoned preview still spends
+        the host's disk: the newest protected reviews are kept, oldest first
+        out, and a review that has been outrun is rebuilt on request.
         """
         if self.memory is None:
             return set()
@@ -498,7 +539,7 @@ class SourceDeploymentService:
             return set()
         pending: set[int] = set()
         for draft in drafts:
-            if str(draft.get("status") or "") != "pending":
+            if str(draft.get("status") or "") not in _PROTECTED_REVIEW_STATUSES:
                 continue
             if str(draft.get("kind") or "") not in {"design", "merge", "rollback"}:
                 continue
@@ -2531,6 +2572,7 @@ class SourceDeploymentService:
         if mode != _COMPILED_PREVIEW:
             raise SourceDeploymentError("production builds and uploads are owned by the central VPS release pipeline")
         checkout = self._local_checkout()
+        self._require_preview_capacity(checkout)
         run_id = str(job.get("design_run_id") or "")
         self._mark_step(job, "worktree")
         worktree, local_head = (self._worktree(checkout, branch, commit, retained=True)
