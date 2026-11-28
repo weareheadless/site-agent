@@ -369,10 +369,53 @@ of this phase; what remains is one tenant.
 
 ### Implementation status (2026-11-27)
 
+### Deployed state (2026-11-28)
+
+**Phase 1 is live in production.** Contract
+
+- `site-agent` `main` `dff4e550` (PR #638, squash-merged).
+- `helloada-mailbox-ui-v0.4.2` published, sha256
+  `74c37aa3778559f0993d5b075af1b13927e1122c132e66cbf0da212a1dde22b8`.
+- `helloada` `main` `ff8adb50` (PR #46), released as
+  `20261128-mailbox-tenant-key`; Worker version `01310a82` at 100% traffic;
+  `/api/health` reports `releaseSha=ff8adb500ab33dfe9f28772f9f2b49e3a772aa37`.
+- Phase 2 shipped by the ordinary fan-out at fingerprint `fc48b8a28d40` after
+  the grant-identity hotfix (PR #641, merged `821e18f9`). The canary
+  `ada-e2e-studio-intake-…` passed; the batch delivered every registered
+  automatic tenant.
+
+Verified in an authenticated production browser session, not from the receipt:
+
+| Check | Result |
+| --- | --- |
+| casamigo inbox | renders its own (empty) inbox, `total: 0` |
+| oceanicvibes inbox | renders its own 4 messages, `total: 4`, no casamigo data |
+| cross-tenant | one identity, one mailbox per site; the UI drops the previous tenant's state on switch |
+| own address | each tenant's header and message rows name its own mailbox |
+| console/module errors | none observed |
+
+**Phase 2 is fanning out by inheritance**, not by a hand-queued list: the timer
+saw the new fingerprint (`3b7ccb8c…`) on its own and queued the canary
+`ada-e2e-studio-intake-0aa0b1a55ae48348`. oceanicvibes is repaired in its batch.
+
+Before-snapshot for oceanicvibes (the one real legacy tenant), read-only:
+
+```
+canonical owner : ha_99503793d7ed139d501db3ed9f617d7e613f5832e1781122c1453bb3d8e6ff43
+registered owner: ha_e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683  (legacy)
+users           : service, ha_e7f6c011…, ha_2c624232… (all enabled)
+mailbox_access  : ha_e7f6c011… full_access, ha_2c624232… full_access
+messages        : 4
+```
+
+After the batch the expectation is: the registration is the canonical id, both
+legacy accounts are disabled but still present, one `full_access` grant, the
+same 4 messages, and the same visible inbox.
+
 | Phase | State | Landed in | Tests |
 | --- | --- | --- | --- |
-| 1 client scoping | implemented | `packages/helloada-mailbox-ui/scripts/build.mjs` (`writeScope`, `patchTenantScopedCaches`, `patchTenantScopedStorage`, `patchMailboxProvider`, `patchMailboxSelector`, `removeDeadSessionModules`), generated `dist/scope.ts`, `helloada` mount `key`/`tenantKey` | `packages/helloada-mailbox-ui/tests/contract.test.mjs` (5 new tests, 19 total) |
-| 2 identity repair | implemented | `templates/next-payload/mailflare-owner-identity.ts`; gate now delegates (`mailflare-owner-gate.ts`), booking path delegates (`mailflare-booking-service.ts`) | `templates/next-payload/tests/mailflare-owner-identity.test.mjs` (8), updated `mailflare-owner-gate.test.mjs` |
+| 1 client scoping | **deployed** | `packages/helloada-mailbox-ui/scripts/build.mjs` (`writeScope`, `patchTenantScopedCaches`, `patchTenantScopedStorage`, `patchMailboxProvider`, `patchMailboxSelector`, `removeDeadSessionModules`), generated `dist/scope.ts`, `helloada` mount `key`/`tenantKey` | `packages/helloada-mailbox-ui/tests/contract.test.mjs` (6 new tests, 20 total) |
+| 2 identity repair | **deployed and verified on the one legacy tenant** | `templates/next-payload/mailflare-owner-identity.ts` (added to the shared-runtime overlay); gate repairs (`mailflare-owner-gate.ts`), public booking path resolves read-only (`mailflare-booking-service.ts`) | `mailflare-owner-identity.test.mjs` (9), rewritten `booking-owner.test.mjs`, updated `booking-runtime.test.mjs`, `build-contract.test.mjs` (13) |
 | 3 id invariant | documented | this document; enforced by the phase-1 generator scan test | — |
 | 4 routing reconcile | implemented | `application/email_routing_reconcile.py` (pure plan + apply), `application/email_routing_fleet.py` (fleet gather), `site-agent reconcile-email-routing` CLI | `tests/test_email_routing_reconcile.py` (12), `tests/test_email_routing_fleet.py` (6) |
 | 5 ops convergence | operator | existing `provision-email` lane; the new CLI reports the rest as `actionRequired` | — |
@@ -393,6 +436,71 @@ ship in one order and not the other:
    constraint, not a broken lock: the app must not ship a mount that passes
    `tenantKey` to a package that ignores it.
 3. Then release `helloada` through `deploy/desired-helloada-app-release.json`.
+
+### A production incident the repair caused, and the boundary it exposed
+
+The repair worked. The next mailbox request for the tenant it repaired returned
+an error page, and the reason is worth keeping.
+
+`ensureOwnerSession` inserted the owner's `full_access` grant with
+`INSERT OR IGNORE`, then required the stored id to equal the id it had just
+generated. The repair *re-points* a legacy grant rather than recreating it, so
+the grant it kept carried the old id. `INSERT OR IGNORE` correctly did nothing,
+and the id check read a valid grant as a provisioning failure — on every mailbox
+request, so the whole mailbox was down for that owner.
+
+The table already declared its identity: `mailbox_access_mailbox_user_idx` is
+unique on `(mailbox_id, user_id)`. The grant is now found on that pair and its
+permission verified, which is what "the owner has access" actually means.
+
+Two things this says:
+
+1. **The defect predates this work.** The id comparison could only ever fail on
+   a grant that already existed under another id, which nothing produced before
+   the repair existed. It was invisible because the path was never exercised.
+2. **A migration that preserves rows exposes every assumption that they are
+   recreated.** The write paths that consume repaired state are part of the
+   migration's contract, not a separate concern to be verified later.
+
+Verified after the fix, in the live tenant: registration canonical, both legacy
+accounts disabled (not deleted), exactly one `full_access` grant, 4 messages
+before and after, and the inbox rendering them.
+
+### Two boundary errors CI caught before merge, and what they were
+
+Both were mine, both were invisible locally, and both are worth keeping because
+each names a different way the same mistake can hide.
+
+1. **A public request was running the repair.** `resolveTenantOwnerUserId` ran
+   `ensureTenantOwnerIdentity`, and the public booking runtime calls it on every
+   anonymous page load and enquiry. One stranger visiting a booking page could
+   have rewritten thirty owner-scoped tables on a tenant whose registration was
+   still legacy. Resolving an owner is a read; repairing one is a migration, and
+   a migration belongs to the authenticated owner path.
+   - `resolveTenantOwnerUserId` now resolves and verifies only, and fails closed
+     with `mailbox_owner_identity_invalid` on a non-canonical registration.
+   - `resolveOrRepairTenantOwnerUserId` is the repair, used by the gate and the
+     authenticated `/api/workspace/booking` route.
+   - The test asserts both directions: a public resolve on a legacy registration
+     writes nothing, and repair-then-resolve serves.
+
+2. **The module was in neither place that ships it.** Adding
+   `mailflare-owner-identity.ts` to the template without adding it to
+   `deploy/shared-runtime-overlay.json` broke the tenant build
+   (`UNRESOLVED_IMPORT` in `mailflare-integration`); the vendored Mailflare build
+   had the same gap in `packages/helloada-mailflare/scripts/build.mjs`, which
+   copies `mailflare-booking-service.ts` without what it imports. Local tests
+   passed both times because the file sits next to its importer in this checkout.
+   - Both copy paths now carry the module, and the overlay's packaged twin is
+     byte-identical.
+   - `tests/test_shared_runtime.py` asserts that every relative import between
+     modules the overlay copies resolves inside the copied set.
+   - `build-contract.test.mjs` asserts the same for the vendored tree *and* that
+     `scripts/build.mjs` actually performs each copy.
+
+Both changes are inside the shared-runtime boundary, so the fingerprint moved
+twice more (`5dcab068…`, then `3b7ccb8c…`); both were restamped with
+`stamp_declared_runtime`.
 
 ### Three release defects this work produced and now guards against
 
